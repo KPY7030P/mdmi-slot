@@ -15,6 +15,14 @@ fail() {
   failures=$((failures + 1))
 }
 
+# Prints the slowest engine boot in ms if it outlasted the first note of a realtime run, otherwise 0.
+late_boot_ms() {
+  awk -v rate="$2" '
+    /^EVENT 9/ && !first { split($4, a, "="); first = a[2] / rate * 1000 }
+    /^boot / { t = 0; for (i = 2; i <= 5; i++) { split($i, a, "="); t += a[2] + 0 } if (t > slowest) slowest = t }
+    END { print (slowest > first) ? int(slowest) : 0 }' "$1"
+}
+
 # expect is "sound" when the engine must keep playing, "dead" when it must fail while the host lives.
 run() {
   name="$1"; rate="$2"; block="$3"; mode="$4"; instances="$5"; expect="${6:-sound}"
@@ -22,6 +30,14 @@ run() {
   log="$OUT/$name.log"
   timeout 60 ./clap_host.exe "MDMI Mega Drive.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
   code=$?
+  # The first run of a new build can boot for many seconds; a realtime run then ends in silence
+  # without saying anything about the sound. Say so and measure again, once.
+  late="$(late_boot_ms "$log" "$rate")"
+  if [ "$mode" = realtime ] && [ "$late" != 0 ]; then
+    echo "SLOW BOOT: ${late} ms, later than the first note. Running $name again."
+    timeout 60 ./clap_host.exe "MDMI Mega Drive.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
+    code=$?
+  fi
   grep -E "wall=|stats " "$log"
   [ "$code" = 0 ] || { fail "$name: host exit $code"; tail -5 "$log"; }
   grep -q "clean_shutdown=1" "$log" || fail "$name: no clean shutdown"
