@@ -127,6 +127,7 @@ static bool channel_is_fm(int channel)
 	return channel < PATCH_NUM_FM_CHANNELS;
 }
 
+#ifdef MDMI_E3
 // The row a window position falls on, or -1.
 static int row_at(int y)
 {
@@ -140,6 +141,7 @@ static int row_at(int y)
 	}
 	return -1;
 }
+#endif
 
 static int row_y(int channel)
 {

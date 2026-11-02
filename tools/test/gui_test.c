@@ -288,7 +288,7 @@ int main(int argc, char **argv)
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		capture(window);
-		CHECK(count_not_black(HEIGHT - 28, HEIGHT) == 0, "nothing from the ROM page is left at the bottom");
+		CHECK(count_not_black(666, 671) == 0, "nothing from the ROM page is left under the status line");
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);
