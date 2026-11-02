@@ -4,13 +4,14 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WIN_ROOT="$(cygpath -m "$ROOT")"
 export MSYS_NO_PATHCONV=1
+LABEL="$(git -C "$WIN_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)"
 
 docker build -q -t mdmi-plugin-build "$WIN_ROOT/tools/docker"
-docker run --rm -v "$WIN_ROOT:/src" -w /src mdmi-plugin-build sh -c '
+docker run --rm -v "$WIN_ROOT:/src" -w /src -e LABEL="$LABEL" mdmi-plugin-build sh -c '
   set -e
   mkdir -p build/engine
   make -C third_party/blastem -j16 OS=Windows CPU=x86_64 libblastem.dll > build/engine/build.log 2>&1 || { grep -E "error|undefined" build/engine/build.log; exit 1; }
   x86_64-w64-mingw32-strip -o build/engine/libblastem.dll third_party/blastem/libblastem.dll
-  cmake -S . -B build/cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake
+  cmake -S . -B build/cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake -DMDMI_BUILD_LABEL="$LABEL"
   cmake --build build/cmake --target mdmi_all
 '

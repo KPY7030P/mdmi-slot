@@ -40,23 +40,24 @@ Knob ids never change, because hosts store automation by id. New knobs take the 
 
 ## Building
 
-Needs Docker and Git Bash. Clone with `core.autocrlf=false`, or BlastEm's scripts break:
-
-- `third_party/blastem`: `ulalume/blastem` at `patches/BASE_COMMIT`, with `0001` applied
-- `third_party/clap`: `free-audio/clap`
-- `third_party/clap-wrapper`: `free-audio/clap-wrapper` at `patches/BASE_COMMIT_CLAP_WRAPPER`, with `0002` applied
-- `third_party/vst3sdk`: `steinbergmedia/vst3sdk` at `v3.8.0_build_66`, the version clap-wrapper expects
-- `third_party/mdmi`: `rhargreaves/mega-drive-midi-interface`, only for regenerating the preset table
-- `roms/mdmi-everdrive-v1.34.bin`: from the MDMI v1.34 release
+Needs Docker, Git Bash, and Python with numpy for the tests. All outside code is pinned in `tools/deps.lock`:
 
 ```bash
+sh tools/fetch_deps.sh
 sh tools/build_plugin.sh
 sh tools/test/run_tests.sh
-build/cmake/param_test.exe "build/cmake/out/CLAP/MDMI Mega Drive.clap"
+sh tools/install.sh
 ```
 
-Plugins land in `build/cmake/out`. `crash-*` tests report `NO SOUND` on purpose: they kill the engine and
-check that the host survives and shuts down cleanly (`failed=1`, `clean_shutdown=1`).
+`fetch_deps.sh` clones `third_party/` and applies `patches/`. After changing code there, run
+`tools/save_patches.sh`. `run_tests.sh` exits with the number of failed checks. Plugins land in `build/cmake/out`.
+
+`install.sh` copies them to `D:\ALL\VST\CHIPTUNE\MDMI` or the folder you name, checks the hashes, and writes
+`BUILD.txt` there. It fails if Ableton Live has the VST3 locked. Live does not show plugin versions, so `BUILD.txt`
+is how to tell what is installed.
+
+The version is `0.N.M+revision`: N is the stage in `docs/ROADMAP.md`, M the delivery, and the revision is
+`git describe`, ending in `-dirty` for uncommitted code.
 
 ## Licence
 

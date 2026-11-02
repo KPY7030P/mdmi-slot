@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
-project(mdmi_plugin VERSION 0.1.0 LANGUAGES C CXX)
+# 0.N.M: N is the stage in docs/ROADMAP.md, M the delivery within it.
+project(mdmi_plugin VERSION 0.0.1 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
@@ -8,6 +9,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+
+set(MDMI_BUILD_LABEL "unknown" CACHE STRING "Revision shown as part of the plugin version")
+set(MDMI_VERSION "${PROJECT_VERSION}+${MDMI_BUILD_LABEL}")
+file(WRITE "${CMAKE_SOURCE_DIR}/build/label.txt" "${MDMI_VERSION}\n")
 
 set(MDMI_ENGINE "${CMAKE_SOURCE_DIR}/build/engine/libblastem.dll")
 set(MDMI_ROM "${CMAKE_SOURCE_DIR}/roms/mdmi-everdrive-v1.34.bin")
@@ -23,6 +28,8 @@ add_library(mdmi_impl STATIC src/plugin.c src/engine.c src/patch.c src/resampler
 target_compile_options(mdmi_impl PRIVATE -Wall -Wextra -Wno-cast-function-type)
 target_include_directories(mdmi_impl PUBLIC "${CLAP_SDK_ROOT}/include" PRIVATE "${BLASTEM_DIR}")
 target_link_libraries(mdmi_impl PUBLIC m avrt)
+set_source_files_properties(src/plugin.c PROPERTIES
+  COMPILE_DEFINITIONS "MDMI_VERSION=\"${MDMI_VERSION}\"")
 set_source_files_properties(src/embed.c PROPERTIES
   COMPILE_DEFINITIONS "MDMI_ENGINE_PATH=${MDMI_ENGINE};MDMI_ROM_PATH=${MDMI_ROM}"
   OBJECT_DEPENDS "${MDMI_ENGINE};${MDMI_ROM}")

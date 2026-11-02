@@ -55,6 +55,7 @@ struct mdmi_engine {
 	void_fn retro_run;
 	midi_write_fn midi_write;
 	void_fn test_fatal;
+	void_fn test_freeze;
 	has_failed_fn has_failed;
 	set_lowpass_fn set_lowpass;
 	void_fn retro_deinit;
@@ -350,12 +351,14 @@ static bool load_core(mdmi_engine *e)
 	LOAD(midi_write, midi_write_fn, "mdmi_midi_write")
 	LOAD(has_failed, has_failed_fn, "mdmi_has_failed")
 	LOAD(test_fatal, void_fn, "mdmi_test_fatal")
+	LOAD(test_freeze, void_fn, "mdmi_test_freeze")
 	LOAD(deinit, void_fn, "retro_deinit")
 	LOAD(set_lowpass, set_lowpass_fn, "mdmi_set_lowpass")
 	e->retro_run = run;
 	e->midi_write = midi_write;
 	e->has_failed = has_failed;
 	e->test_fatal = test_fatal;
+	e->test_freeze = test_freeze;
 	e->retro_deinit = deinit;
 	e->set_lowpass = set_lowpass;
 
@@ -417,6 +420,8 @@ static DWORD WINAPI worker_main(LPVOID param)
 	const char *crash_test = getenv("MDMI_TEST_CRASH");
 	if (crash_test && !strcmp(crash_test, "fatal")) {
 		e->test_fatal();
+	} else if (crash_test && !strcmp(crash_test, "freeze")) {
+		e->test_freeze();
 	} else if (crash_test && !strcmp(crash_test, "segv")) {
 		*(volatile int *)NULL = 1;
 	}

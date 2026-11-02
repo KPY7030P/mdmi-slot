@@ -149,6 +149,13 @@ int main(int argc, char **argv)
 	}
 	IPluginFactory *factory = get_factory();
 
+	IPluginFactory2 *factory2 = nullptr;
+	if (factory->queryInterface(IPluginFactory2::iid, (void **)&factory2) == kResultOk) {
+		PClassInfo2 info2;
+		factory2->getClassInfo2(0, &info2);
+		printf("version=%s\n", info2.version);
+	}
+
 	TUID cid;
 	bool found = false;
 	for (int32 i = 0; i < factory->countClasses(); i++) {

@@ -11,6 +11,19 @@ index 870067f..b0f7bc3 100644
  	$(TRANSOBJS) $(AUDIOOBJS) saves.o jcart.o gen_player.o coleco.o pico_pcm.o ymz263b.o \
  	segacd.o lc8951.o cdimage.o cdd_mcu.o cd_graphics.o cdd_fader.o sft_mapper.o mediaplayer.o \
  	laseractive.o upd78k2_dis.o upd78k2.o osd_font.o pd0178.o radica.o 32x.o 32x_video.o sh2.o \
+diff --git a/config.c b/config.c
+index 5fc1254..9e83783 100644
+--- a/config.c
++++ b/config.c
+@@ -751,7 +751,7 @@ tern_node *set_machine_feeze_choice(tern_node *config, uint8_t choice)
+ 
+ void machine_freeze(tern_node *config, debug_callback callback, void *data, char *format, ...)
+ {
+-#ifdef ISLIB
++#ifdef IS_LIB
+ 	return;
+ #else
+ 	static uint8_t freeze_choice;
 diff --git a/libblastem.c b/libblastem.c
 index 3472c7f..ababb61 100644
 --- a/libblastem.c
@@ -65,14 +78,15 @@ index 3472c7f..ababb61 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..e643f5e
+index 0000000..8700ef4
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,109 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
 +#include "util.h"
++#include "config.h"
 +#ifdef _WIN32
 +#include <windows.h>
 +#else
@@ -150,6 +164,12 @@ index 0000000..e643f5e
 +RETRO_API void mdmi_test_fatal(void)
 +{
 +	fatal_error("mdmi_test_fatal\n");
++}
++
++//Host API: exercises the machine freeze path from tests. In a library build it must simply return.
++RETRO_API void mdmi_test_freeze(void)
++{
++	machine_freeze(NULL, NULL, NULL, "mdmi_test_freeze\n");
 +}
 +
 +//Host API: returns the number of bytes accepted

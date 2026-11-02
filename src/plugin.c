@@ -22,8 +22,8 @@ static const clap_plugin_descriptor_t plugin_descriptor = {
 	.url = "",
 	.manual_url = "",
 	.support_url = "",
-	.version = "0.1.0",
-	.description = "Mega Drive MIDI Interface ROM running in the BlastEm emulator",
+	.version = MDMI_VERSION,
+	.description = "Mega Drive MIDI Interface ROM running in the BlastEm emulator, build " MDMI_VERSION,
 	.features = plugin_features,
 };
 
