@@ -243,7 +243,7 @@ int main(int argc, char **argv)
 
 	// The window, attached the way a host attaches it, stays open while the sound runs.
 	IPlugView *view = controller ? controller->createView(ViewType::kEditor) : nullptr;
-	HWND view_parent = CreateWindowExA(0, "STATIC", "vst3_host", WS_POPUP, 0, 0, 960, 704, nullptr, nullptr, nullptr, nullptr);
+	HWND view_parent = CreateWindowExA(0, "STATIC", "vst3_host", WS_POPUP, 0, 0, 720, 528, nullptr, nullptr, nullptr, nullptr);
 	if (view) {
 		ViewRect rect;
 		view->getSize(&rect);

@@ -8,8 +8,8 @@
 
 // The plugin's window: everything is drawn by our own code into a pixel buffer. All of this runs
 // on the host's main thread. The window only reads; nothing here changes the sound.
-#define GUI_WIDTH 960
-#define GUI_HEIGHT 704
+#define GUI_WIDTH 720
+#define GUI_HEIGHT 528
 #define GUI_NUM_MIDI_CHANNELS 16
 
 // What a MIDI channel is playing, written by the audio thread as one atomic value.

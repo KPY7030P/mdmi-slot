@@ -30,20 +30,22 @@
 #define C_TARGET 0xEEEE22
 #define C_ERROR 0xEE2222
 
-#define HEADER_H 32
-#define FOOTER_Y 672
-#define STATUS_Y 640
-#define GROUP_H 24
-#define ROW_H 56
-#define ROM_SCALE 3
-#define BUTTON_Y 4
-#define BUTTON_W 92
+#define HEADER_H 28
+#define FOOTER_Y 504
+#define STATUS_Y 480
+#define GROUP_H 16
+#define ROW_H 42
+#define ROM_SCALE 2
+#define BUTTON_Y 2
+#define BUTTON_W 80
 #define BUTTON_H 24
-#define BUTTON_EDITOR_X 80
+#define BUTTON_EDITOR_X 60
 #define BUTTON_ROM_X (BUTTON_EDITOR_X + BUTTON_W + 4)
+#define STATUS_X 236
 #define VELOCITY_STEPS 15
-#define E3_CELL_X 800
-#define E3_CELL_W 152
+#define TIMER_PER_SECOND (1000 / TIMER_MS)
+#define E3_CELL_X 590
+#define E3_CELL_W 122
 
 enum { PAGE_EDITOR, PAGE_ROM };
 
@@ -69,6 +71,9 @@ struct mdmi_gui {
 	char drag_name[64];
 	char message[128];
 	bool message_is_warning;
+	uint32_t underruns_second_ago;
+	uint32_t underruns_per_second;
+	int ticks;
 
 #ifdef MDMI_E3
 	int drag_cell;
@@ -119,7 +124,7 @@ static void button(mdmi_gui *g, int x, const char *label, bool on)
 {
 	fill(g, x, BUTTON_Y, BUTTON_W, BUTTON_H, on ? C_TEXT : C_CELL);
 	int width = (int)strlen(label) * 12;
-	text(g, x + (BUTTON_W - width) / 2, BUTTON_Y + 4, label, on ? C_BG : C_LABEL, 2);
+	text(g, x + (BUTTON_W - width) / 2, BUTTON_Y + 5, label, on ? C_BG : C_LABEL, 2);
 }
 
 static bool channel_is_fm(int channel)
@@ -192,21 +197,21 @@ static void draw_row(mdmi_gui *g, int channel)
 
 	char buffer[64];
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
-	text(g, 20, y + 16, buffer, C_TEXT, 3);
+	text(g, 14, y + 9, buffer, C_TEXT, 3);
 
 	const char *tag = dac ? "DAC" : channel == PATCH_NUM_CHANNELS - 1 ? "NOISE"
 		: !channel_is_fm(channel) ? "PSG"
 		: channel == 2 && patch_get(patch, PARAM_CH3_MODE) ? "FM SP" : "FM";
-	text(g, 76, y + 20, tag, dac ? C_DAC : channel_is_fm(channel) ? C_FM_LIGHT : C_PSG, 2);
+	text(g, 54, y + 13, tag, dac ? C_DAC : channel_is_fm(channel) ? C_FM_LIGHT : C_PSG, 2);
 
 	if (voice) {
-		text(g, 156, y + 20, "voice of CH 1", C_HINT, 2);
+		text(g, 122, y + 13, "voice of CH 1", C_HINT, 2);
 	} else if (dac) {
-		text(g, 156, y + 20, "Samples", C_LABEL, 2);
+		text(g, 122, y + 13, "Samples", C_LABEL, 2);
 	} else {
 		patch_format_preset(channel, patch_get_channel(patch, channel, PARAM_PRESET), buffer, sizeof(buffer));
-		buffer[28] = 0;
-		text(g, 156, y + 20, buffer, C_LABEL, 2);
+		buffer[21] = 0;
+		text(g, 122, y + 13, buffer, C_LABEL, 2);
 	}
 
 	if (!voice) {
@@ -214,14 +219,14 @@ static void draw_row(mdmi_gui *g, int channel)
 		if (GUI_NOTE_SEEN(note)) {
 			const bool held = GUI_NOTE_HELD(note) > 0;
 			note_name(GUI_NOTE_KEY(note), buffer, sizeof(buffer));
-			text(g, 516, y + 16, buffer, held ? C_PLAYING : C_HINT, 3);
+			text(g, 382, y + 9, buffer, held ? C_PLAYING : C_HINT, 3);
 			int lit = held ? (GUI_NOTE_VELOCITY(note) * VELOCITY_STEPS + 126) / 127 : 0;
 			for (int step = 0; step < VELOCITY_STEPS; step++) {
-				fill(g, 600 + step * 8, y + 20, 6, 16, step < lit ? C_PLAYING : C_CELL);
+				fill(g, 442 + step * 6, y + 13, 4, 16, step < lit ? C_PLAYING : C_CELL);
 			}
 			if (GUI_NOTE_HELD(note) > 1) {
 				snprintf(buffer, sizeof(buffer), "x%d", (int)GUI_NOTE_HELD(note));
-				text(g, 732, y + 20, buffer, C_PLAYING, 2);
+				text(g, 536, y + 13, buffer, C_PLAYING, 2);
 			}
 		}
 	}
@@ -230,10 +235,10 @@ static void draw_row(mdmi_gui *g, int channel)
 	const gui_e3 *e3 = &g->source.e3;
 	int cell = channel == 3 ? 0 : channel == 6 ? 1 : -1;
 	if (cell >= 0) {
-		fill(g, E3_CELL_X, y + 8, E3_CELL_W, ROW_H - 17, g->drag_cell == cell ? C_FM_DARK : C_CELL);
-		text(g, E3_CELL_X + 4, y + 11, e3->names[cell], C_LABEL, 1);
+		fill(g, E3_CELL_X, y + 3, E3_CELL_W, ROW_H - 7, g->drag_cell == cell ? C_FM_DARK : C_CELL);
+		text(g, E3_CELL_X + 4, y + 5, e3->names[cell], C_LABEL, 1);
 		snprintf(buffer, sizeof(buffer), "%d", e3->value(e3->context, cell));
-		text(g, E3_CELL_X + 4, y + 24, buffer, C_TEXT, 2);
+		text(g, E3_CELL_X + 4, y + 17, buffer, C_TEXT, 2);
 	}
 #endif
 
@@ -250,18 +255,25 @@ static void draw_editor(mdmi_gui *g)
 {
 	fill(g, 0, HEADER_H, GUI_WIDTH, FOOTER_Y - HEADER_H, C_BG);
 	fill(g, 0, HEADER_H, GUI_WIDTH, GROUP_H, C_CELL);
-	text(g, 8, HEADER_H + 8, "YM2612", C_FM_LIGHT, 1);
+	text(g, 8, HEADER_H + 4, "YM2612", C_FM_LIGHT, 1);
 	int psg_y = row_y(PATCH_NUM_FM_CHANNELS) - GROUP_H;
 	fill(g, 0, psg_y, GUI_WIDTH, GROUP_H, C_CELL);
-	text(g, 8, psg_y + 8, "SN76489", C_PSG, 1);
+	text(g, 8, psg_y + 4, "SN76489", C_PSG, 1);
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		draw_row(g, channel);
 	}
 
 	mdmi_engine_stats stats = mdmi_engine_get_stats(g->source.engine);
 	char buffer[128];
-	snprintf(buffer, sizeof(buffer), "UNDERRUNS %u   DROPPED MIDI %u", stats.underruns, stats.dropped_midi);
-	text(g, 8, STATUS_Y + 8, buffer, stats.underruns || stats.dropped_midi ? C_TARGET : C_HINT, 2);
+	if (++g->ticks >= TIMER_PER_SECOND) {
+		g->ticks = 0;
+		g->underruns_per_second = stats.underruns - g->underruns_second_ago;
+		g->underruns_second_ago = stats.underruns;
+	}
+	snprintf(buffer, sizeof(buffer), "UNDERRUNS %u +%u/S  MIDI LOST %u", stats.underruns, g->underruns_per_second, stats.dropped_midi);
+	text(g, 8, STATUS_Y + 4, buffer, stats.underruns || stats.dropped_midi ? C_TARGET : C_HINT, 2);
+	snprintf(buffer, sizeof(buffer), "BLOCK %u @ %u  RUN %.1f WAIT %.1f MS", stats.last_block, stats.sample_rate, stats.worst_run_ms, stats.worst_wait_ms);
+	text(g, 450, STATUS_Y + 8, buffer, C_HINT, 1);
 }
 
 static void draw_rom(mdmi_gui *g)
@@ -276,9 +288,10 @@ static void draw_rom(mdmi_gui *g)
 		height = GUI_HEIGHT - HEADER_H;
 	}
 	const int left = (GUI_WIDTH - width) / 2;
+	const int top = HEADER_H + (GUI_HEIGHT - HEADER_H - height) / 2;
 	for (int y = 0; y < height; y++) {
 		const uint32_t *source = frame->pixels + (y / ROM_SCALE) * MDMI_FRAME_MAX_WIDTH;
-		uint32_t *line = g->pixels + (HEADER_H + y) * GUI_WIDTH + left;
+		uint32_t *line = g->pixels + (top + y) * GUI_WIDTH + left;
 		for (int x = 0; x < width; x++) {
 			line[x] = source[x / ROM_SCALE] & 0xFFFFFF;
 		}
@@ -290,21 +303,22 @@ static void draw_status(mdmi_gui *g)
 	mdmi_engine_stats stats = mdmi_engine_get_stats(g->source.engine);
 	char buffer[64];
 	if (stats.failed) {
+		int end = text(g, STATUS_X, 7, "ENGINE FAILED", C_ERROR, 2);
 		if (stats.boot_error) {
-			snprintf(buffer, sizeof(buffer), "ENGINE FAILED: %s %u", stats.boot_stage ? stats.boot_stage : "", stats.boot_error);
+			snprintf(buffer, sizeof(buffer), "%s %u", stats.boot_stage ? stats.boot_stage : "", stats.boot_error);
 		} else {
-			snprintf(buffer, sizeof(buffer), "ENGINE FAILED: RELOAD DEVICE");
+			snprintf(buffer, sizeof(buffer), "RELOAD DEVICE");
 		}
-		text(g, 280, 8, buffer, C_ERROR, 2);
+		text(g, end + 6, 11, buffer, C_ERROR, 1);
 	} else if (!stats.active) {
-		text(g, 280, 8, "STOPPED", C_HINT, 2);
+		text(g, STATUS_X, 7, "STOPPED", C_HINT, 2);
 	} else if (!stats.booted) {
-		text(g, 280, 8, "LOADING ENGINE", C_TARGET, 2);
+		text(g, STATUS_X, 7, "LOADING", C_TARGET, 2);
 	} else {
-		text(g, 280, 8, "RUNNING", C_PLAYING, 2);
+		text(g, STATUS_X, 7, "RUNNING", C_PLAYING, 2);
 	}
 	const int width = (int)strlen(g->source.version) * 6;
-	text(g, GUI_WIDTH - width - 8, 12, g->source.version, C_HINT, 1);
+	text(g, GUI_WIDTH - width - 8, 11, g->source.version, C_HINT, 1);
 }
 
 static void draw_footer(mdmi_gui *g)
@@ -314,23 +328,23 @@ static void draw_footer(mdmi_gui *g)
 	char buffer[128];
 	if (g->dragging) {
 		if (!g->drag_has_file) {
-			text(g, 8, FOOTER_Y + 10, g->message, C_TARGET, 1);
+			text(g, 8, FOOTER_Y + 8, g->message, C_TARGET, 1);
 		} else if (g->drag_row >= 0 && drag_fits_channel(g, g->drag_row)) {
 			snprintf(buffer, sizeof(buffer), "%s: drop on CH %d", g->drag_name, g->drag_row + 1);
-			text(g, 8, FOOTER_Y + 8, buffer, C_TARGET, 2);
+			text(g, 8, FOOTER_Y + 4, buffer, C_TARGET, 2);
 		} else {
-			text(g, 8, FOOTER_Y + 8, g->drag_name, C_LABEL, 2);
+			text(g, 8, FOOTER_Y + 4, g->drag_name, C_LABEL, 2);
 		}
 		return;
 	}
 	if (g->message[0]) {
-		text(g, 8, FOOTER_Y + 10, g->message, g->message_is_warning ? C_TARGET : C_LABEL, 1);
+		text(g, 8, FOOTER_Y + 8, g->message, g->message_is_warning ? C_TARGET : C_LABEL, 1);
 	}
 #ifdef MDMI_E3
 	uint32_t seen = __atomic_load_n(g->source.e3.programs_seen, __ATOMIC_ACQUIRE);
 	uint32_t last = __atomic_load_n(g->source.e3.last_program, __ATOMIC_ACQUIRE);
 	snprintf(buffer, sizeof(buffer), "PGM SEEN %u  LAST CH %u = %u", seen, (last >> 8) + 1, last & 0xFF);
-	text(g, 600, FOOTER_Y + 10, buffer, seen ? C_PLAYING : C_HINT, 1);
+	text(g, 520, FOOTER_Y + 8, buffer, seen ? C_PLAYING : C_HINT, 1);
 #endif
 }
 
@@ -338,7 +352,7 @@ static void render(mdmi_gui *g)
 {
 	fill(g, 0, 0, GUI_WIDTH, HEADER_H, C_BG);
 	fill(g, 0, HEADER_H - 1, GUI_WIDTH, 1, C_LINE);
-	text(g, 8, 8, "MDMI", C_TEXT, 2);
+	text(g, 8, 7, "MDMI", C_TEXT, 2);
 	// While a file is dragged the table stays in view, because it holds the drop targets.
 	const bool rom = *g->source.page == PAGE_ROM && !g->dragging;
 	button(g, BUTTON_EDITOR_X, "EDITOR", !rom);

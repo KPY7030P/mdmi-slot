@@ -14,14 +14,15 @@
 
 #define RATE 48000
 #define BLOCK 128
-#define WIDTH 960
-#define HEIGHT 704
+#define WIDTH 720
+#define HEIGHT 528
 #define COLOR_PLAYING 0xAAEE22
 #define COLOR_ERROR 0xEE2222
-#define HEADER_H 32
+#define HEADER_H 28
+#define TABLE_BOTTOM 480
 #define BOOT_TIMEOUT_MS 30000
 #define BUTTON_EDITOR_X 100
-#define BUTTON_ROM_X 200
+#define BUTTON_ROM_X 180
 #define BUTTON_Y 12
 
 static int failures;
@@ -271,6 +272,7 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(count_color(HEADER_H, HEIGHT, COLOR_PLAYING) == 0, "table goes dark after note off");
+		memcpy(before, pixels, sizeof(pixels));
 
 		// Closing and opening the window again, as a host does, with the sound running.
 		click(window, BUTTON_ROM_X, BUTTON_Y);
@@ -284,11 +286,11 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_not_black(HEADER_H, HEIGHT) > 1000, "the ROM page is still open after reopening");
 
-		// The status strip must not keep pieces of the ROM page.
+		// The table must not keep pieces of the ROM page.
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		capture(window);
-		CHECK(count_not_black(666, 671) == 0, "nothing from the ROM page is left under the status line");
+		CHECK(memcmp(before + HEADER_H * WIDTH, pixels + HEADER_H * WIDTH, (TABLE_BOTTOM - HEADER_H) * WIDTH * sizeof(uint32_t)) == 0, "the table looks the same after the ROM page");
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

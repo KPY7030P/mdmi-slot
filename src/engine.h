@@ -22,6 +22,8 @@ typedef struct {
 	uint64_t first_underrun_pos;
 	uint64_t last_underrun_pos;
 	bool active;
+	uint32_t last_block;
+	uint32_t sample_rate;
 } mdmi_engine_stats;
 
 // The ROM's screen. A frame stays valid until the next call to mdmi_engine_latest_frame.

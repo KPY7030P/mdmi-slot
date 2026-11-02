@@ -91,6 +91,7 @@ struct mdmi_engine {
 	uint32_t frames_seen;
 	uint32_t underruns;
 	uint32_t dropped_midi;
+	uint32_t last_block;
 
 	float *ring[2];
 	uint64_t ring_read;
@@ -663,6 +664,8 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.first_underrun_pos = e->first_underrun_pos,
 		.last_underrun_pos = e->last_underrun_pos,
 		.active = __atomic_load_n(&e->active, __ATOMIC_ACQUIRE) != 0,
+		.last_block = __atomic_load_n(&e->last_block, __ATOMIC_RELAXED),
+		.sample_rate = (uint32_t)e->sample_rate,
 	};
 	return stats;
 }
@@ -716,6 +719,7 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 	uint64_t read = e->ring_read;
 	uint64_t available = __atomic_load_n(&e->ring_write, __ATOMIC_ACQUIRE) - read;
 	SetEvent(e->wake);
+	__atomic_store_n(&e->last_block, frames, __ATOMIC_RELAXED);
 
 	if (available < frames && __atomic_load_n(&e->offline, __ATOMIC_ACQUIRE)) {
 		// Offline rendering has no deadline, so wait for the emulator instead of dropping audio.
