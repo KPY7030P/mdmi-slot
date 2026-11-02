@@ -1,0 +1,287 @@
+diff --git a/Makefile b/Makefile
+index 870067f..b0f7bc3 100644
+--- a/Makefile
++++ b/Makefile
+@@ -314,7 +314,7 @@ endif
+ endif
+ 
+ COREOBJS:=system.o genesis.o vdp.o io.o romdb.o hash.o xband.o realtec.o i2c.o nor.o kit_prof.o kit_script.o $(M68KOBJS) \
+-	sega_mapper.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
++	sega_mapper.o mdmi_bridge.o multi_game.o megawifi.o $(NET) serialize.o $(TERMINAL) $(CONFIGOBJS) gst.o \
+ 	$(TRANSOBJS) $(AUDIOOBJS) saves.o jcart.o gen_player.o coleco.o pico_pcm.o ymz263b.o \
+ 	segacd.o lc8951.o cdimage.o cdd_mcu.o cd_graphics.o cdd_fader.o sft_mapper.o mediaplayer.o \
+ 	laseractive.o upd78k2_dis.o upd78k2.o osd_font.o pd0178.o radica.o 32x.o 32x_video.o sh2.o \
+diff --git a/libblastem.c b/libblastem.c
+index 3472c7f..ababb61 100644
+--- a/libblastem.c
++++ b/libblastem.c
+@@ -533,6 +533,18 @@ void render_audio_created(audio_source *src)
+ {
+ }
+ 
++RETRO_API void mdmi_set_lowpass(double cutoff_hz)
++{
++	render_audio_set_lowpass(cutoff_hz);
++}
++
++//When set, retro_run returns after every audio batch instead of once per video frame
++static uint8_t audio_slices;
++RETRO_API void mdmi_set_audio_slices(uint8_t enabled)
++{
++	audio_slices = enabled;
++}
++
+ void render_do_audio_ready(audio_source *src)
+ {
+ 	int16_t *tmp = src->front;
+@@ -545,6 +557,9 @@ void render_do_audio_ready(audio_source *src)
+ 		int min_remaining_out;
+ 		mix_and_convert((uint8_t *)buffer, sizeof(buffer), &min_remaining_out);
+ 		retro_audio_sample_batch(buffer, sizeof(buffer)/(2*sizeof(*buffer)));
++		if (audio_slices) {
++			system_request_exit(current_system, 0);
++		}
+ 	}
+ }
+ 
+@@ -588,3 +603,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
+ 	}
+ 	return NULL;
+ }
++
++//the debug windows and oscilloscope belong to the SDL frontend
++uint8_t debug_create_window(uint8_t debug_type, char *caption, uint32_t width, uint32_t height, window_close_handler close_handler)
++{
++	return 0;
++}
++
++uint8_t scope_add_channel(oscilloscope *scope, const char *name, uint32_t sample_rate)
++{
++	return 0;
++}
++
++void scope_add_sample(oscilloscope *scope, uint8_t channel, int16_t value, uint8_t trigger)
++{
++}
+diff --git a/mdmi_bridge.c b/mdmi_bridge.c
+new file mode 100644
+index 0000000..e643f5e
+--- /dev/null
++++ b/mdmi_bridge.c
+@@ -0,0 +1,102 @@
++#include <stddef.h>
++#include "mdmi_bridge.h"
++#include "libretro.h"
++#include "util.h"
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <pthread.h>
++#endif
++
++//Single producer, single consumer byte queues, so the host side of each may live on another thread
++#define QUEUE_SIZE 65536
++
++typedef struct {
++	uint32_t head;
++	uint32_t tail;
++	uint8_t data[QUEUE_SIZE];
++} byte_queue;
++
++static byte_queue rx, tx;
++
++static uint8_t queue_push(byte_queue *q, uint8_t value)
++{
++	uint32_t head = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
++	if (head - __atomic_load_n(&q->tail, __ATOMIC_ACQUIRE) == QUEUE_SIZE) {
++		return 0;
++	}
++	q->data[head % QUEUE_SIZE] = value;
++	__atomic_store_n(&q->head, head + 1, __ATOMIC_RELEASE);
++	return 1;
++}
++
++static uint8_t queue_pop(byte_queue *q, uint8_t *value)
++{
++	uint32_t tail = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
++	if (tail == __atomic_load_n(&q->head, __ATOMIC_ACQUIRE)) {
++		return 0;
++	}
++	*value = q->data[tail % QUEUE_SIZE];
++	__atomic_store_n(&q->tail, tail + 1, __ATOMIC_RELEASE);
++	return 1;
++}
++
++uint8_t mdmi_bridge_rx_ready(void)
++{
++	return __atomic_load_n(&rx.tail, __ATOMIC_RELAXED) != __atomic_load_n(&rx.head, __ATOMIC_ACQUIRE);
++}
++
++uint8_t mdmi_bridge_rx_pop(void)
++{
++	uint8_t value = 0xFF;
++	queue_pop(&rx, &value);
++	return value;
++}
++
++void mdmi_bridge_tx_push(uint8_t value)
++{
++	queue_push(&tx, value);
++}
++
++static uint32_t failed;
++
++void mdmi_bridge_fatal(void)
++{
++	__atomic_store_n(&failed, 1, __ATOMIC_RELEASE);
++#ifdef _WIN32
++	ExitThread(1);
++#else
++	pthread_exit(NULL);
++#endif
++}
++
++RETRO_API uint32_t mdmi_has_failed(void)
++{
++	return __atomic_load_n(&failed, __ATOMIC_ACQUIRE);
++}
++
++//Host API: exercises the fatal error path from tests
++RETRO_API void mdmi_test_fatal(void)
++{
++	fatal_error("mdmi_test_fatal\n");
++}
++
++//Host API: returns the number of bytes accepted
++RETRO_API size_t mdmi_midi_write(const uint8_t *data, size_t length)
++{
++	size_t written = 0;
++	while (written < length && queue_push(&rx, data[written])) {
++		written++;
++	}
++	return written;
++}
++
++//Host API: returns the number of bytes read
++RETRO_API size_t mdmi_midi_read(uint8_t *data, size_t length)
++{
++	size_t read = 0;
++	while (read < length && queue_pop(&tx, data + read)) {
++		read++;
++	}
++	return read;
++}
+diff --git a/mdmi_bridge.h b/mdmi_bridge.h
+new file mode 100644
+index 0000000..0a735ec
+--- /dev/null
++++ b/mdmi_bridge.h
+@@ -0,0 +1,15 @@
++#ifndef MDMI_BRIDGE_H_
++#define MDMI_BRIDGE_H_
++
++#include <stdint.h>
++
++//Emulated side of the Mega EverDrive USB port (0xA130E2 data, 0xA130E4 status)
++//These run on the emulation thread, from the MED mapper register handlers
++uint8_t mdmi_bridge_rx_ready(void);
++uint8_t mdmi_bridge_rx_pop(void);
++void mdmi_bridge_tx_push(uint8_t value);
++
++//Marks the core as dead and ends the emulation thread, so a fatal error can't take the host process with it
++void mdmi_bridge_fatal(void);
++
++#endif //MDMI_BRIDGE_H_
+diff --git a/render_audio.c b/render_audio.c
+index 9f0b28b..899e5c4 100644
+--- a/render_audio.c
++++ b/render_audio.c
+@@ -414,6 +414,19 @@ static void update_source(audio_source *src, double rc, uint8_t sync_changed)
+ 	}
+ }
+ 
++void render_audio_set_lowpass(double cutoff)
++{
++	double rc = (1.0 / cutoff) / (2.0 * M_PI);
++	for (uint8_t i = 0; i < num_audio_sources; i++)
++	{
++		update_source(audio_sources[i], rc, 0);
++	}
++	for (uint8_t i = 0; i < num_inactive_audio_sources; i++)
++	{
++		update_source(inactive_audio_sources[i], rc, 0);
++	}
++}
++
+ uint8_t old_audio_sync;
+ void render_audio_initialized(render_audio_format format, uint32_t rate, uint8_t channels, uint32_t buffer_size, int sample_size_in)
+ {
+diff --git a/render_audio.h b/render_audio.h
+index 914219f..54efbf6 100644
+--- a/render_audio.h
++++ b/render_audio.h
+@@ -44,6 +44,7 @@ void render_audio_initialized(render_audio_format format, uint32_t rate, uint8_t
+ int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out);
+ uint8_t all_sources_ready(void);
+ void render_audio_adjust_speed(float adjust_ratio);
++void render_audio_set_lowpass(double cutoff);
+ //to be implemented by render backend
+ uint8_t render_is_audio_sync(void);
+ void render_buffer_consumed(audio_source *src);
+diff --git a/sega_mapper.c b/sega_mapper.c
+index f67a36b..fd738a0 100644
+--- a/sega_mapper.c
++++ b/sega_mapper.c
+@@ -1,5 +1,6 @@
+ #include "genesis.h"
+ #include "util.h"
++#include "mdmi_bridge.h"
+ 
+ uint16_t read_sram_w(uint32_t address, m68k_context * context)
+ {
+@@ -330,6 +331,9 @@ m68k_context * write_bank_reg_w(uint32_t address, m68k_context * context, uint16
+ {
+ 	genesis_context * gen = context->system;
+ 	if (gen->mapper_type == MAPPER_SEGA_MED_V2 && (address & 0xF0) < 0xF0) {
++		if ((address & 0xFE) == 0xE2) {
++			mdmi_bridge_tx_push(value);
++		}
+ 		// ignore writes to other MED extended registers for now
+ 		return context;
+ 	}
+@@ -443,9 +447,11 @@ uint16_t med_reg_read_w(uint32_t address, void *vcontext)
+ 	m68k_context *context = vcontext;
+ 	switch (address & 0xFE)
+ 	{
++	case 0xE2:
++		return mdmi_bridge_rx_pop();
+ 	case 0xE4:
+-		//ensure USB serial read returns "not-ready" status
+-		return 0x02;
++		//USB serial status: always ready to write, ready to read when the host has queued MIDI
++		return 0x02 | (mdmi_bridge_rx_ready() ? 0x04 : 0);
+ 	default:
+ #ifdef NEW_CORE
+ 		return context->prefetch;
+diff --git a/util.c b/util.c
+index 09efac7..7daabbc 100644
+--- a/util.c
++++ b/util.c
+@@ -35,6 +35,7 @@ android_LogPriority log_level_to_android(log_level)
+ #endif
+ 
+ #include "util.h"
++#include "mdmi_bridge.h"
+ 
+ void *aligned_calloc(size_t nmemb, size_t size, size_t align)
+ {
+@@ -477,6 +478,9 @@ void fatal_error(char *format, ...)
+ 	va_start(args, format);
+ 	log_msg(format, FATAL, args);
+ 	va_end(args);
++#ifdef IS_LIB
++	mdmi_bridge_fatal();
++#endif
+ 	exit(1);
+ }
+ 

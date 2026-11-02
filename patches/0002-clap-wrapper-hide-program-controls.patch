@@ -1,0 +1,14 @@
+diff --git a/src/detail/vst3/parameter.cpp b/src/detail/vst3/parameter.cpp
+index 56f0cca..7c1be0f 100644
+--- a/src/detail/vst3/parameter.cpp
++++ b/src/detail/vst3/parameter.cpp
+@@ -169,7 +169,8 @@ Vst3Parameter *Vst3Parameter::create(uint8_t bus, uint8_t channel, uint8_t cc, V
+   v.flags = Vst::ParameterInfo::kNoFlags;
+   if (cc == Vst::ControllerNumbers::kCtrlProgramChange)
+   {
+-    v.flags |= Vst::ParameterInfo::kIsProgramChange | Vst::ParameterInfo::kCanAutomate;
++    // mdmi-plugin: hidden, or hosts list one anonymous "Program" control per MIDI channel.
++    v.flags |= Vst::ParameterInfo::kIsProgramChange | Vst::ParameterInfo::kIsHidden;
+     v.stepCount = 127;
+   }
+ 

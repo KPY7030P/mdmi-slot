@@ -1,0 +1,769 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI UI mock</title>
+<style>
+  body { margin: 0; padding: 12px; background: #111; color: #ccc; font: 13px/1.4 Consolas, monospace; }
+  #nav { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  #nav button { background: #222; color: #ccc; border: 1px solid #444; padding: 4px 8px; font: inherit; cursor: pointer; }
+  #nav button.on { background: #eee; color: #000; }
+  #cap { min-height: 40px; max-width: 960px; margin-bottom: 8px; }
+  canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<div id="nav"></div>
+<div id="cap"></div>
+<canvas id="c" width="960" height="704"></canvas>
+<script>
+"use strict";
+// Everything inside the canvas is drawn with filled rectangles and a 5x7 bitmap font, on purpose:
+// that is all the plugin's renderer has to be able to do.
+const PRESETS = [[2,0,0,0,1,0,26,1,7,0,7,4,1,39,0,2,7,31,3,23,0,9,15,1,4,0,4,6,24,1,9,0,6,9,7,36,0,1,3,27,2,4,0,10,4,6,2,0],[5,7,0,0,4,2,27,1,9,0,11,5,6,33,0,1,2,27,1,5,1,10,5,6,8,0,4,5,27,1,9,0,7,9,7,18,0,6,5,27,1,9,0,3,8,7,9,0],[4,0,0,0,1,7,24,1,5,0,6,6,4,33,0,1,0,25,2,5,0,1,4,5,6,0,2,4,22,1,7,0,6,6,4,26,0,1,3,25,2,4,1,6,4,5,9,0],[5,1,0,0,2,3,31,0,10,0,15,5,7,35,0,4,0,25,0,7,0,13,0,7,7,0,2,0,25,0,6,0,2,6,7,14,0,1,3,25,0,9,0,2,0,7,16,0],[4,6,0,0,12,4,31,1,7,0,11,0,8,57,0,1,0,31,2,4,1,1,4,8,9,0,1,4,22,2,5,0,11,0,8,34,0,1,0,31,2,4,1,6,4,8,9,0],[7,6,0,0,10,7,31,0,10,0,15,7,6,30,0,2,3,31,0,13,0,15,0,8,12,0,1,5,25,1,5,0,15,2,6,10,0,1,1,25,0,10,0,15,2,6,20,0],[1,7,0,0,6,1,31,2,0,1,0,1,5,38,0,10,3,31,3,0,0,0,1,6,33,0,0,5,31,3,0,1,0,0,2,35,0,0,7,31,0,6,0,4,6,7,6,0],[1,7,0,0,1,1,31,2,0,1,0,1,6,28,0,1,3,31,2,0,0,0,1,7,33,0,1,5,31,3,0,1,0,0,2,30,0,1,7,31,0,6,0,4,6,7,6,0],[0,0,3,0,3,1,19,1,1,0,4,27,0,8,0,1,7,27,1,7,0,0,26,6,17,0,11,3,29,0,15,0,15,31,8,34,0,1,7,31,0,0,0,0,9,6,11,0],[4,1,3,0,7,1,31,0,7,0,15,0,2,30,0,1,7,31,2,7,0,15,0,3,0,0,5,3,31,0,11,0,15,0,6,51,0,1,7,31,2,7,0,15,0,3,15,0],[4,1,3,0,7,1,15,0,14,0,15,0,7,30,0,1,7,31,0,12,0,15,0,6,0,0,10,3,15,0,14,0,15,0,5,51,0,0,7,31,0,12,0,15,0,6,15,0],[6,7,2,0,8,3,25,1,15,0,10,6,6,40,0,1,0,25,1,6,1,10,5,6,4,0,10,7,31,1,16,0,6,6,6,35,0,4,3,28,2,10,0,6,5,5,4,0],[4,0,0,0,5,4,31,0,19,1,7,7,14,27,0,1,3,30,0,15,0,15,7,7,0,0,2,2,31,2,18,1,8,4,2,40,0,1,0,31,0,15,0,15,2,7,11,0],[0,0,0,0,0,7,0,1,29,1,9,31,15,0,0,0,7,31,1,0,1,0,24,15,0,0,3,6,29,1,15,0,15,31,15,31,0,0,7,31,0,0,0,0,12,6,0,0],[4,5,0,0,7,7,22,0,5,0,15,30,4,30,0,2,3,24,0,3,0,12,31,4,8,0,7,3,22,0,6,0,8,30,4,30,0,2,7,19,0,2,0,9,31,4,8,0],[6,2,0,0,3,0,15,1,11,0,15,6,5,23,0,1,0,24,2,8,0,15,0,5,3,0,10,0,19,1,14,0,4,6,6,44,0,1,0,22,2,8,0,15,0,3,9,0],[7,4,0,0,4,1,28,1,0,0,15,4,10,17,0,0,3,28,1,0,0,15,27,8,23,0,1,5,28,1,0,0,15,4,8,15,0,2,6,28,1,0,0,15,4,10,23,0],[4,0,3,2,14,0,27,0,23,0,11,11,8,21,0,6,0,20,0,9,0,2,0,8,7,0,1,1,21,0,28,0,2,5,15,17,0,1,0,23,0,1,0,10,31,15,11,0],[4,4,1,4,3,1,20,1,12,1,2,0,10,25,0,1,0,20,2,0,0,0,0,10,7,0,1,0,20,2,0,1,0,0,10,24,0,2,5,20,2,0,0,0,0,10,10,0],[6,2,0,0,3,1,20,2,10,0,2,0,3,27,0,1,0,14,0,10,0,1,0,6,9,0,4,0,19,0,10,0,2,0,9,6,0,0,0,12,0,10,0,1,0,6,4,0],[4,6,1,0,1,1,24,2,16,0,1,0,7,25,0,1,0,16,0,0,0,0,0,8,7,0,1,0,25,0,0,0,0,0,6,21,0,2,0,13,2,0,1,0,0,8,7,0],[2,6,0,2,1,3,21,0,5,0,1,0,7,30,0,7,3,18,0,8,0,2,0,8,21,0,2,7,14,0,9,0,2,3,9,52,0,2,0,13,2,22,0,1,0,9,0,0],[0,7,0,0,10,3,20,3,5,0,9,0,9,45,0,10,0,20,0,8,0,0,0,9,40,0,1,1,16,1,2,0,0,0,9,39,0,2,0,16,0,8,1,1,0,10,0,0],[4,6,1,0,3,1,15,0,4,0,1,0,10,25,0,1,0,13,2,4,0,2,0,10,7,0,3,0,14,0,4,0,1,0,10,26,0,2,5,14,2,4,0,2,0,10,8,0],[0,3,0,0,5,0,31,0,18,0,2,0,7,48,0,0,3,31,0,10,0,2,4,7,19,0,1,3,31,0,14,0,2,4,7,45,0,0,0,31,1,10,0,2,3,7,0,0],[0,3,0,0,5,0,31,0,18,0,2,0,7,32,0,0,3,31,0,10,0,2,4,7,19,0,1,3,31,0,14,0,2,4,7,45,0,0,0,31,1,10,0,2,3,7,0,0],[0,5,0,0,2,0,31,1,4,0,15,0,7,30,0,3,3,31,1,4,0,15,0,7,43,0,1,3,31,2,4,0,15,0,7,42,0,1,0,31,0,4,0,15,0,7,0,0],[0,7,0,0,8,5,31,1,7,0,15,0,6,39,0,3,3,31,1,10,0,15,0,9,29,0,3,5,31,1,4,0,15,0,8,34,0,1,3,31,1,31,0,1,4,7,0,0],[2,3,0,4,3,3,20,1,23,0,8,9,10,28,0,4,0,24,1,23,0,11,1,11,11,0,1,3,27,1,27,0,8,7,11,5,0,1,0,20,0,18,0,0,4,12,0,0],[0,0,0,4,3,0,31,2,12,0,8,0,12,36,0,2,0,18,2,1,0,13,0,10,25,0,1,2,19,1,1,0,11,0,8,32,0,2,0,17,2,1,0,4,0,7,0,0],[0,0,0,4,3,0,31,2,12,0,8,0,12,36,0,2,0,18,2,1,0,15,0,7,25,0,1,2,19,1,2,0,11,0,8,26,0,2,0,17,2,1,0,4,0,6,0,0],[3,6,0,5,10,0,16,2,6,0,15,8,12,28,0,8,7,21,2,6,0,8,7,1,13,0,2,3,31,2,3,0,15,0,6,20,0,1,1,16,0,2,0,15,15,7,0,0],[2,7,0,0,0,2,30,0,10,0,10,5,4,33,0,3,2,31,0,10,0,8,7,5,37,0,0,6,31,0,8,0,9,10,6,40,0,1,0,31,0,7,0,7,7,8,0,0],[0,1,0,0,9,0,31,0,18,0,2,0,15,37,0,0,7,31,0,14,0,2,4,15,48,0,0,3,31,1,10,0,2,4,15,19,0,0,0,31,1,10,0,2,3,15,0,0],[0,1,0,0,9,0,31,0,21,0,8,0,15,30,0,0,7,31,0,14,0,3,4,15,49,0,0,3,31,1,13,0,2,4,15,14,0,0,0,31,1,10,0,2,3,15,0,0],[6,0,0,4,0,0,26,0,9,0,0,7,11,29,0,0,0,13,1,3,0,6,0,10,5,0,0,5,18,2,11,0,14,19,10,0,0,0,6,10,1,12,0,15,0,10,9,0],[0,4,0,0,15,3,31,2,14,0,2,8,7,19,0,3,0,31,2,15,0,2,8,7,56,0,0,0,31,1,13,0,2,8,7,24,0,1,0,31,1,7,0,1,8,7,0,0],[0,4,0,0,15,3,31,2,14,0,2,6,7,14,0,3,0,31,2,15,0,2,8,7,56,0,0,0,31,1,13,0,2,8,7,24,0,1,0,31,1,7,0,1,8,7,0,0],[5,7,0,0,4,4,21,1,30,0,0,13,11,23,0,4,1,25,1,30,0,0,10,10,0,0,2,0,20,1,30,0,0,9,9,5,0,3,3,20,1,30,0,8,5,9,24,0],[0,4,0,0,6,3,31,3,7,0,2,7,0,25,0,5,3,31,3,6,0,1,6,6,55,0,0,3,31,2,9,0,1,6,7,19,0,1,3,31,2,6,0,15,8,6,0,0],[2,7,2,3,1,3,15,0,4,0,1,0,5,30,0,7,3,13,0,16,0,0,0,4,31,0,0,7,12,0,9,0,0,3,7,49,0,2,0,11,2,10,0,1,0,5,3,0],[2,7,2,3,1,3,14,0,4,0,1,0,5,30,0,4,3,14,0,16,0,0,0,4,30,0,0,7,11,0,9,0,0,3,7,61,0,2,0,12,2,10,0,1,0,5,3,0],[2,7,2,3,1,3,16,0,4,0,1,0,5,40,0,5,3,14,1,16,0,0,0,4,30,0,0,7,14,0,9,0,0,3,8,47,0,2,0,14,2,10,0,1,0,6,3,0],[2,7,2,3,1,3,16,0,4,0,1,0,5,43,0,4,3,14,0,16,0,0,0,4,44,0,0,7,14,0,9,0,0,3,7,31,0,2,0,14,2,10,0,1,0,5,0,0],[4,7,2,5,1,3,16,3,1,1,1,0,3,21,0,1,0,15,0,10,0,2,0,7,6,0,1,0,13,2,11,0,4,0,4,19,0,1,0,14,0,10,0,1,0,8,0,0],[5,6,0,0,4,1,19,3,19,0,10,11,7,0,0,1,1,16,0,19,0,15,23,7,8,0,2,1,19,1,15,0,15,24,7,5,0,1,1,18,1,14,0,12,14,7,12,0],[4,0,0,0,2,0,31,0,10,0,1,0,4,27,0,1,1,31,0,14,0,6,5,4,0,0,1,5,31,1,10,0,7,2,4,127,0,0,5,14,1,11,0,15,2,4,127,0],[4,1,0,0,0,0,20,1,15,0,15,0,7,10,0,1,0,31,0,11,0,15,0,6,0,0,1,0,31,0,14,0,15,0,10,0,0,2,0,15,0,13,0,15,0,14,71,0],[4,7,1,3,1,3,14,3,11,0,0,0,4,29,0,5,0,14,0,10,1,2,0,8,6,0,1,0,14,2,10,1,1,0,5,28,0,1,0,15,0,10,0,1,0,8,0,0],[4,7,1,1,1,3,11,3,11,0,0,0,1,29,0,1,0,10,0,8,0,2,0,6,6,0,1,0,11,2,10,1,1,0,1,28,0,1,0,10,0,8,0,1,0,6,3,0],[4,6,0,0,1,1,26,0,2,1,6,0,2,21,0,1,0,10,0,0,0,0,0,6,24,0,1,3,25,0,1,1,11,0,3,28,0,1,0,10,0,0,0,0,0,5,2,0],[2,6,1,5,0,3,8,0,4,0,0,0,5,35,0,4,3,8,2,3,0,10,0,4,52,0,0,0,15,0,1,0,7,3,3,32,0,0,0,8,1,10,1,0,0,5,0,0],[4,0,0,4,0,3,17,1,0,1,5,0,1,42,0,0,3,13,1,0,1,0,0,5,8,0,0,7,13,2,0,0,5,0,1,30,0,0,7,11,2,0,1,0,0,5,8,0],[4,6,2,3,5,7,20,0,10,0,1,3,7,0,0,3,0,21,1,10,0,6,2,7,37,0,1,3,19,2,13,1,2,5,8,14,0,1,0,15,1,4,0,1,0,8,0,0],[0,4,0,4,10,3,12,1,0,1,5,0,1,76,0,7,3,14,1,0,1,0,0,5,51,0,0,7,12,2,0,0,5,0,1,46,0,0,7,11,2,0,1,0,0,5,0,0],[0,7,0,0,0,0,16,1,13,0,15,0,5,19,0,1,0,22,0,9,0,15,0,3,17,0,1,0,18,0,5,0,15,0,2,21,0,2,0,18,1,10,0,15,0,5,0,0],[5,7,0,0,2,0,16,2,14,0,1,1,4,27,0,4,0,16,0,11,0,15,0,13,10,0,2,0,19,0,14,0,1,0,9,21,0,2,0,20,0,13,0,0,0,14,9,0],[5,5,2,3,0,0,12,2,13,0,2,1,10,26,0,0,0,23,2,7,1,1,2,10,9,0,0,0,10,2,8,0,2,0,10,18,0,1,5,23,2,7,1,1,0,10,3,0],[5,7,1,2,0,0,14,2,6,0,6,1,6,27,0,0,0,14,2,7,1,1,2,5,4,0,1,0,13,2,13,0,2,10,5,3,0,1,5,17,2,7,1,1,0,6,5,0],[5,7,0,0,2,1,15,2,14,0,1,1,3,21,0,2,0,13,0,11,0,15,0,13,31,0,2,0,15,0,14,0,1,0,8,74,0,2,0,15,0,13,0,0,0,14,0,0],[4,7,0,0,1,0,11,2,4,0,3,0,7,34,0,1,0,20,2,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,0,0,0,127,0],[5,6,1,2,1,2,14,2,0,0,4,1,7,26,0,1,3,27,2,5,0,3,2,6,0,0,0,2,21,2,0,0,1,2,7,9,0,4,1,20,2,0,1,0,2,8,6,0],[2,6,0,2,1,0,22,0,6,0,15,0,6,20,0,1,3,31,0,0,0,0,0,13,28,0,1,7,31,0,0,0,0,0,12,42,0,1,0,19,0,0,0,0,0,8,0,0],[2,7,2,3,1,3,17,0,4,0,1,0,9,30,0,7,3,17,0,16,0,0,0,9,31,0,2,7,17,0,9,0,0,3,9,55,0,2,0,17,2,10,0,1,0,7,0,0],[5,6,1,2,1,2,17,1,0,0,4,1,8,32,0,2,3,12,1,5,0,3,2,7,13,0,0,2,13,1,0,0,1,2,8,14,0,2,1,14,2,0,1,0,2,9,0,0],[5,6,1,2,1,2,14,2,0,0,4,1,8,26,0,1,3,12,2,5,0,3,2,7,5,0,0,2,19,1,0,0,1,2,8,11,0,4,1,14,2,0,1,0,2,8,4,0],[5,6,1,2,1,2,15,2,0,0,4,1,8,30,0,1,3,11,2,5,0,3,2,6,5,0,0,2,18,1,0,0,1,2,7,10,0,2,1,13,2,0,1,0,2,8,4,0],[5,6,1,2,1,2,14,2,0,0,4,1,8,23,0,1,3,14,2,5,0,3,2,6,5,0,0,2,17,2,0,0,1,2,7,10,0,3,1,17,2,0,1,0,2,8,4,0],[0,7,1,2,1,0,24,0,23,1,0,0,10,39,0,1,0,16,0,31,1,0,0,10,30,0,1,0,22,0,31,0,0,0,10,40,0,4,0,24,0,31,0,0,0,10,0,0],[0,7,1,2,1,0,24,0,23,1,0,0,10,38,0,1,0,16,0,31,1,0,0,10,23,0,1,0,22,0,31,0,0,0,10,43,0,2,0,16,0,31,0,0,0,8,5,0],[0,7,1,2,0,0,3,0,23,1,0,0,12,39,0,1,0,15,0,31,1,0,0,12,35,0,0,0,31,0,31,0,0,0,12,36,0,2,0,16,0,31,0,0,0,12,0,0],[4,1,2,3,2,1,13,2,0,0,0,1,10,30,0,1,7,18,0,0,0,0,0,10,4,0,2,7,15,1,11,1,8,29,10,18,0,1,1,19,0,15,1,2,6,10,12,0],[7,2,3,2,2,3,10,3,0,0,0,0,8,9,0,2,7,10,2,8,0,7,0,8,6,0,2,3,12,2,12,1,12,10,8,17,0,2,1,10,3,13,1,7,0,8,11,0],[4,6,1,0,5,7,20,0,10,0,1,3,5,0,0,3,0,22,1,12,0,6,2,8,49,0,1,3,19,2,13,1,4,0,5,22,0,1,0,14,1,4,1,1,0,8,0,0],[3,7,0,0,1,7,20,1,14,0,6,3,5,8,0,2,0,20,1,16,0,5,2,5,55,0,2,3,13,2,4,0,2,0,5,36,0,2,0,14,1,4,1,0,0,8,0,0],[4,6,0,0,5,7,19,0,10,0,1,0,5,0,0,3,0,22,1,12,0,1,0,5,49,0,2,3,18,2,13,0,4,0,5,19,0,1,0,14,1,4,1,1,0,8,0,0],[4,7,0,0,5,7,18,0,10,0,1,0,6,0,0,3,0,25,1,13,0,3,0,6,41,0,2,3,12,2,13,1,5,0,6,24,0,1,0,12,1,4,1,2,0,7,0,0],[4,5,0,0,4,3,18,0,6,0,2,2,7,32,0,2,7,15,0,9,0,7,0,8,6,0,4,5,18,0,6,0,2,2,6,35,0,2,3,14,0,10,1,2,0,9,11,0],[7,2,1,3,1,3,18,0,0,1,0,0,8,8,0,1,0,15,2,2,0,7,0,8,8,0,1,3,0,2,0,0,4,0,8,127,0,2,1,0,3,0,0,0,0,8,127,0],[4,6,0,0,5,7,20,0,10,0,1,3,5,0,0,3,0,22,1,12,0,6,2,8,49,0,2,3,20,2,13,0,4,0,5,41,0,1,0,14,1,4,1,1,0,7,0,0],[4,7,1,0,2,3,31,1,0,1,8,1,11,24,0,1,7,28,0,0,0,1,0,10,9,0,2,0,26,0,0,1,2,0,10,26,0,1,0,27,1,0,1,0,0,15,13,0],[4,7,0,0,1,7,31,0,0,0,0,0,15,28,0,2,7,31,0,0,0,0,0,15,4,0,1,3,31,0,0,0,0,0,15,28,0,2,3,31,0,0,0,0,0,15,4,0],[4,7,0,5,5,7,19,0,10,1,1,0,5,0,0,3,2,25,2,13,0,13,0,5,41,0,2,3,13,2,13,0,5,0,5,24,0,1,6,14,1,4,1,2,0,11,5,0],[2,7,0,0,1,0,14,2,14,0,5,0,15,20,0,7,0,15,2,14,0,5,8,15,43,0,1,0,14,2,14,0,11,0,15,23,0,1,0,20,1,3,0,11,8,15,4,0],[0,7,0,0,2,7,17,3,1,0,15,0,15,30,0,3,1,18,1,7,0,15,0,15,30,0,1,7,20,0,1,0,15,0,15,30,0,1,1,20,0,1,0,15,0,15,4,0],[4,1,2,3,2,1,15,2,0,0,0,1,10,30,0,1,7,21,0,0,0,0,0,10,4,0,2,7,16,1,11,1,8,29,10,18,0,1,1,19,0,15,1,2,6,10,12,0],[4,7,0,0,4,3,27,1,5,0,0,3,7,24,0,4,7,27,1,5,0,0,3,7,0,0,3,7,24,1,0,0,0,3,6,14,0,3,3,22,1,0,0,0,3,6,12,0],[4,0,0,1,1,0,19,1,13,1,6,9,9,17,0,2,7,30,0,5,1,4,0,8,6,0,1,0,1,2,19,1,0,2,8,29,0,1,6,31,0,7,0,0,0,8,4,0],[4,1,0,0,7,0,15,0,11,0,7,6,6,25,0,8,0,31,0,7,0,15,0,5,22,0,1,3,9,2,2,0,2,0,3,33,0,1,0,14,0,5,0,1,0,6,0,0],[7,0,0,0,1,0,7,3,0,0,0,0,3,16,0,1,0,5,0,0,0,0,0,6,16,0,1,3,7,1,0,0,0,0,4,16,0,1,3,5,0,0,0,0,0,6,16,0],[4,7,0,0,1,3,18,1,8,0,1,4,6,26,0,2,5,17,1,0,0,0,0,6,3,0,0,5,21,1,8,0,1,4,5,22,0,0,3,20,1,0,0,0,0,5,5,0],[5,0,0,4,0,0,14,1,0,1,5,0,2,34,0,0,0,12,1,0,1,0,0,5,12,0,0,0,10,2,0,0,5,0,3,17,0,0,0,9,2,0,1,0,0,4,14,0],[4,3,0,0,6,0,11,3,3,0,6,1,1,26,0,1,0,9,2,6,0,7,2,3,6,0,5,0,10,0,9,0,15,0,3,35,0,2,0,10,0,6,0,15,0,4,29,0],[4,7,1,4,1,3,11,3,11,0,0,0,1,28,0,9,0,7,0,3,0,10,0,5,14,0,1,0,11,2,3,1,1,0,1,22,0,2,0,7,0,1,0,14,0,5,11,0],[4,5,0,4,1,2,3,1,4,0,5,0,5,12,0,1,0,9,0,7,1,3,0,6,3,0,1,7,3,1,4,1,5,1,4,0,0,1,0,10,0,7,0,3,0,6,22,0],[4,5,0,5,2,2,6,0,6,0,5,0,4,22,0,1,0,15,0,7,1,3,0,6,3,0,5,7,4,0,8,1,5,5,4,24,0,2,0,9,0,7,0,3,0,6,19,0],[6,7,2,2,6,0,31,0,18,0,3,0,7,20,0,2,0,31,0,18,1,2,13,5,21,0,2,3,12,0,0,1,0,0,5,17,0,1,7,12,0,0,1,0,0,5,17,0],[4,5,0,0,3,3,6,0,6,0,15,4,4,30,0,3,5,17,0,3,0,2,0,4,9,0,2,5,5,0,6,0,15,4,5,30,0,2,3,10,0,3,0,2,0,5,9,0],[4,7,0,0,5,4,31,0,13,0,7,4,6,55,0,2,7,31,0,8,0,6,7,8,12,0,4,0,26,0,19,0,2,7,6,43,0,2,3,24,0,8,0,2,7,5,15,0],[4,6,1,3,2,7,22,2,1,1,5,0,5,23,0,1,3,31,2,4,0,4,0,5,5,0,1,1,22,0,4,1,0,5,6,49,0,1,5,13,0,9,0,5,6,6,16,0],[3,0,0,0,2,3,18,2,1,1,5,4,1,40,0,3,5,31,1,0,0,0,0,6,43,0,5,5,20,1,8,0,1,4,4,39,0,2,3,31,1,0,0,0,0,5,6,0],[4,5,0,4,1,2,4,0,6,0,5,0,3,18,0,1,0,3,1,7,1,3,0,3,19,0,1,7,4,0,1,1,0,1,3,0,0,1,0,5,0,7,0,3,0,3,22,0],[4,2,0,4,2,3,16,1,0,1,5,0,5,41,0,2,0,16,1,0,1,0,0,5,12,0,1,0,11,2,0,0,5,0,5,45,0,1,7,20,2,0,1,0,0,5,16,0],[0,3,0,4,1,3,20,2,2,0,2,0,3,34,0,8,6,31,2,2,0,2,0,3,36,0,3,2,31,2,3,0,4,0,3,34,0,1,0,19,0,1,1,2,0,5,8,0],[4,0,0,0,2,0,31,1,7,0,4,5,4,47,0,7,0,19,2,3,0,15,0,6,25,0,2,0,18,2,3,0,15,0,3,8,0,7,0,31,0,5,0,15,0,6,14,0],[2,6,0,0,6,3,15,1,20,0,1,8,9,25,0,1,2,31,1,15,0,1,23,8,69,0,2,5,28,1,9,0,1,1,0,23,0,2,3,19,0,25,0,1,9,7,0,0],[0,7,0,0,5,0,31,2,14,0,15,0,8,27,0,2,0,31,2,14,0,14,0,2,34,0,1,0,31,1,5,0,14,0,4,24,0,6,0,31,1,7,0,15,0,5,10,0],[4,4,0,3,3,5,27,2,8,0,3,4,3,23,0,1,0,24,1,22,0,2,4,3,7,0,3,1,27,2,8,1,3,8,2,28,0,3,0,24,0,22,0,1,8,5,14,0],[6,6,0,0,4,7,20,1,22,1,7,21,7,23,0,1,7,21,0,0,1,0,10,6,7,0,4,6,30,1,13,0,5,7,5,21,0,4,7,21,0,12,0,4,9,6,19,0],[0,3,1,0,1,0,16,2,16,0,3,0,6,11,0,4,0,12,0,0,0,0,0,13,39,0,0,0,17,0,0,0,3,0,5,28,0,2,0,12,2,0,0,0,0,13,8,0],[2,7,2,3,1,3,14,0,4,0,1,0,5,29,0,7,3,12,0,16,0,0,0,4,31,0,0,7,11,0,9,0,0,3,7,55,0,2,0,10,2,10,0,1,0,5,3,0],[0,7,1,2,1,0,24,0,23,1,0,0,10,39,0,1,0,16,0,31,1,0,0,10,30,0,1,0,22,0,31,0,0,0,10,40,0,4,0,24,0,31,0,0,0,10,0,0],[7,0,0,0,3,3,20,3,4,0,0,4,3,25,0,2,7,22,3,3,0,5,8,3,16,0,2,3,20,0,5,0,0,6,3,17,0,3,7,22,2,7,0,11,7,3,11,0],[4,7,0,0,6,0,31,0,31,0,6,14,8,0,0,14,0,31,2,14,0,10,14,7,14,0,11,0,31,0,31,0,4,14,8,0,0,14,0,31,2,31,0,0,15,7,14,0],[4,1,3,0,12,1,13,0,19,0,5,0,7,65,0,1,7,26,0,12,0,15,0,6,12,0,5,3,13,0,16,0,8,7,7,34,0,1,7,26,0,14,0,15,0,6,12,0],[4,7,0,0,7,1,31,0,22,0,12,22,8,20,0,5,1,31,0,18,0,11,28,8,0,0,14,1,31,3,25,0,14,12,8,10,0,9,1,31,3,20,0,1,13,8,5,0],[6,3,0,0,0,0,31,2,18,0,0,18,8,6,0,1,0,31,2,16,0,0,16,11,4,0,0,0,31,0,16,0,0,16,7,12,0,0,0,31,0,8,0,9,12,5,3,0],[1,6,0,0,2,0,31,0,0,0,0,13,0,16,0,0,0,31,0,2,0,0,18,0,2,0,0,0,30,0,0,0,0,20,0,35,0,0,0,30,0,0,0,0,14,6,0,0],[3,7,0,0,1,0,29,0,18,0,5,0,6,6,0,1,0,31,0,26,0,2,22,6,8,0,2,0,31,1,27,0,5,8,6,13,0,1,0,31,0,14,0,12,17,6,0,0],[4,7,1,0,15,7,29,0,1,0,8,0,0,0,0,3,1,4,1,13,1,0,22,9,9,0,15,7,31,0,0,0,1,0,4,0,0,0,0,4,2,27,0,10,6,6,29,0],[4,7,1,0,6,7,27,0,1,0,8,0,0,14,0,3,1,14,1,7,1,0,14,9,17,0,3,7,31,0,0,0,1,0,4,33,0,4,0,12,2,14,0,10,9,6,32,0],[4,7,0,0,4,3,31,0,0,0,2,0,2,0,0,2,7,12,0,12,0,11,7,7,11,0,4,5,31,0,0,0,2,0,2,8,0,2,3,12,0,9,1,7,9,6,24,0],[5,7,0,0,3,3,31,0,0,0,15,0,0,0,0,1,0,6,0,8,0,15,0,4,26,0,1,0,6,0,8,0,15,0,4,22,0,1,0,7,0,8,0,15,0,4,28,0],[7,3,0,0,7,0,6,3,16,0,0,14,7,25,8,8,0,8,3,14,0,5,16,6,16,8,5,1,15,0,13,0,0,14,10,17,0,6,0,11,2,14,0,11,16,6,0,0],[4,7,0,0,11,3,31,0,2,0,15,0,8,32,0,13,3,16,1,17,0,15,0,5,0,14,0,0,31,0,2,0,15,0,8,50,0,6,0,22,0,19,0,15,0,6,0,14],[4,6,3,0,0,3,5,1,1,0,0,0,0,0,0,2,0,7,0,2,1,1,0,5,20,0,0,0,5,0,13,1,0,0,9,127,0,0,0,7,0,15,1,0,0,4,127,0],[5,7,0,0,3,3,31,0,0,0,15,0,0,4,0,1,1,6,0,7,0,0,0,8,23,0,1,0,6,0,13,0,0,0,9,22,0,1,0,6,0,15,0,0,0,4,21,0],[5,7,0,5,3,3,31,0,3,0,15,17,5,4,0,1,0,31,0,15,0,15,31,8,0,0,1,0,31,0,20,0,15,20,8,0,0,1,0,31,0,15,0,15,16,11,0,0]];
+const GM = ["Grand Piano","Bright Piano","Electric Grand","Honky-tonk","Rhodes","Chorus Piano","Harpsichord","Clavinet","Celesta","Glockenspiel","Music Box","Vibraphone","Marimba","Xylophone","Tubular Bells","Dulcimer","Drawbar Organ","Percussive Organ","Rock Organ","Church Organ","Reed Organ","Accordion","Harmonica","Tango Accordion","Nylon Guitar","Steel Guitar","Jazz Guitar","Clean Guitar","Muted Guitar","Overdrive Guitar","Distortion Guitar","Guitar Harmonics","Acoustic Bass","Finger Bass","Pick Bass","Fretless Bass","Slap Bass 1","Slap Bass 2","Synth Bass 1","Synth Bass 2","Violin","Viola","Cello","Contrabass","Tremolo Strings","Pizzicato Strings","Harp","Timpani","String Ensemble 1","String Ensemble 2","Synth Strings 1","Synth Strings 2","Choir Aahs","Voice Oohs","Synth Voice","Orchestra Hit","Trumpet","Trombone","Tuba","Muted Trumpet","French Horn","Brass Section","Synth Brass 1","Synth Brass 2","Soprano Sax","Alto Sax","Tenor Sax","Baritone Sax","Oboe","English Horn","Bassoon","Clarinet","Piccolo","Flute","Recorder","Pan Flute","Blown Bottle","Shakuhachi","Whistle","Ocarina","Square Lead","Saw Lead","Calliope Lead","Chiff Lead","Charang Lead","Voice Lead","Fifths Lead","Bass Lead","New Age Pad","Warm Pad","Polysynth Pad","Choir Pad","Bowed Pad","Metallic Pad","Halo Pad","Sweep Pad","Rain FX","Soundtrack FX","Crystal FX","Atmosphere FX","Brightness FX","Goblins FX","Echoes FX","Sci-fi FX","Sitar","Banjo","Shamisen","Koto","Kalimba","Bagpipe","Fiddle","Shanai","Tinkle Bell","Agogo","Steel Drums","Woodblock","Taiko Drum","Melodic Tom","Synth Drum","Reverse Cymbal","Guitar Fret Noise","Breath Noise","Seashore","Bird Tweet","Telephone","Helicopter","Applause","Gunshot"];
+const ROM_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAVsAAADzCAIAAACnlSKNAAAF4UlEQVR4nO3dYXLiIBgG4FxpT9N79cJup+kG5IOISdwG8zzTcTSLxP3BK8QA0wQAAAAAAAAAAAAAAAAAAAAAAABwZbfbrXrklukpv1LgqfNuqCfqfztwp2jz88uPPz+P818sEMvnR/KXK+ct3vX1uByJ1a7Xk//ln7+oH3igaHtFIuTF1svnJZ9NhCIOnqqn9cZtnwqubmk/UzZeiC0q/mtxpKiw87xTIw7665lqAweJABvl7Sc+5sWm73bbU7I/EVpx0F/PrDpqiDprg+uK39WxnefttlU+VvjwvCtxUK2n2qqrR+Y3xpjQTYAH8haePym+WvN0qJaPFfacd6VkKxGqB+Oo4WFtQN3SVIon+XdsT/lYoPO8/QWqIVL81tAKGokAAAAAAAAAAAAn9Pn5eUg9phXA8D6/7b/br3VzMTCYQxJhMrMAxtKaFCAR4IpazVUiwBVJBCCRCECy0lyPaskSAYahuQKJRAASiQAkEgFIJAKQSAQgkQhAIhGAJE5wijZUa/9FGFJ1ymP+t+125mU3t2ILxuM+OPAC1d3T8pebJzjEnRolApxdz6hhWx+hZ6dW4Fwejhq27bYeRw12bYcBWDoJSPzWACTVK4uH9PaNGgAAYHTLBYKjtm8CRjWnQP4IXFfeQZAIcHV5CkgEwHUEAGBdMYJwzyJcWpEI1keAy1npBVgfAa6odWXxkPURptrAQSLAqbXuUNo/aoj1SAQYT0yHzdcR4hGJAGf3cMhgVTV4fyvzGqyPAJdjphOQSATgzp5bEgGA92XuI/DDdQQgsYYSkFhDCbhTvY5wVDpYDQHeQXHP8uaAKO5ZFhBwaq31EWIibJ4KXSSCW5jh1Krf/xIBrqs69znaULN1FmEwraYel0vZP/dxWXZx30cGXqOzF7BnAaWcUQO8iaNaskSA83JXEnBHKAB3LJEA/BAEwA9xAAAAdHKbAJDEnaDNa4Drqu4Nv38vpmUigz2dYCTVRNhfrYkMMCSjBiCJ3+RFP39zr6GoR68BBhD7CEWBbYkQewQSAQbQM2rYlgiRRICzezhqOGQNJb81wBi0UiCRCEAiEYBEIgCJRAASiQAkEgFIJAKQmOkEJNZHABLrIwCJUQOQFF36OGrYPPfR+ggwvNj+9yTC+hHg7KyPANyxPgIAAAAAAAAAAPBq2yY4Lcx0gvex+eblhZlO8Fb2L5RgphOMpzXp4KilU2bzkEEiwNm1WumBiSAOYBivTgRxACP5D4kgDmAYK831qJYsEWAYmiuQSAQgkQhAIhGARCIAiUQAEokAJBIBSOwECzTZCRa4YydYuJx5LBDHBXaChStaEmG6X1Ixjhq27eBq1AAjKVIgf/6iSdASAc5rJRFe91uDRIDzajX4Q0YNB9YDAPxHS9dg504twDto/dYAXJFEABKJANxxKQEAqNE1AH60riBYHwGuaCURrI8Al7PyK4P1EeByVsYF1kcA7uwfNUxhppNEgPG0riw8W0+8jigRYAA9azEbNcBVxFZqfQS4Lq0USCQCkEgEIJEIQCIRgEQiAIlEABKJACTxnsVt9RS3LVsfAYa0Pve5MyDiTcrF+gjuYoYxPEyEzmZcTYTleSwAnNGrE2GOA7OhYQzFNKTN6yxWE2GJg1gAGENcLqWnJcdEyOMgFgDGs2fUYH0EeEP9zbgoaX0EAAAAAAAAAABg3W3jagnAO/pKBKEA1zI3+/U/AHEAZMQBAACwzqgBSFxZhMvx6yPQRRwAiTgAAAAAAAAAAAAAAAAAXuj2T37kFz8P8Ju+2v/Hn9v8OP2Lg/n59DE99fjRemy86bj/w/3fFF4WhYvn8e0rhWPlK+eC4Sx9hDkXpiUOpqESYeVI61+rDfhhIjx7LhjOVwRU4mAaKhFu7ZbZ0/JbB9f7CMVLccDbmOOgvKYwUCKsHOnsIzzMiJ56hAJvYOkdFNcURkqEPdcR4vNq5fFcrSMwrnywkF9T+O3PBfySvP3P1xQkAgAAAAAAAAAAAAAAAAAAAADwEn8BBb0LzGM9c2oAAAAASUVORK5CYII=";
+
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+
+// The whole interface is one 16-colour palette line, all of it valid Mega Drive CRAM values.
+const C = {
+  bg: "#000000", panel: "#222222", line: "#444444", dim: "#666666", sec: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE",
+  psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822",
+  lit: "#AAEE22", warn: "#EEEE22", err: "#EE2222",
+};
+
+const OPF = ["mul","dt","ar","rs","dr","am","sl","sr","rr","tl","ssg"];
+function patch(p) {
+  const r = PRESETS[p];
+  const ops = [];
+  for (let o = 0; o < 4; o++) {
+    const op = {};
+    OPF.forEach((f, i) => op[f] = r[4 + o * 11 + i]);
+    ops.push(op);
+  }
+  return { alg: r[0], fb: r[1], ams: r[2], fms: r[3], ops };
+}
+
+const ALG = [
+  { p: {1:[0,1],2:[1,1],3:[2,1],4:[3,1]}, e: [[1,2],[2,3],[3,4]], out: [4] },
+  { p: {1:[0,0],2:[0,2],3:[1,1],4:[2,1]}, e: [[1,3],[2,3],[3,4]], out: [4] },
+  { p: {1:[1,0],2:[0,2],3:[1,2],4:[2,1]}, e: [[2,3],[1,4],[3,4]], out: [4] },
+  { p: {1:[0,0],2:[1,0],3:[1,2],4:[2,1]}, e: [[1,2],[2,4],[3,4]], out: [4] },
+  { p: {1:[0,0],2:[1,0],3:[0,2],4:[1,2]}, e: [[1,2],[3,4]], out: [2,4] },
+  { p: {1:[0,1],2:[1,0],3:[1,1],4:[1,2]}, e: [[1,2],[1,3],[1,4]], out: [2,3,4] },
+  { p: {1:[0,0],2:[1,0],3:[1,1],4:[1,2]}, e: [[1,2]], out: [2,3,4] },
+  { p: {1:[0,0],2:[1,0],3:[2,0],4:[3,0]}, e: [], out: [1,2,3,4] },
+];
+
+// ENVELOPE_0 as written in third_party/mdmi/src/envelopes.c. How it is read is unconfirmed.
+const ENV0 = { steps: [0,0].concat(Array(21).fill(1), [1,1,0x11,0x11,1,1,0x81,0x81], [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]), a: 23, b: 31 };
+const ENVSQ = { steps: [0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15], a: 1, b: 2 };
+
+const SAMPLES = {26:"HighQ",27:"Slap",28:"ScratchPush",29:"ScratchPull",30:"Sticks",31:"SquareClick",32:"MetroClick",33:"MetroBell",34:"StdKick",35:"StdKick",36:"RimTap",37:"StdSnr1",38:"Clap",39:"StdSnr2",40:"LowFlrStudio",41:"HiHatClosed",42:"FlrStudio",43:"HiHatFoot",44:"LowStudio",45:"HiHatHalf",46:"MdStudio",47:"MdHiStudio",48:"Crsh1",49:"HiStudio",50:"Ride1",51:"ChinaCrash",52:"BellRide",53:"Tambourine",54:"Splash",55:"CowBell",56:"Crsh2",57:"VibraSlap",58:"Ride2",59:"BongoRim",60:"LowBongo",61:"ClosedSlap",62:"HighConga",63:"LowTumba",64:"HighTimbale",65:"LowTimbale",66:"HighAgogo",67:"LowAgogo",68:"Cabasa",69:"Maracas",70:"ShortWhistle",71:"LongWhistle",72:"GuiroDown",73:"GuiroUp",74:"Clave",75:"HighWoodblock",76:"LowWoodblock",77:"QuicaHi",78:"QuicaLow",79:"Triangle",80:"Triangle",81:"SmallShaker",82:"SleighBells",83:"BellTree",84:"Castanet",85:"ShortTaikoHit",86:"LongTaikoHit"};
+
+function noteName(p) {
+  const n = ["C-","C#","D-","D#","E-","F-","F#","G-","G#","A-","A#","B-"][p % 12];
+  return n + (Math.floor(p / 12) - 1);
+}
+
+function freshState() {
+  return {
+    view: "editor", page: "all", drag: null, hover: -1, msg: "", msgKind: "", undo: false,
+    stage: 0, ch3sp: false, dac: false, poly: false, picker: false, dacSel: 34, dropped: false, romDrag: false,
+    ch: [
+      { pr: 38, note: 36, vel: 14, vol: 112, pan: 1, tune: 0, bend: 2, porta: 0 },
+      { pr: 4,  note: 64, vel: 11, vol: 100, pan: 0, tune: 0, bend: 2, porta: 0 },
+      { pr: 16, note: 55, vel: 9,  vol: 88,  pan: 2, tune: 3, bend: 2, porta: 0 },
+      { pr: 48, note: 59, vel: 8,  vol: 96,  pan: 1, tune: 0, bend: 12, porta: 0 },
+      { pr: 29, note: 0,  vel: 0,  vol: 104, pan: 1, tune: 0, bend: 2, porta: 64 },
+      { pr: 62, note: 0,  vel: 0,  vol: 110, pan: 1, tune: 0, bend: 2, porta: 0 },
+      { pr: 0,  note: 72, vel: 12, vol: 96,  tune: 0, bend: 2, porta: 0 },
+      { pr: 80, note: 76, vel: 10, vol: 90,  tune: 0, bend: 2, porta: 40 },
+      { pr: 0,  note: 0,  vel: 0,  vol: 90,  tune: 0, bend: 2, porta: 0 },
+      { pr: 0,  note: 53, vel: 13, vol: 80,  tune: 0, bend: 2, porta: 0 },
+    ],
+  };
+}
+
+let S = freshState();
+const cv = document.getElementById("c");
+const g = cv.getContext("2d");
+g.imageSmoothingEnabled = false;
+let hits = [];
+const romImg = new Image();
+romImg.onload = () => draw();
+romImg.src = ROM_PNG;
+
+// ---------- primitives ----------
+function R(x, y, w, h, c) { g.fillStyle = c; g.fillRect(x, y, w, h); }
+function B(x, y, w, h, c, t = 1) { R(x, y, w, t, c); R(x, y + h - t, w, t, c); R(x, y, t, h, c); R(x + w - t, y, t, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c;
+  s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32];
+    if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) {
+      const bits = parseInt(hex.substr(col * 2, 2), 16);
+      for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z);
+    }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z - z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z), y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z)) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n - 1) + "~" : s; }
+function L(x0, y0, x1, y1, c, t = 2) {
+  g.fillStyle = c;
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx - dy;
+  for (;;) {
+    g.fillRect(x0, y0, t, t);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 > -dy) { e -= dy; x0 += sx; }
+    if (e2 < dx) { e += dx; y0 += sy; }
+  }
+}
+function hit(x, y, w, h, fn) { hits.push({ x, y, w, h, fn }); }
+function btn(label, x, y, w, h, o = {}) {
+  if (o.on) { R(x, y, w, h, o.color || C.text); }
+  else { B(x, y, w, h, o.dis ? C.panel : (o.border || C.line)); }
+  const tc = o.on ? (o.tc || C.bg) : o.dis ? C.line : (o.tc || C.sec);
+  TC(label, x, w, y + Math.floor((h - 14) / 2), tc, 2);
+  if (o.fn) hit(x, y, w, h, o.fn);
+}
+function cell(x, y, w, h, val, max, text, fill = C.fmD, tc = C.text) {
+  R(x, y, w, h, C.panel);
+  R(x, y, Math.round(w * val / max), h, fill);
+  TR(text, x + w - 6, y + Math.floor((h - 14) / 2), tc);
+}
+
+// ---------- channel helpers ----------
+function kind(i) {
+  if (i < 6) return i === 5 && S.dac ? "dac" : "fm";
+  return i === 9 ? "noise" : "psg";
+}
+function kindColor(k) { return k === "fm" ? C.fm : k === "dac" ? C.dac : C.psg; }
+function kindLight(k) { return k === "fm" ? C.fmL : k === "dac" ? C.dac : C.psg; }
+function kindDark(k) { return k === "fm" ? C.fmD : k === "dac" ? C.dacD : C.psgD; }
+function chName(i) {
+  const c = S.ch[i], k = kind(i);
+  if (S.dropped && i === 1) return "bass_slap*";
+  if (k === "dac") return "Drum samples";
+  if (k === "fm") {
+    if (S.poly && i > 0) return "voice of CH 1";
+    return GM[c.pr];
+  }
+  return c.pr === 80 ? "Square Lead" : "Envelope " + c.pr;
+}
+function isTarget(i) {
+  if (S.drag === "fm") return kind(i) === "fm";
+  if (S.drag === "psg") return kind(i) === "psg" || kind(i) === "noise";
+  return false;
+}
+function openCh(i) {
+  S.page = S.poly && i < 6 ? 0 : i;
+  S.picker = false;
+  draw();
+}
+
+// ---------- rail ----------
+function drawRow(i, y) {
+  const c = S.ch[i], k = kind(i), h = 56;
+  const sel = S.page === i;
+  const hov = S.hover === i;
+  const dimmed = S.drag && !isTarget(i);
+  if (hov) R(0, y, 288, h, C.warn);
+  else if (sel) R(0, y, 288, h, kindDark(k));
+  else R(0, y, 288, h, C.bg);
+  R(0, y, 4, h, dimmed ? C.line : kindColor(k));
+  R(4, y + h - 1, 284, 1, C.panel);
+  if (S.drag && isTarget(i) && !hov) B(4, y + 1, 282, h - 2, C.warn, 2);
+
+  const main = hov ? C.bg : dimmed ? C.line : C.text;
+  const second = hov ? C.bg : dimmed ? C.line : C.sec;
+  T(i + 1, 12, y + 7, main, 3);
+  const tag = k === "fm" ? (i === 2 && S.ch3sp ? "FM SP" : "FM") : k === "dac" ? "DAC" : k === "noise" ? "NOISE" : "PSG";
+  T(tag, 12, y + 38, hov ? C.bg : dimmed ? C.line : kindLight(k), 1);
+  T(cut(chName(i), 19), 56, y + 7, S.poly && i > 0 && i < 6 ? C.dim : main);
+
+  if (hov) {
+    T("drop to replace", 56, y + 30, C.bg);
+    return;
+  }
+  if (i === 2 && S.ch3sp) {
+    [60, 64, 67, 48].forEach((n, op) => {
+      T(noteName(n), 56 + op * 56, y + 30, dimmed ? C.line : C.lit);
+      T(op < 3 ? "m" + (11 + op) : "m3", 56 + op * 56, y + 46, C.dim, 1);
+    });
+    return;
+  }
+  const noteY = y + 27;
+  if (k === "dac") {
+    const n = 34;
+    T(noteName(n), 56, noteY, dimmed ? C.line : C.lit, 3);
+    T(SAMPLES[n], 122, noteY + 6, dimmed ? C.line : C.dac);
+    return;
+  }
+  if (c.note) T(noteName(c.note), 56, noteY, dimmed ? C.line : C.lit, 3);
+  else T("---", 56, noteY, C.panel === main ? C.line : C.line, 3);
+  for (let s = 0; s < 15; s++) {
+    const on = s < c.vel;
+    R(122 + s * 10, noteY + 6, 8, 12, on ? (dimmed ? C.line : C.lit) : C.panel);
+  }
+}
+function drawRail(forRom) {
+  if (forRom) {
+    R(0, 32, 289, 672, C.bg);
+    R(0, 672, 289, 1, C.line);
+    R(288, 672, 1, 32, C.line);
+    T("Drop on a channel", 12, 681, C.warn);
+  }
+  const allSel = S.page === "all";
+  R(0, 32, 288, 48, allSel && !S.drag ? C.panel : C.bg);
+  T("ALL CHANNELS", 12, 48, S.drag ? C.dim : C.text);
+  hit(0, 32, 288, 48, () => { S.page = "all"; S.picker = false; draw(); });
+  R(0, 80, 288, 16, C.panel);
+  T("YM2612", 12, 84, C.fmL, 1);
+  R(0, 432, 288, 16, C.panel);
+  T("SN76489", 12, 436, C.psg, 1);
+  for (let i = 0; i < 10; i++) {
+    const y = i < 6 ? 96 + i * 56 : 448 + (i - 6) * 56;
+    drawRow(i, y);
+    hit(0, y, 288, 56, () => openCh(i));
+  }
+  R(288, 32, 1, 640, C.line);
+}
+
+// ---------- algorithm picture ----------
+function drawAlg(x, y, a, box, sx, sy, full) {
+  const al = ALG[a];
+  const pos = n => [x + al.p[n][0] * sx, y + al.p[n][1] * sy];
+  const lw = full ? 2 : 1;
+  const edge = full ? C.fmL : C.dim;
+  al.e.forEach(([f, t]) => {
+    const [fx, fy] = pos(f), [tx, ty] = pos(t);
+    const y1 = fy + Math.floor(box / 2), y2 = ty + Math.floor(box / 2);
+    if (y1 === y2) { R(fx + box, y1, tx - fx - box, lw, edge); return; }
+    const mx = tx - Math.floor((sx - box) / 2);
+    R(fx + box, y1, mx - fx - box, lw, edge);
+    R(mx, Math.min(y1, y2), lw, Math.abs(y1 - y2) + lw, edge);
+    R(mx, y2, tx - mx, lw, edge);
+  });
+  // output bus
+  const maxCol = Math.max(...al.out.map(n => al.p[n][0]));
+  const rowMid = y + sy + Math.floor(box / 2);
+  if (a === 7) {
+    const by = y + box + (full ? 24 : 6);
+    al.out.forEach(n => { const [px] = pos(n); R(px + Math.floor(box / 2), y + box, lw, by - y - box, C.text); });
+    R(x + Math.floor(box / 2), by, 3 * sx + box + (full ? 18 : 6) - Math.floor(box / 2), lw, C.text);
+    if (full) T("OUT", x + 3 * sx + box + 20, by - 3, C.text, 1);
+  } else {
+    const bx = x + maxCol * sx + box + (full ? 12 : 4);
+    const ys = al.out.map(n => pos(n)[1] + Math.floor(box / 2));
+    al.out.forEach(n => { const [px, py] = pos(n); R(px + box, py + Math.floor(box / 2), bx - px - box, lw, C.text); });
+    const top = Math.min(...ys, rowMid), bot = Math.max(...ys, rowMid);
+    R(bx, top, lw, bot - top + lw, C.text);
+    R(bx, rowMid, full ? 12 : 4, lw, C.text);
+    if (full) T("OUT", bx + 15, rowMid - 3, C.text, 1);
+  }
+  for (let n = 1; n <= 4; n++) {
+    const [px, py] = pos(n), car = al.out.includes(n);
+    if (car) R(px, py, box, box, C.fm);
+    else { R(px, py, box, box, C.bg); B(px, py, box, box, full ? C.fmL : C.sec); }
+    if (full) TC(n, px, box, py + Math.floor((box - 14) / 2), car ? C.text : C.fmL);
+  }
+  if (full) { // feedback loop on operator 1
+    const [px, py] = pos(1);
+    R(px + 6, py - 6, box - 12, 2, C.warn);
+    R(px + 6, py - 6, 2, 6, C.warn);
+    R(px + box - 8, py - 6, 2, 6, C.warn);
+    T("FB " + full.fb, px + box + 4, py - 8, C.warn, 1);
+  }
+}
+
+// ---------- FM envelope, approximate. The mock only needs the shape. ----------
+function egTime(rate) { return rate <= 0 ? Infinity : 120000 * Math.pow(2, -rate / 4); }
+function eg(op, tk) {
+  const ta = op.ar >= 31 ? 0 : op.ar === 0 ? Infinity : 20000 * Math.pow(2, -(2 * op.ar) / 4);
+  const sl = op.sl === 15 ? 93 : op.sl * 3;
+  const dt = sl === 0 ? 0 : egTime(2 * op.dr) * sl / 96;
+  const sr = op.sr === 0 ? 0 : 96 / egTime(2 * op.sr);
+  const rr = 96 / egTime(4 * op.rr + 2);
+  const held = t => {
+    if (ta > 0 && t < ta) return 96 * Math.pow(1 - t / ta, 3);
+    if (dt > 0 && t < ta + dt) return isFinite(dt) ? sl * (t - ta) / dt : 0;
+    return Math.min(96, sl + (t - ta - dt) * sr);
+  };
+  const at = t => t <= tk ? held(t) : Math.min(96, held(tk) + (t - tk) * rr);
+  return { at, ta, dEnd: ta + dt, sl };
+}
+function drawEnvelope(op, x, y, w, h, car) {
+  R(x, y, w, h, C.bg);
+  B(x, y, w, h, C.panel);
+  const T_MAX = 2000, TK = 1000;
+  const toX = t => x + w * Math.sqrt(t / T_MAX);
+  [10, 100].forEach(t => R(Math.round(toX(t)), y, 1, h, C.panel));
+  const e = eg(op, TK), tl = op.tl * 0.75;
+  const yOf = t => y + Math.min(h - 1, (Math.min(96, e.at(t) + tl) / 96) * (h - 1));
+  for (let px = 0; px < w - 2; px += 2) {
+    const t = T_MAX * Math.pow(px / w, 2);
+    const yy = Math.round(yOf(t));
+    if (y + h - yy > 1) R(x + 1 + px, yy, 2, y + h - yy - 1, car ? C.fmD : C.panel);
+  }
+  let lx = x, ly = yOf(0);
+  for (let px = 2; px < w; px += 2) {
+    const t = T_MAX * Math.pow(px / w, 2), yy = yOf(t);
+    L(lx, ly, x + px - 1, yy, car ? C.text : C.fmL);
+    lx = x + px - 1; ly = yy;
+  }
+  const kx = Math.round(toX(TK));
+  R(kx, y, 1, h, C.dim);
+  T("OFF", kx + 3, y + 3, C.dim, 1);
+  const handle = t => { if (t < T_MAX && isFinite(t)) R(Math.round(toX(t)) - 2, Math.round(yOf(t)) - 2, 6, 6, C.text); };
+  handle(e.ta);
+  handle(e.dEnd);
+}
+
+// ---------- channel page head ----------
+function drawHead(i) {
+  const k = kind(i);
+  R(289, 32, 671, 48, C.bg);
+  R(289, 79, 671, 1, C.line);
+  const c = S.ch[i];
+  const pname = k === "dac" ? "Built-in drum map" : k === "fm" ? (S.dropped && i === 1 ? "bass_slap.tfi *" : (c.pr + 1) + " " + GM[c.pr]) : chName(i);
+  B(296, 40, 264, 32, C.line);
+  T(cut(pname, 19), 304, 49, C.text);
+  L(544, 53, 548, 58, C.sec, 1); L(548, 58, 552, 53, C.sec, 1);
+  if (k !== "dac") hit(296, 40, 264, 32, () => { S.picker = !S.picker; draw(); });
+  btn("LOAD", 568, 40, 56, 32);
+  btn("SAVE", 628, 40, 56, 32);
+  if (i === 2) {
+    btn("NORMAL", 696, 40, 124, 32, { on: !S.ch3sp, fn: () => { S.ch3sp = false; draw(); } });
+    btn("SPECIAL", 824, 40, 128, 32, { on: S.ch3sp, fn: () => { S.ch3sp = true; draw(); } });
+  } else if (i === 5) {
+    btn("FM", 696, 40, 124, 32, { on: !S.dac, fn: () => { S.dac = false; S.page = 5; draw(); } });
+    btn("DAC", 824, 40, 128, 32, { on: S.dac, color: C.dac, fn: () => { S.dac = true; S.page = 5; draw(); } });
+  } else {
+    const t = i < 6 ? "YM2612 channel " + (i + 1) : i < 9 ? "SN76489 tone " + (i - 5) : "SN76489 noise";
+    T(t, 696, 49, C.dim);
+  }
+}
+
+// ---------- pages ----------
+function drawAll() {
+  const titles = [["PATCH", 296], ["VOLUME", 440], ["PAN", 584], ["TUNE", 664], ["BEND", 724], ["PORTA", 784], ["SOURCE", 860]];
+  titles.forEach(([t, x]) => T(t, x, 48, C.sec));
+  R(289, 80, 671, 16, C.panel);
+  R(289, 432, 671, 16, C.panel);
+  for (let i = 0; i < 10; i++) {
+    const y = i < 6 ? 96 + i * 56 : 448 + (i - 6) * 56;
+    const c = S.ch[i], k = kind(i);
+    R(289, y + 55, 671, 1, C.panel);
+    const dimmed = S.drag && !isTarget(i);
+    const tcol = dimmed ? C.line : C.text;
+    if (S.poly && i > 0 && i < 6) { // the ROM has nothing mapped to receive these channels' values
+      T("as CH 1", 296, y + 20, C.dim);
+      hit(289, y, 671, 56, () => openCh(i));
+      continue;
+    }
+    if (k === "fm") {
+      const p = patch(c.pr);
+      drawAlg(296, y + 12, p.alg, 7, 13, 11, false);
+      T("ALG " + p.alg, 366, y + 14, C.sec, 1);
+      T("FB  " + p.fb, 366, y + 28, C.sec, 1);
+    } else if (k === "dac") {
+      T("61 notes", 296, y + 20, C.dac);
+    } else {
+      const env = c.pr === 80 ? ENVSQ : ENV0;
+      env.steps.forEach((v, s) => {
+        const l = 15 - (v & 15);
+        R(296 + s * 2, y + 44 - l * 2, 2, l * 2, s >= env.a && s < env.b ? C.sec : C.psg);
+      });
+    }
+    cell(440, y + 18, 128, 20, c.vol, 127, c.vol, k === "fm" ? C.fmD : k === "dac" ? C.dacD : C.psgD, tcol);
+    if (k === "fm") {
+      ["L", "C", "R"].forEach((n, p) => btn(n, 584 + p * 24, y + 18, 22, 20, { on: c.pan === p }));
+    } else T("-", 584, y + 20, C.line);
+    if (k === "dac") {
+      ["-", "-", "-"].forEach((t, n) => T(t, [664, 724, 784][n], y + 20, C.line));
+      T("ROM", 860, y + 20, C.sec);
+      hit(289, y, 671, 56, () => openCh(i));
+      continue;
+    }
+    T((c.tune >= 0 ? "+" : "") + c.tune, 664, y + 20, c.tune ? tcol : C.sec);
+    T(c.bend, 724, y + 20, c.bend !== 2 ? tcol : C.sec);
+    const portaBlocked = S.poly && i < 6;
+    T(portaBlocked ? "-" : c.porta ? c.porta : "off", 784, y + 20, portaBlocked ? C.line : c.porta ? tcol : C.sec);
+    const src = S.dropped && i === 1 ? "bass_slap.tfi" : k === "fm" ? "GM " + (c.pr + 1) : c.pr === 80 ? "ROM 80" : "ROM " + c.pr;
+    if (src.length > 8) T(src, 860, y + 24, C.warn, 1); else T(src, 860, y + 20, C.sec);
+    hit(289, y, 671, 56, () => openCh(i));
+  }
+}
+
+function drawFM(i) {
+  const c = S.ch[i], p = patch(c.pr);
+  const sr22 = S.dropped && i === 1;
+  if (sr22) p.ops[1].sr = 22;
+  // algorithm buttons
+  for (let a = 0; a < 8; a++) btn(a, 296 + a * 33, 84, 32, 24, { on: a === p.alg, color: C.fmL });
+  // algorithm picture
+  const w = (ALG[p.alg].e.length, [212, 156, 156, 156, 100, 100, 100, 212][p.alg]);
+  const ax = 296 + Math.max(0, Math.floor((264 - w - 28) / 2));
+  drawAlg(ax, 124, p.alg, 28, 56, 36, { fb: p.fb });
+
+  // channel controls
+  const lab = (t, x, y) => T(t, x, y + 3, C.sec);
+  const X1 = 572, X2 = 760, CW1 = 116, CW2 = 132;
+  const AMS = ["0 dB", "1 dB", "6 dB", "12 dB"], FMS = ["0 %", "3 %", "6 %", "10 %", "14 %", "20 %", "40 %", "80 %"];
+  lab("FB", X1, 84);  cell(X1 + 60, 84, CW1, 20, p.fb, 7, p.fb);
+  lab("AMS", X1, 108); cell(X1 + 60, 108, CW1, 20, p.ams, 3, AMS[p.ams]);
+  lab("FMS", X1, 132); cell(X1 + 60, 132, CW1, 20, p.fms, 7, FMS[p.fms]);
+  if (i === 2 && S.ch3sp) {
+    T("Op 1-3 pitch", X1, 170, C.lit);
+    T("from MIDI 11-13", X1, 190, C.lit);
+  } else {
+    T(c.note ? noteName(c.note) : "---", X1, 168, c.note ? C.lit : C.line, 3);
+    T(c.note ? "key on" : "key off", X1 + 64, 174, c.note ? C.lit : C.dim);
+  }
+  lab("VOL", X2, 84); cell(X2 + 60, 84, CW2, 20, c.vol, 127, c.vol);
+  lab("PAN", X2, 108);
+  ["L", "C", "R"].forEach((n, q) => btn(n, X2 + 60 + q * 45, 108, 42, 20, { on: c.pan === q }));
+  lab("TUNE", X2, 132); cell(X2 + 60, 132, CW2, 20, c.tune + 64, 127, (c.tune >= 0 ? "+" : "") + c.tune + " ct");
+  lab("BEND", X2, 156); cell(X2 + 60, 156, CW2, 20, c.bend, 24, c.bend + " st");
+  lab("PORT", X2, 180);
+  if (S.poly) { R(X2 + 60, 180, CW2, 20, C.panel); TR("not in poly", X2 + 60 + CW2 - 4, 183, C.line); }
+  else cell(X2 + 60, 180, CW2, 20, c.porta, 127, c.porta ? c.porta : "off");
+
+  // operator columns
+  R(289, 236, 671, 1, C.panel);
+  const LX = 296, X0 = 344, CW = 148, GAP = 4;
+  const ROWS = [
+    ["TL", "tl", 127], ["MUL", "mul", 15], ["DT", "dt", 7], null,
+    ["AR", "ar", 31], ["DR", "dr", 31], ["SL", "sl", 15], ["SR", "sr", 31], ["RR", "rr", 15], null,
+    ["RS", "rs", 3], ["AM", "am", 1], ["SSG", "ssg", 15],
+  ];
+  const al = ALG[p.alg];
+  T("ENV", LX, 312, C.sec);
+  p.ops.forEach((op, o) => {
+    const x = X0 + o * (CW + GAP), car = al.out.includes(o + 1);
+    if (car) { R(x, 240, CW, 22, C.fm); } else { B(x, 240, CW, 22, C.fmL); }
+    T("OP" + (o + 1), x + 6, 244, car ? C.text : C.fmL);
+    T(car ? "CARRIER" : "MOD", x + 46, 248, car ? C.text : C.fmL, 1);
+    if (i === 2 && S.ch3sp) {
+      const nn = [60, 64, 67, 0][o];
+      TR(nn ? noteName(nn) : "ch 3", x + CW - 6, 244, nn ? C.lit : car ? C.text : C.fmL);
+    }
+    drawEnvelope(op, x, 266, CW, 112, car);
+  });
+  let y = 384;
+  ROWS.forEach(r => {
+    if (!r) { y += 8; return; }
+    T(r[0], LX, y + 2, C.sec);
+    p.ops.forEach((op, o) => {
+      const x = X0 + o * (CW + GAP);
+      const v = op[r[1]];
+      let txt = String(v);
+      if (r[1] === "ssg") txt = v < 8 ? "off" : "Env " + (v - 7);
+      if (r[1] === "am") txt = v ? "on" : "off";
+      const over = r[1] === "sr" && v > 15;
+      cell(x, y, CW, 20, v, r[2], txt, over ? C.dacD : C.fmD, over ? C.warn : C.text);
+      if (over) T("CC: 15 max", x + 6, y + 6, C.warn, 1);
+    });
+    y += 22;
+  });
+}
+
+function drawPSG(i) {
+  const c = S.ch[i];
+  const env = c.pr === 80 ? ENVSQ : ENV0;
+  const X0 = 340, ST = 13;
+  const n = env.steps.length;
+  // section strip
+  const ax = X0 + env.a * ST, bx = X0 + env.b * ST, ex = X0 + n * ST;
+  R(X0, 88, ax - X0 - 1, 20, C.psgD);
+  if (ax - X0 > 80) T("ONSET", X0 + 6, 91, C.psg);
+  R(ax, 88, bx - ax - 1, 20, C.text);
+  TC(bx - ax > 60 ? "LOOP" : "L", ax, bx - ax, 91, C.bg);
+  R(bx, 88, ex - bx - 1, 20, C.psgD);
+  if (ex - bx > 90) T("RELEASE", bx + 6, 91, C.psg);
+  // drag handles
+  R(ax - 2, 84, 4, 28, C.warn);
+  R(bx - 2, 84, 4, 28, C.warn);
+
+  // level cells
+  const Y0 = 116, CH = 16;
+  R(ax, Y0, bx - ax - 1, 15 * CH, C.panel);
+  for (let l = 0; l <= 15; l += 5) {
+    const yy = Y0 + l * CH;
+    T(l === 0 ? "0 dB" : "-" + l * 2, 296, yy - 3, C.dim, 1);
+    R(330, yy, 8, 1, C.dim);
+  }
+  env.steps.forEach((v, s) => {
+    const att = v & 15, lev = 15 - att, x = X0 + s * ST;
+    const inLoop = s >= env.a && s < env.b;
+    for (let q = 0; q < lev; q++) {
+      const top = q === lev - 1;
+      const col = inLoop ? (top ? C.text : C.dim) : top ? C.psg : C.psgD;
+      R(x, Y0 + (14 - q) * CH + 1, ST - 1, CH - 1, col);
+    }
+    if (lev === 0) R(x, Y0 + 15 * CH - 2, ST - 1, 2, C.line);
+    TC(att.toString(16).toUpperCase(), x, ST - 1, Y0 + 15 * CH + 6, inLoop ? C.text : C.sec, 1);
+    if (s % 8 === 0) T(s, x, 462, C.dim, 1);
+  });
+  // new step ghost
+  B(ex, Y0, ST - 1, 15 * CH, C.line);
+  TC("+", ex, ST - 1, Y0 + 15 * CH + 6, C.dim, 1);
+  T("ATT", 296, Y0 + 15 * CH + 6, C.sec, 1);
+
+  // pitch lane
+  const PY = 382;
+  T("PITCH", 296, PY + 12, C.sec, 1);
+  T("assumed", 296, PY + 24, C.warn, 1);
+  R(X0, PY, n * ST, 64, C.panel);
+  R(X0, PY + 32, n * ST, 1, C.line);
+  env.steps.forEach((v, s) => {
+    const hi = v >> 4;
+    if (hi) {
+      const x = X0 + s * ST;
+      R(x, PY + 22, ST - 1, 20, C.warn);
+      TC(hi.toString(16).toUpperCase(), x, ST - 1, PY + 28, C.bg, 1);
+    }
+  });
+  T("STEP", 296, 462, C.sec, 1);
+
+  // applies to
+  T("APPLIES TO", 296, 486, C.sec);
+  btn("CH " + (i + 1) + " ONLY", 424, 480, 120, 28, { on: true, color: C.psg });
+  btn("ALL PSG", 548, 480, 120, 28);
+  T("ROM may have a single user slot: unconfirmed", 680, 490, C.warn, 1);
+
+  // starting points
+  T("START FROM ROM", 296, 524, C.sec);
+  [["Envelope 0", ENV0], ["Square Lead", ENVSQ]].forEach(([name, e], q) => {
+    const x = 296 + q * 172, cur = e === env;
+    B(x, 546, 164, 64, cur ? C.psg : C.line);
+    T(name, x + 6, 552, cur ? C.text : C.sec);
+    e.steps.forEach((v, s) => {
+      const l = 15 - (v & 15);
+      const bw = e.steps.length > 20 ? 3 : 6;
+      R(x + 6 + s * bw, 604 - l * 2, bw - 1, l * 2, s >= e.a && s < e.b ? C.sec : C.psg);
+    });
+  });
+  B(640, 546, 312, 64, C.panel);
+  T("Drop envelope file here", 652, 556, C.dim);
+  T("or on rows 7-10", 652, 578, C.dim);
+  T("1 step = time not confirmed, so the axis counts steps", 296, 624, C.dim, 1);
+  if (i === 9) T("Channel 10 is noise. Same editor. Pitch lane only if research says it applies.", 296, 640, C.dim, 1);
+}
+
+function twoLines(name) {
+  if (name.length <= 8) return [name, ""];
+  for (let i = name.length - 1; i > 0; i--) {
+    if (name[i] >= "A" && name[i] <= "Z" && i <= 8) return [name.slice(0, i), name.slice(i, i + 8)];
+  }
+  return [name.slice(0, 8), name.slice(8, 16)];
+}
+function drawDAC() {
+  btn("NOTES", 296, 88, 112, 24, { on: true, color: C.dac });
+  btn("AUDIO IN", 412, 88, 112, 24, { dis: true });
+  T("unconfirmed, reserved", 532, 96, C.dim, 1);
+  T("CH 6 plays one sample at a time", 696, 94, C.sec, 1);
+  const X0 = 332, CW = 51, CH = 42, Y0 = 136;
+  ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].forEach((n, q) => TC(n, X0 + q * CW, CW, 122, C.sec, 1));
+  for (let oct = 0; oct < 6; oct++) {
+    const y = Y0 + oct * CH;
+    T("C-" + (oct + 1), 296, y + 14, C.sec);
+    for (let q = 0; q < 12; q++) {
+      const p = 24 + oct * 12 + q, x = X0 + q * CW, name = SAMPLES[p];
+      const playing = p === 34, sel = p === S.dacSel;
+      if (playing) R(x, y, CW - 1, CH - 1, C.lit);
+      else if (name) R(x, y, CW - 1, CH - 1, C.dacD);
+      else B(x, y, CW - 1, CH - 1, C.panel);
+      if (sel) B(x, y, CW - 1, CH - 1, C.text, 2);
+      if (name) {
+        const tc = playing ? C.bg : C.text;
+        const [a, b] = twoLines(name);
+        T(a, x + 3, y + 8, tc, 1);
+        T(b, x + 3, y + 22, tc, 1);
+        hit(x, y, CW, CH, () => { S.dacSel = p; draw(); });
+      }
+    }
+  }
+  // selected sample
+  const dy = 396;
+  R(289, dy, 671, 1, C.line);
+  T(noteName(S.dacSel), 296, dy + 12, C.lit, 3);
+  T(SAMPLES[S.dacSel] || "empty", 360, dy + 12, C.text);
+  T("22050 Hz  built into the ROM", 360, dy + 30, C.sec, 1);
+  btn("REPLACE", 700, dy + 10, 124, 28);
+  btn("CLEAR", 828, dy + 10, 124, 28);
+  const wy = dy + 52, ww = 656, wh = 96;
+  R(296, wy, ww, wh, C.panel);
+  let seed = S.dacSel * 7919 + 13;
+  for (let x = 0; x < ww; x += 2) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const a = (seed % 100) / 100 * Math.exp(-x / 120) * (wh / 2 - 2);
+    R(296 + x, wy + wh / 2 - a, 2, Math.max(1, a * 2), C.dac);
+  }
+  T("The ROM's DAC code ignores volume, pan and pitch. Note off stops the sample.", 296, wy + wh + 14, C.sec, 1);
+  T("Toggling DAC resets the YM2612: sounding FM notes stop.", 296, wy + wh + 28, C.warn, 1);
+  T("Drop a WAV on a note cell (only if a custom sample path into the ROM is confirmed).", 296, wy + wh + 42, C.dim, 1);
+}
+
+function drawPicker(i) {
+  R(289, 80, 671, 592, C.bg);
+  const k = kind(i);
+  if (k !== "fm") {
+    T("ROM envelopes", 296, 92, C.sec);
+    T("128 program numbers. In the ROM's table they point at 2 distinct envelopes.", 296, 116, C.sec, 1);
+    btn("Envelope 0", 296, 136, 200, 32, { on: S.ch[i].pr === 0, color: C.psg, fn: () => { S.ch[i].pr = 0; S.picker = false; draw(); } });
+    btn("Square Lead", 500, 136, 200, 32, { on: S.ch[i].pr === 80, color: C.psg, fn: () => { S.ch[i].pr = 80; S.picker = false; draw(); } });
+    return;
+  }
+  const X0 = 296, Y0 = 84, CW = 165, RH = 18;
+  for (let n = 0; n < 128; n++) {
+    const col = Math.floor(n / 32), row = n % 32;
+    const x = X0 + col * CW, y = Y0 + row * RH;
+    if (n === S.ch[i].pr) R(x, y, CW - 3, RH - 1, C.text);
+    T(cut(GM[n], 13), x + 2, y + 2, n === S.ch[i].pr ? C.bg : C.text);
+    hit(x, y, CW, RH, () => { S.ch[i].pr = n; S.picker = false; S.dropped = false; draw(); });
+    if (n % 8 === 0 && row !== 0) R(x, y - 1, CW - 3, 1, C.line);
+  }
+}
+
+// ---------- header and footer ----------
+function drawHeader() {
+  const lost = S.stage === 2;
+  R(0, 0, W, 32, lost ? C.err : C.bg);
+  R(0, 31, W, 1, lost ? C.err : C.line);
+  T("MDMI", 12, 9, lost ? C.bg : C.fmL);
+  const on = lost ? C.bg : C.text, tc = lost ? C.err : C.bg;
+  btn("EDITOR", 72, 4, 100, 24, { on: S.view === "editor", color: on, tc: S.view === "editor" ? tc : lost ? C.bg : C.sec, border: lost ? C.bg : C.line, fn: () => { S.view = "editor"; draw(); } });
+  btn("ROM", 176, 4, 100, 24, { on: S.view === "rom", color: on, tc: S.view === "rom" ? tc : lost ? C.bg : C.sec, border: lost ? C.bg : C.line, fn: () => { S.view = "rom"; draw(); } });
+  if (lost) {
+    T("CONSOLE LOST", 300, 4, C.bg, 3);
+    R(700, 4, 252, 24, C.bg);
+    TC("EMU IS LIVE", 700, 252, 9, C.lit);
+    return;
+  }
+  T("BANK", 296, 12, C.dim, 1);
+  T("Set 1*", 328, 9, C.text);
+  btn("LOAD", 412, 4, 56, 24);
+  btn("SAVE", 472, 4, 56, 24);
+  // stage slot: same place, today and later
+  if (S.stage === 0) {
+    R(700, 4, 120, 24, C.lit);
+    TC("EMU LIVE", 700, 120, 9, C.bg);
+    B(824, 4, 128, 24, C.panel);
+    TC("no console", 824, 128, 9, C.line);
+  } else {
+    B(700, 4, 120, 24, C.sec);
+    TC("EMU ready", 700, 120, 9, C.sec);
+    R(824, 4, 128, 24, C.lit);
+    TC("CON LIVE", 824, 128, 9, C.bg);
+  }
+}
+function drawFooter() {
+  R(0, 672, W, 32, C.bg);
+  R(0, 672, W, 1, C.line);
+  const col = S.msgKind === "err" ? C.err : S.msgKind === "warn" ? C.warn : C.sec;
+  if (S.msg) T(S.msg, 12, S.msg.length > 44 ? 684 : 681, col, S.msg.length > 44 ? 1 : 2);
+  else T("Drop VGI, TYI, TFI on FM, envelopes on PSG", 12, 684, C.dim, 1);
+  if (S.undo) btn("UNDO", 500, 676, 64, 24, { tc: C.text, border: C.text, fn: () => { S.dropped = false; S.undo = false; S.msg = ""; draw(); } });
+  T("LFO", 584, 681, C.dim); T("3.98Hz", 624, 681, C.text);
+  T("FLT", 712, 681, C.dim); T("3392", 752, 681, C.text);
+  T("POLY", 820, 681, C.dim);
+  T(S.poly ? "ON" : "off", 876, 681, S.poly ? C.warn : C.text);
+  hit(820, 672, 100, 32, () => { S.poly = !S.poly; if (S.poly && S.page !== "all" && S.page > 0 && S.page < 6) S.page = 0; draw(); });
+}
+
+function draw() {
+  hits = [];
+  R(0, 0, W, H, C.bg);
+  drawHeader();
+  if (S.view === "rom") {
+    if (romImg.complete && romImg.naturalWidth) {
+      g.imageSmoothingEnabled = false;
+      g.drawImage(romImg, 13, 9, 320, 224, 0, 32, 960, 672);
+    }
+    if (S.romDrag) { drawRail(true); }
+    return;
+  }
+  drawRail(false);
+  if (S.page === "all") drawAll();
+  else {
+    const i = S.page, k = kind(i);
+    drawHead(i);
+    if (S.picker) drawPicker(i);
+    else if (k === "fm") drawFM(i);
+    else if (k === "dac") drawDAC();
+    else drawPSG(i);
+  }
+  drawFooter();
+}
+const W = 960, H = 704;
+
+cv.addEventListener("click", e => {
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * W / r.width, y = (e.clientY - r.top) * H / r.height;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const h = hits[i];
+    if (x >= h.x && y >= h.y && x < h.x + h.w && y < h.y + h.h) { h.fn(); return; }
+  }
+});
+cv.addEventListener("mousemove", e => {
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * W / r.width, y = (e.clientY - r.top) * H / r.height;
+  cv.style.cursor = hits.some(h => x >= h.x && y >= h.y && x < h.x + h.w && y < h.y + h.h) ? "pointer" : "default";
+});
+
+// ---------- screens of the mock (the buttons above the canvas are not part of the plugin) ----------
+const SCREENS = [
+  ["Overview", "Домашний экран: все каналы одной таблицей. Левая колонка («рельс») есть всегда, правая часть дополняет те же строки. Клик по строке открывает канал.", s => {}],
+  ["FM: Rhodes", "Алгоритм нарисован как есть, несущие залиты, модуляторы контуром. Огибающие настоящие: TL опускает кривую, время общее для всех операторов. Значения из presets_gm.h (форма огибающих в мокапе приближённая).", s => { s.page = 1; }],
+  ["FM: Bass", "Другой алгоритм, другие значения: Synth Bass 1, чтобы видеть, как меняется картинка.", s => { s.page = 0; }],
+  ["Preset list", "Самое частое действие на канале: выбрать звук. Все 128 сразу на экране, без прокрутки. Клик загружает.", s => { s.page = 1; s.picker = true; }],
+  ["Ch3 Special", "Канал 3 в особом режиме: у операторов 1-3 свои ноты (MIDI 11-13), это видно в заголовках колонок и в строке 3.", s => { s.page = 2; s.ch3sp = true; }],
+  ["PSG envelope", "Столбики из 15 реальных шагов уровня, петля и хвост после неё как разметка сверху, сырые значения под столбиками. Данные: ENVELOPE_0 из envelopes.c, чтение формата не подтверждено.", s => { s.page = 6; }],
+  ["DAC map", "Канал 6 в режиме DAC. Карта нот из pcm_sample.c, как в коде ROM. Волна выбранного сэмпла условная. AUDIO IN только занимает место.", s => { s.page = 5; s.dac = true; }],
+  ["ROM screen", "Переключатель EDITOR / ROM на одном месте, один клик. Картинка ROM ровно 3x в окне 960x704.", s => { s.view = "rom"; }],
+  ["Drag: hover", "Файл инструмента над окном: подсвечены только каналы, куда он подходит. Строка под курсором говорит, что будет.", s => { s.drag = "fm"; s.hover = 1; s.msg = "bass_slap.tfi: replaces Rhodes on CH 2"; s.msgKind = "warn"; }],
+  ["Drag over ROM", "То же, но открыт экран ROM: рельс временно выезжает поверх картинки и исчезает после броска.", s => { s.view = "rom"; s.romDrag = true; s.drag = "fm"; s.hover = 1; }],
+  ["Drag: envelope", "Файл огибающей: цели только PSG.", s => { s.drag = "psg"; s.hover = 7; s.msg = "pluck.eef: replaces Square Lead on CH 8"; s.msgKind = "warn"; }],
+  ["Loaded, warning", "Файл загружен, но одно значение не проходит через CC: SR 22 на операторе 2. Об этом сказано внизу и в ячейке SR оператора 2. UNDO рядом.", s => { s.dropped = true; s.undo = true; s.msg = "bass_slap.tfi: Op2 SR 22, CC max 15"; s.msgKind = "warn"; s.page = 1; }],
+  ["Bad file", "Файл не читается: канал не тронут, причина внизу.", s => { s.msg = "broken.tfi: 17 bytes. CH 2 unchanged"; s.msgKind = "err"; }],
+  ["Polyphony", "Polyphony включена: все FM-голоса принадлежат каналу 1. Строки 2-6 показывают ноты, но патч у них общий. Клик по ним ведёт на канал 1.", s => { s.poly = true; }],
+  ["Stage: console", "Позже. Приставка играет, эмулятор наготове. Это то же место в заголовке, где сегодня только EMU LIVE.", s => { s.stage = 1; }],
+  ["Stage: lost", "Позже. Приставка отвалилась: весь заголовок красный, читается через сцену, эмулятор уже играет.", s => { s.stage = 2; }],
+];
+const nav = document.getElementById("nav"), cap = document.getElementById("cap");
+function show(n) {
+  S = freshState();
+  SCREENS[n][2](S);
+  cap.textContent = SCREENS[n][1];
+  [...nav.children].forEach((b, i) => b.className = i === n ? "on" : "");
+  draw();
+}
+SCREENS.forEach((s, i) => {
+  const b = document.createElement("button");
+  b.textContent = s[0];
+  b.onclick = () => show(i);
+  nav.appendChild(b);
+});
+// One canvas pixel = a whole number of screen pixels, the way the plugin would scale.
+const dpr = window.devicePixelRatio || 1;
+const k = Math.max(1, Math.round(dpr));
+cv.style.width = W * k / dpr + "px";
+cv.style.height = H * k / dpr + "px";
+show(0);
+</script>
+</body>
+</html>

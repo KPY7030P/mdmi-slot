@@ -1,0 +1,4 @@
+*.patch -text
+*.sh text eol=lf
+*.bin binary
+*.tar.gz binary
