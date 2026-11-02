@@ -29,14 +29,16 @@ run() {
   echo "=== $name: rate=$rate block=$block $mode instances=$instances expect=$expect"
   log="$OUT/$name.log"
   # Booting can occasionally take over 10 seconds (see the ROADMAP); a realtime run then ends in
-  # silence without saying anything about the sound. Say so and measure again, up to three times.
+  # silence without saying anything about the sound. Say so and measure again; slow boots come in
+  # runs of up to three in a row.
   attempt=1
   while :; do
     timeout 60 ./clap_host.exe "MDMI Mega Drive.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
     code=$?
     late="$(late_boot_ms "$log" "$rate")"
-    [ "$mode" = realtime ] && [ "$late" != 0 ] && [ "$attempt" -lt 3 ] || break
-    echo "SLOW BOOT: ${late} ms, later than the first note. Running $name again."
+    [ "$mode" = realtime ] && [ "$late" != 0 ] || break
+    echo "SLOW BOOT: ${late} ms, later than the first note, attempt $attempt."
+    [ "$attempt" -lt 8 ] || { fail "$name: boot stayed slower than the first note"; return; }
     attempt=$((attempt + 1))
   done
   grep -E "wall=|stats " "$log"
