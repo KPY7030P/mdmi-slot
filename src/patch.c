@@ -35,6 +35,7 @@
 #define CC_SUSTAIN 64
 #define CC_STEREO 77
 #define CC_RESET_ALL 121
+#define CC_STORE_PROGRAM 87
 #define YM_REG_SUSTAIN_RATE 0x70
 // Stored voices shadow the ROM's built-in programs from here on, two numbers per FM channel.
 #define FIRST_SERVICE_PROGRAM 116
@@ -674,6 +675,10 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 			emit_cc(emit, context, channel, CC_SUSTAIN, 0);
 			return false;
 		}
+		if (cc == CC_STORE_PROGRAM) {
+			// Would make a program number mean something other than its preset, for good.
+			return false;
+		}
 		if (cc == CC_RPN_MSB || cc == CC_RPN_LSB) {
 			(cc == CC_RPN_MSB ? patch->rpn_msb : patch->rpn_lsb)[channel] = (uint8_t)value;
 			emit(context, bytes, length);
@@ -682,11 +687,11 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		if (cc == CC_DATA_ENTRY_MSB && is_channel && patch->rpn_msb[channel] == 0 && patch->rpn_lsb[channel] == 0) {
 			patch->model.channels[channel][channel_index(PARAM_BEND_RANGE)] = (int16_t)(value > BEND_RANGE_MAX ? BEND_RANGE_MAX : value);
 			changed = true;
-		} else if (cc == CC_STEREO && fm) {
+		} else if (cc == CC_STEREO) {
 			// The stereo bits of the chip: 1 right, 2 left, 3 both. Off has no place on the Pan knob.
 			static const int8_t STEREO_TO_PAN[4] = {-1, 2, 0, 1};
 			int pan = STEREO_TO_PAN[value / (128 / 4)];
-			if (pan >= 0) {
+			if (pan >= 0 && fm) {
 				patch->model.channels[channel][channel_index(PARAM_PAN)] = (int16_t)pan;
 				changed = true;
 			}
@@ -697,9 +702,8 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 			} else if (is_channel && !(is_fm_only(id) && !fm)) {
 				patch->model.channels[channel][channel_index(id)] = (int16_t)result;
 				changed = true;
-			} else if (!is_channel) {
-				emit(context, bytes, length);
 			}
+			// Dropped otherwise: on channels without these values, the ROM would apply them to an FM voice.
 		} else {
 			emit(context, bytes, length);
 		}

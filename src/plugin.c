@@ -179,7 +179,7 @@ static void track_midi_notes(mdmi_plugin *self, const uint8_t *bytes)
 		track_note(self, channel, bytes[1] & 0x7F, 0, false);
 		break;
 	case 0xB0:
-		if (bytes[1] == 120 || bytes[1] == 121 || bytes[1] == 123) {
+		if (bytes[1] == 120 || bytes[1] == 123) {
 			release_notes(self, channel);
 		}
 		break;

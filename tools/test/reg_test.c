@@ -103,6 +103,8 @@ static int compare(int voice, int channel, const char *what)
 	}
 	EXPECT(read_reg(voice, 0xB0, 0), model_value(channel, PARAM_FEEDBACK) << 3 | model_value(channel, PARAM_ALGORITHM), "FB/ALG", 0);
 	EXPECT(read_reg(voice, 0xB4, 0) & 0x3F, model_value(channel, PARAM_AMS) << 4 | model_value(channel, PARAM_FMS), "AMS/FMS", 0);
+	static const uint8_t PAN_BITS[3] = {0x80, 0xC0, 0x40};
+	EXPECT(read_reg(voice, 0xB4, 0) & 0xC0, PAN_BITS[model_value(channel, PARAM_PAN)], "pan", 0);
 #undef EXPECT
 	return wrong;
 }
@@ -117,6 +119,19 @@ static void check_voices(const char *what, int first_voice, int last_voice, bool
 	}
 	printf("  %s: %s, %d of %d voices differ\n", bad ? "FAIL" : "ok  ", what, bad, last_voice - first_voice + 1);
 	if (bad) {
+		failures++;
+	}
+}
+
+static void check_globals(const char *what)
+{
+	patch_publish(patch);
+	int lfo = patch_get(patch, PARAM_LFO_ON) << 3 | patch_get(patch, PARAM_LFO_RATE);
+	int ch3 = patch_get(patch, PARAM_CH3_MODE) << 6;
+	int got_lfo = mdmi_engine_test_ym(engine, 0, 0x22), got_ch3 = mdmi_engine_test_ym(engine, 0, 0x27) & 0xC0;
+	bool same = got_lfo == lfo && got_ch3 == ch3;
+	printf("  %s: %s, LFO register %d model %d, Ch3 mode %d model %d\n", same ? "ok  " : "FAIL", what, got_lfo, lfo, got_ch3, ch3);
+	if (!same) {
 		failures++;
 	}
 }
@@ -190,6 +205,7 @@ static void test_polyphony(void)
 	set_on(0, PARAM_PRESET, 61);
 	set_on(0, PARAM_OP_BASE + F_TL, 70);
 	set_on(0, PARAM_OP_BASE + F_SR, 27);
+	set_on(0, PARAM_PAN, 0);
 	for (int channel = 1; channel < FM_CHANNELS; channel++) {
 		set_on(channel, PARAM_PRESET, 10 + channel);
 		set_on(channel, PARAM_OP_BASE + F_AR, 11);
@@ -252,12 +268,21 @@ static void test_dac(void)
 {
 	set_on(3, PARAM_OP_BASE + F_TL, 66);
 	set_on(3, PARAM_OP_BASE + F_SR, 24);
+	set_on(3, PARAM_PAN, 2);
+	patch_set(patch, PARAM_LFO_RATE, 5);
+	patch_set(patch, PARAM_CH3_MODE, 1);
+	sync_and_settle();
+	check_globals("LFO rate and Ch3 mode by knob");
 	patch_set(patch, PARAM_DAC, 1);
 	wait_for_voices(FM_CHANNELS - 2);
 	check_voices("DAC on: the five FM voices come back", 0, FM_CHANNELS - 2, false);
+	check_globals("and the LFO and Ch3 mode");
 	patch_set(patch, PARAM_DAC, 0);
 	wait_for_voices(FM_CHANNELS - 1);
 	check_voices("DAC off: all six come back", 0, FM_CHANNELS - 1, false);
+	check_globals("and the LFO and Ch3 mode");
+	patch_set(patch, PARAM_CH3_MODE, 0);
+	sync_and_settle();
 }
 
 static void test_load(void)
@@ -307,6 +332,7 @@ int main(void)
 	}
 	render(SETTLE_BLOCKS);
 	check_voices("a booted ROM holds the model's defaults", 0, FM_CHANNELS - 1, false);
+	check_globals("and its LFO and Ch3 mode");
 	test_every_preset();
 	test_values();
 	test_program_from_clip();

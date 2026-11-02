@@ -593,6 +593,28 @@ static void test_state(void)
 	settle(b, 0.05);
 	CHECK(get_value(b, P_PRESET) == 81, "other channels are restored too: preset %d", get_value(b, P_PRESET));
 
+	// Loading into a running instance, with nothing else telling it to send anything.
+	instance *c = create_instance();
+	settle(c, 0.4);
+	m.pos = 0;
+	CHECK(c->state->load(c->plugin, &in), "loaded while running");
+	settle(c, 0.1);
+	float *running = play_note(c, 0, 48, 0.7);
+	double *sc = spectrum(running, 4000);
+	CHECK(similarity(sa, sc) > 0.97, "a state loaded while running reaches the sound: spectrum %.4f", similarity(sa, sc));
+
+	// A host may process with its output off. The engine keeps time and nothing breaks.
+	clap_input_events_t no_events = {.ctx = &c->pending, .size = events_size, .get = events_get};
+	clap_output_events_t no_out = {.ctx = NULL, .try_push = out_try_push};
+	clap_process_t silent = {.frames_count = BLOCK, .audio_outputs_count = 0, .in_events = &no_events, .out_events = &no_out};
+	for (int i = 0; i < 16; i++) {
+		c->plugin->process(c->plugin, &silent);
+	}
+	float *after_silent = play_note(c, 0, 48, 0.7);
+	double *sd = spectrum(after_silent, 4000);
+	CHECK(similarity(sa, sd) > 0.97, "processing without an output changes nothing: spectrum %.4f", similarity(sa, sd));
+	destroy_instance(c);
+
 	static memory_stream junk;
 	junk.size = 10;
 	junk.pos = 0;

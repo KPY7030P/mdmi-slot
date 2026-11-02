@@ -230,6 +230,12 @@ static void test_incoming(void)
 	midi(&patch, 0xB3, 77, 64);
 	CHECK(sent_bytes == 3 && sent[1] == 10 && sent[2] == 0, "stereo bits move the Pan knob");
 	clear();
+	midi(&patch, 0xBA, 16, 50);
+	midi(&patch, 0xB6, 77, 64);
+	midi(&patch, 0xB6, 16, 50);
+	midi(&patch, 0xB0, 87, 5);
+	CHECK(sent_bytes == 0, "voice values on channels without a voice, and storing a program, stop here, %d bytes", (int)sent_bytes);
+	clear();
 	const uint8_t reset = 0xFF;
 	patch_midi(&patch, &reset, 1, record, NULL);
 	CHECK(sent[0] == 0xFF && count_voices() == 6, "a reset goes through and every voice follows, %d", count_voices());
