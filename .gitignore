@@ -2,3 +2,4 @@ build/
 dist/
 third_party/
 .claude/settings.local.json
+ALS_tsts/
