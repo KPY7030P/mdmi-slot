@@ -26,8 +26,7 @@ values, and the project saves them all. With `Polyphony` on, FM voices all belon
 - Channel: Preset, Volume, Pan, Fine Tune, Pitch Bend Range, Portamento On, Portamento Time
 - FM channel: Algorithm, Feedback, AMS, FMS, and for each of 4 operators TL, MUL, DT, RS, AR, DR, SR, SL, RR, AM, SSG
 
-MDMI sets the limits: Pan has three positions and does nothing on PSG. SR is 0-31 in presets, but moving its
-knob only reaches 0-15 (18 of the 128 presets use more). Portamento only works without Polyphony.
+MDMI sets the limits: Pan has three positions and does nothing on PSG. Portamento only works without Polyphony.
 
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays the ROM's drum samples, chosen by note, with no FM voice of its own.

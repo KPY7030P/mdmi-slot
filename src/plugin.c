@@ -38,6 +38,8 @@ typedef struct {
 	mdmi_patch patch;
 	uint32_t sync_pending;
 	uint32_t rescan_pending;
+	bool knobs_moved;
+	bool active;
 	mdmi_gui *gui;
 	int gui_page;
 	uint32_t notes[GUI_NUM_MIDI_CHANNELS];
@@ -57,7 +59,7 @@ static void emit_to_engine(void *context, const uint8_t *bytes, size_t length)
 
 static void apply_filter(mdmi_plugin *self)
 {
-	mdmi_engine_set_filter(self->engine, patch_filter_hz(patch_get(&self->patch, PARAM_FILTER)));
+	mdmi_engine_set_filter(self->engine, patch_model_filter_hz(&self->patch));
 }
 
 // The host learns about knobs it didn't move itself on the main thread.
@@ -105,6 +107,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate, uin
 {
 	(void)min_frames;
 	mdmi_plugin *self = self_of(plugin);
+	self->active = true;
 	__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
 	for (int channel = 0; channel < GUI_NUM_MIDI_CHANNELS; channel++) {
 		release_notes(self, channel);
@@ -114,6 +117,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate, uin
 
 static void plugin_deactivate(const clap_plugin_t *plugin)
 {
+	self_of(plugin)->active = false;
 	mdmi_engine_deactivate(self_of(plugin)->engine);
 }
 
@@ -192,29 +196,22 @@ static void track_midi_notes(mdmi_plugin *self, const uint8_t *bytes)
 static void handle_midi(mdmi_plugin *self, uint32_t time, const uint8_t *bytes, size_t length)
 {
 	emit_target target = {self->engine, time};
-	bool knobs_changed = false;
-	if (patch_track_midi(&self->patch, bytes, length, &knobs_changed)) {
-		emit_to_engine(&target, bytes, length);
-	} else {
-		patch_sync(&self->patch, emit_to_engine, &target);
-	}
-	if (knobs_changed) {
-		request_rescan(self);
+	if (patch_midi(&self->patch, bytes, length, emit_to_engine, &target)) {
+		self->knobs_moved = true;
 	}
 }
-
 
 static void handle_param(mdmi_plugin *self, const clap_event_param_value_t *event)
 {
 	int value = (int)(event->value + 0.5);
 	if (patch_set(&self->patch, event->param_id, value)) {
-		request_rescan(self);
+		self->knobs_moved = true;
 	}
 	if (event->param_id == PARAM_FILTER) {
 		apply_filter(self);
 	}
 	emit_target target = {self->engine, event->header.time};
-	patch_sync(&self->patch, emit_to_engine, &target);
+	patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
 }
 
 static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
@@ -253,7 +250,10 @@ static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
 	}
 	case CLAP_EVENT_MIDI_SYSEX: {
 		const clap_event_midi_sysex_t *sysex = (const clap_event_midi_sysex_t *)header;
-		mdmi_engine_midi(self->engine, header->time, sysex->buffer, sysex->size);
+		emit_target target = {self->engine, header->time};
+		if (sysex->size > 0) {
+			patch_midi(&self->patch, sysex->buffer, sysex->size, emit_to_engine, &target);
+		}
 		break;
 	}
 	case CLAP_EVENT_PARAM_VALUE:
@@ -268,25 +268,34 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 {
 	mdmi_plugin *self = self_of(plugin);
 	mdmi_engine *engine = self->engine;
-	if (__atomic_exchange_n(&self->sync_pending, 0, __ATOMIC_ACQ_REL)) {
+	bool state_taken = patch_take_incoming(&self->patch);
+	if (__atomic_exchange_n(&self->sync_pending, 0, __ATOMIC_ACQ_REL) || state_taken) {
+		apply_filter(self);
 		emit_target target = {engine, 0};
-		patch_sync(&self->patch, emit_to_engine, &target);
+		patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
 	}
 	const uint32_t event_count = process->in_events->size(process->in_events);
 	for (uint32_t i = 0; i < event_count; i++) {
 		handle_event(self, process->in_events->get(process->in_events, i));
 	}
-	const clap_audio_buffer_t *out = &process->audio_outputs[0];
-	float *left = out->data32[0];
-	float *right = out->channel_count > 1 ? out->data32[1] : NULL;
-	float scratch[4096];
+	patch_publish(&self->patch);
+	if (self->knobs_moved) {
+		self->knobs_moved = false;
+		request_rescan(self);
+	}
+	// A host may switch the output off. The emulator keeps its time anyway.
+	const clap_audio_buffer_t *out = process->audio_outputs_count ? &process->audio_outputs[0] : NULL;
+	bool has_output = out && out->data32 && out->channel_count > 0 && out->data32[0];
+	float *left = has_output ? out->data32[0] : NULL;
+	float *right = has_output && out->channel_count > 1 ? out->data32[1] : NULL;
+	float scratch_left[4096], scratch_right[4096];
 	uint32_t done = 0;
 	while (done < process->frames_count) {
 		uint32_t frames = process->frames_count - done;
-		if (!right && frames > 4096) {
+		if ((!left || !right) && frames > 4096) {
 			frames = 4096;
 		}
-		mdmi_engine_render(engine, left + done, right ? right + done : scratch, frames);
+		mdmi_engine_render(engine, left ? left + done : scratch_left, right ? right + done : scratch_right, frames);
 		done += frames;
 	}
 	return CLAP_PROCESS_CONTINUE;
@@ -429,6 +438,7 @@ static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t 
 {
 	mdmi_plugin *self = self_of(plugin);
 	(void)out;
+	patch_take_incoming(&self->patch);
 	const uint32_t count = in->size(in);
 	for (uint32_t i = 0; i < count; i++) {
 		const clap_event_header_t *header = in->get(in, i);
@@ -440,6 +450,7 @@ static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t 
 		}
 	}
 	apply_filter(self);
+	patch_publish(&self->patch);
 	__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
 }
 
@@ -485,8 +496,15 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
 	if (!patch_load(&self->patch, buffer, total)) {
 		return false;
 	}
-	apply_filter(self);
-	__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
+	if (self->active) {
+		// The next process call or flush takes it. The host may not process until asked.
+		if (self->host_params) {
+			self->host_params->request_flush(self->host);
+		}
+	} else if (patch_take_incoming(&self->patch)) {
+		apply_filter(self);
+		__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
+	}
 	if (self->host_params) {
 		self->host_params->rescan(self->host, CLAP_PARAM_RESCAN_VALUES);
 	}

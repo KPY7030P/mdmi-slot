@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 # 0.N.M: N is the stage in docs/ROADMAP.md, M the delivery within it.
-project(mdmi_plugin VERSION 0.1.1 LANGUAGES C CXX)
+project(mdmi_plugin VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
@@ -69,11 +69,17 @@ target_sources(vst3_host PRIVATE "${VST3_SDK_ROOT}/pluginterfaces/base/funknown.
 target_link_libraries(vst3_host PRIVATE ole32 user32)
 add_dependencies(mdmi_all vst3_host)
 
-add_executable(e1_test tools/test/e1_test.c)
-target_compile_options(e1_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
-target_include_directories(e1_test PRIVATE src "${CLAP_SDK_ROOT}/include")
-target_link_libraries(e1_test PRIVATE mdmi_impl)
-add_dependencies(mdmi_all e1_test)
+add_executable(reg_test tools/test/reg_test.c)
+target_compile_options(reg_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
+target_include_directories(reg_test PRIVATE src "${CLAP_SDK_ROOT}/include")
+target_link_libraries(reg_test PRIVATE mdmi_impl)
+add_dependencies(mdmi_all reg_test)
+
+add_executable(patch_test tools/test/patch_test.c)
+target_compile_options(patch_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
+target_include_directories(patch_test PRIVATE src "${CLAP_SDK_ROOT}/include")
+target_link_libraries(patch_test PRIVATE mdmi_impl)
+add_dependencies(mdmi_all patch_test)
 
 add_executable(param_test tools/test/param_test.c)
 target_compile_options(param_test PRIVATE -Wall -Wextra -Wno-cast-function-type)

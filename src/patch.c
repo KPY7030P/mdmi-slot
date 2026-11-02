@@ -32,6 +32,17 @@
 #define OP_SSG_FIELD 10
 #define SSG_FIRST_ENVELOPE 8
 #define BEND_RANGE_MAX 24
+#define CC_SUSTAIN 64
+#define CC_STEREO 77
+#define CC_RESET_ALL 121
+#define YM_REG_SUSTAIN_RATE 0x70
+// Stored voices shadow the ROM's built-in programs from here on, two numbers per FM channel.
+#define FIRST_SERVICE_PROGRAM 116
+#define VOICE_SYSEX_HEAD 7
+#define VOICE_BYTES 48
+#define SNAPSHOT_INDEX 3u
+#define SNAPSHOT_NEW 4u
+enum { INCOMING_FREE, INCOMING_WRITING, INCOMING_READY, INCOMING_TAKING };
 
 #define FILTER_MIN_HZ 500.0
 #define FILTER_RANGE 40.0
@@ -204,31 +215,64 @@ static void default_values(patch_values *values)
 void patch_init(mdmi_patch *patch)
 {
 	memset(patch, 0, sizeof(*patch));
-	default_values(&patch->shown);
-	patch->rom = patch->shown;
+	default_values(&patch->model);
+	// A booted ROM holds exactly these values, reg_test checks it.
+	patch->rom.values = patch->model;
 	memset(patch->rpn_msb, RPN_NULL, sizeof(patch->rpn_msb));
 	memset(patch->rpn_lsb, RPN_NULL, sizeof(patch->rpn_lsb));
+	patch->snapshots[0] = patch->snapshots[1] = patch->snapshots[2] = patch->model;
+	patch->snapshot_back = 0;
+	patch->snapshot_shared = 1;
+	patch->snapshot_front = 2;
+}
+
+void patch_publish(mdmi_patch *patch)
+{
+	if (!patch->dirty) {
+		return;
+	}
+	patch->dirty = false;
+	patch->snapshots[patch->snapshot_back] = patch->model;
+	patch->snapshot_back = __atomic_exchange_n(&patch->snapshot_shared, patch->snapshot_back | SNAPSHOT_NEW, __ATOMIC_ACQ_REL) & SNAPSHOT_INDEX;
+}
+
+// What the main thread reads: a state waiting to be taken, or else the newest whole snapshot.
+static const patch_values *latest(mdmi_patch *patch)
+{
+	uint32_t incoming = __atomic_load_n(&patch->incoming_state, __ATOMIC_ACQUIRE);
+	if (incoming == INCOMING_READY || incoming == INCOMING_TAKING) {
+		return &patch->incoming;
+	}
+	if (__atomic_load_n(&patch->snapshot_shared, __ATOMIC_ACQUIRE) & SNAPSHOT_NEW) {
+		patch->snapshot_front = __atomic_exchange_n(&patch->snapshot_shared, patch->snapshot_front, __ATOMIC_ACQ_REL) & SNAPSHOT_INDEX;
+	}
+	return &patch->snapshots[patch->snapshot_front];
 }
 
 // With polyphony on, every FM voice belongs to MIDI channel 1, so all FM editing goes there.
 static int effective_channel(const patch_values *values)
 {
-	int channel = __atomic_load_n(&values->globals[PARAM_EDIT_CHANNEL], __ATOMIC_RELAXED);
-	bool polyphony = __atomic_load_n(&values->globals[PARAM_POLYPHONY], __ATOMIC_RELAXED) != 0;
-	return polyphony && channel < PATCH_NUM_FM_CHANNELS ? 0 : channel;
+	int channel = values->globals[PARAM_EDIT_CHANNEL];
+	return values->globals[PARAM_POLYPHONY] && channel < PATCH_NUM_FM_CHANNELS ? 0 : channel;
 }
 
-int patch_get(const mdmi_patch *patch, uint32_t id)
+int patch_get(mdmi_patch *patch, uint32_t id)
 {
+	const patch_values *values = latest(patch);
 	if (is_global(id)) {
-		return __atomic_load_n(&patch->shown.globals[global_index(id)], __ATOMIC_RELAXED);
+		return values->globals[global_index(id)];
 	}
-	return __atomic_load_n(&patch->shown.channels[effective_channel(&patch->shown)][channel_index(id)], __ATOMIC_RELAXED);
+	return values->channels[effective_channel(values)][channel_index(id)];
 }
 
-int patch_get_channel(const mdmi_patch *patch, int channel, uint32_t id)
+int patch_get_channel(mdmi_patch *patch, int channel, uint32_t id)
 {
-	return __atomic_load_n(&patch->shown.channels[channel][channel_index(id)], __ATOMIC_RELAXED);
+	return latest(patch)->channels[channel][channel_index(id)];
+}
+
+double patch_model_filter_hz(const mdmi_patch *patch)
+{
+	return patch_filter_hz(patch->model.globals[PARAM_FILTER]);
 }
 
 void patch_format_preset(int channel, int value, char *text, size_t size)
@@ -259,7 +303,7 @@ static void format_channel(int channel, char *text, size_t size)
 	}
 }
 
-void patch_format(const mdmi_patch *patch, uint32_t id, int value, char *text, size_t size)
+void patch_format(mdmi_patch *patch, uint32_t id, int value, char *text, size_t size)
 {
 	switch (id) {
 	case PARAM_EDIT_CHANNEL:
@@ -289,7 +333,7 @@ void patch_format(const mdmi_patch *patch, uint32_t id, int value, char *text, s
 		snprintf(text, size, "%s", LFO_RATES[value & 7]);
 		break;
 	case PARAM_PRESET:
-		patch_format_preset(effective_channel(&patch->shown), value, text, size);
+		patch_format_preset(effective_channel(latest(patch)), value, text, size);
 		break;
 	case PARAM_PAN:
 		snprintf(text, size, "%s", value == 0 ? "Left" : value == 1 ? "Center" : "Right");
@@ -318,19 +362,21 @@ bool patch_set(mdmi_patch *patch, uint32_t id, int value)
 	} else if (value > params[id].max) {
 		value = params[id].max;
 	}
+	patch->dirty = true;
 	if (is_global(id)) {
-		bool changed = patch->shown.globals[global_index(id)] != value;
-		__atomic_store_n(&patch->shown.globals[global_index(id)], (int16_t)value, __ATOMIC_RELAXED);
+		bool changed = patch->model.globals[global_index(id)] != value;
+		patch->model.globals[global_index(id)] = (int16_t)value;
 		// These two change which channel the other knobs show.
 		return changed && (id == PARAM_EDIT_CHANNEL || id == PARAM_POLYPHONY);
 	}
-	int channel = effective_channel(&patch->shown);
+	int channel = effective_channel(&patch->model);
 	if (is_fm_only(id) && channel >= PATCH_NUM_FM_CHANNELS) {
 		return false;
 	}
-	int16_t *values = patch->shown.channels[channel];
+	int16_t *values = patch->model.channels[channel];
 	if (id == PARAM_PRESET) {
-		if (values[channel_index(id)] == value && channel >= PATCH_NUM_FM_CHANNELS) {
+		// A lane repeating its value must not wipe tweaks. Only a new preset loads.
+		if (values[channel_index(id)] == value) {
 			return false;
 		}
 		values[channel_index(PARAM_PRESET)] = (int16_t)value;
@@ -339,7 +385,7 @@ bool patch_set(mdmi_patch *patch, uint32_t id, int value)
 		}
 		return true;
 	}
-	__atomic_store_n(&values[channel_index(id)], (int16_t)value, __ATOMIC_RELAXED);
+	values[channel_index(id)] = (int16_t)value;
 	return false;
 }
 
@@ -349,276 +395,322 @@ static void emit_cc(patch_emit_fn emit, void *context, int channel, int cc, int 
 	emit(context, message, sizeof(message));
 }
 
-static void sync_shared_params(mdmi_patch *patch, int channel, bool force, patch_emit_fn emit, void *context)
+static void forget_voice(patch_receiver *receiver, int channel)
 {
-	int16_t *shown = patch->shown.channels[channel];
-	int16_t *rom = patch->rom.channels[channel];
-	int preset = channel_index(PARAM_PRESET);
-	if (shown[preset] != rom[preset]) {
-		const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)shown[preset]};
-		emit(context, message, sizeof(message));
-		rom[preset] = shown[preset];
-		if (channel < PATCH_NUM_FM_CHANNELS) {
-			// The ROM has just loaded this preset's values, so only tweaks on top of it still differ.
-			load_preset(rom, shown[preset]);
-		}
-	}
-	int volume = channel_index(PARAM_VOLUME), pan = channel_index(PARAM_PAN);
-	if (force || shown[volume] != rom[volume]) {
-		emit_cc(emit, context, channel, CC_VOLUME, shown[volume]);
-		rom[volume] = shown[volume];
-	}
-	if (force || shown[pan] != rom[pan]) {
-		emit_cc(emit, context, channel, CC_PAN, PAN_CC[shown[pan]]);
-		rom[pan] = shown[pan];
+	int16_t *rom = receiver->values.channels[channel];
+	rom[channel_index(PARAM_PRESET)] = PATCH_UNKNOWN;
+	for (uint32_t id = PARAM_ALGORITHM; id < PARAM_CH3_MODE; id++) {
+		rom[channel_index(id)] = PATCH_UNKNOWN;
 	}
 }
 
-static void sync_tuning_params(mdmi_patch *patch, int channel, patch_emit_fn emit, void *context)
+static void forget_everything(patch_receiver *receiver)
 {
-	int16_t *shown = patch->shown.channels[channel];
-	int16_t *rom = patch->rom.channels[channel];
+	memset(&receiver->values, 0xFF, sizeof(receiver->values));
+}
+
+// A whole voice as the ROM's stored program, selected under one of the channel's two service
+// numbers: the ROM skips a program it thinks is loaded, and a stored one shadows the built-in.
+static void send_whole_voice(const int16_t *model, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
+{
+	int program = FIRST_SERVICE_PROGRAM + channel * 2 + receiver->alternate[channel];
+	receiver->alternate[channel] = !receiver->alternate[channel];
+	uint8_t sysex[VOICE_SYSEX_HEAD + VOICE_BYTES + 1] = {0xF0, 0x00, 0x22, 0x77, 0x0A, 0x00, (uint8_t)program};
+	uint8_t *voice = sysex + VOICE_SYSEX_HEAD;
+	voice[0] = (uint8_t)model[channel_index(PARAM_ALGORITHM)];
+	voice[1] = (uint8_t)model[channel_index(PARAM_FEEDBACK)];
+	voice[2] = (uint8_t)model[channel_index(PARAM_AMS)];
+	voice[3] = (uint8_t)model[channel_index(PARAM_FMS)];
+	for (int op = 0; op < PATCH_OPS; op++) {
+		for (int i = 0; i < PATCH_OP_PARAMS; i++) {
+			voice[4 + op * PATCH_OP_PARAMS + OP_PARAMS[i].preset_field] = (uint8_t)model[channel_index(PARAM_OP_BASE) + op * PATCH_OP_PARAMS + i];
+		}
+	}
+	sysex[sizeof(sysex) - 1] = 0xF7;
+	emit(context, sysex, sizeof(sysex));
+	const uint8_t select[2] = {(uint8_t)(0xC0 | channel), (uint8_t)program};
+	emit(context, select, sizeof(select));
+	int16_t *rom = receiver->values.channels[channel];
+	rom[channel_index(PARAM_PRESET)] = model[channel_index(PARAM_PRESET)];
+	for (uint32_t id = PARAM_ALGORITHM; id < PARAM_CH3_MODE; id++) {
+		rom[channel_index(id)] = model[channel_index(id)];
+	}
+}
+
+// The ROM's CC only reaches the first 16 sustain rates. Registers hold operators in the order 1, 3, 2, 4.
+static void write_sustain_rate(int voice, int op, int value, patch_emit_fn emit, void *context)
+{
+	int slot = op == 1 ? 2 : op == 2 ? 1 : op;
+	int reg = YM_REG_SUSTAIN_RATE + voice % 3 + slot * 4;
+	const uint8_t sysex[10] = {0xF0, 0x00, 0x22, 0x77, (uint8_t)(voice < 3 ? 0x08 : 0x09), (uint8_t)(reg >> 4), (uint8_t)(reg & 15), (uint8_t)(value >> 4), (uint8_t)(value & 15), 0xF7};
+	emit(context, sysex, sizeof(sysex));
+}
+
+static void sync_voice_param(const int16_t *model, int16_t *rom, uint32_t id, int cc, int cc_range, int channel, bool all_voices, patch_emit_fn emit, void *context)
+{
+	int index = channel_index(id);
+	int value = model[index];
+	if (value == rom[index]) {
+		return;
+	}
+	rom[index] = (int16_t)value;
+	if (value < cc_range) {
+		emit_cc(emit, context, channel, cc, value * (128 / cc_range));
+		return;
+	}
+	int op = (int)(id - PARAM_OP_BASE) / PATCH_OP_PARAMS;
+	for (int voice = all_voices ? 0 : channel; voice < (all_voices ? PATCH_NUM_FM_CHANNELS : channel + 1); voice++) {
+		write_sustain_rate(voice, op, value, emit, context);
+	}
+}
+
+static void sync_voice(const int16_t *model, patch_receiver *receiver, int channel, bool all_voices, patch_emit_fn emit, void *context)
+{
+	int16_t *rom = receiver->values.channels[channel];
+	int preset = channel_index(PARAM_PRESET);
+	bool unknown = rom[channel_index(PARAM_ALGORITHM)] == PATCH_UNKNOWN;
+	if (unknown || (model[preset] != rom[preset] && model[preset] >= FIRST_SERVICE_PROGRAM)) {
+		send_whole_voice(model, receiver, channel, emit, context);
+		return;
+	}
+	if (model[preset] != rom[preset]) {
+		const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)model[preset]};
+		emit(context, message, sizeof(message));
+		load_preset(rom, model[preset]);
+	}
+	sync_voice_param(model, rom, PARAM_ALGORITHM, CC_ALGORITHM, 8, channel, all_voices, emit, context);
+	sync_voice_param(model, rom, PARAM_FEEDBACK, CC_FEEDBACK, 8, channel, all_voices, emit, context);
+	sync_voice_param(model, rom, PARAM_AMS, CC_AMS, 4, channel, all_voices, emit, context);
+	sync_voice_param(model, rom, PARAM_FMS, CC_FMS, 8, channel, all_voices, emit, context);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		for (int i = 0; i < PATCH_OP_PARAMS; i++) {
+			sync_voice_param(model, rom, PARAM_OP_BASE + op * PATCH_OP_PARAMS + i, OP_PARAMS[i].cc + op, OP_PARAMS[i].cc_range, channel, all_voices, emit, context);
+		}
+	}
+}
+
+static void sync_channel_params(mdmi_patch *patch, const int16_t *model, int16_t *rom, int channel, patch_emit_fn emit, void *context)
+{
+	int volume = channel_index(PARAM_VOLUME), pan = channel_index(PARAM_PAN);
+	if (model[volume] != rom[volume]) {
+		emit_cc(emit, context, channel, CC_VOLUME, model[volume]);
+		rom[volume] = model[volume];
+	}
+	if (model[pan] != rom[pan]) {
+		emit_cc(emit, context, channel, CC_PAN, PAN_CC[model[pan]]);
+		rom[pan] = model[pan];
+	}
 	int fine_tune = channel_index(PARAM_FINE_TUNE);
-	if (shown[fine_tune] != rom[fine_tune]) {
-		emit_cc(emit, context, channel, CC_FINE_TUNE, shown[fine_tune]);
-		rom[fine_tune] = shown[fine_tune];
+	if (model[fine_tune] != rom[fine_tune]) {
+		emit_cc(emit, context, channel, CC_FINE_TUNE, model[fine_tune]);
+		rom[fine_tune] = model[fine_tune];
 	}
 	int time = channel_index(PARAM_PORTA_TIME);
-	if (shown[time] != rom[time]) {
-		emit_cc(emit, context, channel, CC_PORTA_TIME, shown[time]);
-		rom[time] = shown[time];
+	if (model[time] != rom[time]) {
+		emit_cc(emit, context, channel, CC_PORTA_TIME, model[time]);
+		rom[time] = model[time];
 	}
 	int on = channel_index(PARAM_PORTA_ON);
-	if (shown[on] != rom[on]) {
-		emit_cc(emit, context, channel, CC_PORTA_ON, shown[on] ? CC_ON : 0);
-		rom[on] = shown[on];
+	if (model[on] != rom[on]) {
+		emit_cc(emit, context, channel, CC_PORTA_ON, model[on] ? CC_ON : 0);
+		rom[on] = model[on];
 	}
 	int bend = channel_index(PARAM_BEND_RANGE);
-	if (shown[bend] != rom[bend]) {
+	if (model[bend] != rom[bend]) {
 		// RPN 0,0, then back to the null RPN so stray data entry messages change nothing.
 		emit_cc(emit, context, channel, CC_RPN_MSB, 0);
 		emit_cc(emit, context, channel, CC_RPN_LSB, 0);
-		emit_cc(emit, context, channel, CC_DATA_ENTRY_MSB, shown[bend]);
+		emit_cc(emit, context, channel, CC_DATA_ENTRY_MSB, model[bend]);
 		emit_cc(emit, context, channel, CC_DATA_ENTRY_LSB, 0);
 		emit_cc(emit, context, channel, CC_RPN_MSB, RPN_NULL);
 		emit_cc(emit, context, channel, CC_RPN_LSB, RPN_NULL);
 		patch->rpn_msb[channel] = patch->rpn_lsb[channel] = RPN_NULL;
-		rom[bend] = shown[bend];
+		rom[bend] = model[bend];
 	}
 }
 
-static void sync_fm_param(int16_t *shown, int16_t *rom, uint32_t id, int cc, int cc_range, bool force, int channel, patch_emit_fn emit, void *context)
+void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context)
 {
-	int index = channel_index(id);
-	if (!force && shown[index] == rom[index]) {
-		return;
-	}
-	int value = shown[index];
-	int steps = 128 / cc_range;
-	// A value only the preset itself can set, which a resend through CC would clip.
-	if (value >= cc_range && shown[index] == rom[index]) {
-		return;
-	}
-	if (value >= cc_range) {
-		value = cc_range - 1;
-	}
-	emit_cc(emit, context, channel, cc, value * steps);
-	rom[index] = shown[index];
-}
-
-static void sync_fm_channel(mdmi_patch *patch, int channel, bool force, patch_emit_fn emit, void *context)
-{
-	int16_t *shown = patch->shown.channels[channel];
-	int16_t *rom = patch->rom.channels[channel];
-	sync_fm_param(shown, rom, PARAM_ALGORITHM, CC_ALGORITHM, 8, force, channel, emit, context);
-	sync_fm_param(shown, rom, PARAM_FEEDBACK, CC_FEEDBACK, 8, force, channel, emit, context);
-	sync_fm_param(shown, rom, PARAM_AMS, CC_AMS, 4, force, channel, emit, context);
-	sync_fm_param(shown, rom, PARAM_FMS, CC_FMS, 8, force, channel, emit, context);
-	for (int op = 0; op < PATCH_OPS; op++) {
-		for (int i = 0; i < PATCH_OP_PARAMS; i++) {
-			sync_fm_param(shown, rom, PARAM_OP_BASE + op * PATCH_OP_PARAMS + i, OP_PARAMS[i].cc + op, OP_PARAMS[i].cc_range, force, channel, emit, context);
-		}
-	}
-}
-
-void patch_sync(mdmi_patch *patch, patch_emit_fn emit, void *context)
-{
-	int16_t *shown_globals = patch->shown.globals;
-	int16_t *rom_globals = patch->rom.globals;
-	int dac = global_index(PARAM_DAC);
-	bool chip_reset = shown_globals[dac] != rom_globals[dac];
-	if (chip_reset) {
+	const int16_t *model_globals = patch->model.globals;
+	int16_t *rom_globals = receiver->values.globals;
+	int dac = global_index(PARAM_DAC), ch3 = global_index(PARAM_CH3_MODE);
+	if (model_globals[dac] != rom_globals[dac]) {
 		// The ROM swaps the Z80 driver for this, and the Z80's reset line also clears the YM2612.
 		// The ROM doesn't know, so FM stays silent until its registers are written again.
-		emit_cc(emit, context, 0, CC_DAC, shown_globals[dac] ? CC_ON : 0);
-		rom_globals[dac] = shown_globals[dac];
+		emit_cc(emit, context, 0, CC_DAC, model_globals[dac] ? CC_ON : 0);
+		rom_globals[dac] = model_globals[dac];
+		rom_globals[PARAM_LFO_ON] = rom_globals[PARAM_LFO_RATE] = rom_globals[ch3] = PATCH_UNKNOWN;
 		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
-			patch->reload_preset[channel] = true;
+			forget_voice(receiver, channel);
 		}
 	}
-	if (shown_globals[PARAM_POLYPHONY] != rom_globals[PARAM_POLYPHONY]) {
-		emit_cc(emit, context, 0, CC_POLYPHONY, shown_globals[PARAM_POLYPHONY] ? CC_ON : 0);
-		rom_globals[PARAM_POLYPHONY] = shown_globals[PARAM_POLYPHONY];
-		// Remapping leaves voices with whatever patch they had, so every FM value goes out again.
+	if (model_globals[PARAM_POLYPHONY] != rom_globals[PARAM_POLYPHONY]) {
+		emit_cc(emit, context, 0, CC_POLYPHONY, model_globals[PARAM_POLYPHONY] ? CC_ON : 0);
+		rom_globals[PARAM_POLYPHONY] = model_globals[PARAM_POLYPHONY];
+		// Remapping leaves voices with whatever patch they had, and the ROM loads a voice's program
+		// over it on the first note unless that program is the channel's.
 		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
-			patch->force_resend[channel] = true;
+			forget_voice(receiver, channel);
+			receiver->values.channels[channel][channel_index(PARAM_VOLUME)] = PATCH_UNKNOWN;
+			receiver->values.channels[channel][channel_index(PARAM_PAN)] = PATCH_UNKNOWN;
 		}
 	}
-	if (chip_reset || shown_globals[PARAM_LFO_ON] != rom_globals[PARAM_LFO_ON]) {
-		emit_cc(emit, context, 0, CC_LFO_ON, shown_globals[PARAM_LFO_ON] ? CC_ON : 0);
-		rom_globals[PARAM_LFO_ON] = shown_globals[PARAM_LFO_ON];
+	if (model_globals[PARAM_LFO_ON] != rom_globals[PARAM_LFO_ON]) {
+		emit_cc(emit, context, 0, CC_LFO_ON, model_globals[PARAM_LFO_ON] ? CC_ON : 0);
+		rom_globals[PARAM_LFO_ON] = model_globals[PARAM_LFO_ON];
 	}
-	if (chip_reset || shown_globals[PARAM_LFO_RATE] != rom_globals[PARAM_LFO_RATE]) {
-		emit_cc(emit, context, 0, CC_LFO_RATE, shown_globals[PARAM_LFO_RATE] * (128 / 8));
-		rom_globals[PARAM_LFO_RATE] = shown_globals[PARAM_LFO_RATE];
+	if (model_globals[PARAM_LFO_RATE] != rom_globals[PARAM_LFO_RATE]) {
+		emit_cc(emit, context, 0, CC_LFO_RATE, model_globals[PARAM_LFO_RATE] * (128 / 8));
+		rom_globals[PARAM_LFO_RATE] = model_globals[PARAM_LFO_RATE];
 	}
-	int ch3 = global_index(PARAM_CH3_MODE);
-	if (chip_reset || shown_globals[ch3] != rom_globals[ch3]) {
-		emit_cc(emit, context, 0, CC_CH3_MODE, shown_globals[ch3] ? CC_ON : 0);
-		rom_globals[ch3] = shown_globals[ch3];
+	if (model_globals[ch3] != rom_globals[ch3]) {
+		emit_cc(emit, context, 0, CC_CH3_MODE, model_globals[ch3] ? CC_ON : 0);
+		rom_globals[ch3] = model_globals[ch3];
 	}
-	bool polyphony = shown_globals[PARAM_POLYPHONY] != 0;
+	bool polyphony = model_globals[PARAM_POLYPHONY] != 0;
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
-		bool is_fm = channel < PATCH_NUM_FM_CHANNELS;
-		// While polyphony owns the FM voices, channels 2-6 have nothing mapped to receive their values.
-		if (is_fm && polyphony && channel != 0) {
+		const int16_t *model = patch->model.channels[channel];
+		int16_t *rom = receiver->values.channels[channel];
+		if (channel >= PATCH_NUM_FM_CHANNELS) {
+			int preset = channel_index(PARAM_PRESET);
+			if (model[preset] != rom[preset]) {
+				const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)model[preset]};
+				emit(context, message, sizeof(message));
+				rom[preset] = model[preset];
+			}
+		} else if (polyphony && channel != 0) {
+			// Nothing is mapped to receive these values until polyphony ends.
 			continue;
+		} else {
+			sync_voice(model, receiver, channel, polyphony, emit, context);
 		}
-		if (is_fm && patch->reload_preset[channel]) {
-			// The ROM skips a program it thinks is loaded, so go through another one. A preset also
-			// restores values CCs can't reach; the sync below then re-applies any knob tweaks.
-			patch->reload_preset[channel] = false;
-			int16_t *rom = patch->rom.channels[channel];
-			int program = rom[channel_index(PARAM_PRESET)];
-			const uint8_t other[2] = {(uint8_t)(0xC0 | channel), (uint8_t)((program + 1) & 127)};
-			const uint8_t same[2] = {(uint8_t)(0xC0 | channel), (uint8_t)program};
-			emit(context, other, sizeof(other));
-			emit(context, same, sizeof(same));
-			load_preset(rom, program);
-		}
-		bool force = patch->force_resend[channel];
-		patch->force_resend[channel] = false;
-		sync_shared_params(patch, channel, force, emit, context);
-		sync_tuning_params(patch, channel, emit, context);
-		if (is_fm) {
-			sync_fm_channel(patch, channel, force, emit, context);
-		}
+		sync_channel_params(patch, model, rom, channel, emit, context);
 	}
 }
 
-// Knob value for an incoming CC, the inverse of what sync sends.
-static void track_cc(int16_t *shown, int16_t *rom, int cc, int value)
+// Controllers that are the model's values. Operator controllers follow OP_PARAMS.
+typedef struct {
+	uint8_t cc;
+	uint8_t id;
+	uint8_t cc_range;
+} cc_param;
+
+static const cc_param CC_PARAMS[] = {
+	{CC_ALGORITHM, PARAM_ALGORITHM, 8},
+	{CC_FEEDBACK, PARAM_FEEDBACK, 8},
+	{CC_AMS, PARAM_AMS, 4},
+	{CC_FMS, PARAM_FMS, 8},
+	{CC_VOLUME, PARAM_VOLUME, 128},
+	{CC_FINE_TUNE, PARAM_FINE_TUNE, 128},
+	{CC_PORTA_TIME, PARAM_PORTA_TIME, 128},
+	{CC_PORTA_ON, PARAM_PORTA_ON, 2},
+	{CC_LFO_ON, PARAM_LFO_ON, 2},
+	{CC_LFO_RATE, PARAM_LFO_RATE, 8},
+	{CC_CH3_MODE, PARAM_CH3_MODE, 2},
+	{CC_DAC, PARAM_DAC, 2},
+	{CC_POLYPHONY, PARAM_POLYPHONY, 2},
+};
+
+// Finds the model's value for a controller on a channel. False means it isn't one of ours.
+static bool cc_to_model(int cc, int value, uint32_t *id, int *result)
 {
 	for (int op = 0; op < PATCH_OPS; op++) {
 		for (int i = 0; i < PATCH_OP_PARAMS; i++) {
 			if (OP_PARAMS[i].cc + op == cc) {
-				int index = channel_index(PARAM_OP_BASE + op * PATCH_OP_PARAMS + i);
-				shown[index] = rom[index] = (int16_t)(value / (128 / OP_PARAMS[i].cc_range));
-				return;
+				*id = PARAM_OP_BASE + op * PATCH_OP_PARAMS + i;
+				*result = value / (128 / OP_PARAMS[i].cc_range);
+				return true;
 			}
 		}
 	}
-	int index, range;
-	switch (cc) {
-	case CC_ALGORITHM: index = channel_index(PARAM_ALGORITHM); range = 8; break;
-	case CC_FEEDBACK: index = channel_index(PARAM_FEEDBACK); range = 8; break;
-	case CC_AMS: index = channel_index(PARAM_AMS); range = 4; break;
-	case CC_FMS: index = channel_index(PARAM_FMS); range = 8; break;
-	default: return;
-	}
-	shown[index] = rom[index] = (int16_t)(value / (128 / range));
-}
-
-bool patch_track_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, bool *knobs_changed)
-{
-	*knobs_changed = false;
-	if (length < 2) {
-		return true;
-	}
-	int status = bytes[0] & 0xF0;
-	int channel = bytes[0] & 0x0F;
-	if (status == 0xC0) {
-		if (channel < PATCH_NUM_CHANNELS) {
-			int16_t *shown = patch->shown.channels[channel];
-			int16_t *rom = patch->rom.channels[channel];
-			shown[channel_index(PARAM_PRESET)] = rom[channel_index(PARAM_PRESET)] = bytes[1];
-			if (channel < PATCH_NUM_FM_CHANNELS) {
-				load_preset(shown, bytes[1]);
-				load_preset(rom, bytes[1]);
-			}
-			*knobs_changed = true;
-		}
-		return true;
-	}
-	if (status != 0xB0 || length < 3) {
-		return true;
-	}
-	int cc = bytes[1], value = bytes[2];
-	if (cc == CC_POLYPHONY) {
-		// Polyphony has to go through sync, which re-sends the FM values after the ROM remaps its voices.
-		__atomic_store_n(&patch->shown.globals[PARAM_POLYPHONY], (int16_t)(value >= 64), __ATOMIC_RELAXED);
-		*knobs_changed = true;
-		return false;
-	}
-	if (cc == CC_LFO_ON) {
-		patch->shown.globals[PARAM_LFO_ON] = patch->rom.globals[PARAM_LFO_ON] = (int16_t)(value >= 64);
-		*knobs_changed = true;
-		return true;
-	}
-	if (cc == CC_LFO_RATE) {
-		patch->shown.globals[PARAM_LFO_RATE] = patch->rom.globals[PARAM_LFO_RATE] = (int16_t)(value / (128 / 8));
-		*knobs_changed = true;
-		return true;
-	}
-	if (cc == CC_DAC) {
-		// Goes through sync, which restores FM after the chip reset this causes.
-		__atomic_store_n(&patch->shown.globals[global_index(PARAM_DAC)], (int16_t)(value >= 64), __ATOMIC_RELAXED);
-		*knobs_changed = true;
-		return false;
-	}
-	if (cc == CC_CH3_MODE) {
-		int index = global_index(PARAM_CH3_MODE);
-		patch->shown.globals[index] = patch->rom.globals[index] = (int16_t)(value >= 64);
-		*knobs_changed = true;
-		return true;
-	}
-	if (cc == CC_RPN_MSB) {
-		patch->rpn_msb[channel] = (uint8_t)value;
-		return true;
-	}
-	if (cc == CC_RPN_LSB) {
-		patch->rpn_lsb[channel] = (uint8_t)value;
-		return true;
-	}
-	if (channel >= PATCH_NUM_CHANNELS) {
-		return true;
-	}
-	int16_t *shown = patch->shown.channels[channel];
-	int16_t *rom = patch->rom.channels[channel];
-	if (cc == CC_DATA_ENTRY_MSB) {
-		if (patch->rpn_msb[channel] != 0 || patch->rpn_lsb[channel] != 0) {
+	for (size_t i = 0; i < sizeof(CC_PARAMS) / sizeof(*CC_PARAMS); i++) {
+		if (CC_PARAMS[i].cc == cc) {
+			*id = CC_PARAMS[i].id;
+			*result = value / (128 / CC_PARAMS[i].cc_range);
 			return true;
 		}
-		shown[channel_index(PARAM_BEND_RANGE)] = rom[channel_index(PARAM_BEND_RANGE)] = (int16_t)(value > BEND_RANGE_MAX ? BEND_RANGE_MAX : value);
-	} else if (cc == CC_DATA_ENTRY_LSB) {
-		return true;
-	} else if (cc == CC_FINE_TUNE) {
-		shown[channel_index(PARAM_FINE_TUNE)] = rom[channel_index(PARAM_FINE_TUNE)] = (int16_t)value;
-	} else if (cc == CC_PORTA_TIME) {
-		shown[channel_index(PARAM_PORTA_TIME)] = rom[channel_index(PARAM_PORTA_TIME)] = (int16_t)value;
-	} else if (cc == CC_PORTA_ON) {
-		shown[channel_index(PARAM_PORTA_ON)] = rom[channel_index(PARAM_PORTA_ON)] = (int16_t)(value >= 64);
-	} else if (cc == CC_VOLUME) {
-		shown[channel_index(PARAM_VOLUME)] = rom[channel_index(PARAM_VOLUME)] = (int16_t)value;
-	} else if (cc == CC_PAN) {
-		shown[channel_index(PARAM_PAN)] = rom[channel_index(PARAM_PAN)] = (int16_t)(value > 95 ? 2 : value > 31 ? 1 : 0);
-	} else if (channel < PATCH_NUM_FM_CHANNELS) {
-		track_cc(shown, rom, cc, value);
-	} else {
+	}
+	if (cc == CC_PAN) {
+		*id = PARAM_PAN;
+		*result = value > 95 ? 2 : value > 31 ? 1 : 0;
 		return true;
 	}
-	*knobs_changed = true;
-	return true;
+	return false;
+}
+
+// One message from the host, by what it means to the model:
+//   a value of the model: goes into the model only, and sync sends the difference;
+//   a reset, or SysEx we can't read: goes to the ROM, which we then know nothing about;
+//   anything else plays: goes straight to the ROM.
+bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_emit_fn emit, void *context)
+{
+	int status = bytes[0] & 0xF0;
+	int channel = bytes[0] & 0x0F;
+	bool is_channel = channel < PATCH_NUM_CHANNELS;
+	bool fm = channel < PATCH_NUM_FM_CHANNELS;
+	bool changed = false;
+	if (bytes[0] == 0xF0 || bytes[0] == 0xFF) {
+		emit(context, bytes, length);
+		forget_everything(&patch->rom);
+		patch_sync(patch, &patch->rom, emit, context);
+		return false;
+	}
+	if (status == 0xC0 && length >= 2 && is_channel) {
+		// Unlike a lane repeating the Preset knob, a program from a clip always loads, tweaks gone.
+		int16_t *model = patch->model.channels[channel];
+		model[channel_index(PARAM_PRESET)] = bytes[1];
+		if (fm) {
+			load_preset(model, bytes[1]);
+		}
+		changed = true;
+	} else if (status == 0xB0 && length >= 3) {
+		int cc = bytes[1], value = bytes[2];
+		uint32_t id;
+		int result;
+		if (cc == CC_RESET_ALL) {
+			// The ROM takes this as a reset of the channel and its program, so send what it means by the standard.
+			const uint8_t bend[3] = {(uint8_t)(0xE0 | channel), 0, 0x40};
+			emit(context, bend, sizeof(bend));
+			emit_cc(emit, context, channel, CC_SUSTAIN, 0);
+			return false;
+		}
+		if (cc == CC_RPN_MSB || cc == CC_RPN_LSB) {
+			(cc == CC_RPN_MSB ? patch->rpn_msb : patch->rpn_lsb)[channel] = (uint8_t)value;
+			emit(context, bytes, length);
+			return false;
+		}
+		if (cc == CC_DATA_ENTRY_MSB && is_channel && patch->rpn_msb[channel] == 0 && patch->rpn_lsb[channel] == 0) {
+			patch->model.channels[channel][channel_index(PARAM_BEND_RANGE)] = (int16_t)(value > BEND_RANGE_MAX ? BEND_RANGE_MAX : value);
+			changed = true;
+		} else if (cc == CC_STEREO && fm) {
+			// The stereo bits of the chip: 1 right, 2 left, 3 both. Off has no place on the Pan knob.
+			static const int8_t STEREO_TO_PAN[4] = {-1, 2, 0, 1};
+			int pan = STEREO_TO_PAN[value / (128 / 4)];
+			if (pan >= 0) {
+				patch->model.channels[channel][channel_index(PARAM_PAN)] = (int16_t)pan;
+				changed = true;
+			}
+		} else if (cc_to_model(cc, value, &id, &result)) {
+			if (is_global(id)) {
+				patch->model.globals[global_index(id)] = (int16_t)result;
+				changed = true;
+			} else if (is_channel && !(is_fm_only(id) && !fm)) {
+				patch->model.channels[channel][channel_index(id)] = (int16_t)result;
+				changed = true;
+			} else if (!is_channel) {
+				emit(context, bytes, length);
+			}
+		} else {
+			emit(context, bytes, length);
+		}
+	} else {
+		emit(context, bytes, length);
+	}
+	if (changed) {
+		patch->dirty = true;
+		patch_sync(patch, &patch->rom, emit, context);
+	}
+	return changed;
 }
 
 size_t patch_state_size(void)
@@ -626,11 +718,11 @@ size_t patch_state_size(void)
 	return sizeof(uint32_t) + sizeof(patch_values);
 }
 
-void patch_save(const mdmi_patch *patch, void *buffer)
+void patch_save(mdmi_patch *patch, void *buffer)
 {
 	const uint32_t version = STATE_VERSION;
 	memcpy(buffer, &version, sizeof(version));
-	memcpy((uint8_t *)buffer + sizeof(version), &patch->shown, sizeof(patch->shown));
+	memcpy((uint8_t *)buffer + sizeof(version), latest(patch), sizeof(patch_values));
 }
 
 bool patch_load(mdmi_patch *patch, const void *buffer, size_t size)
@@ -672,6 +764,29 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size)
 			}
 		}
 	}
-	memcpy(&patch->shown, &incoming, sizeof(patch->shown));
+	// A newer state replaces one that was never taken. Only a take in progress has to finish first.
+	uint32_t expected;
+	do {
+		expected = INCOMING_FREE;
+		if (__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+			break;
+		}
+		expected = INCOMING_READY;
+	} while (!__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+	patch->incoming = incoming;
+	__atomic_store_n(&patch->incoming_state, INCOMING_READY, __ATOMIC_RELEASE);
+	return true;
+}
+
+bool patch_take_incoming(mdmi_patch *patch)
+{
+	uint32_t expected = INCOMING_READY;
+	if (!__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_TAKING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+		return false;
+	}
+	patch->model = patch->incoming;
+	patch->dirty = true;
+	patch_publish(patch);
+	__atomic_store_n(&patch->incoming_state, INCOMING_FREE, __ATOMIC_RELEASE);
 	return true;
 }

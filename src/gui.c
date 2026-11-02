@@ -115,7 +115,7 @@ static void note_name(int key, char *out, size_t size)
 
 static void draw_row(mdmi_gui *g, int channel)
 {
-	const mdmi_patch *patch = g->source.patch;
+	mdmi_patch *patch = g->source.patch;
 	const int y = row_y(channel);
 	const bool dac = channel == PATCH_NUM_FM_CHANNELS - 1 && patch_get(patch, PARAM_DAC);
 	const bool voice = channel > 0 && channel_is_fm(channel) && patch_get(patch, PARAM_POLYPHONY);

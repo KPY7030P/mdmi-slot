@@ -23,7 +23,7 @@
 
 typedef struct {
 	mdmi_engine *engine;
-	const mdmi_patch *patch;
+	mdmi_patch *patch;
 	const uint32_t *notes;
 	const char *version;
 	// Which page is open. Belongs to the plugin instance, so it outlives the window.

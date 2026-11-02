@@ -83,6 +83,20 @@ grep -q "view=720x528 attached=1" "$log" || fail "vst3: window did not attach"
 grep -q "clean_shutdown=1" "$log" || fail "vst3: no clean shutdown"
 python -I "$WIN_ROOT/tools/test/check_wav.py" "$WIN_OUT/vst3.log" "$WIN_OUT/vst3-0.wav" || fail "vst3: audio"
 
+echo "=== model"
+log="$OUT/patch_test.log"
+timeout 60 ./patch_test.exe > "$log" 2>&1
+code=$?
+grep -E "FAIL|PASSED|FAILED" "$log"
+[ "$code" = 0 ] || fail "patch_test: exit $code"
+
+echo "=== registers"
+log="$OUT/reg_test.log"
+timeout 300 ./reg_test.exe > "$log" 2>&1
+code=$?
+grep -E "FAIL|PASSED|FAILED" "$log"
+[ "$code" = 0 ] || fail "reg_test: exit $code"
+
 echo "=== knobs"
 log="$OUT/param_test.log"
 timeout 600 ./param_test.exe "MDMI Mega Drive.clap" > "$log" 2>&1
