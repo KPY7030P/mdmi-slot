@@ -24,15 +24,11 @@ set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES FALSE)
 set(CLAP_WRAPPER_OUTPUT_NAME "MDMI Mega Drive")
 add_subdirectory(third_party/clap-wrapper EXCLUDE_FROM_ALL)
 
-function(add_mdmi_impl name)
-  add_library(${name} STATIC src/plugin.c src/engine.c src/patch.c src/resampler.c src/embed.c src/gui.c)
-  target_compile_options(${name} PRIVATE -Wall -Wextra -Wno-cast-function-type)
-  target_include_directories(${name} PUBLIC "${CLAP_SDK_ROOT}/include" PRIVATE "${BLASTEM_DIR}")
-  target_link_libraries(${name} PUBLIC m avrt user32 gdi32 ole32 shell32 uuid)
-  target_link_options(${name} INTERFACE -static -s)
-endfunction()
-
-add_mdmi_impl(mdmi_impl)
+add_library(mdmi_impl STATIC src/plugin.c src/engine.c src/patch.c src/resampler.c src/embed.c src/gui.c)
+target_compile_options(mdmi_impl PRIVATE -Wall -Wextra -Wno-cast-function-type)
+target_include_directories(mdmi_impl PUBLIC "${CLAP_SDK_ROOT}/include" PRIVATE "${BLASTEM_DIR}")
+target_link_libraries(mdmi_impl PUBLIC m avrt user32 gdi32)
+target_link_options(mdmi_impl INTERFACE -static -s)
 set_source_files_properties(src/plugin.c PROPERTIES
   COMPILE_DEFINITIONS "MDMI_VERSION=\"${MDMI_VERSION}\"")
 set_source_files_properties(src/embed.c PROPERTIES
@@ -58,25 +54,6 @@ target_link_libraries(clap_host PRIVATE avrt)
 add_dependencies(mdmi_all clap_host)
 
 set_target_properties(mdmi_vst3 PROPERTIES PREFIX "")
-
-# Experiment E3: a separate test plugin, built only on request.
-option(MDMI_BUILD_E3 "Build the E3 test plugin" OFF)
-if(MDMI_BUILD_E3)
-  add_mdmi_impl(mdmi_e3_impl)
-  target_compile_definitions(mdmi_e3_impl PRIVATE MDMI_E3=1)
-  make_clapfirst_plugins(
-    TARGET_NAME mdmi_e3
-    IMPL_TARGET mdmi_e3_impl
-    OUTPUT_NAME "MDMI E3 Test"
-    ENTRY_SOURCE src/clap_entry.cpp
-    BUNDLE_IDENTIFIER "dev.mdmi-plugin.e3-test"
-    BUNDLE_VERSION "${PROJECT_VERSION}"
-    ASSET_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out-e3"
-    PLUGIN_FORMATS CLAP VST3
-  )
-  set_target_properties(mdmi_e3_vst3 PROPERTIES PREFIX "")
-  add_dependencies(mdmi_all mdmi_e3_all)
-endif()
 
 add_executable(gui_test tools/test/gui_test.c)
 target_compile_options(gui_test PRIVATE -Wall -Wextra -Wno-cast-function-type)

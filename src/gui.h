@@ -20,20 +20,6 @@
 #define GUI_NOTE_PACK(key, velocity, held) \
 	((uint32_t)(key) | ((uint32_t)(velocity) << 8) | ((uint32_t)(held) << 16) | (1u << 24))
 
-#ifdef MDMI_E3
-// Experiment E3: two cells that send real gestures to the host, and what Program Changes arrived.
-#define GUI_E3_CELLS 2
-typedef struct {
-	void *context;
-	const char *names[GUI_E3_CELLS];
-	int (*value)(void *context, int cell);
-	void (*begin)(void *context, int cell);
-	void (*change)(void *context, int cell, int value);
-	void (*end)(void *context, int cell);
-	const uint32_t *programs_seen;
-	const uint32_t *last_program;
-} gui_e3;
-#endif
 
 typedef struct {
 	mdmi_engine *engine;
@@ -42,9 +28,6 @@ typedef struct {
 	const char *version;
 	// Which page is open. Belongs to the plugin instance, so it outlives the window.
 	int *page;
-#ifdef MDMI_E3
-	gui_e3 e3;
-#endif
 } gui_source;
 
 typedef struct mdmi_gui mdmi_gui;

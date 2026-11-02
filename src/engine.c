@@ -20,6 +20,8 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 #define CORE_BATCH_FRAMES 128
 #define MARGIN_SECONDS 0.005
 #define RENDER_WAIT_MS 1.0
+// Blocks closer together than this count as one burst in the window's diagnostics.
+#define BURST_GAP_MS 1.0
 // Measured from note event to first sound: the ROM parsing MIDI and the YM2612 attack.
 #define ROM_REACTION_SECONDS 0.0025
 #define STALE_TEMP_FILE_SECONDS (24 * 3600)
@@ -93,6 +95,10 @@ struct mdmi_engine {
 	uint32_t underruns;
 	uint32_t dropped_midi;
 	uint32_t last_block;
+	uint32_t worst_short;
+	uint32_t burst;
+	uint32_t longest_burst;
+	double last_render_ms;
 
 	float *ring[2];
 	uint64_t ring_read;
@@ -666,6 +672,9 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.last_underrun_pos = e->last_underrun_pos,
 		.active = __atomic_load_n(&e->active, __ATOMIC_ACQUIRE) != 0,
 		.last_block = __atomic_load_n(&e->last_block, __ATOMIC_RELAXED),
+		.fill_target = e->fill_target,
+		.worst_short = __atomic_load_n(&e->worst_short, __ATOMIC_RELAXED),
+		.longest_burst = __atomic_load_n(&e->longest_burst, __ATOMIC_RELAXED),
 		.sample_rate = (uint32_t)e->sample_rate,
 	};
 	return stats;
@@ -721,6 +730,12 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 	uint64_t available = __atomic_load_n(&e->ring_write, __ATOMIC_ACQUIRE) - read;
 	SetEvent(e->wake);
 	__atomic_store_n(&e->last_block, frames, __ATOMIC_RELAXED);
+	double render_start = now_ms();
+	e->burst = render_start - e->last_render_ms < BURST_GAP_MS ? e->burst + 1 : 1;
+	e->last_render_ms = render_start;
+	if (e->burst > e->longest_burst) {
+		__atomic_store_n(&e->longest_burst, e->burst, __ATOMIC_RELAXED);
+	}
 
 	bool offline = __atomic_load_n(&e->offline, __ATOMIC_ACQUIRE) != 0;
 	if (available < frames && (offline || __atomic_load_n(&e->booted, __ATOMIC_ACQUIRE))) {
@@ -739,6 +754,9 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 			e->first_underrun_pos = read;
 		}
 		e->last_underrun_pos = read;
+		if (frames - count > e->worst_short) {
+			__atomic_store_n(&e->worst_short, frames - count, __ATOMIC_RELAXED);
+		}
 	}
 	for (uint32_t i = 0; i < count; i++) {
 		left[i] = e->ring[0][(read + i) % RING_FRAMES];

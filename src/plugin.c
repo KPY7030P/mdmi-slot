@@ -6,18 +6,8 @@
 #include "gui.h"
 #include "patch.h"
 
-#ifdef MDMI_E3
-// Experiment E3 (docs/ROADMAP.md): a separate test plugin with the parameter count the real one
-// would have. Removed when the experiment has given its answers.
-#define PLUGIN_ID "dev.mdmi-plugin.e3-test"
-#define PLUGIN_NAME "MDMI E3 Test"
-#define E3_FIRST_ID 1000
-#define E3_EXTRA_PARAMS 298
-#define E3_CELL_PROGRAM 1
-#else
 #define PLUGIN_ID "dev.mdmi-plugin.mega-drive"
 #define PLUGIN_NAME "MDMI Mega Drive"
-#endif
 
 static const char *const plugin_features[] = {
 	CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -52,15 +42,6 @@ typedef struct {
 	int gui_page;
 	uint32_t notes[GUI_NUM_MIDI_CHANNELS];
 	uint8_t held[GUI_NUM_MIDI_CHANNELS];
-#ifdef MDMI_E3
-	int16_t e3_values[E3_EXTRA_PARAMS];
-	uint32_t e3_begin[GUI_E3_CELLS];
-	uint32_t e3_changed[GUI_E3_CELLS];
-	uint32_t e3_end[GUI_E3_CELLS];
-	int e3_sent_program;
-	uint32_t e3_programs_seen;
-	uint32_t e3_last_program;
-#endif
 } mdmi_plugin;
 
 typedef struct {
@@ -198,12 +179,6 @@ static void track_midi_notes(mdmi_plugin *self, const uint8_t *bytes)
 			release_notes(self, channel);
 		}
 		break;
-#ifdef MDMI_E3
-	case 0xC0:
-		__atomic_store_n(&self->e3_last_program, ((uint32_t)channel << 8) | bytes[1], __ATOMIC_RELEASE);
-		__atomic_fetch_add(&self->e3_programs_seen, 1, __ATOMIC_ACQ_REL);
-		break;
-#endif
 	default:
 		if (bytes[0] == 0xFF) {
 			for (int ch = 0; ch < GUI_NUM_MIDI_CHANNELS; ch++) {
@@ -228,89 +203,9 @@ static void handle_midi(mdmi_plugin *self, uint32_t time, const uint8_t *bytes, 
 	}
 }
 
-#ifdef MDMI_E3
-static int e3_cell_param(int cell)
-{
-	return E3_FIRST_ID + cell;
-}
-
-static void e3_send_program(mdmi_plugin *self, uint32_t time, int value)
-{
-	const uint8_t message[2] = {0xC6, (uint8_t)value};
-	mdmi_engine_midi(self->engine, time, message, sizeof(message));
-	self->e3_sent_program = value;
-}
-
-static void e3_push_gesture(const clap_output_events_t *out, uint16_t type, int cell)
-{
-	clap_event_param_gesture_t event = {{sizeof(event), 0, CLAP_CORE_EVENT_SPACE_ID, type, 0}, (clap_id)e3_cell_param(cell)};
-	out->try_push(out, &event.header);
-}
-
-// What the window's cells did since the last block, told to the host.
-static void e3_send_gestures(mdmi_plugin *self, const clap_output_events_t *out)
-{
-	for (int cell = 0; cell < GUI_E3_CELLS; cell++) {
-		if (__atomic_exchange_n(&self->e3_begin[cell], 0, __ATOMIC_ACQ_REL)) {
-			e3_push_gesture(out, CLAP_EVENT_PARAM_GESTURE_BEGIN, cell);
-		}
-		if (__atomic_exchange_n(&self->e3_changed[cell], 0, __ATOMIC_ACQ_REL)) {
-			clap_event_param_value_t event = {{sizeof(event), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, (clap_id)e3_cell_param(cell), NULL, -1, -1, -1, -1, __atomic_load_n(&self->e3_values[cell], __ATOMIC_ACQUIRE)};
-			out->try_push(out, &event.header);
-		}
-		if (__atomic_exchange_n(&self->e3_end[cell], 0, __ATOMIC_ACQ_REL)) {
-			e3_push_gesture(out, CLAP_EVENT_PARAM_GESTURE_END, cell);
-		}
-	}
-}
-
-static void e3_request_flush(mdmi_plugin *self)
-{
-	if (self->host_params) {
-		self->host_params->request_flush(self->host);
-	}
-}
-
-static int e3_cell_value(void *context, int cell)
-{
-	return __atomic_load_n(&((mdmi_plugin *)context)->e3_values[cell], __ATOMIC_ACQUIRE);
-}
-
-static void e3_cell_begin(void *context, int cell)
-{
-	mdmi_plugin *self = context;
-	__atomic_store_n(&self->e3_begin[cell], 1, __ATOMIC_RELEASE);
-	e3_request_flush(self);
-}
-
-static void e3_cell_change(void *context, int cell, int value)
-{
-	mdmi_plugin *self = context;
-	__atomic_store_n(&self->e3_values[cell], (int16_t)value, __ATOMIC_RELEASE);
-	__atomic_store_n(&self->e3_changed[cell], 1, __ATOMIC_RELEASE);
-	e3_request_flush(self);
-}
-
-static void e3_cell_end(void *context, int cell)
-{
-	mdmi_plugin *self = context;
-	__atomic_store_n(&self->e3_end[cell], 1, __ATOMIC_RELEASE);
-	e3_request_flush(self);
-}
-#endif
 
 static void handle_param(mdmi_plugin *self, const clap_event_param_value_t *event)
 {
-#ifdef MDMI_E3
-	if (event->param_id >= E3_FIRST_ID) {
-		int e3_value = (int)(event->value + 0.5);
-		__atomic_store_n(&self->e3_values[event->param_id - E3_FIRST_ID], (int16_t)e3_value, __ATOMIC_RELEASE);
-		if (event->param_id == (clap_id)e3_cell_param(E3_CELL_PROGRAM)) {
-			e3_send_program(self, event->header.time, e3_value);
-		}
-		return;
-	}
-#endif
 	int value = (int)(event->value + 0.5);
 	if (patch_set(&self->patch, event->param_id, value)) {
 		request_rescan(self);
@@ -381,13 +276,6 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 	for (uint32_t i = 0; i < event_count; i++) {
 		handle_event(self, process->in_events->get(process->in_events, i));
 	}
-#ifdef MDMI_E3
-	e3_send_gestures(self, process->out_events);
-	int e3_program = e3_cell_value(self, E3_CELL_PROGRAM);
-	if (e3_program != self->e3_sent_program) {
-		e3_send_program(self, 0, e3_program);
-	}
-#endif
 	const clap_audio_buffer_t *out = &process->audio_outputs[0];
 	float *left = out->data32[0];
 	float *right = out->channel_count > 1 ? out->data32[1] : NULL;
@@ -485,34 +373,12 @@ static const clap_plugin_render_t render_ext = {
 static uint32_t params_count(const clap_plugin_t *plugin)
 {
 	(void)plugin;
-#ifdef MDMI_E3
-	return PATCH_NUM_PARAMS + E3_EXTRA_PARAMS;
-#else
 	return PATCH_NUM_PARAMS;
-#endif
 }
 
 static bool params_get_info(const clap_plugin_t *plugin, uint32_t index, clap_param_info_t *info)
 {
 	(void)plugin;
-#ifdef MDMI_E3
-	if (index >= PATCH_NUM_PARAMS) {
-		uint32_t extra = index - PATCH_NUM_PARAMS;
-		if (extra >= E3_EXTRA_PARAMS) {
-			return false;
-		}
-		memset(info, 0, sizeof(*info));
-		info->id = E3_FIRST_ID + extra;
-		info->flags = CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED;
-		if (extra < GUI_E3_CELLS) {
-			snprintf(info->name, sizeof(info->name), "%s", extra == 0 ? "CH4 Op1 TL" : "CH7 Preset");
-		} else {
-			snprintf(info->name, sizeof(info->name), "E3 Param %u", extra);
-		}
-		info->max_value = 127;
-		return true;
-	}
-#endif
 	uint32_t id = patch_param_id_at(index);
 	const patch_param_info *param = patch_param(id);
 	if (!param) {
@@ -530,12 +396,6 @@ static bool params_get_info(const clap_plugin_t *plugin, uint32_t index, clap_pa
 
 static bool params_get_value(const clap_plugin_t *plugin, clap_id id, double *value)
 {
-#ifdef MDMI_E3
-	if (id >= E3_FIRST_ID && id < E3_FIRST_ID + E3_EXTRA_PARAMS) {
-		*value = e3_cell_value(self_of(plugin), (int)(id - E3_FIRST_ID));
-		return true;
-	}
-#endif
 	if (!patch_param(id)) {
 		return false;
 	}
@@ -545,12 +405,6 @@ static bool params_get_value(const clap_plugin_t *plugin, clap_id id, double *va
 
 static bool params_value_to_text(const clap_plugin_t *plugin, clap_id id, double value, char *text, uint32_t size)
 {
-#ifdef MDMI_E3
-	if (id >= E3_FIRST_ID) {
-		snprintf(text, size, "%d", (int)(value + 0.5));
-		return true;
-	}
-#endif
 	if (!patch_param(id)) {
 		return false;
 	}
@@ -563,12 +417,6 @@ static bool params_text_to_value(const clap_plugin_t *plugin, clap_id id, const 
 	(void)plugin;
 	char *end;
 	double parsed = strtod(text, &end);
-#ifdef MDMI_E3
-	if (id >= E3_FIRST_ID && end != text) {
-		*value = parsed;
-		return true;
-	}
-#endif
 	if (!patch_param(id) || end == text) {
 		return false;
 	}
@@ -580,22 +428,12 @@ static bool params_text_to_value(const clap_plugin_t *plugin, clap_id id, const 
 static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t *in, const clap_output_events_t *out)
 {
 	mdmi_plugin *self = self_of(plugin);
-#ifdef MDMI_E3
-	e3_send_gestures(self, out);
-#else
 	(void)out;
-#endif
 	const uint32_t count = in->size(in);
 	for (uint32_t i = 0; i < count; i++) {
 		const clap_event_header_t *header = in->get(in, i);
 		if (header->space_id == CLAP_CORE_EVENT_SPACE_ID && header->type == CLAP_EVENT_PARAM_VALUE) {
 			const clap_event_param_value_t *event = (const clap_event_param_value_t *)header;
-#ifdef MDMI_E3
-			if (event->param_id >= E3_FIRST_ID) {
-				__atomic_store_n(&self->e3_values[event->param_id - E3_FIRST_ID], (int16_t)(event->value + 0.5), __ATOMIC_RELEASE);
-				continue;
-			}
-#endif
 			if (patch_set(&self->patch, event->param_id, (int)(event->value + 0.5))) {
 				request_rescan(self);
 			}
@@ -686,18 +524,6 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.notes = self->notes,
 		.version = plugin_descriptor.version,
 		.page = &self->gui_page,
-#ifdef MDMI_E3
-		.e3 = {
-			.context = self,
-			.names = {"CH4 OP1 TL", "CH7 PRESET"},
-			.value = e3_cell_value,
-			.begin = e3_cell_begin,
-			.change = e3_cell_change,
-			.end = e3_cell_end,
-			.programs_seen = &self->e3_programs_seen,
-			.last_program = &self->e3_last_program,
-		},
-#endif
 	};
 	self->gui = gui_create(&source);
 	return self->gui != NULL;

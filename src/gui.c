@@ -1,10 +1,7 @@
-#define COBJMACROS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-#include <ole2.h>
-#include <shellapi.h>
 #include "gui.h"
 #include "font5x7.h"
 
@@ -44,15 +41,8 @@
 #define STATUS_X 236
 #define VELOCITY_STEPS 15
 #define TIMER_PER_SECOND (1000 / TIMER_MS)
-#define E3_CELL_X 590
-#define E3_CELL_W 122
 
 enum { PAGE_EDITOR, PAGE_ROM };
-
-typedef struct {
-	IDropTarget iface;
-	struct mdmi_gui *gui;
-} drop_target;
 
 struct mdmi_gui {
 	gui_source source;
@@ -62,24 +52,9 @@ struct mdmi_gui {
 	uint32_t *pixels;
 	bool dirty;
 
-	drop_target drop;
-	bool drop_registered;
-	bool ole_ready;
-	bool dragging;
-	bool drag_has_file;
-	int drag_row;
-	char drag_name[64];
-	char message[128];
-	bool message_is_warning;
 	uint32_t underruns_second_ago;
 	uint32_t underruns_per_second;
 	int ticks;
-
-#ifdef MDMI_E3
-	int drag_cell;
-	int drag_start_y;
-	int drag_start_value;
-#endif
 };
 
 static LONG window_count;
@@ -92,14 +67,6 @@ static void fill(mdmi_gui *g, int x, int y, int w, int h, uint32_t color)
 			line[col] = color;
 		}
 	}
-}
-
-static void frame_rect(mdmi_gui *g, int x, int y, int w, int h, int thickness, uint32_t color)
-{
-	fill(g, x, y, w, thickness, color);
-	fill(g, x, y + h - thickness, w, thickness, color);
-	fill(g, x, y, thickness, h, color);
-	fill(g, x + w - thickness, y, thickness, h, color);
 }
 
 static int text(mdmi_gui *g, int x, int y, const char *string, uint32_t color, int scale)
@@ -132,49 +99,12 @@ static bool channel_is_fm(int channel)
 	return channel < PATCH_NUM_FM_CHANNELS;
 }
 
-#ifdef MDMI_E3
-// The row a window position falls on, or -1.
-static int row_at(int y)
-{
-	int top = HEADER_H + GROUP_H;
-	if (y >= top && y < top + PATCH_NUM_FM_CHANNELS * ROW_H) {
-		return (y - top) / ROW_H;
-	}
-	top += PATCH_NUM_FM_CHANNELS * ROW_H + GROUP_H;
-	if (y >= top && y < top + (PATCH_NUM_CHANNELS - PATCH_NUM_FM_CHANNELS) * ROW_H) {
-		return PATCH_NUM_FM_CHANNELS + (y - top) / ROW_H;
-	}
-	return -1;
-}
-#endif
-
 static int row_y(int channel)
 {
 	if (channel_is_fm(channel)) {
 		return HEADER_H + GROUP_H + channel * ROW_H;
 	}
 	return HEADER_H + 2 * GROUP_H + channel * ROW_H;
-}
-
-static bool drag_fits_channel(const mdmi_gui *g, int channel)
-{
-#ifdef MDMI_E3
-	// The experiment asks whether any file arrives, so a browser that hides .tfi can still answer.
-	(void)channel;
-	return g->drag_has_file;
-#else
-	const char *dot = strrchr(g->drag_name, '.');
-	if (!g->drag_has_file || !dot) {
-		return false;
-	}
-	if (!_stricmp(dot, ".tfi") || !_stricmp(dot, ".vgi") || !_stricmp(dot, ".tyi")) {
-		return channel_is_fm(channel);
-	}
-	if (!_stricmp(dot, ".eef")) {
-		return !channel_is_fm(channel);
-	}
-	return false;
-#endif
 }
 
 static void note_name(int key, char *out, size_t size)
@@ -228,25 +158,6 @@ static void draw_row(mdmi_gui *g, int channel)
 				snprintf(buffer, sizeof(buffer), "x%d", (int)GUI_NOTE_HELD(note));
 				text(g, 536, y + 13, buffer, C_PLAYING, 2);
 			}
-		}
-	}
-
-#ifdef MDMI_E3
-	const gui_e3 *e3 = &g->source.e3;
-	int cell = channel == 3 ? 0 : channel == 6 ? 1 : -1;
-	if (cell >= 0) {
-		fill(g, E3_CELL_X, y + 3, E3_CELL_W, ROW_H - 7, g->drag_cell == cell ? C_FM_DARK : C_CELL);
-		text(g, E3_CELL_X + 4, y + 5, e3->names[cell], C_LABEL, 1);
-		snprintf(buffer, sizeof(buffer), "%d", e3->value(e3->context, cell));
-		text(g, E3_CELL_X + 4, y + 17, buffer, C_TEXT, 2);
-	}
-#endif
-
-	if (g->dragging && drag_fits_channel(g, channel)) {
-		if (g->drag_row == channel) {
-			frame_rect(g, 0, y, GUI_WIDTH, ROW_H - 1, 4, C_TARGET);
-		} else {
-			frame_rect(g, 0, y, GUI_WIDTH, ROW_H - 1, 2, C_TARGET);
 		}
 	}
 }
@@ -325,27 +236,10 @@ static void draw_footer(mdmi_gui *g)
 {
 	fill(g, 0, FOOTER_Y, GUI_WIDTH, GUI_HEIGHT - FOOTER_Y, C_BG);
 	fill(g, 0, FOOTER_Y, GUI_WIDTH, 1, C_LINE);
-	char buffer[128];
-	if (g->dragging) {
-		if (!g->drag_has_file) {
-			text(g, 8, FOOTER_Y + 8, g->message, C_TARGET, 1);
-		} else if (g->drag_row >= 0 && drag_fits_channel(g, g->drag_row)) {
-			snprintf(buffer, sizeof(buffer), "%s: drop on CH %d", g->drag_name, g->drag_row + 1);
-			text(g, 8, FOOTER_Y + 4, buffer, C_TARGET, 2);
-		} else {
-			text(g, 8, FOOTER_Y + 4, g->drag_name, C_LABEL, 2);
-		}
-		return;
-	}
-	if (g->message[0]) {
-		text(g, 8, FOOTER_Y + 8, g->message, g->message_is_warning ? C_TARGET : C_LABEL, 1);
-	}
-#ifdef MDMI_E3
-	uint32_t seen = __atomic_load_n(g->source.e3.programs_seen, __ATOMIC_ACQUIRE);
-	uint32_t last = __atomic_load_n(g->source.e3.last_program, __ATOMIC_ACQUIRE);
-	snprintf(buffer, sizeof(buffer), "PGM SEEN %u  LAST CH %u = %u", seen, (last >> 8) + 1, last & 0xFF);
-	text(g, 520, FOOTER_Y + 8, buffer, seen ? C_PLAYING : C_HINT, 1);
-#endif
+	const mdmi_engine_stats stats = mdmi_engine_get_stats(g->source.engine);
+	char buffer[96];
+	snprintf(buffer, sizeof(buffer), "RING %u  WORST SHORT %u  LONGEST BURST %u BLOCKS", stats.fill_target, stats.worst_short, stats.longest_burst);
+	text(g, 8, FOOTER_Y + 8, buffer, C_HINT, 1);
 }
 
 static void render(mdmi_gui *g)
@@ -353,8 +247,7 @@ static void render(mdmi_gui *g)
 	fill(g, 0, 0, GUI_WIDTH, HEADER_H, C_BG);
 	fill(g, 0, HEADER_H - 1, GUI_WIDTH, 1, C_LINE);
 	text(g, 8, 7, "MDMI", C_TEXT, 2);
-	// While a file is dragged the table stays in view, because it holds the drop targets.
-	const bool rom = *g->source.page == PAGE_ROM && !g->dragging;
+	const bool rom = *g->source.page == PAGE_ROM;
 	button(g, BUTTON_EDITOR_X, "EDITOR", !rom);
 	button(g, BUTTON_ROM_X, "ROM", rom);
 	draw_status(g);
@@ -387,158 +280,6 @@ static void refresh(mdmi_gui *g)
 	}
 }
 
-#ifdef MDMI_E3
-// Drag and drop. Stage 4 brings it to the real plugin. Explorer offers CF_HDROP. Whatever else a host offers is listed in the footer,
-// so that a browser that does not offer files can be told apart from one that offers them.
-static HRESULT STDMETHODCALLTYPE drop_query_interface(IDropTarget *self, REFIID riid, void **out)
-{
-	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropTarget)) {
-		*out = self;
-		return S_OK;
-	}
-	*out = NULL;
-	return E_NOINTERFACE;
-}
-
-static ULONG STDMETHODCALLTYPE drop_add_ref(IDropTarget *self)
-{
-	(void)self;
-	return 1;
-}
-
-static ULONG STDMETHODCALLTYPE drop_release(IDropTarget *self)
-{
-	(void)self;
-	return 1;
-}
-
-static mdmi_gui *gui_of(IDropTarget *self)
-{
-	return ((drop_target *)self)->gui;
-}
-
-static bool read_file_name(IDataObject *data, char *out, size_t size)
-{
-	FORMATETC format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-	STGMEDIUM medium;
-	if (FAILED(IDataObject_GetData(data, &format, &medium))) {
-		return false;
-	}
-	bool ok = false;
-	HDROP drop = GlobalLock(medium.hGlobal);
-	if (drop) {
-		wchar_t path[MAX_PATH];
-		if (DragQueryFileW(drop, 0, path, MAX_PATH)) {
-			const wchar_t *name = wcsrchr(path, L'\\');
-			name = name ? name + 1 : path;
-			size_t i = 0;
-			for (; name[i] && i + 1 < size; i++) {
-				out[i] = name[i] < 127 && name[i] >= 32 ? (char)name[i] : '?';
-			}
-			out[i] = 0;
-			ok = true;
-		}
-		GlobalUnlock(medium.hGlobal);
-	}
-	ReleaseStgMedium(&medium);
-	return ok;
-}
-
-static void describe_offered_formats(mdmi_gui *g, IDataObject *data)
-{
-	int used = snprintf(g->message, sizeof(g->message), "No file offered. Formats:");
-	IEnumFORMATETC *formats = NULL;
-	if (FAILED(IDataObject_EnumFormatEtc(data, DATADIR_GET, &formats)) || !formats) {
-		return;
-	}
-	FORMATETC format;
-	while (IEnumFORMATETC_Next(formats, 1, &format, NULL) == S_OK && used < (int)sizeof(g->message) - 1) {
-		char name[48] = "";
-		if (!GetClipboardFormatNameA(format.cfFormat, name, sizeof(name))) {
-			snprintf(name, sizeof(name), "%u", format.cfFormat);
-		}
-		used += snprintf(g->message + used, sizeof(g->message) - (size_t)used, " %s", name);
-		if (format.ptd) {
-			CoTaskMemFree(format.ptd);
-		}
-	}
-	IEnumFORMATETC_Release(formats);
-}
-
-static void update_drag(mdmi_gui *g, POINTL point, DWORD *effect)
-{
-	POINT client = {point.x, point.y};
-	ScreenToClient(g->window, &client);
-	g->drag_row = row_at(client.y / g->scale);
-	// Only an effect the source allows can complete the drop.
-	DWORD allowed = *effect;
-	DWORD chosen = allowed & DROPEFFECT_COPY ? DROPEFFECT_COPY : allowed & DROPEFFECT_LINK ? DROPEFFECT_LINK : allowed & DROPEFFECT_MOVE;
-	*effect = g->drag_has_file && g->drag_row >= 0 && drag_fits_channel(g, g->drag_row) ? chosen : DROPEFFECT_NONE;
-	refresh(g);
-}
-
-static HRESULT STDMETHODCALLTYPE drop_enter(IDropTarget *self, IDataObject *data, DWORD keys, POINTL point, DWORD *effect)
-{
-	(void)keys;
-	mdmi_gui *g = gui_of(self);
-	g->dragging = true;
-	g->message[0] = 0;
-	g->drag_has_file = read_file_name(data, g->drag_name, sizeof(g->drag_name));
-	if (!g->drag_has_file) {
-		describe_offered_formats(g, data);
-	}
-	update_drag(g, point, effect);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE drop_over(IDropTarget *self, DWORD keys, POINTL point, DWORD *effect)
-{
-	(void)keys;
-	update_drag(gui_of(self), point, effect);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE drop_leave(IDropTarget *self)
-{
-	mdmi_gui *g = gui_of(self);
-	g->dragging = false;
-	if (!g->drag_has_file) {
-		// Keep the format list on screen after the drag: it is the point of the message.
-		g->message_is_warning = true;
-	}
-	refresh(g);
-	return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data, DWORD keys, POINTL point, DWORD *effect)
-{
-	(void)keys;
-	(void)data;
-	mdmi_gui *g = gui_of(self);
-	update_drag(g, point, effect);
-	g->dragging = false;
-	if (*effect != DROPEFFECT_NONE) {
-		snprintf(g->message, sizeof(g->message), "%s reached CH %d. Loading files arrives in stage 4.", g->drag_name, g->drag_row + 1);
-		g->message_is_warning = false;
-	}
-	refresh(g);
-	return S_OK;
-}
-
-static IDropTargetVtbl drop_vtable = {
-	drop_query_interface, drop_add_ref, drop_release, drop_enter, drop_over, drop_leave, drop_drop,
-};
-
-static void e3_finish_cell_drag(mdmi_gui *g)
-{
-	if (g->drag_cell >= 0) {
-		int cell = g->drag_cell;
-		g->drag_cell = -1;
-		g->source.e3.end(g->source.e3.context, cell);
-	}
-}
-#endif
-
 static void on_click(mdmi_gui *g, int x, int y)
 {
 	if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H) {
@@ -550,17 +291,6 @@ static void on_click(mdmi_gui *g, int x, int y)
 		refresh(g);
 		return;
 	}
-#ifdef MDMI_E3
-	int row = row_at(y);
-	int cell = row == 3 ? 0 : row == 6 ? 1 : -1;
-	if (*g->source.page == PAGE_EDITOR && cell >= 0 && x >= E3_CELL_X && x < E3_CELL_X + E3_CELL_W) {
-		g->drag_cell = cell;
-		g->drag_start_y = y;
-		g->drag_start_value = g->source.e3.value(g->source.e3.context, cell);
-		SetCapture(g->window);
-		g->source.e3.begin(g->source.e3.context, cell);
-	}
-#endif
 }
 
 static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -589,12 +319,6 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_DESTROY:
 		// Also reached when the host destroys our parent first. The next set_parent makes a new window.
 		KillTimer(window, TIMER_ID);
-#ifdef MDMI_E3
-		if (g->drop_registered) {
-			RevokeDragDrop(window);
-			g->drop_registered = false;
-		}
-#endif
 		SetWindowLongPtrA(window, GWLP_USERDATA, 0);
 		g->window = NULL;
 		InterlockedDecrement(&window_count);
@@ -602,22 +326,6 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_LBUTTONDOWN:
 		on_click(g, (short)LOWORD(lparam) / g->scale, (short)HIWORD(lparam) / g->scale);
 		return 0;
-#ifdef MDMI_E3
-	case WM_MOUSEMOVE:
-		if (g->drag_cell >= 0 && (wparam & MK_LBUTTON)) {
-			int value = g->drag_start_value + g->drag_start_y - (short)HIWORD(lparam) / g->scale;
-			value = value < 0 ? 0 : value > 127 ? 127 : value;
-			g->source.e3.change(g->source.e3.context, g->drag_cell, value);
-		}
-		return 0;
-	case WM_LBUTTONUP:
-		e3_finish_cell_drag(g);
-		ReleaseCapture();
-		return 0;
-	case WM_CAPTURECHANGED:
-		e3_finish_cell_drag(g);
-		return 0;
-#endif
 	default:
 		return DefWindowProcA(window, message, wparam, lparam);
 	}
@@ -643,10 +351,6 @@ mdmi_gui *gui_create(const gui_source *source)
 	}
 	g->source = *source;
 	g->scale = 1;
-	g->drag_row = -1;
-#ifdef MDMI_E3
-	g->drag_cell = -1;
-#endif
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
 }
@@ -663,11 +367,6 @@ void gui_destroy(mdmi_gui *g)
 	if (window_count == 0) {
 		UnregisterClassA(WINDOW_CLASS, this_module());
 	}
-#ifdef MDMI_E3
-	if (g->ole_ready) {
-		OleUninitialize();
-	}
-#endif
 	free(g->pixels);
 	free(g);
 }
@@ -695,21 +394,6 @@ bool gui_set_parent(mdmi_gui *g, void *parent_hwnd)
 	}
 	SetWindowLongPtrA(g->window, GWLP_USERDATA, (LONG_PTR)g);
 	SetTimer(g->window, TIMER_ID, TIMER_MS, NULL);
-
-#ifdef MDMI_E3
-	g->drop.iface.lpVtbl = &drop_vtable;
-	g->drop.gui = g;
-	// OleInitialize says S_FALSE when the host has done it already; both count towards uninitializing.
-	if (!g->ole_ready) {
-		g->ole_ready = SUCCEEDED(OleInitialize(NULL));
-	}
-	HRESULT registered = RegisterDragDrop(g->window, &g->drop.iface);
-	g->drop_registered = SUCCEEDED(registered);
-	if (!g->drop_registered) {
-		snprintf(g->message, sizeof(g->message), "Files can't be dropped here: error %08lX", (unsigned long)registered);
-		g->message_is_warning = true;
-	}
-#endif
 	render(g);
 	return true;
 }

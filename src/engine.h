@@ -23,6 +23,9 @@ typedef struct {
 	uint64_t last_underrun_pos;
 	bool active;
 	uint32_t last_block;
+	uint32_t fill_target;
+	uint32_t worst_short;
+	uint32_t longest_burst;
 	uint32_t sample_rate;
 } mdmi_engine_stats;
 
