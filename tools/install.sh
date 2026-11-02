@@ -17,8 +17,8 @@ install_one() {
 	if [ ! -f "$source" ]; then
 		echo "$2: NOT BUILT, $source is missing"
 		failed=1
-	elif ! cp "$source" "$dest" 2>/dev/null; then
-		echo "$2: NOT INSTALLED, the file is locked. Close Ableton Live and run this again."
+	elif ! cp "$source" "$dest"; then
+		echo "$2: NOT INSTALLED. If the error above says busy or denied, close Ableton Live and run this again."
 		failed=1
 	elif [ "$(hash_of "$source")" != "$(hash_of "$dest")" ]; then
 		echo "$2: NOT INSTALLED, the copy differs from the build"
@@ -41,5 +41,5 @@ fi
 	echo "$LABEL"
 	echo "VST3 sha256 $(hash_of "$TARGET/MDMI Mega Drive.vst3")"
 	echo "CLAP sha256 $(hash_of "$TARGET/MDMI Mega Drive.clap")"
-} > "$TARGET/BUILD.txt"
+} > "$TARGET/BUILD.txt" || { echo "INSTALL FAILED: could not write BUILD.txt"; exit 1; }
 echo "OK: $TARGET holds build $LABEL"

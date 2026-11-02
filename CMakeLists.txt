@@ -12,7 +12,7 @@ endif()
 
 set(MDMI_BUILD_LABEL "unknown" CACHE STRING "Revision shown as part of the plugin version")
 set(MDMI_VERSION "${PROJECT_VERSION}+${MDMI_BUILD_LABEL}")
-file(WRITE "${CMAKE_SOURCE_DIR}/build/label.txt" "${MDMI_VERSION}\n")
+file(WRITE "${CMAKE_BINARY_DIR}/label.txt" "${MDMI_VERSION}\n")
 
 set(MDMI_ENGINE "${CMAKE_SOURCE_DIR}/build/engine/libblastem.dll")
 set(MDMI_ROM "${CMAKE_SOURCE_DIR}/roms/mdmi-everdrive-v1.34.bin")

@@ -15,11 +15,12 @@ check_existing() {
 	dir="$1"; commit="$2"; patch="$3"
 	[ -f "$dir/.vendored" ] || [ "$(git -C "$dir" rev-parse HEAD)" = "$commit" ] \
 		|| die "$dir is not at $commit"
-	if [ -n "$patch" ]; then
-		git -C "$dir" diff HEAD | cmp -s - "$patch" \
-			|| die "$dir differs from $patch; run tools/save_patches.sh if the change is meant to stay"
+	[ -n "$patch" ] || patch=/dev/null
+	git -C "$dir" diff HEAD | cmp -s - "$patch" \
+		|| die "$dir differs from ${patch}; if the change is meant to stay, run tools/save_patches.sh for a patched clone"
+	if git -C "$dir" submodule status --recursive | grep -q '^[-+U]'; then
+		die "$dir has submodules out of step; delete it and run this again"
 	fi
-	echo "$dir: ok"
 }
 
 fetch() {
@@ -29,10 +30,14 @@ fetch() {
 		return
 	fi
 	echo "$dir: cloning $url"
-	git clone -q -c core.autocrlf=false "$url" "$dir"
-	git -C "$dir" checkout -q "$commit"
-	git -C "$dir" -c core.autocrlf=false submodule --quiet update --init --recursive
-	[ -z "$patch" ] || git -C "$dir" apply --index "$ROOT/$patch"
+	# Only a complete clone gets the final name, so an interrupted one can't pass as existing.
+	tmp="$dir.tmp"
+	rm -rf "$tmp"
+	git clone -q -c core.autocrlf=false "$url" "$tmp"
+	git -C "$tmp" checkout -q "$commit"
+	git -C "$tmp" -c core.autocrlf=false submodule --quiet update --init --recursive
+	[ -z "$patch" ] || git -C "$tmp" apply --index "$ROOT/$patch"
+	mv "$tmp" "$dir"
 }
 
 # BlastEm comes from a personal fork, so a copy of its source is kept in vendor/.
@@ -44,15 +49,18 @@ fetch_blastem() {
 		return
 	fi
 	echo "$dir: $BLASTEM_URL is unreachable, using $BLASTEM_ARCHIVE"
-	mkdir -p "$dir"
+	tmp="$dir.tmp"
+	rm -rf "$tmp"
+	mkdir -p "$tmp"
 	# android/ holds symlinks Windows refuses, and the plugin does not use it.
-	tar -xzf "$BLASTEM_ARCHIVE" -C "$dir" --exclude=android
-	git -C "$dir" init -q
-	git -C "$dir" config core.autocrlf false
-	git -C "$dir" add -A
-	git -C "$dir" commit -q -m "$BLASTEM_ARCHIVE"
-	touch "$dir/.vendored"
-	git -C "$dir" apply --index "$ROOT/$patch"
+	tar -xzf "$BLASTEM_ARCHIVE" -C "$tmp" --exclude=android
+	git -C "$tmp" init -q
+	git -C "$tmp" config core.autocrlf false
+	git -C "$tmp" add -A
+	git -C "$tmp" commit -q -m "$BLASTEM_ARCHIVE"
+	touch "$tmp/.vendored"
+	git -C "$tmp" apply --index "$ROOT/$patch"
+	mv "$tmp" "$dir"
 }
 
 fetch_blastem

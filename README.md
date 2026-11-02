@@ -49,8 +49,8 @@ sh tools/test/run_tests.sh
 sh tools/install.sh
 ```
 
-`fetch_deps.sh` clones `third_party/` and applies `patches/`. After changing code there, run
-`tools/save_patches.sh`. `run_tests.sh` exits with the number of failed checks. Plugins land in `build/cmake/out`.
+`fetch_deps.sh` clones `third_party/` and applies `patches/`. The build runs it too and refuses to start if
+`third_party/` differs from `patches/`, so after changing code there, run `tools/save_patches.sh`. `run_tests.sh` exits with the number of failed checks. Plugins land in `build/cmake/out`.
 
 `install.sh` copies them to `D:\ALL\VST\CHIPTUNE\MDMI` or the folder you name, checks the hashes, and writes
 `BUILD.txt` there. It fails if Ableton Live has the VST3 locked. Live does not show plugin versions, so `BUILD.txt`
