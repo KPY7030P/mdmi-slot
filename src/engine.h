@@ -16,6 +16,8 @@ typedef struct {
 	bool booted;
 	double worst_run_ms;
 	double worst_wait_ms;
+	const char *boot_stage;
+	uint32_t boot_error;
 	uint64_t worst_run_pos;
 	uint64_t first_underrun_pos;
 	uint64_t last_underrun_pos;

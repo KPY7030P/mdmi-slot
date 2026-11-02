@@ -28,16 +28,17 @@ run() {
   name="$1"; rate="$2"; block="$3"; mode="$4"; instances="$5"; expect="${6:-sound}"
   echo "=== $name: rate=$rate block=$block $mode instances=$instances expect=$expect"
   log="$OUT/$name.log"
-  timeout 60 ./clap_host.exe "MDMI Mega Drive.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
-  code=$?
-  # The first run of a new build can boot for many seconds; a realtime run then ends in silence
-  # without saying anything about the sound. Say so and measure again, once.
-  late="$(late_boot_ms "$log" "$rate")"
-  if [ "$mode" = realtime ] && [ "$late" != 0 ]; then
-    echo "SLOW BOOT: ${late} ms, later than the first note. Running $name again."
+  # Booting can occasionally take over 10 seconds (see the ROADMAP); a realtime run then ends in
+  # silence without saying anything about the sound. Say so and measure again, up to three times.
+  attempt=1
+  while :; do
     timeout 60 ./clap_host.exe "MDMI Mega Drive.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
     code=$?
-  fi
+    late="$(late_boot_ms "$log" "$rate")"
+    [ "$mode" = realtime ] && [ "$late" != 0 ] && [ "$attempt" -lt 3 ] || break
+    echo "SLOW BOOT: ${late} ms, later than the first note. Running $name again."
+    attempt=$((attempt + 1))
+  done
   grep -E "wall=|stats " "$log"
   [ "$code" = 0 ] || { fail "$name: host exit $code"; tail -5 "$log"; }
   grep -q "clean_shutdown=1" "$log" || fail "$name: no clean shutdown"

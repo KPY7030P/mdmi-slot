@@ -73,6 +73,8 @@ struct mdmi_engine {
 	bool thread_started;
 	double worst_run_ms;
 	double worst_wait_ms;
+	const char *boot_stage;
+	DWORD boot_error;
 	uint64_t worst_run_pos;
 	uint64_t first_underrun_pos;
 	uint64_t last_underrun_pos;
@@ -329,14 +331,19 @@ static bool load_core(mdmi_engine *e)
 {
 	double t0 = now_ms();
 	if (!unpack_files(e)) {
+		e->boot_error = GetLastError();
+		e->boot_stage = "unpack";
 		return false;
 	}
 	double t1 = now_ms();
 	e->dll = LoadLibraryA(e->dll_path);
 	double t2 = now_ms();
 	if (!e->dll) {
+		e->boot_error = GetLastError();
+		e->boot_stage = "loadlibrary";
 		return false;
 	}
+	e->boot_stage = "core";
 	LOAD(set_environment, set_environment_fn, "retro_set_environment")
 	LOAD(set_video, set_video_refresh_fn, "retro_set_video_refresh")
 	LOAD(set_sample, set_audio_sample_fn, "retro_set_audio_sample")
@@ -371,6 +378,7 @@ static bool load_core(mdmi_engine *e)
 	retro_init();
 
 	struct retro_game_info game = {.path = e->rom_path};
+	e->boot_stage = "load_game";
 	if (!load_game(&game)) {
 		return false;
 	}
@@ -379,6 +387,7 @@ static bool load_core(mdmi_engine *e)
 	e->core_rate = av.timing.sample_rate;
 	double t3 = now_ms();
 
+	e->boot_stage = "frames";
 	// Run through the ROM's startup with audio thrown away, then switch to fine-grained slices.
 	e->discard_audio = 1;
 	run_frames(e, BOOT_FRAMES);
@@ -623,6 +632,8 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.booted = __atomic_load_n(&e->booted, __ATOMIC_ACQUIRE) != 0,
 		.worst_run_ms = e->worst_run_ms,
 		.worst_wait_ms = e->worst_wait_ms,
+		.boot_stage = e->boot_stage,
+		.boot_error = e->boot_error,
 		.worst_run_pos = e->worst_run_pos,
 		.first_underrun_pos = e->first_underrun_pos,
 		.last_underrun_pos = e->last_underrun_pos,

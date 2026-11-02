@@ -45,7 +45,8 @@ fetch_blastem() {
 	fi
 	echo "$dir: $BLASTEM_URL is unreachable, using $BLASTEM_ARCHIVE"
 	mkdir -p "$dir"
-	tar -xzf "$BLASTEM_ARCHIVE" -C "$dir"
+	# android/ holds symlinks Windows refuses, and the plugin does not use it.
+	tar -xzf "$BLASTEM_ARCHIVE" -C "$dir" --exclude=android
 	git -C "$dir" init -q
 	git -C "$dir" config core.autocrlf false
 	git -C "$dir" add -A

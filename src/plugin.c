@@ -85,7 +85,7 @@ static void plugin_destroy(const clap_plugin_t *plugin)
 	mdmi_plugin *self = self_of(plugin);
 	if (getenv("MDMI_PLUGIN_STATS")) {
 		mdmi_engine_stats stats = mdmi_engine_get_stats(self->engine);
-		fprintf(stderr, "stats underruns=%u dropped_midi=%u failed=%d booted=%d worst_wait=%.2fms worst_run=%.2fms@%llu underruns_at=%llu..%llu\n", stats.underruns, stats.dropped_midi, stats.failed, stats.booted,
+		fprintf(stderr, "stats underruns=%u dropped_midi=%u failed=%d booted=%d boot_stage=%s boot_error=%u worst_wait=%.2fms worst_run=%.2fms@%llu underruns_at=%llu..%llu\n", stats.underruns, stats.dropped_midi, stats.failed, stats.booted, stats.boot_stage ? stats.boot_stage : "none", stats.boot_error,
 			stats.worst_wait_ms, stats.worst_run_ms, (unsigned long long)stats.worst_run_pos, (unsigned long long)stats.first_underrun_pos, (unsigned long long)stats.last_underrun_pos);
 	}
 	mdmi_engine_destroy(self->engine);
