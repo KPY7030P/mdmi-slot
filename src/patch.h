@@ -74,6 +74,8 @@ void patch_init(mdmi_patch *patch);
 
 // Safe from the main thread while the audio thread runs.
 int patch_get(const mdmi_patch *patch, uint32_t id);
+int patch_get_channel(const mdmi_patch *patch, int channel, uint32_t id);
+void patch_format_preset(int channel, int value, char *text, size_t size);
 void patch_format(const mdmi_patch *patch, uint32_t id, int value, char *text, size_t size);
 double patch_filter_hz(int value);
 

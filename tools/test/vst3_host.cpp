@@ -6,6 +6,7 @@
 // so note 64 must come out quieter than note 60. Log format matches clap_host.
 #define INIT_CLASS_IID
 #include <pluginterfaces/base/ipluginbase.h>
+#include <pluginterfaces/gui/iplugview.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
@@ -240,6 +241,16 @@ int main(int argc, char **argv)
 	printf("automatable=%d hidden=%d\n", automatable, hidden);
 	printf("cc7_param=%u\n", (unsigned)cc7_param);
 
+	// The window, attached the way a host attaches it, stays open while the sound runs.
+	IPlugView *view = controller ? controller->createView(ViewType::kEditor) : nullptr;
+	HWND view_parent = CreateWindowExA(0, "STATIC", "vst3_host", WS_POPUP, 0, 0, 960, 704, nullptr, nullptr, nullptr, nullptr);
+	if (view) {
+		ViewRect rect;
+		view->getSize(&rect);
+		bool attached = view->isPlatformTypeSupported(kPlatformTypeHWND) == kResultTrue && view->attached(view_parent, kPlatformTypeHWND) == kResultOk;
+		printf("view=%dx%d attached=%d\n", rect.getWidth(), rect.getHeight(), attached);
+	}
+
 	struct NoteScript { double seconds; bool on; int16 pitch; };
 	const NoteScript notes[] = {{3.0, true, 60}, {3.5, false, 60}, {4.0, true, 64}, {4.5, false, 64}};
 	const double cc_seconds = 3.8;
@@ -293,6 +304,10 @@ int main(int argc, char **argv)
 		data.inputParameterChanges = &changes;
 		processor->process(data);
 
+		MSG message;
+		while (PeekMessageA(&message, nullptr, 0, 0, PM_REMOVE)) {
+			DispatchMessageA(&message);
+		}
 		if (!offline) {
 			double due = (double)(pos + block) / rate;
 			for (;;) {
@@ -310,6 +325,11 @@ int main(int argc, char **argv)
 	QueryPerformanceCounter(&now);
 	printf("wall=%.3fs audio=%ds\n", (double)(now.QuadPart - start.QuadPart) / (double)freq.QuadPart, SECONDS);
 
+	if (view) {
+		view->removed();
+		view->release();
+	}
+	DestroyWindow(view_parent);
 	processor->setProcessing(false);
 	component->setActive(false);
 	component->terminate();

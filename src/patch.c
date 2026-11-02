@@ -226,6 +226,20 @@ int patch_get(const mdmi_patch *patch, uint32_t id)
 	return __atomic_load_n(&patch->shown.channels[effective_channel(&patch->shown)][channel_index(id)], __ATOMIC_RELAXED);
 }
 
+int patch_get_channel(const mdmi_patch *patch, int channel, uint32_t id)
+{
+	return __atomic_load_n(&patch->shown.channels[channel][channel_index(id)], __ATOMIC_RELAXED);
+}
+
+void patch_format_preset(int channel, int value, char *text, size_t size)
+{
+	if (channel < PATCH_NUM_FM_CHANNELS) {
+		snprintf(text, size, "%d %s", value + 1, GM_NAMES[value & 127]);
+	} else {
+		snprintf(text, size, "Envelope %d", value);
+	}
+}
+
 double patch_filter_hz(int value)
 {
 	if (value >= FILTER_MAX) {
@@ -275,11 +289,7 @@ void patch_format(const mdmi_patch *patch, uint32_t id, int value, char *text, s
 		snprintf(text, size, "%s", LFO_RATES[value & 7]);
 		break;
 	case PARAM_PRESET:
-		if (effective_channel(&patch->shown) < PATCH_NUM_FM_CHANNELS) {
-			snprintf(text, size, "%d %s", value + 1, GM_NAMES[value & 127]);
-		} else {
-			snprintf(text, size, "Envelope %d", value);
-		}
+		patch_format_preset(effective_channel(&patch->shown), value, text, size);
 		break;
 	case PARAM_PAN:
 		snprintf(text, size, "%s", value == 0 ? "Left" : value == 1 ? "Center" : "Right");

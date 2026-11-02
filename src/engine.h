@@ -21,7 +21,17 @@ typedef struct {
 	uint64_t worst_run_pos;
 	uint64_t first_underrun_pos;
 	uint64_t last_underrun_pos;
+	bool active;
 } mdmi_engine_stats;
+
+// The ROM's screen. A frame stays valid until the next call to mdmi_engine_latest_frame.
+#define MDMI_FRAME_MAX_WIDTH 352
+#define MDMI_FRAME_MAX_HEIGHT 256
+typedef struct {
+	uint32_t width;
+	uint32_t height;
+	uint32_t pixels[MDMI_FRAME_MAX_WIDTH * MDMI_FRAME_MAX_HEIGHT];
+} mdmi_frame;
 
 bool mdmi_engine_global_init(void);
 void mdmi_engine_global_deinit(void);
@@ -37,6 +47,9 @@ void mdmi_engine_set_offline(mdmi_engine *e, bool offline);
 // Any thread. Applied by the emulation thread before its next step.
 void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz);
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e);
+// Main thread. Frames are only copied while someone is watching.
+void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
+const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);
 
 // Audio thread. Queue a block's MIDI first, then render that block.
 void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *bytes, size_t length);

@@ -77,6 +77,7 @@ code=$?
 label="$(tr -d '\r\n' < "$ROOT/build/label.txt")"
 tr -d '\r' < "$log" | grep -qFx "version=$label" || fail "vst3: version is not $label"
 grep -q "automatable=62 " "$log" || fail "vst3: expected 62 automatable controls"
+grep -q "view=960x704 attached=1" "$log" || fail "vst3: window did not attach"
 grep -q "clean_shutdown=1" "$log" || fail "vst3: no clean shutdown"
 python -I "$WIN_ROOT/tools/test/check_wav.py" "$WIN_OUT/vst3.log" "$WIN_OUT/vst3-0.wav" || fail "vst3: audio"
 
@@ -86,6 +87,20 @@ timeout 600 ./param_test.exe "MDMI Mega Drive.clap" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "param_test: exit $code"
+
+echo "=== window"
+log="$OUT/gui.log"
+timeout 90 ./gui_test.exe "MDMI Mega Drive.clap" "$WIN_OUT/gui" > "$log" 2>&1
+code=$?
+grep -E "FAIL|PASSED|FAILED" "$log"
+[ "$code" = 0 ] || fail "gui_test: exit $code"
+log="$OUT/gui-crash.log"
+export MDMI_TEST_CRASH=segv
+timeout 90 ./gui_test.exe "MDMI Mega Drive.clap" "$WIN_OUT/gui" > "$log" 2>&1
+code=$?
+unset MDMI_TEST_CRASH
+grep -E "FAIL|PASSED|FAILED" "$log"
+[ "$code" = 0 ] || fail "gui_test with a dead engine: exit $code"
 
 if [ "$failures" = 0 ]; then
   echo "ALL PASSED"

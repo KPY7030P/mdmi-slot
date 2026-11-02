@@ -99,7 +99,18 @@ struct mdmi_engine {
 	midi_chunk *midi_queue;
 	uint32_t midi_head;
 	uint32_t midi_tail;
+
+	// Triple buffer: the worker fills frames[frame_back], publishes it by swapping it with
+	// frame_shared, and the main thread swaps frame_front for frame_shared when it is new.
+	mdmi_frame *frames;
+	uint32_t frame_back;
+	uint32_t frame_front;
+	uint32_t frame_shared;
+	uint32_t frames_watched;
 };
+
+#define FRAME_NEW 4
+#define FRAME_INDEX 3
 
 static DWORD tls_engine = TLS_OUT_OF_INDEXES;
 static PVOID crash_handler;
@@ -164,7 +175,8 @@ static bool env_cb(unsigned cmd, void *data)
 {
 	switch (cmd) {
 	case RETRO_ENVIRONMENT_GET_OVERSCAN:
-		*(bool *)data = true;
+		// Without overscan an NTSC frame is exactly the console's 320x224.
+		*(bool *)data = false;
 		return true;
 	case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
 		return true;
@@ -178,11 +190,19 @@ static bool env_cb(unsigned cmd, void *data)
 
 static void video_cb(const void *data, unsigned width, unsigned height, size_t pitch)
 {
-	(void)data;
-	(void)width;
-	(void)height;
-	(void)pitch;
-	current_engine()->frames_seen++;
+	mdmi_engine *e = current_engine();
+	e->frames_seen++;
+	if (!data || !__atomic_load_n(&e->frames_watched, __ATOMIC_ACQUIRE)) {
+		return;
+	}
+	mdmi_frame *frame = &e->frames[e->frame_back];
+	frame->width = width < MDMI_FRAME_MAX_WIDTH ? width : MDMI_FRAME_MAX_WIDTH;
+	frame->height = height < MDMI_FRAME_MAX_HEIGHT ? height : MDMI_FRAME_MAX_HEIGHT;
+	const uint8_t *row = data;
+	for (uint32_t y = 0; y < frame->height; y++, row += pitch) {
+		memcpy(frame->pixels + y * MDMI_FRAME_MAX_WIDTH, row, frame->width * sizeof(uint32_t));
+	}
+	e->frame_back = __atomic_exchange_n(&e->frame_shared, e->frame_back | FRAME_NEW, __ATOMIC_ACQ_REL) & FRAME_INDEX;
 }
 
 static void audio_cb(int16_t left, int16_t right)
@@ -494,10 +514,14 @@ mdmi_engine *mdmi_engine_create(void)
 	e->ring[0] = calloc(RING_FRAMES, sizeof(float));
 	e->ring[1] = calloc(RING_FRAMES, sizeof(float));
 	e->midi_queue = calloc(MIDI_QUEUE_SIZE, sizeof(midi_chunk));
-	if (!e->wake || !e->rs || !e->ring[0] || !e->ring[1] || !e->midi_queue) {
+	e->frames = calloc(3, sizeof(mdmi_frame));
+	if (!e->wake || !e->rs || !e->ring[0] || !e->ring[1] || !e->midi_queue || !e->frames) {
 		mdmi_engine_destroy(e);
 		return NULL;
 	}
+	e->frame_front = 0;
+	e->frame_back = 1;
+	e->frame_shared = 2;
 	return e;
 }
 
@@ -544,6 +568,7 @@ void mdmi_engine_destroy(mdmi_engine *e)
 		free(e->ring[0]);
 		free(e->ring[1]);
 		free(e->midi_queue);
+		free(e->frames);
 		free(e);
 	}
 }
@@ -637,8 +662,22 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.worst_run_pos = e->worst_run_pos,
 		.first_underrun_pos = e->first_underrun_pos,
 		.last_underrun_pos = e->last_underrun_pos,
+		.active = __atomic_load_n(&e->active, __ATOMIC_ACQUIRE) != 0,
 	};
 	return stats;
+}
+
+void mdmi_engine_watch_frames(mdmi_engine *e, bool watching)
+{
+	__atomic_store_n(&e->frames_watched, watching, __ATOMIC_RELEASE);
+}
+
+const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e)
+{
+	if (__atomic_load_n(&e->frame_shared, __ATOMIC_ACQUIRE) & FRAME_NEW) {
+		e->frame_front = __atomic_exchange_n(&e->frame_shared, e->frame_front, __ATOMIC_ACQ_REL) & FRAME_INDEX;
+	}
+	return &e->frames[e->frame_front];
 }
 
 void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *bytes, size_t length)
