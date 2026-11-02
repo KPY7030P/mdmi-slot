@@ -47,6 +47,7 @@ typedef size_t (*midi_write_fn)(const uint8_t *, size_t);
 typedef void (*set_audio_slices_fn)(uint8_t);
 typedef uint32_t (*has_failed_fn)(void);
 typedef void (*set_lowpass_fn)(double);
+typedef uint8_t (*test_ym_read_fn)(uint8_t, uint8_t);
 
 struct mdmi_engine {
 	HANDLE thread;
@@ -60,6 +61,7 @@ struct mdmi_engine {
 	void_fn test_fatal;
 	void_fn test_freeze;
 	has_failed_fn has_failed;
+	test_ym_read_fn test_ym_read;
 	set_lowpass_fn set_lowpass;
 	void_fn retro_deinit;
 	double core_rate;
@@ -387,11 +389,13 @@ static bool load_core(mdmi_engine *e)
 	LOAD(has_failed, has_failed_fn, "mdmi_has_failed")
 	LOAD(test_fatal, void_fn, "mdmi_test_fatal")
 	LOAD(test_freeze, void_fn, "mdmi_test_freeze")
+	LOAD(test_ym_read, test_ym_read_fn, "mdmi_test_ym_read")
 	LOAD(deinit, void_fn, "retro_deinit")
 	LOAD(set_lowpass, set_lowpass_fn, "mdmi_set_lowpass")
 	e->retro_run = run;
 	e->midi_write = midi_write;
 	e->has_failed = has_failed;
+	e->test_ym_read = test_ym_read;
 	e->test_fatal = test_fatal;
 	e->test_freeze = test_freeze;
 	e->retro_deinit = deinit;
@@ -654,6 +658,11 @@ void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz)
 void mdmi_engine_set_offline(mdmi_engine *e, bool offline)
 {
 	__atomic_store_n(&e->offline, offline, __ATOMIC_RELEASE);
+}
+
+uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg)
+{
+	return e->test_ym_read(part, reg);
 }
 
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)

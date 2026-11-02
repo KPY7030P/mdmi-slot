@@ -69,6 +69,12 @@ target_sources(vst3_host PRIVATE "${VST3_SDK_ROOT}/pluginterfaces/base/funknown.
 target_link_libraries(vst3_host PRIVATE ole32 user32)
 add_dependencies(mdmi_all vst3_host)
 
+add_executable(e1_test tools/test/e1_test.c)
+target_compile_options(e1_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
+target_include_directories(e1_test PRIVATE src "${CLAP_SDK_ROOT}/include")
+target_link_libraries(e1_test PRIVATE mdmi_impl)
+add_dependencies(mdmi_all e1_test)
+
 add_executable(param_test tools/test/param_test.c)
 target_compile_options(param_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
 target_include_directories(param_test PRIVATE "${CLAP_SDK_ROOT}/include")

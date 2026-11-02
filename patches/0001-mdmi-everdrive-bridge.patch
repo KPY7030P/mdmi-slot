@@ -78,15 +78,16 @@ index 3472c7f..ababb61 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..8700ef4
+index 0000000..b4edd05
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,118 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
 +#include "util.h"
 +#include "config.h"
++#include "genesis.h"
 +#ifdef _WIN32
 +#include <windows.h>
 +#else
@@ -170,6 +171,14 @@ index 0000000..8700ef4
 +RETRO_API void mdmi_test_freeze(void)
 +{
 +	machine_freeze(NULL, NULL, NULL, "mdmi_test_freeze\n");
++}
++
++//Host API: what the running chip holds in a register, for tests
++RETRO_API uint8_t mdmi_test_ym_read(uint8_t part, uint8_t reg)
++{
++	extern system_header *current_system;
++	ym2612_context *ym = ((genesis_context *)current_system)->ym;
++	return part ? ym->part2_regs[reg - YM_PART2_START] : ym->part1_regs[reg - YM_PART1_START];
 +}
 +
 +//Host API: returns the number of bytes accepted
