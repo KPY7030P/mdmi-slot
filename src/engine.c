@@ -114,7 +114,6 @@ struct mdmi_engine {
 
 static DWORD tls_engine = TLS_OUT_OF_INDEXES;
 static PVOID crash_handler;
-static LONG instance_counter;
 static LONG global_init_count;
 
 static mdmi_engine *current_engine(void)
@@ -301,9 +300,10 @@ static bool unpack_files(mdmi_engine *e)
 	CreateDirectoryA(dir, NULL);
 	clean_stale_temp_files(dir);
 
-	LONG id = InterlockedIncrement(&instance_counter);
-	snprintf(e->dll_path, sizeof(e->dll_path), "%sengine-%lu-%ld.dll", dir, GetCurrentProcessId(), id);
-	snprintf(e->rom_path, sizeof(e->rom_path), "%srom-%lu-%ld.bin", dir, GetCurrentProcessId(), id);
+	// This runs on the engine's own thread, whose id no other engine has, whichever plugin file
+	// of this process it comes from.
+	snprintf(e->dll_path, sizeof(e->dll_path), "%sengine-%lu-%lu.dll", dir, GetCurrentProcessId(), GetCurrentThreadId());
+	snprintf(e->rom_path, sizeof(e->rom_path), "%srom-%lu-%lu.bin", dir, GetCurrentProcessId(), GetCurrentThreadId());
 	return write_file(e->dll_path, mdmi_blob_engine, (size_t)(mdmi_blob_engine_end - mdmi_blob_engine))
 		&& write_file(e->rom_path, mdmi_blob_rom, (size_t)(mdmi_blob_rom_end - mdmi_blob_rom));
 }

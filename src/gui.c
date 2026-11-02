@@ -151,6 +151,11 @@ static int row_y(int channel)
 
 static bool drag_fits_channel(const mdmi_gui *g, int channel)
 {
+#ifdef MDMI_E3
+	// The experiment asks whether any file arrives, so a browser that hides .tfi can still answer.
+	(void)channel;
+	return g->drag_has_file;
+#else
 	const char *dot = strrchr(g->drag_name, '.');
 	if (!g->drag_has_file || !dot) {
 		return false;
@@ -162,6 +167,7 @@ static bool drag_fits_channel(const mdmi_gui *g, int channel)
 		return !channel_is_fm(channel);
 	}
 	return false;
+#endif
 }
 
 static void note_name(int key, char *out, size_t size)
@@ -240,6 +246,7 @@ static void draw_row(mdmi_gui *g, int channel)
 
 static void draw_editor(mdmi_gui *g)
 {
+	fill(g, 0, HEADER_H, GUI_WIDTH, FOOTER_Y - HEADER_H, C_BG);
 	fill(g, 0, HEADER_H, GUI_WIDTH, GROUP_H, C_CELL);
 	text(g, 8, HEADER_H + 8, "YM2612", C_FM_LIGHT, 1);
 	int psg_y = row_y(PATCH_NUM_FM_CHANNELS) - GROUP_H;
@@ -364,7 +371,8 @@ static void refresh(mdmi_gui *g)
 	}
 }
 
-// Drag and drop. Explorer offers CF_HDROP. Whatever else a host offers is listed in the footer,
+#ifdef MDMI_E3
+// Drag and drop. Stage 4 brings it to the real plugin. Explorer offers CF_HDROP. Whatever else a host offers is listed in the footer,
 // so that a browser that does not offer files can be told apart from one that offers them.
 static HRESULT STDMETHODCALLTYPE drop_query_interface(IDropTarget *self, REFIID riid, void **out)
 {
@@ -446,7 +454,10 @@ static void update_drag(mdmi_gui *g, POINTL point, DWORD *effect)
 	POINT client = {point.x, point.y};
 	ScreenToClient(g->window, &client);
 	g->drag_row = row_at(client.y / g->scale);
-	*effect = g->drag_has_file && g->drag_row >= 0 && drag_fits_channel(g, g->drag_row) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+	// Only an effect the source allows can complete the drop.
+	DWORD allowed = *effect;
+	DWORD chosen = allowed & DROPEFFECT_COPY ? DROPEFFECT_COPY : allowed & DROPEFFECT_LINK ? DROPEFFECT_LINK : allowed & DROPEFFECT_MOVE;
+	*effect = g->drag_has_file && g->drag_row >= 0 && drag_fits_channel(g, g->drag_row) ? chosen : DROPEFFECT_NONE;
 	refresh(g);
 }
 
@@ -502,6 +513,16 @@ static IDropTargetVtbl drop_vtable = {
 	drop_query_interface, drop_add_ref, drop_release, drop_enter, drop_over, drop_leave, drop_drop,
 };
 
+static void e3_finish_cell_drag(mdmi_gui *g)
+{
+	if (g->drag_cell >= 0) {
+		int cell = g->drag_cell;
+		g->drag_cell = -1;
+		g->source.e3.end(g->source.e3.context, cell);
+	}
+}
+#endif
+
 static void on_click(mdmi_gui *g, int x, int y)
 {
 	if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H) {
@@ -549,23 +570,36 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		return 0;
 	case WM_ERASEBKGND:
 		return 1;
+	case WM_DESTROY:
+		// Also reached when the host destroys our parent first. The next set_parent makes a new window.
+		KillTimer(window, TIMER_ID);
+#ifdef MDMI_E3
+		if (g->drop_registered) {
+			RevokeDragDrop(window);
+			g->drop_registered = false;
+		}
+#endif
+		SetWindowLongPtrA(window, GWLP_USERDATA, 0);
+		g->window = NULL;
+		InterlockedDecrement(&window_count);
+		return 0;
 	case WM_LBUTTONDOWN:
 		on_click(g, (short)LOWORD(lparam) / g->scale, (short)HIWORD(lparam) / g->scale);
 		return 0;
 #ifdef MDMI_E3
 	case WM_MOUSEMOVE:
-		if (g->drag_cell >= 0) {
+		if (g->drag_cell >= 0 && (wparam & MK_LBUTTON)) {
 			int value = g->drag_start_value + g->drag_start_y - (short)HIWORD(lparam) / g->scale;
 			value = value < 0 ? 0 : value > 127 ? 127 : value;
 			g->source.e3.change(g->source.e3.context, g->drag_cell, value);
 		}
 		return 0;
 	case WM_LBUTTONUP:
-		if (g->drag_cell >= 0) {
-			g->source.e3.end(g->source.e3.context, g->drag_cell);
-			g->drag_cell = -1;
-			ReleaseCapture();
-		}
+		e3_finish_cell_drag(g);
+		ReleaseCapture();
+		return 0;
+	case WM_CAPTURECHANGED:
+		e3_finish_cell_drag(g);
 		return 0;
 #endif
 	default:
@@ -608,19 +642,16 @@ void gui_destroy(mdmi_gui *g)
 	}
 	mdmi_engine_watch_frames(g->source.engine, false);
 	if (g->window) {
-		KillTimer(g->window, TIMER_ID);
-		if (g->drop_registered) {
-			RevokeDragDrop(g->window);
-		}
-		SetWindowLongPtrA(g->window, GWLP_USERDATA, 0);
 		DestroyWindow(g->window);
-		if (InterlockedDecrement(&window_count) == 0) {
-			UnregisterClassA(WINDOW_CLASS, this_module());
-		}
 	}
+	if (window_count == 0) {
+		UnregisterClassA(WINDOW_CLASS, this_module());
+	}
+#ifdef MDMI_E3
 	if (g->ole_ready) {
 		OleUninitialize();
 	}
+#endif
 	free(g->pixels);
 	free(g);
 }
@@ -649,16 +680,20 @@ bool gui_set_parent(mdmi_gui *g, void *parent_hwnd)
 	SetWindowLongPtrA(g->window, GWLP_USERDATA, (LONG_PTR)g);
 	SetTimer(g->window, TIMER_ID, TIMER_MS, NULL);
 
+#ifdef MDMI_E3
 	g->drop.iface.lpVtbl = &drop_vtable;
 	g->drop.gui = g;
 	// OleInitialize says S_FALSE when the host has done it already; both count towards uninitializing.
-	g->ole_ready = SUCCEEDED(OleInitialize(NULL));
+	if (!g->ole_ready) {
+		g->ole_ready = SUCCEEDED(OleInitialize(NULL));
+	}
 	HRESULT registered = RegisterDragDrop(g->window, &g->drop.iface);
 	g->drop_registered = SUCCEEDED(registered);
 	if (!g->drop_registered) {
 		snprintf(g->message, sizeof(g->message), "Files can't be dropped here: error %08lX", (unsigned long)registered);
 		g->message_is_warning = true;
 	}
+#endif
 	render(g);
 	return true;
 }

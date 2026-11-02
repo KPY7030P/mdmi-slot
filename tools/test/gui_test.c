@@ -284,6 +284,22 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_not_black(HEADER_H, HEIGHT) > 1000, "the ROM page is still open after reopening");
 
+		// The status strip must not keep pieces of the ROM page.
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(100);
+		capture(window);
+		CHECK(count_not_black(HEIGHT - 28, HEIGHT) == 0, "nothing from the ROM page is left at the bottom");
+
+		// A host may destroy our parent before telling us, then attach the same view again.
+		DestroyWindow(parent);
+		run_ms(100);
+		parent = CreateWindowExA(0, "STATIC", "gui_test", WS_POPUP, 0, 0, WIDTH, HEIGHT, NULL, NULL, NULL, NULL);
+		window_ref.win32 = parent;
+		CHECK(gui->set_parent(plugin, &window_ref) && gui->show(plugin), "window survives losing its parent");
+		window = FindWindowExA(parent, NULL, "MDMIPluginWindow", NULL);
+		CHECK(window != NULL, "a new window exists");
+		run_ms(100);
+
 		CHECK(gui->set_scale(plugin, 2.0), "scale accepted");
 		gui->get_size(plugin, &width, &height);
 		CHECK(width == WIDTH * 2 && height == HEIGHT * 2, "doubled size is %ux%u", width, height);
