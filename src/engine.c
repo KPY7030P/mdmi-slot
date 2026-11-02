@@ -19,6 +19,7 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 #define MIDI_CHUNK 7
 #define CORE_BATCH_FRAMES 128
 #define MARGIN_SECONDS 0.005
+#define RENDER_WAIT_MS 1.0
 // Measured from note event to first sound: the ROM parsing MIDI and the YM2612 attack.
 #define ROM_REACTION_SECONDS 0.0025
 #define STALE_TEMP_FILE_SECONDS (24 * 3600)
@@ -721,9 +722,12 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 	SetEvent(e->wake);
 	__atomic_store_n(&e->last_block, frames, __ATOMIC_RELAXED);
 
-	if (available < frames && __atomic_load_n(&e->offline, __ATOMIC_ACQUIRE)) {
-		// Offline rendering has no deadline, so wait for the emulator instead of dropping audio.
-		while (available < frames && !worker_dead(e)) {
+	bool offline = __atomic_load_n(&e->offline, __ATOMIC_ACQUIRE) != 0;
+	if (available < frames && (offline || __atomic_load_n(&e->booted, __ATOMIC_ACQUIRE))) {
+		// Offline rendering has no deadline. In real time a host with a large device buffer calls
+		// several blocks in a row, ahead of its deadline, so a short wait beats dropping audio.
+		double give_up = now_ms() + RENDER_WAIT_MS;
+		while (available < frames && !worker_dead(e) && (offline || now_ms() < give_up)) {
 			SwitchToThread();
 			available = __atomic_load_n(&e->ring_write, __ATOMIC_ACQUIRE) - read;
 		}

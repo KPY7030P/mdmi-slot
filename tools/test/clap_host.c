@@ -219,7 +219,10 @@ int main(int argc, char **argv)
 				worst_process_ms = ms;
 			}
 		}
-		if (!offline) {
+		// A host with a large device buffer calls process() several times in a row, then waits.
+		const char *burst = getenv("MDMI_TEST_BURST");
+		uint32_t burst_frames = block * (burst ? (uint32_t)atoi(burst) : 1);
+		if (!offline && (pos + block) % burst_frames == 0) {
 			// Pace blocks against the clock like an audio callback.
 			double due = (double)(pos + block) / rate;
 			QueryPerformanceCounter(&now);
@@ -234,7 +237,7 @@ int main(int argc, char **argv)
 					break;
 				}
 				// Spin rather than Sleep: Sleep can oversleep by 15ms, and catching up afterwards
-				// would call process() faster than real time, which no audio driver does.
+				// would add bursts the test did not ask for.
 				SwitchToThread();
 			}
 		}

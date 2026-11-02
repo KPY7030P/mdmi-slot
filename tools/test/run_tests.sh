@@ -64,6 +64,8 @@ run realtime-48k-64 48000 64 realtime 1
 run realtime-two 48000 128 realtime 2
 run offline-four 48000 256 offline 4
 run realtime-eight 48000 64 realtime 8
+export MDMI_TEST_BURST=2; run realtime-burst 44100 256 realtime 2; unset MDMI_TEST_BURST
+! grep -q "underruns=[1-9]" "$OUT/realtime-burst.log" || fail "realtime-burst: underruns"
 export MDMI_TEST_REACTIVATE=1; run reactivate 48000 128 realtime 1; unset MDMI_TEST_REACTIVATE
 export MDMI_TEST_CRASH=fatal; run crash-fatal 48000 128 realtime 1 dead
 export MDMI_TEST_CRASH=segv; run crash-segv 48000 128 realtime 1 dead
