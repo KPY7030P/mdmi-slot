@@ -213,10 +213,17 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	}
 
 	uint32_t note = __atomic_load_n(&g->source.notes[channel], __ATOMIC_ACQUIRE);
-	// A row whose voice another channel's chord plays shows the bracket, not its own last note.
+	// A row whose voice another channel's chord plays shows that note and whose it is, not its own
+	// last note.
 	const int player = patch_voice_player(g->source.patch, channel);
-	const bool lent = player >= 0 && player != channel;
-	if (GUI_NOTE_SEEN(note) && !(lent && GUI_NOTE_HELD(note) == 0)) {
+	const bool lent = player >= 0 && player != channel && !(GUI_NOTE_SEEN(note) && GUI_NOTE_HELD(note));
+	if (lent) {
+		note_name(patch_voice_key(g->source.patch, channel), buffer, sizeof(buffer));
+		const int left = RAIL_W - 6 - (int)strlen(buffer) * 12;
+		text(g, left, y + 3, buffer, C_PLAYING, 2);
+		snprintf(buffer, sizeof(buffer), "CH%d", player + 1);
+		text(g, left - 4 - (int)strlen(buffer) * 6, y + 7, buffer, C_LABEL, 1);
+	} else if (GUI_NOTE_SEEN(note)) {
 		const int held = (int)GUI_NOTE_HELD(note);
 		note_name(GUI_NOTE_KEY(note), buffer, sizeof(buffer));
 		int left = RAIL_W - 6 - (int)strlen(buffer) * 12;
@@ -240,7 +247,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 // rows sits nearest the names, so nested ones don't cross.
 #define LEND_LANE_X 44
 #define LEND_LANE_STEP 7
-#define LEND_TIP_X 49
+#define LEND_TIP_X 47
 static void draw_lends(mdmi_gui *g)
 {
 	int top[PATCH_NUM_FM_CHANNELS], bottom[PATCH_NUM_FM_CHANNELS];
@@ -274,11 +281,15 @@ static void draw_lends(mdmi_gui *g)
 				continue;
 			}
 			const int y = row_y(row) + ROW_H / 2;
+			if (row == c) {
+				// Where the chord comes from: a square on the spine, no arrow.
+				fill(g, x - 2, y - 3, 6, 7, C_PLAYING);
+				continue;
+			}
+			// Where it goes: a branch with an arrowhead into the row.
 			fill(g, x, y, LEND_TIP_X - x, 1, C_PLAYING);
-			if (row != c) {
-				fill(g, LEND_TIP_X, y - 2, 1, 5, C_PLAYING);
-				fill(g, LEND_TIP_X + 1, y - 1, 1, 3, C_PLAYING);
-				fill(g, LEND_TIP_X + 2, y, 1, 1, C_PLAYING);
+			for (int i = 0; i < 5; i++) {
+				fill(g, LEND_TIP_X + i, y - 4 + i, 1, 9 - 2 * i, C_PLAYING);
 			}
 		}
 	}

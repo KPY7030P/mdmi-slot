@@ -688,11 +688,20 @@ int patch_voice_player(const mdmi_patch *patch, int voice)
 	return __atomic_load_n(&patch->playing[voice], __ATOMIC_RELAXED);
 }
 
+int patch_voice_key(const mdmi_patch *patch, int voice)
+{
+	if (voice < 0 || voice >= PATCH_NUM_FM_CHANNELS) {
+		return 0;
+	}
+	return __atomic_load_n(&patch->playing_key[voice], __ATOMIC_RELAXED);
+}
+
 // Shows the window who plays where, once the notes are out.
 static void publish_voices(mdmi_patch *patch)
 {
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		const patch_voice *v = &patch->voices[voice];
+		__atomic_store_n(&patch->playing_key[voice], v->key, __ATOMIC_RELAXED);
 		__atomic_store_n(&patch->playing[voice], (int8_t)(v->pending ? -1 : v->channel), __ATOMIC_RELAXED);
 	}
 }
