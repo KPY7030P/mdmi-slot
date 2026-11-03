@@ -1075,15 +1075,23 @@ static void save_dialog(mdmi_gui *g)
 	dialog.nFilterIndex = fm ? 1 : 2;
 	dialog.lpstrFile = path;
 	dialog.nMaxFile = MAX_PATH;
-	dialog.lpstrDefExt = L"vgi";
 	dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 	if (!GetSaveFileNameW(&dialog)) {
 		return;
 	}
+	// The name's extension says what the file is when it is ours, since loading goes by it; without
+	// one, the chosen type's extension is added.
 	static const int KINDS[3] = {FILES_INSTRUMENT, FILES_BANK, FILES_SNAPSHOT};
-	const int kind = KINDS[dialog.nFilterIndex >= 1 && dialog.nFilterIndex <= 3 ? dialog.nFilterIndex - 1 : 1];
-	char utf8[MAX_PATH * 3], message[FILES_MESSAGE];
-	to_utf8(path, utf8, sizeof(utf8));
+	static const char *const EXTENSIONS[3] = {".vgi", ".mdbank", ".mdsnap"};
+	const int chosen = dialog.nFilterIndex >= 1 && dialog.nFilterIndex <= 3 ? (int)dialog.nFilterIndex - 1 : 1;
+	char utf8[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
+	to_utf8(path, utf8, MAX_PATH * 3);
+	const char *dot = strrchr(utf8, '.');
+	const bool ours = dot && (!_stricmp(dot, ".vgi") || files_kind(utf8) == FILES_BANK || files_kind(utf8) == FILES_SNAPSHOT);
+	if (!ours) {
+		strcat(utf8, EXTENSIONS[chosen]);
+	}
+	const int kind = ours ? files_kind(utf8) : KINDS[chosen];
 	bool done = files_save(g->source.files, utf8, kind, fm ? channel : -1, message, sizeof(message));
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
 }
@@ -1347,8 +1355,8 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 
 static DWORD drop_effect(DWORD allowed, bool fits)
 {
-	// Only an effect the source allows can complete the drop.
-	DWORD chosen = allowed & DROPEFFECT_COPY ? DROPEFFECT_COPY : allowed & DROPEFFECT_LINK ? DROPEFFECT_LINK : allowed & DROPEFFECT_MOVE;
+	// Only an effect the source allows can complete the drop, and a move would let it delete the file.
+	DWORD chosen = allowed & DROPEFFECT_COPY ? DROPEFFECT_COPY : allowed & DROPEFFECT_LINK;
 	return fits ? chosen : DROPEFFECT_NONE;
 }
 
@@ -1390,6 +1398,9 @@ static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data,
 	g->file_over = false;
 	if (fits) {
 		open_file(g, g->file_path, g->drop_channel, g->drop_place);
+	} else {
+		// What the footer said while the file was over the window stays there after it.
+		say(g, g->drop_hint, C_ERROR, ERROR_TICKS);
 	}
 	refresh(g);
 	return S_OK;

@@ -265,7 +265,7 @@ static void test_load(void)
 {
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	patch_publish(patch);
-	patch_save(patch, state);
+	patch_save(patch_view(patch), state);
 	set_on(0, PARAM_PRESET, 99);
 	set_on(1, PARAM_OP_BASE + F_TL, 12);
 	set_on(5, PARAM_OP_BASE + F_SR, 30);
@@ -965,12 +965,20 @@ static void test_files(void)
 	patch_instrument instrument;
 	if (load_file("Duck Guitar.tfi", &instrument)) {
 		drop_and_play(0, &instrument);
-		const uint8_t VGM[7] = {0x51, 0x12, 0x1D, 0x00, 0x01, 0x10, 0x00};
+		// Registers 30-90 of each slot at the song's key ons; only the carrier's TL changes there.
+		const uint8_t VGM[4][7] = {
+			{0x51, 0x12, 0x1D, 0x00, 0x01, 0x10, 0x00},
+			{0x01, 0x06, 0x1D, 0x0A, 0x01, 0x80, 0x00},
+			{0x00, 0x1A, 0x1C, 0x1F, 0x00, 0x51, 0x00},
+			{0x02, 0x00, 0x1F, 0x0A, 0x00, 0x09, 0x00},
+		};
 		bool same = read_reg(0, 0xB0, 0) == (4 << 3 | 0);
-		for (int reg = 0; reg < 7; reg++) {
-			same = same && read_reg(0, 0x30 + reg * 0x10, 0) == VGM[reg];
+		for (int slot = 0; slot < 4; slot++) {
+			for (int reg = 0; reg < 7; reg++) {
+				same = same && (slot == 3 && reg == 1 ? true : read_reg(0, 0x30 + reg * 0x10, slot) == VGM[slot][reg]);
+			}
 		}
-		check(same, "Duck Guitar's first operator holds the registers of the VGM it came from: detune centred on 3");
+		check(same, "Duck Guitar holds the registers of the VGM it came from, every slot: operators 1, 3, 2, 4 and detune centred on 3");
 	}
 	if (load_file("Thunder Guitar 03.tyi", &instrument)) {
 		drop_and_play(1, &instrument);
@@ -1039,6 +1047,16 @@ static void test_bank_place(void)
 	check(count == 4 && same == 4, "a chord of 4 on channel 1 plays it on every voice it borrowed");
 	moment(0, 60, 4, false);
 	render(SETTLE_BLOCKS);
+
+	// A file dropped on the place a channel plays as it is: the channel takes it at once.
+	file_regs duck;
+	if (file_regs_of("Duck Guitar.tfi", &duck) && load_file("Duck Guitar.tfi", &instrument)) {
+		patch_load_place(patch, 20, &instrument);
+		patch_take_incoming(patch);
+		patch_sync(patch, &patch->rom, emit, NULL);
+		play_each_channel();
+		check(compare_file(0, &duck, true) == 0 && !strcmp(patch->model.names[0], "Duck Guitar"), "a new file in the place channel 1 plays reaches it");
+	}
 	midi(0xC0, 0, 0);
 	set_on(2, PARAM_PRESET, 0);
 }

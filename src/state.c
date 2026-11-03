@@ -27,13 +27,14 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 	memcpy(buffer, &version, sizeof(version));
 	uint8_t *out = buffer + sizeof(version);
 	if (view) {
+		const patch_values *values = patch_view(patch);
 		out = put_block_head(out, BLOCK_VALUES, (uint32_t)patch_save_size());
-		patch_save(patch, out);
+		patch_save(values, out);
 		out = put_block_head(out + patch_save_size(), BLOCK_VIEW, 2);
 		out[0] = (uint8_t)view->page;
 		out[1] = (uint8_t)view->channel;
 		out = put_block_head(out + 2, BLOCK_NAMES, NAMES_BYTES);
-		patch_save_names(patch, out);
+		patch_save_names(values, out);
 		out += NAMES_BYTES;
 	}
 	out = put_block_head(out, BLOCK_BANK, sizeof(patch_bank));

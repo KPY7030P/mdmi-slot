@@ -1272,9 +1272,8 @@ size_t patch_save_size(void)
 	return PATCH_NUM_IDS * SAVED_PAIR_BYTES;
 }
 
-void patch_save(mdmi_patch *patch, void *buffer)
+void patch_save(const patch_values *values, void *buffer)
 {
-	const patch_values *values = patch_view(patch);
 	uint8_t *out = buffer;
 	for (uint32_t i = 0; i < PATCH_NUM_IDS; i++) {
 		uint32_t id = panel_order[i];
@@ -1344,9 +1343,9 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (
 	return true;
 }
 
-void patch_save_names(mdmi_patch *patch, void *buffer)
+void patch_save_names(const patch_values *values, void *buffer)
 {
-	memcpy(buffer, patch_view(patch)->names, sizeof(patch->model.names));
+	memcpy(buffer, values->names, sizeof(values->names));
 }
 
 // A bank place from a file holds only what the knobs can.
@@ -1405,6 +1404,15 @@ bool patch_take_incoming(mdmi_patch *patch)
 		patch->model = incoming->values;
 	}
 	if (incoming->parts & PATCH_INCOMING_BANK) {
+		// A channel that plays its place as it is follows the place; one with tweaks or a file of its
+		// own keeps them. A whole state brings its channels with it.
+		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS && !(incoming->parts & PATCH_INCOMING_VALUES); channel++) {
+			const int place = patch->model.channels[channel][PARAM_PRESET];
+			const patch_instrument *was = &patch->bank.places[place];
+			if (!memcmp(patch->model.channels[channel] + PARAM_ALGORITHM, was->voice, sizeof(was->voice)) && !strcmp(patch->model.names[channel], was->name)) {
+				put_voice(&patch->model, channel, &incoming->bank.places[place]);
+			}
+		}
 		patch->bank = incoming->bank;
 	}
 	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {

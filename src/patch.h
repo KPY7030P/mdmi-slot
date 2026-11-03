@@ -192,12 +192,13 @@ void patch_format(const patch_bank *bank, uint32_t id, int value, char *text, si
 double patch_filter_hz(int value);
 // Saved values are pairs of id and value, so knobs can be added without breaking projects.
 size_t patch_save_size(void);
-void patch_save(mdmi_patch *patch, void *buffer);
+// Of one view, so the values and the names of a saved state belong together.
+void patch_save(const patch_values *values, void *buffer);
 // Takes what it knows from a saved state and leaves it for the writer to take. Without names, a
 // channel is named after its bank place.
 bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME]);
 // Main thread: the names of the FM channels, PATCH_NUM_FM_CHANNELS * PATCH_NAME bytes.
-void patch_save_names(mdmi_patch *patch, void *buffer);
+void patch_save_names(const patch_values *values, void *buffer);
 // Main thread: a new bank, or one place of it, for the writer to take.
 void patch_load_bank(mdmi_patch *patch, const patch_bank *bank);
 void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *instrument);

@@ -279,7 +279,7 @@ static void test_load(void)
 	patch_publish(&patch);
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
-	patch_save(&patch, state);
+	patch_save(patch_view(&patch), state);
 	CHECK(patch_load(&other, state, sizeof(state), NULL), "a saved state loads");
 	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
@@ -353,7 +353,7 @@ static void test_threads(void)
 	int torn = 0, reads = 0;
 	DWORD start = GetTickCount();
 	while (GetTickCount() - start < STRESS_MS) {
-		patch_save(&stress, state);
+		patch_save(patch_view(&stress), state);
 		int preset = saved(state, PRESET_ID(0));
 		bool same = saved(state, PATCH_CHANNEL_ID(0, PARAM_ALGORITHM)) == PRESETS_GM[preset][0];
 		for (int op = 0; op < PATCH_OPS; op++) {
