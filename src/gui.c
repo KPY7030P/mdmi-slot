@@ -216,11 +216,18 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	if (GUI_NOTE_SEEN(note)) {
 		const int held = (int)GUI_NOTE_HELD(note);
 		note_name(GUI_NOTE_KEY(note), buffer, sizeof(buffer));
-		const int left = RAIL_W - 6 - (int)strlen(buffer) * 12;
+		int left = RAIL_W - 6 - (int)strlen(buffer) * 12;
 		text(g, left, y + 3, buffer, held ? C_PLAYING : C_HINT, 2);
 		if (held > 1) {
 			snprintf(buffer, sizeof(buffer), "x%d", held);
-			text(g, left - 4 - (int)strlen(buffer) * 6, y + 7, buffer, C_PLAYING, 1);
+			left -= 4 + (int)strlen(buffer) * 6;
+			text(g, left, y + 7, buffer, C_PLAYING, 1);
+		}
+		// Held notes without a voice: cut off by a tune, or more than the free voices (D20).
+		const int muted = patch_muted_notes(g->source.patch, channel);
+		if (muted > 0) {
+			snprintf(buffer, sizeof(buffer), "%d CUT", muted);
+			text(g, left - 6 - (int)strlen(buffer) * 6, y + 7, buffer, C_ERROR, 1);
 		}
 	}
 }

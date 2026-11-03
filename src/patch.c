@@ -33,7 +33,10 @@
 #define CC_RESET_ALL 121
 #define CC_STORE_PROGRAM 87
 #define YM_REG_SUSTAIN_RATE 0x70
+#define SYSEX_REMAP 0x00
 #define SYSEX_DYNAMIC 0x03
+#define CC_ALL_NOTES_OFF 123
+#define CC_ALL_SOUND_OFF 120
 // The ROM applies LFO and DAC controllers once per voice of the channel they come on. Channel 7's
 // PSG voice is never remapped, so there they apply exactly once whatever Polyphony does.
 #define GLOBAL_CC_CHANNEL 6
@@ -254,6 +257,14 @@ void patch_init(mdmi_patch *patch)
 	patch->rom.values = patch->model;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		patch->rom.voice_owner[voice] = (int8_t)voice;
+		patch->rom.programs[voice] = patch->model.channels[voice][PARAM_PRESET];
+		memcpy(patch->rom.voices[voice], patch->model.channels[voice], sizeof(patch->rom.voices[voice]));
+		patch->voices[voice].channel = -1;
+		patch->voices[voice].sound = (int8_t)voice;
+	}
+	// Nothing is stored yet, so a service number still loads its built-in preset.
+	for (int i = 0; i < PATCH_SERVICE_PROGRAMS; i++) {
+		load_preset(patch->rom.stored[i], FIRST_SERVICE_PROGRAM + i);
 	}
 	memset(patch->rpn_msb, RPN_NULL, sizeof(patch->rpn_msb));
 	memset(patch->rpn_lsb, RPN_NULL, sizeof(patch->rpn_lsb));
@@ -430,52 +441,64 @@ static void emit_cc(patch_emit_fn emit, void *context, int channel, int cc, int 
 	emit(context, message, sizeof(message));
 }
 
-static void forget_voice(patch_receiver *receiver, int channel)
+// A reset of the chip the ROM doesn't know about: the voices lose their sound, not their numbers.
+static void forget_voices(patch_receiver *receiver)
 {
-	int16_t *rom = receiver->values.channels[channel];
-	rom[PARAM_PRESET] = PATCH_UNKNOWN;
-	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
-		rom[param] = PATCH_UNKNOWN;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+			receiver->voices[voice][param] = PATCH_UNKNOWN;
+		}
 	}
 }
 
 static void forget_everything(patch_receiver *receiver)
 {
-	memset(&receiver->values, 0xFF, sizeof(receiver->values));
-	memset(receiver->voice_owner, 0xFF, sizeof(receiver->voice_owner));
+	memset(receiver, 0xFF, sizeof(*receiver));
+	memset(receiver->alternate, 0, sizeof(receiver->alternate));
 }
 
-static bool owns_voice(const patch_receiver *receiver, int channel)
+// What a program change to a number loads into a voice.
+static void load_program(const patch_receiver *receiver, int program, int16_t *voice)
 {
+	voice[PARAM_PRESET] = (int16_t)program;
+	if (program >= FIRST_SERVICE_PROGRAM) {
+		memcpy(voice + PARAM_ALGORITHM, receiver->stored[program - FIRST_SERVICE_PROGRAM] + PARAM_ALGORITHM, (PATCH_NUM_CHANNEL_PARAMS - PARAM_ALGORITHM) * sizeof(*voice));
+	} else {
+		load_preset(voice, program);
+	}
+}
+
+// A program change reaches every voice of the channel, and the ROM loads it into each voice that
+// has another number. One that has this number keeps what it holds.
+static void select_program(patch_receiver *receiver, int channel, int program, patch_emit_fn emit, void *context)
+{
+	const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)program};
+	emit(context, message, sizeof(message));
+	receiver->programs[channel] = (int16_t)program;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		if (receiver->voice_owner[voice] == channel) {
-			return true;
+		if (receiver->voice_owner[voice] == channel && receiver->voices[voice][PARAM_PRESET] != program) {
+			load_program(receiver, program, receiver->voices[voice]);
 		}
 	}
-	return false;
 }
 
 // A whole voice as the ROM's stored program, selected under one of the channel's two service
 // numbers: the ROM skips a program it thinks is loaded, and a stored one shadows the built-in.
-// The program reaches every voice the channel has.
 static void send_whole_voice(const int16_t *model, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
 {
 	int program = FIRST_SERVICE_PROGRAM + channel * 2 + receiver->alternate[channel];
 	receiver->alternate[channel] = !receiver->alternate[channel];
 	uint8_t sysex[VOICE_SYSEX_HEAD + VOICE_BYTES + 1] = {0xF0, 0x00, 0x22, 0x77, 0x0A, 0x00, (uint8_t)program};
 	uint8_t *voice = sysex + VOICE_SYSEX_HEAD;
+	int16_t *stored = receiver->stored[program - FIRST_SERVICE_PROGRAM];
 	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
 		voice[preset_field(param)] = (uint8_t)model[param];
+		stored[param] = model[param];
 	}
 	sysex[sizeof(sysex) - 1] = 0xF7;
 	emit(context, sysex, sizeof(sysex));
-	const uint8_t select[2] = {(uint8_t)(0xC0 | channel), (uint8_t)program};
-	emit(context, select, sizeof(select));
-	int16_t *rom = receiver->values.channels[channel];
-	rom[PARAM_PRESET] = model[PARAM_PRESET];
-	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
-		rom[param] = model[param];
-	}
+	select_program(receiver, channel, program, emit, context);
+	receiver->values.channels[channel][PARAM_PRESET] = model[PARAM_PRESET];
 }
 
 // The ROM's CC only reaches the first 16 sustain rates. Registers hold operators in the order 1, 3, 2, 4.
@@ -487,46 +510,71 @@ static void write_sustain_rate(int voice, int op, int value, patch_emit_fn emit,
 	emit(context, sysex, sizeof(sysex));
 }
 
-static void sync_voice_param(const int16_t *model, patch_receiver *receiver, int param, int cc, int cc_range, int channel, patch_emit_fn emit, void *context)
+// A controller reaches every voice of its channel, so it goes once if any voice it is meant for
+// differs. A sustain rate above 15 is written into each of them.
+static void sync_voice_param(const int16_t *model, patch_receiver *receiver, unsigned meant, int param, int cc, int cc_range, int channel, patch_emit_fn emit, void *context)
 {
-	int16_t *rom = receiver->values.channels[channel];
 	int value = model[param];
-	if (value == rom[param]) {
+	bool differs = false;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		differs = differs || (meant >> voice & 1 && receiver->voices[voice][param] != value);
+	}
+	if (!differs) {
 		return;
 	}
-	rom[param] = (int16_t)value;
-	if (value < cc_range) {
+	bool by_cc = value < cc_range;
+	if (by_cc) {
 		emit_cc(emit, context, channel, cc, value * (128 / cc_range));
-		return;
 	}
 	int op = (param - PARAM_OP_BASE) / PATCH_OP_PARAMS;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		if (receiver->voice_owner[voice] == channel) {
-			write_sustain_rate(voice, op, value, emit, context);
+		if (receiver->voice_owner[voice] == channel && (by_cc || meant >> voice & 1)) {
+			if (!by_cc) {
+				write_sustain_rate(voice, op, value, emit, context);
+			}
+			receiver->voices[voice][param] = (int16_t)value;
 		}
 	}
 }
 
-static void sync_voice(const int16_t *model, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
+// Brings the voices of the channel to the model: a voice that came from another channel gets the
+// channel's program number, then whatever still differs goes as controllers (D20). A free voice
+// that went home with another channel's sound waits for its own channel's next note, so its tail
+// plays on as it was.
+static void sync_voice(mdmi_patch *patch, const int16_t *model, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
 {
 	int16_t *rom = receiver->values.channels[channel];
-	bool unknown = rom[PARAM_ALGORITHM] == PATCH_UNKNOWN;
-	if (unknown || (model[PARAM_PRESET] != rom[PARAM_PRESET] && model[PARAM_PRESET] >= FIRST_SERVICE_PROGRAM)) {
+	unsigned meant = 0;
+	bool unknown = false, other_program = false;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		const patch_voice *dealt = &patch->voices[voice];
+		if (receiver->voice_owner[voice] == channel && (dealt->channel == channel || dealt->sound == channel)) {
+			meant |= 1u << voice;
+			unknown = unknown || receiver->voices[voice][PARAM_ALGORITHM] == PATCH_UNKNOWN;
+			other_program = other_program || receiver->voices[voice][PARAM_PRESET] != receiver->programs[channel];
+		}
+	}
+	bool new_preset = model[PARAM_PRESET] != rom[PARAM_PRESET];
+	if (unknown || receiver->programs[channel] == PATCH_UNKNOWN || (new_preset && model[PARAM_PRESET] >= FIRST_SERVICE_PROGRAM)) {
 		send_whole_voice(model, receiver, channel, emit, context);
-		return;
+	} else if (new_preset) {
+		select_program(receiver, channel, model[PARAM_PRESET], emit, context);
+		rom[PARAM_PRESET] = model[PARAM_PRESET];
+	} else if (other_program) {
+		select_program(receiver, channel, receiver->programs[channel], emit, context);
 	}
-	if (model[PARAM_PRESET] != rom[PARAM_PRESET]) {
-		const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)model[PARAM_PRESET]};
-		emit(context, message, sizeof(message));
-		load_preset(rom, model[PARAM_PRESET]);
-	}
-	sync_voice_param(model, receiver, PARAM_ALGORITHM, CC_ALGORITHM, 8, channel, emit, context);
-	sync_voice_param(model, receiver, PARAM_FEEDBACK, CC_FEEDBACK, 8, channel, emit, context);
-	sync_voice_param(model, receiver, PARAM_AMS, CC_AMS, 4, channel, emit, context);
-	sync_voice_param(model, receiver, PARAM_FMS, CC_FMS, 8, channel, emit, context);
+	sync_voice_param(model, receiver, meant, PARAM_ALGORITHM, CC_ALGORITHM, 8, channel, emit, context);
+	sync_voice_param(model, receiver, meant, PARAM_FEEDBACK, CC_FEEDBACK, 8, channel, emit, context);
+	sync_voice_param(model, receiver, meant, PARAM_AMS, CC_AMS, 4, channel, emit, context);
+	sync_voice_param(model, receiver, meant, PARAM_FMS, CC_FMS, 8, channel, emit, context);
 	for (int op = 0; op < PATCH_OPS; op++) {
 		for (int i = 0; i < PATCH_OP_PARAMS; i++) {
-			sync_voice_param(model, receiver, PARAM_OP_BASE + op * PATCH_OP_PARAMS + i, OP_PARAMS[i].cc + op, OP_PARAMS[i].cc_range, channel, emit, context);
+			sync_voice_param(model, receiver, meant, PARAM_OP_BASE + op * PATCH_OP_PARAMS + i, OP_PARAMS[i].cc + op, OP_PARAMS[i].cc_range, channel, emit, context);
+		}
+	}
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		if (meant >> voice & 1) {
+			patch->voices[voice].sound = (int8_t)channel;
 		}
 	}
 }
@@ -566,14 +614,14 @@ static void sync_channel_params(mdmi_patch *patch, const int16_t *model, int16_t
 	}
 }
 
-// The ROM's static mapping plays a channel's notes only on its own voice. After a reset or SysEx
-// we can't read, it is set again: a GM reset would otherwise leave the ROM taking any free voice
-// for any channel, past the model. Stage 4 lends voices on top of this (D20).
+// The ROM's static mapping plays a channel's notes only on voices given to it. After a reset or
+// SysEx we can't read, every voice goes back to its own channel: a GM reset would otherwise leave
+// the ROM taking any free voice for any channel, past the model.
 static void sync_voice_owners(patch_receiver *receiver, patch_emit_fn emit, void *context)
 {
 	bool unknown = false;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		unknown = unknown || receiver->voice_owner[voice] != voice;
+		unknown = unknown || receiver->voice_owner[voice] == PATCH_UNKNOWN;
 	}
 	if (unknown) {
 		const uint8_t sysex[7] = {0xF0, 0x00, 0x22, 0x77, SYSEX_DYNAMIC, 0x00, 0xF7};
@@ -582,6 +630,283 @@ static void sync_voice_owners(patch_receiver *receiver, patch_emit_fn emit, void
 			receiver->voice_owner[voice] = (int8_t)voice;
 		}
 	}
+}
+
+// The voice dealer (D20, D21). Every FM channel plays on its own voice; a note it plays while that
+// voice is busy borrows the free voice of another channel that costs least to turn into its sound.
+// A channel takes its own voice back for its next note and cuts the chord's note on it.
+
+// Channels that play only on their own voice, which is never lent: the ROM glides on one voice,
+// Ch3 Special gives voice 3 a pitch per operator, and the DAC takes voice 6.
+static bool plays_alone(const mdmi_patch *patch, int channel)
+{
+	return patch->model.channels[channel][PARAM_PORTA_ON]
+		|| (channel == 2 && patch->model.globals[GLOBAL_CH3_MODE])
+		|| (channel == PATCH_NUM_FM_CHANNELS - 1 && patch->model.globals[GLOBAL_DAC]);
+}
+
+static void emit_note(patch_emit_fn emit, void *context, int status, int channel, int key, int velocity)
+{
+	const uint8_t message[3] = {(uint8_t)(status | channel), (uint8_t)key, (uint8_t)velocity};
+	emit(context, message, sizeof(message));
+}
+
+static bool is_muted(const mdmi_patch *patch, int channel, int key)
+{
+	return patch->muted[channel][key >> 5] >> (key & 31) & 1;
+}
+
+static void set_muted(mdmi_patch *patch, int channel, int key, bool muted)
+{
+	if (is_muted(patch, channel, key) == muted) {
+		return;
+	}
+	patch->muted[channel][key >> 5] ^= 1u << (key & 31);
+	__atomic_store_n(&patch->muted_count[channel], (uint8_t)(patch->muted_count[channel] + (muted ? 1 : -1)), __ATOMIC_RELAXED);
+}
+
+int patch_muted_notes(const mdmi_patch *patch, int channel)
+{
+	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
+		return 0;
+	}
+	return __atomic_load_n(&patch->muted_count[channel], __ATOMIC_RELAXED);
+}
+
+static void remap(patch_receiver *receiver, int channel, int voice, patch_emit_fn emit, void *context)
+{
+	if (receiver->voice_owner[voice] == channel) {
+		return;
+	}
+	const uint8_t sysex[8] = {0xF0, 0x00, 0x22, 0x77, SYSEX_REMAP, (uint8_t)channel, (uint8_t)voice, 0xF7};
+	emit(context, sysex, sizeof(sysex));
+	receiver->voice_owner[voice] = (int8_t)channel;
+}
+
+// A voice whose note ended goes home at once with nothing but its mapping: the tail plays on in the
+// sound it has, and its own channel's next note brings that channel's sound back.
+static void free_voice(mdmi_patch *patch, int voice, patch_emit_fn emit, void *context)
+{
+	patch->voices[voice].channel = -1;
+	patch->voices[voice].pending = false;
+	remap(&patch->rom, voice, voice, emit, context);
+}
+
+// Takes a voice from the note on it, which stays held but silent.
+static void cut_voice(mdmi_patch *patch, int voice, patch_emit_fn emit, void *context)
+{
+	const patch_voice *taken = &patch->voices[voice];
+	if (taken->channel < 0) {
+		return;
+	}
+	set_muted(patch, taken->channel, taken->key, true);
+	if (!taken->pending) {
+		emit_note(emit, context, 0x80, taken->channel, taken->key, 0);
+	}
+	free_voice(patch, voice, emit, context);
+}
+
+// About how long the ROM takes to give a voice a channel's sound: a program it loads costs as
+// much as a few controllers (D21).
+#define PROGRAM_COST 4
+static int lending_cost(const mdmi_patch *patch, int voice, int channel)
+{
+	int16_t after[PATCH_NUM_CHANNEL_PARAMS];
+	memcpy(after, patch->rom.voices[voice], sizeof(after));
+	int cost = 0;
+	if (after[PARAM_PRESET] != patch->rom.programs[channel]) {
+		if (patch->rom.programs[channel] == PATCH_UNKNOWN) {
+			return PROGRAM_COST + PATCH_NUM_CHANNEL_PARAMS;
+		}
+		load_program(&patch->rom, patch->rom.programs[channel], after);
+		cost = PROGRAM_COST;
+	}
+	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+		cost += after[param] != patch->model.channels[channel][param];
+	}
+	return cost;
+}
+
+// The free voice that costs least to turn into a channel's sound, or -1 if none is free.
+static int cheapest_voice(const mdmi_patch *patch, int channel)
+{
+	int best = -1, best_cost = 0;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		if (patch->voices[voice].channel >= 0 || plays_alone(patch, voice)) {
+			continue;
+		}
+		int cost = lending_cost(patch, voice, channel);
+		if (best < 0 || cost < best_cost) {
+			best = voice;
+			best_cost = cost;
+		}
+	}
+	return best;
+}
+
+static void take_voice(mdmi_patch *patch, int voice, int channel, int key, bool pending, patch_emit_fn emit, void *context)
+{
+	remap(&patch->rom, channel, voice, emit, context);
+	patch->voices[voice] = (patch_voice){(int8_t)channel, (uint8_t)key, pending, patch->voices[voice].sound};
+}
+
+// A note waits for the end of its moment, when the voices are dealt.
+static void note_on(mdmi_patch *patch, int channel, int key, int velocity, patch_emit_fn emit, void *context)
+{
+	if (patch->pending_count == PATCH_PENDING_NOTES) {
+		patch_flush(patch, emit, context);
+	}
+	for (uint32_t i = 0; i < patch->pending_count; i++) {
+		if (patch->pending[i].channel == channel && patch->pending[i].key == key) {
+			return;
+		}
+	}
+	set_muted(patch, channel, key, false);
+	if (!plays_alone(patch, channel)) {
+		// The same key again: its note ends first.
+		for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+			if (patch->voices[voice].channel == channel && patch->voices[voice].key == key) {
+				emit_note(emit, context, 0x80, channel, key, 0);
+				free_voice(patch, voice, emit, context);
+			}
+		}
+	}
+	patch->pending[patch->pending_count++] = (patch_note){(uint8_t)channel, (uint8_t)key, (uint8_t)velocity};
+}
+
+static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit, void *context)
+{
+	if (is_muted(patch, channel, key)) {
+		set_muted(patch, channel, key, false);
+		return;
+	}
+	emit_note(emit, context, 0x80, channel, key, 0);
+	if (patch->held[channel]) {
+		if (--patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
+			patch->voices[channel].channel = -1;
+		}
+		return;
+	}
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key) {
+			free_voice(patch, voice, emit, context);
+		}
+	}
+}
+
+// After the ROM stopped a channel's notes.
+static void release_channel(mdmi_patch *patch, int channel, patch_emit_fn emit, void *context)
+{
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		if (patch->voices[voice].channel == channel) {
+			free_voice(patch, voice, emit, context);
+		}
+	}
+	patch->held[channel] = 0;
+	memset(patch->muted[channel], 0, sizeof(patch->muted[channel]));
+	__atomic_store_n(&patch->muted_count[channel], 0, __ATOMIC_RELAXED);
+}
+
+static void stop_channel(mdmi_patch *patch, int channel, patch_emit_fn emit, void *context)
+{
+	emit_cc(emit, context, channel, CC_ALL_NOTES_OFF, 0);
+	release_channel(patch, channel, emit, context);
+}
+
+// Stops the FM channels that play, before something we can't follow reaches the ROM.
+static void stop_playing(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	patch->pending_count = 0;
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		bool playing = patch->held[channel] > 0;
+		for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+			playing = playing || patch->voices[voice].channel == channel;
+		}
+		if (playing) {
+			stop_channel(patch, channel, emit, context);
+		}
+	}
+}
+
+void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	patch->pending_count = 0;
+	for (int channel = 0; channel < 16; channel++) {
+		if (channel < PATCH_NUM_FM_CHANNELS) {
+			stop_channel(patch, channel, emit, context);
+		} else {
+			emit_cc(emit, context, channel, CC_ALL_NOTES_OFF, 0);
+		}
+	}
+}
+
+// The moment is complete. First every note that can play on its own channel's voice takes it,
+// cutting a chord's note there; then the other notes borrow free voices in their order (D20).
+// The borrowed voices get their sound in one go, then the notes start (D21).
+void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	if (patch->pending_count == 0) {
+		return;
+	}
+	enum { WAITS, OWN, ALONE, MUTED };
+	uint8_t dealt[PATCH_PENDING_NOTES];
+	for (uint32_t i = 0; i < patch->pending_count; i++) {
+		const patch_note *note = &patch->pending[i];
+		dealt[i] = WAITS;
+		if (plays_alone(patch, note->channel)) {
+			if (patch->voices[note->channel].channel != note->channel) {
+				cut_voice(patch, note->channel, emit, context);
+			}
+			take_voice(patch, note->channel, note->channel, note->key, false, emit, context);
+			if (patch->held[note->channel] < 255) {
+				patch->held[note->channel]++;
+			}
+			dealt[i] = ALONE;
+		} else if (patch->voices[note->channel].channel != note->channel) {
+			cut_voice(patch, note->channel, emit, context);
+			take_voice(patch, note->channel, note->channel, note->key, true, emit, context);
+			dealt[i] = OWN;
+		}
+	}
+	for (uint32_t i = 0; i < patch->pending_count; i++) {
+		const patch_note *note = &patch->pending[i];
+		if (dealt[i] == WAITS) {
+			int voice = cheapest_voice(patch, note->channel);
+			if (voice < 0) {
+				set_muted(patch, note->channel, note->key, true);
+				dealt[i] = MUTED;
+			} else {
+				take_voice(patch, voice, note->channel, note->key, true, emit, context);
+			}
+		}
+	}
+	patch_sync(patch, &patch->rom, emit, context);
+	for (uint32_t i = 0; i < patch->pending_count; i++) {
+		const patch_note *note = &patch->pending[i];
+		if (dealt[i] == MUTED) {
+			continue;
+		}
+		if (dealt[i] != ALONE) {
+			// The ROM gives a note the free voice of its channel with the lowest number.
+			int waiting = -1, first = -1;
+			for (int voice = PATCH_NUM_FM_CHANNELS - 1; voice >= 0; voice--) {
+				const patch_voice *v = &patch->voices[voice];
+				if (v->channel == note->channel && v->pending) {
+					first = voice;
+					waiting = v->key == note->key ? voice : waiting;
+				}
+			}
+			if (waiting < 0) {
+				// Every note dealt a voice above has one waiting; nothing else to start.
+				continue;
+			}
+			patch->voices[waiting].key = patch->voices[first].key;
+			patch->voices[first].key = note->key;
+			patch->voices[first].pending = false;
+		}
+		emit_note(emit, context, 0x90, note->channel, note->key, note->velocity);
+	}
+	patch->pending_count = 0;
 }
 
 void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context)
@@ -594,11 +919,15 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_DAC, model_globals[GLOBAL_DAC] ? CC_ON : 0);
 		rom_globals[GLOBAL_DAC] = model_globals[GLOBAL_DAC];
 		rom_globals[GLOBAL_LFO_ON] = rom_globals[GLOBAL_LFO_RATE] = rom_globals[GLOBAL_CH3_MODE] = PATCH_UNKNOWN;
-		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
-			forget_voice(receiver, channel);
-		}
+		forget_voices(receiver);
 	}
 	sync_voice_owners(receiver, emit, context);
+	// A voice lent before its channel came to play alone comes back.
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		if (plays_alone(patch, channel) && patch->voices[channel].channel >= 0 && patch->voices[channel].channel != channel) {
+			cut_voice(patch, channel, emit, context);
+		}
+	}
 	if (model_globals[GLOBAL_LFO_ON] != rom_globals[GLOBAL_LFO_ON]) {
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_ON, model_globals[GLOBAL_LFO_ON] ? CC_ON : 0);
 		rom_globals[GLOBAL_LFO_ON] = model_globals[GLOBAL_LFO_ON];
@@ -620,11 +949,8 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 				emit(context, message, sizeof(message));
 				rom[PARAM_PRESET] = model[PARAM_PRESET];
 			}
-		} else if (!owns_voice(receiver, channel)) {
-			// Nothing receives these values until the channel has a voice again.
-			continue;
 		} else {
-			sync_voice(model, receiver, channel, emit, context);
+			sync_voice(patch, model, receiver, channel, emit, context);
 		}
 		sync_channel_params(patch, model, rom, channel, emit, context);
 	}
@@ -695,9 +1021,25 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	bool is_channel = channel < PATCH_NUM_CHANNELS;
 	bool fm = channel < PATCH_NUM_FM_CHANNELS;
 	bool changed = false, moved = false;
+	bool note = fm && (status == 0x90 || status == 0x80) && length >= 3;
+	if (note && status == 0x90 && bytes[2]) {
+		note_on(patch, channel, bytes[1] & 0x7F, bytes[2], emit, context);
+		return false;
+	}
+	// Whatever comes after the notes of a moment comes after them in the ROM too.
+	patch_flush(patch, emit, context);
+	if (note) {
+		note_off(patch, channel, bytes[1] & 0x7F, emit, context);
+		return false;
+	}
 	if (bytes[0] == 0xF0 || bytes[0] == 0xFF) {
+		stop_playing(patch, emit, context);
 		emit(context, bytes, length);
 		forget_everything(&patch->rom);
+		// Every voice gets its own channel's whole sound again.
+		for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+			patch->voices[voice].sound = (int8_t)voice;
+		}
 		patch_sync(patch, &patch->rom, emit, context);
 		return false;
 	}
@@ -758,6 +1100,10 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 			// Dropped otherwise: on channels without these values, the ROM would apply them to an FM voice.
 		} else {
 			emit(context, bytes, length);
+			if ((cc == CC_ALL_NOTES_OFF || cc == CC_ALL_SOUND_OFF) && fm) {
+				// The ROM stops the notes of every voice the channel has, so the lent ones go home.
+				release_channel(patch, channel, emit, context);
+			}
 		}
 	} else {
 		emit(context, bytes, length);

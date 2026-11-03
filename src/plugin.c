@@ -48,6 +48,8 @@ typedef struct {
 	const clap_host_state_t *host_state;
 	mdmi_patch patch;
 	uint32_t sync_pending;
+	// After activation the ROM's notes stopped, and lent voices go home.
+	uint32_t notes_off_pending;
 	uint32_t dirty_pending;
 	bool knobs_moved;
 	bool active;
@@ -127,6 +129,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate, uin
 	mdmi_plugin *self = self_of(plugin);
 	self->active = true;
 	__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&self->notes_off_pending, 1, __ATOMIC_RELEASE);
 	for (int channel = 0; channel < GUI_NUM_MIDI_CHANNELS; channel++) {
 		release_notes(self, channel);
 	}
@@ -153,7 +156,8 @@ static void plugin_stop_processing(const clap_plugin_t *plugin)
 static void plugin_reset(const clap_plugin_t *plugin)
 {
 	mdmi_plugin *self = self_of(plugin);
-	mdmi_engine_all_notes_off(self->engine, 0);
+	emit_target target = {self->engine, 0};
+	patch_all_notes_off(&self->patch, emit_to_engine, &target);
 	for (int channel = 0; channel < GUI_NUM_MIDI_CHANNELS; channel++) {
 		release_notes(self, channel);
 	}
@@ -310,7 +314,7 @@ static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
 			(uint8_t)note->key,
 			(uint8_t)velocity,
 		};
-		mdmi_engine_midi(self->engine, header->time, message, sizeof(message));
+		handle_midi(self, header->time, message, sizeof(message));
 		track_note(self, note->channel, note->key, velocity, header->type == CLAP_EVENT_NOTE_ON);
 		break;
 	}
@@ -341,19 +345,19 @@ static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
 	}
 }
 
-static bool starts_note(const clap_event_header_t *header)
+static bool is_note(const clap_event_header_t *header)
 {
 	if (header->space_id != CLAP_CORE_EVENT_SPACE_ID) {
 		return false;
 	}
-	if (header->type == CLAP_EVENT_NOTE_ON) {
+	if (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF) {
 		return true;
 	}
 	if (header->type != CLAP_EVENT_MIDI) {
 		return false;
 	}
-	const uint8_t *data = ((const clap_event_midi_t *)header)->data;
-	return (data[0] & 0xF0) == 0x90 && data[2] != 0;
+	const uint8_t status = ((const clap_event_midi_t *)header)->data[0] & 0xF0;
+	return status == 0x90 || status == 0x80;
 }
 
 static clap_process_status plugin_process(const clap_plugin_t *plugin, const clap_process_t *process)
@@ -364,11 +368,16 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 	if (__atomic_exchange_n(&self->sync_pending, 0, __ATOMIC_ACQ_REL) || state_taken) {
 		apply_filter(self);
 		emit_target target = {engine, 0};
+		if (__atomic_exchange_n(&self->notes_off_pending, 0, __ATOMIC_ACQ_REL)) {
+			patch_all_notes_off(&self->patch, emit_to_engine, &target);
+		}
 		patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
 	}
 	take_edits(self, process->out_events, true);
 	// The VST3 wrapper puts notes before knobs and controllers of the same moment. A preset point
-	// exactly on a note's start is meant for that note, so at each moment notes start last.
+	// exactly on a note's start is meant for that note, so at each moment notes come last, in their
+	// own order: a note that ends where it starts must not end first. Then the moment's notes go
+	// out together, with their voices changed in one batch (D21).
 	const clap_input_events_t *in = process->in_events;
 	const uint32_t event_count = in->size(in);
 	for (uint32_t first = 0; first < event_count;) {
@@ -380,11 +389,13 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		for (int pass = 0; pass < 2; pass++) {
 			for (uint32_t i = first; i < end; i++) {
 				const clap_event_header_t *header = in->get(in, i);
-				if (starts_note(header) == (pass == 1)) {
+				if (is_note(header) == (pass == 1)) {
 					handle_event(self, header);
 				}
 			}
 		}
+		emit_target target = {engine, time};
+		patch_flush(&self->patch, emit_to_engine, &target);
 		first = end;
 	}
 	patch_publish(&self->patch);

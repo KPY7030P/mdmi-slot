@@ -68,17 +68,54 @@ typedef struct {
 
 // What a receiver holds. A value we can't know is PATCH_UNKNOWN, and always differs from the model.
 #define PATCH_UNKNOWN (-1)
+#define PATCH_SERVICE_PROGRAMS 12
 typedef struct {
+	// Globals and what each MIDI channel has. For an FM channel the Preset is the preset its program
+	// gives; the FM voice itself is in voices.
 	patch_values values;
-	// The MIDI channel each FM voice answers to. Each has its own until stage 4 lends them (D20).
+	// The program number each FM MIDI channel has in the ROM, a service number for a stored voice.
+	int16_t programs[PATCH_NUM_FM_CHANNELS];
+	// What each FM voice holds: its program number as Preset, and the voice's values. A voice keeps
+	// them when it moves to another channel, until that channel's sync changes them.
+	int16_t voices[PATCH_NUM_FM_CHANNELS][PATCH_NUM_CHANNEL_PARAMS];
+	// What a program change to each service number loads.
+	int16_t stored[PATCH_SERVICE_PROGRAMS][PATCH_NUM_CHANNEL_PARAMS];
+	// The MIDI channel each FM voice answers to.
 	int8_t voice_owner[PATCH_NUM_FM_CHANNELS];
 	// Which of its two service programs each FM channel uses next.
 	bool alternate[PATCH_NUM_FM_CHANNELS];
 } patch_receiver;
 
+// Who plays on an FM voice (D20). A voice is free when channel is -1, and then answers to its own
+// channel. A pending voice is taken for a note that goes out when the moment is complete.
+typedef struct {
+	int8_t channel;
+	uint8_t key;
+	bool pending;
+	// The channel whose sound the voice was last given.
+	int8_t sound;
+} patch_voice;
+
+#define PATCH_PENDING_NOTES 32
+typedef struct {
+	uint8_t channel;
+	uint8_t key;
+	uint8_t velocity;
+} patch_note;
+
 typedef struct {
 	patch_values model;
 	patch_receiver rom;
+	// The dealer of FM voices: one for all receivers, so all get the same layout.
+	patch_voice voices[PATCH_NUM_FM_CHANNELS];
+	// Notes held on channels that play only on their own voice: Porta On, Ch3 Special, DAC.
+	uint8_t held[PATCH_NUM_FM_CHANNELS];
+	// Keys held on each FM channel that don't sound: cut off, or no voice was free.
+	uint32_t muted[PATCH_NUM_FM_CHANNELS][4];
+	// How many of them, for the window. Written by the writer only.
+	uint8_t muted_count[PATCH_NUM_FM_CHANNELS];
+	patch_note pending[PATCH_PENDING_NOTES];
+	uint32_t pending_count;
 	// The RPN each MIDI channel last selected, to recognize a pitch bend range coming from a clip.
 	uint8_t rpn_msb[16];
 	uint8_t rpn_lsb[16];
@@ -123,7 +160,14 @@ bool patch_set(mdmi_patch *patch, uint32_t id, int value);
 // Sends the receiver whatever differs from the model.
 void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context);
 // A message from the host: updates the model and sends the ROM what it needs. True if knobs moved.
+// Notes starting at the same moment wait for patch_flush, so their voices change in one batch (D21).
 bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_emit_fn emit, void *context);
+// The moment is complete: sends the waiting notes.
+void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context);
+// Stops every note and gives every FM voice back to its own channel.
+void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
+// Any thread: how many held notes of a channel don't sound.
+int patch_muted_notes(const mdmi_patch *patch, int channel);
 // True if a loaded state became the model. Sync afterwards.
 bool patch_take_incoming(mdmi_patch *patch);
 double patch_model_filter_hz(const mdmi_patch *patch);

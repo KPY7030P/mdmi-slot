@@ -47,6 +47,7 @@ static void midi(uint8_t a, uint8_t b, uint8_t c)
 {
 	const uint8_t message[3] = {a, b, c};
 	patch_midi(patch, message, (a & 0xF0) == 0xC0 ? 2 : 3, emit, NULL);
+	patch_flush(patch, emit, NULL);
 }
 
 static void play_chord(int notes, bool on)
@@ -541,6 +542,230 @@ static void test_voice_by_hand(void)
 	lend_by_hand("by hand, both on preset 41 with different tweaks");
 }
 
+// Stage 4 through the dealer in patch.c, the way the plugin plays (D20, D21).
+
+#define SNAPSHOT_REGS 30
+
+// Everything of a voice's sound the chip holds.
+static void snapshot(int voice, uint8_t *regs)
+{
+	int n = 0;
+	for (int slot = 0; slot < 4; slot++) {
+		for (int base = 0x30; base <= 0x90; base += 0x10) {
+			regs[n++] = read_reg(voice, base, slot);
+		}
+	}
+	regs[n++] = read_reg(voice, 0xB0, 0);
+	regs[n++] = read_reg(voice, 0xB4, 0);
+}
+
+static void snapshot_all(uint8_t regs[FM_CHANNELS][SNAPSHOT_REGS])
+{
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		snapshot(voice, regs[voice]);
+	}
+}
+
+static int changed_voices(uint8_t before[FM_CHANNELS][SNAPSHOT_REGS], int skip)
+{
+	uint8_t now[SNAPSHOT_REGS];
+	int changed = 0;
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		snapshot(voice, now);
+		changed += voice != skip && memcmp(now, before[voice], SNAPSHOT_REGS) != 0;
+	}
+	return changed;
+}
+
+static void check(bool passed, const char *what)
+{
+	printf("  %s: %s\n", passed ? "ok  " : "FAIL", what);
+	if (!passed) {
+		failures++;
+	}
+}
+
+// Notes of one moment on a channel, from the given key up in thirds.
+static void moment(int channel, int first, int count, bool on)
+{
+	for (int i = 0; i < count; i++) {
+		const uint8_t message[3] = {(uint8_t)((on ? 0x90 : 0x80) | channel), (uint8_t)(first + i * 4), on ? 127 : 0};
+		patch_midi(patch, message, 3, emit, NULL);
+	}
+	patch_flush(patch, emit, NULL);
+}
+
+// The voices playing a channel's notes.
+static int voices_of(int channel, int *voices)
+{
+	int count = 0;
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		if (patch->voices[voice].channel == channel) {
+			voices[count++] = voice;
+		}
+	}
+	return count;
+}
+
+static int chord_equals_model(int channel)
+{
+	int voices[FM_CHANNELS], count = voices_of(channel, voices), same = 0;
+	for (int i = 0; i < count; i++) {
+		same += compare(voices[i], channel, "chord") == 0;
+	}
+	return same;
+}
+
+static void tweak_channels(void)
+{
+	static const int PRESET[FM_CHANNELS] = {10, 20, 30, 40, 50, 60};
+	for (int channel = 0; channel < FM_CHANNELS; channel++) {
+		set_on(channel, PARAM_PRESET, PRESET[channel]);
+		set_on(channel, PARAM_OP_BASE + F_TL, 20 + channel);
+	}
+	// Channel 4: TL by CC, SR above 15 by knob, and a few more.
+	midi(0xB3, 17, 50);
+	set_on(3, PARAM_OP_BASE + 2 * PATCH_OP_PARAMS + F_SR, 25);
+	set_on(3, PARAM_OP_BASE + 2 * PATCH_OP_PARAMS + F_MUL, 3);
+	set_on(3, PARAM_OP_BASE + 3 * PATCH_OP_PARAMS + F_AR, 12);
+	set_on(3, PARAM_FEEDBACK, 2);
+	render(SETTLE_BLOCKS);
+}
+
+// A chord's notes start once all its voices have their sound. How long after a plain note just
+// before it the chord's last key on comes, in ms: what the transition adds to the engine's latency.
+static double chord_delay(int channel, int count)
+{
+	moment(FM_CHANNELS - 1, 96, 1, true);
+	moment(channel, 60, count, true);
+	int voices[FM_CHANNELS + 1] = {FM_CHANNELS - 1};
+	int playing = voices_of(channel, voices + 1);
+	double at[FM_CHANNELS + 1], last = 0;
+	chord_key_ons(voices, playing + 1, at);
+	for (int i = 1; i <= playing; i++) {
+		last = at[i] > last ? at[i] : last;
+	}
+	render(SETTLE_BLOCKS);
+	moment(FM_CHANNELS - 1, 96, 1, false);
+	return last;
+}
+
+// A note on each FM channel, so every voice has its own channel's sound and pan again.
+static void play_each_channel(void)
+{
+	for (int channel = 0; channel < FM_CHANNELS; channel++) {
+		moment(channel, 72, 1, true);
+		render(SETTLE_BLOCKS);
+		moment(channel, 72, 1, false);
+	}
+	render(SETTLE_BLOCKS);
+}
+
+static void test_dealer(void)
+{
+	printf("  the voice dealer\n");
+	tweak_channels();
+	double cold = chord_delay(3, 4);
+	check(chord_equals_model(3) == 4, "a chord of 4 on channel 4 with tweaks: four voices hold channel 4");
+	moment(3, 60, 4, false);
+	render(SETTLE_BLOCKS);
+	double warm = chord_delay(3, 4);
+	check(chord_equals_model(3) == 4, "the same chord again, its voices still channel 4's");
+	printf("    the chord's last key on after a plain note: %.2f ms cold, %.2f ms again\n", cold, warm);
+	check(cold < 25 && warm < 10, "cold under 25 ms, again under 10 ms");
+	moment(3, 60, 4, false);
+	render(SETTLE_BLOCKS);
+
+	// A chord of 5 takes voice 2, and channel 2's tune takes it back.
+	moment(3, 60, 5, true);
+	render(SETTLE_BLOCKS);
+	check(patch->voices[1].channel == 3, "a chord of 5 lends voice 2");
+	uint8_t before[FM_CHANNELS][SNAPSHOT_REGS];
+	snapshot_all(before);
+	midi(0x91, 72, 127);
+	render(SETTLE_BLOCKS);
+	check_voices("channel 2's note takes its voice back with its own sound", 1, 1, -1);
+	check(changed_voices(before, 1) == 0 && chord_equals_model(3) == 4, "and the rest of the chord is untouched");
+	check(patch_muted_notes(patch, 3) == 1, "the cut note is marked");
+	midi(0x81, 72, 0);
+	moment(3, 60, 5, false);
+	render(SETTLE_BLOCKS);
+	check(patch_muted_notes(patch, 3) == 0, "no mark when the chord ends");
+
+	// A voice home again with channel 4's sound, its own channel then on the same preset with other
+	// tweaks: the ROM skips a program change to the number the voice has.
+	moment(3, 60, 2, true);
+	render(SETTLE_BLOCKS);
+	int lent = patch->voices[3].channel == 3 && patch->voices[0].channel == 3 ? 0 : -1;
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		lent = voice != 3 && patch->voices[voice].channel == 3 ? voice : lent;
+	}
+	moment(3, 60, 2, false);
+	render(SETTLE_BLOCKS);
+	check(lent >= 0, "a chord of 2 lends a voice");
+	if (lent >= 0) {
+		set_on(lent, PARAM_PRESET, model_value(3, PARAM_PRESET));
+		set_on(lent, PARAM_OP_BASE + F_TL, 5);
+		moment(lent, 72, 1, true);
+		render(SETTLE_BLOCKS);
+		check_voices("home again: its channel's first note on the same preset has that channel's sound", lent, lent, -1);
+		moment(lent, 72, 1, false);
+		render(SETTLE_BLOCKS);
+	}
+
+	// Too many notes.
+	moment(3, 48, 6, true);
+	render(SETTLE_BLOCKS);
+	snapshot_all(before);
+	moment(3, 80, 1, true);
+	render(SETTLE_BLOCKS);
+	check(changed_voices(before, -1) == 0 && patch_muted_notes(patch, 3) == 1 && chord_equals_model(3) == 6, "the 7th note doesn't sound, changes nothing and is marked");
+	moment(3, 80, 1, false);
+	moment(3, 48, 6, false);
+	render(SETTLE_BLOCKS);
+
+	// Porta On: the channel plays alone.
+	set_on(3, PARAM_PORTA_ON, 1);
+	moment(3, 60, 3, true);
+	render(SETTLE_BLOCKS);
+	int voices[FM_CHANNELS];
+	check(voices_of(3, voices) == 1 && voices[0] == 3, "Porta On: channel 4 takes no other voice");
+	moment(0, 60, 2, true);
+	render(SETTLE_BLOCKS);
+	check(patch->voices[3].channel == 3, "and lends none");
+	moment(0, 60, 2, false);
+	moment(3, 60, 3, false);
+	set_on(3, PARAM_PORTA_ON, 0);
+	render(SETTLE_BLOCKS);
+
+	// Ch3 Special keeps voice 3.
+	set_global(GLOBAL_CH3_MODE, 1);
+	sync_and_settle();
+	snapshot(2, before[2]);
+	moment(3, 48, 6, true);
+	render(SETTLE_BLOCKS);
+	uint8_t now[SNAPSHOT_REGS];
+	snapshot(2, now);
+	check(memcmp(now, before[2], sizeof(now)) == 0 && patch->voices[2].channel < 0 && patch_muted_notes(patch, 3) == 1, "Ch3 Special: voice 3 stays, the 6th note is marked");
+	moment(3, 48, 6, false);
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+
+	// The DAC keeps voice 6.
+	play_each_channel();
+	set_global(GLOBAL_DAC, 1);
+	wait_for_voices(FM_CHANNELS - 2);
+	snapshot(5, before[5]);
+	moment(3, 48, 6, true);
+	render(SETTLE_BLOCKS);
+	snapshot(5, now);
+	check(memcmp(now, before[5], sizeof(now)) == 0 && patch->voices[5].channel < 0 && patch_muted_notes(patch, 3) == 1 && chord_equals_model(3) == 5, "DAC: voice 6 stays, five notes sound, the 6th is marked");
+	moment(3, 48, 6, false);
+	play_each_channel();
+	set_global(GLOBAL_DAC, 0);
+	wait_for_voices(FM_CHANNELS - 1);
+}
+
 static void test_reset(void)
 {
 	const uint8_t reset = 0xFF;
@@ -581,6 +806,8 @@ int main(void)
 	test_dac();
 	test_load();
 	test_voice_by_hand();
+	test_reset();
+	test_dealer();
 	test_reset();
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {

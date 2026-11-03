@@ -32,7 +32,12 @@ Knob ids never change, because hosts store automation by id: a global's id is it
 1000 + channel * 100 + its place in `src/patch.h`, so 1411 is Op1 TL of channel 4. New knobs take the next free
 number. A project stores pairs of id and value, so a knob added later starts at its default in an older project.
 
-- Voices: each FM channel plays one note at a time on its own voice. Stage 4 lends the voices of silent channels to chords (D20).
+- Voices (D20, D21): each FM channel plays on its own voice, and a chord borrows the voices of channels
+  that are silent, nothing to set up. A channel takes its voice back for its next note and cuts the chord's
+  note on it. Notes beyond the free voices don't sound, and the window marks them as CUT. A borrowed voice
+  first gets the channel's sound: notes of one moment wait until all their voices have it, a few ms, up to
+  about 20 ms for a chord on voices that held other presets. Channels with Porta On, channel 3 in Ch3
+  Special Mode and channel 6 with the DAC play only on their own voice and lend none.
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays the ROM's drum samples, chosen by note, with no FM voice of its own.
 - PSG presets: the ROM has one envelope under every number except 81, 90 and 100, a square lead.

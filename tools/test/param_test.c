@@ -491,52 +491,53 @@ static double chord_note_energy(const double *mag, int note)
 	return band_energy(mag, hz * 0.985, hz * 1.015);
 }
 
-// Each FM channel keeps its own voice: a chord on one channel takes no voice from another (D20 lends
-// them in stage 4).
+// How many of a chord's notes sound in a second of audio after the given start.
+static int sounding_notes(const float *audio, const uint8_t *notes, int count)
+{
+	double *mag = spectrum(audio, 6000);
+	double e[8], top = 0;
+	for (int n = 0; n < count; n++) {
+		e[n] = chord_note_energy(mag, notes[n]);
+		top = e[n] > top ? e[n] : top;
+	}
+	int sounding = 0;
+	for (int n = 0; n < count; n++) {
+		sounding += e[n] > top * 0.1;
+	}
+	free(mag);
+	return sounding;
+}
+
+// Voices of silent channels go to a chord, and a note that ends where it starts holds none (D20).
 static void test_voices(void)
 {
-	printf("each channel has one voice\n");
-	static const uint8_t chord[3] = {60, 64, 67};
+	printf("voices go where they are needed\n");
+	static const uint8_t chord[6] = {48, 52, 55, 59, 62, 65};
+	static const uint8_t with_tune[4] = {48, 52, 55, 73};
 	instance *in = create_instance();
 	settle(in, 0.4);
 	for (int n = 0; n < 3; n++) {
 		queue_midi(in, 0x93, chord[n], 127);
 	}
-	queue_midi(in, 0x91, 72, 127);
+	queue_midi(in, 0x91, with_tune[3], 127);
 	float *audio = render(in, RATE);
-	double *mag = spectrum(audio, 6000);
-	double e[3], top = 0;
+	CHECK(sounding_notes(audio, with_tune, 4) == 4, "a chord of 3 on channel 4 sounds whole, and channel 2 plays its own note: %d of 4", sounding_notes(audio, with_tune, 4));
+	free(audio);
+	queue_midi(in, 0x81, with_tune[3], 0);
 	for (int n = 0; n < 3; n++) {
-		e[n] = chord_note_energy(mag, chord[n]);
-		top = e[n] > top ? e[n] : top;
-	}
-	int sounding = 0;
-	for (int n = 0; n < 3; n++) {
-		sounding += e[n] > top * 0.1;
-	}
-	double other = chord_note_energy(mag, 72);
-	CHECK(sounding == 1 && other > top * 0.1, "a chord on channel 4 plays one note, channel 2 plays its own: %d of 3", sounding);
-	queue_midi(in, 0xB3, 84, 127);
-	settle(in, 0.1);
-	for (int n = 0; n < 3; n++) {
-		queue_midi(in, 0x80 | 3, chord[n], 0);
+		queue_midi(in, 0x83, chord[n], 0);
 	}
 	settle(in, 0.4);
-	for (int n = 0; n < 3; n++) {
+	// A note on and its note off at the same moment.
+	queue_midi(in, 0x90, 70, 127);
+	queue_midi(in, 0x80, 70, 0);
+	settle(in, 0.1);
+	for (int n = 0; n < 6; n++) {
 		queue_midi(in, 0x93, chord[n], 127);
 	}
-	float *after = render(in, RATE);
-	double *mag2 = spectrum(after, 6000);
-	int sounding2 = 0;
-	double top2 = 0;
-	for (int n = 0; n < 3; n++) {
-		e[n] = chord_note_energy(mag2, chord[n]);
-		top2 = e[n] > top2 ? e[n] : top2;
-	}
-	for (int n = 0; n < 3; n++) {
-		sounding2 += e[n] > top2 * 0.1;
-	}
-	CHECK(sounding2 == 1, "CC84 from a clip changes nothing: %d of 3", sounding2);
+	audio = render(in, RATE);
+	CHECK(sounding_notes(audio, chord, 6) == 6, "then a chord of 6 has every voice: %d of 6", sounding_notes(audio, chord, 6));
+	free(audio);
 	destroy_instance(in);
 }
 

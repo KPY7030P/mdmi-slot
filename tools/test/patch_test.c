@@ -57,6 +57,7 @@ static void midi(mdmi_patch *patch, uint8_t a, uint8_t b, uint8_t c)
 {
 	const uint8_t message[3] = {a, b, c};
 	patch_midi(patch, message, (a & 0xF0) == 0xC0 ? 2 : 3, record, NULL);
+	patch_flush(patch, record, NULL);
 }
 
 // How many messages of a kind went out. 0xF0 counts SysEx with the given command.
@@ -253,7 +254,7 @@ static void test_incoming(void)
 	clear();
 	const uint8_t reset = 0xFF;
 	patch_midi(&patch, &reset, 1, record, NULL);
-	CHECK(sent[0] == 0xFF && count_voices() == 6 && count_sysex(0x03) == 1, "a reset goes through, then static mapping and every voice, %d", count_voices());
+	CHECK(sent[0] == 0xB1 && sent[1] == 123 && sent[3] == 0xFF && count_voices() == 6 && count_sysex(0x03) == 1, "the held note stops, a reset goes through, then static mapping and every voice, %d", count_voices());
 	CHECK(patch.model.channels[2][op_param(0, OP_TL)] == 99, "the model survives the reset");
 	clear();
 	const uint8_t sysex[6] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
@@ -372,6 +373,108 @@ static void test_threads(void)
 	CHECK(torn == 0 && reads > 1000, "%d of %d saved states hold half a preset", torn, reads);
 }
 
+// Notes of one moment on a channel, from the given key up in thirds.
+static void moment(mdmi_patch *patch, int channel, int first, int count, bool on)
+{
+	for (int i = 0; i < count; i++) {
+		const uint8_t message[3] = {(uint8_t)((on ? 0x90 : 0x80) | channel), (uint8_t)(first + i * 4), on ? 100 : 0};
+		patch_midi(patch, message, 3, record, NULL);
+	}
+	patch_flush(patch, record, NULL);
+}
+
+static int free_voices(const mdmi_patch *patch)
+{
+	int count = 0;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		count += patch->voices[voice].channel < 0 && patch->rom.voice_owner[voice] == voice;
+	}
+	return count;
+}
+
+// A clip that loops: a chord on channel 4 with tweaks, a tune on channel 2 through it, a note on 1.
+static void play_clip(mdmi_patch *patch)
+{
+	midi(patch, 0xB3, 16, 40);
+	moment(patch, 3, 60, 4, true);
+	moment(patch, 1, 72, 1, true);
+	moment(patch, 1, 72, 1, false);
+	moment(patch, 0, 50, 1, true);
+	moment(patch, 1, 74, 1, true);
+	moment(patch, 3, 60, 4, false);
+	moment(patch, 0, 50, 1, false);
+	moment(patch, 1, 74, 1, false);
+}
+
+static void test_dealer(void)
+{
+	printf("Voice dealer\n");
+	static mdmi_patch patch;
+	patch_init(&patch);
+	clear();
+	moment(&patch, 3, 60, 3, true);
+	CHECK(count_sysex(0x00) == 2 && count_status(0x90) == 3 && count_status(0xB0) == 0 && count_status(0xC0) == 0, "a chord of 3 on fresh channels: two voices remapped, nothing else to send, then the notes");
+	CHECK(sent[sent_bytes - 9] == 0x93 && sent[sent_bytes - 3] == 0x93, "the notes come after all the remapping");
+	clear();
+	moment(&patch, 3, 60, 3, false);
+	CHECK(count_sysex(0x00) == 2 && count_status(0x80) == 3 && free_voices(&patch) == 6, "the chord ends: the lent voices go home with SysEx 00 only");
+
+	clear();
+	moment(&patch, 3, 48, 6, true);
+	size_t chord = sent_bytes;
+	moment(&patch, 3, 80, 1, true);
+	CHECK(sent_bytes == chord && patch_muted_notes(&patch, 3) == 1, "the 7th note sends nothing and is marked");
+	moment(&patch, 3, 80, 1, false);
+	CHECK(sent_bytes == chord && patch_muted_notes(&patch, 3) == 0, "nor does its note off");
+	clear();
+	midi(&patch, 0xB3, 123, 0);
+	CHECK(count_sysex(0x00) == 5 && free_voices(&patch) == 6, "All Notes Off sends the lent voices home");
+
+	// A note and its note off at one moment.
+	const uint8_t on[3] = {0x90, 70, 100}, off[3] = {0x80, 70, 0};
+	patch_midi(&patch, on, 3, record, NULL);
+	patch_midi(&patch, off, 3, record, NULL);
+	patch_flush(&patch, record, NULL);
+	CHECK(free_voices(&patch) == 6, "a note ending where it starts holds no voice");
+
+	// Ten tweaks by CC on channel 4, every other channel on another preset: the worst a lent voice
+	// costs the console without 0A.
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		if (channel != 3) {
+			set(&patch, PRESET_ID(channel), 20);
+		}
+	}
+	for (int i = 0; i < 10; i++) {
+		midi(&patch, 0xB3, (uint8_t)(16 + i), 8 + i * 8);
+	}
+	moment(&patch, 3, 60, 1, true);
+	clear();
+	moment(&patch, 3, 64, 1, true);
+	size_t transition = sent_bytes - 3;
+	CHECK(count_sysex(0x0A) == 0 && transition * 1000 / 480 <= 100, "a transition with tweaks goes without 0A in %d bytes, %d ms at 480 bytes/s", (int)transition, (int)(transition * 1000 / 480));
+	moment(&patch, 3, 60, 1, false);
+	moment(&patch, 3, 64, 1, false);
+
+	// The same clip, looped: once the first pass settled the voices, every pass is the same.
+	static uint8_t passes[2][4096];
+	size_t lengths[2];
+	play_clip(&patch);
+	for (int pass = 0; pass < 2; pass++) {
+		clear();
+		play_clip(&patch);
+		memcpy(passes[pass], sent, sent_bytes);
+		lengths[pass] = sent_bytes;
+	}
+	CHECK(lengths[0] == lengths[1] && memcmp(passes[0], passes[1], lengths[0]) == 0 && free_voices(&patch) == 6, "a looped clip sends the same bytes every pass, %d bytes", (int)lengths[0]);
+
+	clear();
+	moment(&patch, 3, 60, 3, true);
+	const uint8_t reset = 0xFF;
+	clear();
+	patch_midi(&patch, &reset, 1, record, NULL);
+	CHECK(sent[0] == 0xB3 && sent[1] == 123 && free_voices(&patch) == 6, "a reset stops the chord first and sends its voices home");
+}
+
 int main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -383,6 +486,7 @@ int main(void)
 	test_modes();
 	test_incoming();
 	test_load();
+	test_dealer();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;
