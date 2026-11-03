@@ -113,6 +113,7 @@ typedef struct {
 	uint8_t held[PATCH_NUM_FM_CHANNELS];
 	// Keys held on each FM channel that don't sound: cut off, or no voice was free.
 	uint32_t muted[PATCH_NUM_FM_CHANNELS][4];
+	uint8_t muted_velocity[PATCH_NUM_FM_CHANNELS][128];
 	// How many of them, for the window. Written by the writer only.
 	uint8_t muted_count[PATCH_NUM_FM_CHANNELS];
 	// The channel playing on each voice, or -1, for the window.

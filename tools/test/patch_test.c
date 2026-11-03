@@ -448,6 +448,20 @@ static void test_dealer(void)
 	moment(&patch, 3, 60, 5, false);
 	CHECK(free_voices(&patch) == 6, "and all of it ends without a voice left taken");
 
+	// With every voice taken, a tune cuts a chord's note; when the tune ends, the note comes back.
+	moment(&patch, 3, 48, 6, true);
+	moment(&patch, 1, 90, 1, true);
+	CHECK(patch_muted_notes(&patch, 3) == 1, "a tune over a chord of 6 cuts one of its notes");
+	clear();
+	moment(&patch, 1, 90, 1, false);
+	int chord_voices = 0;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		chord_voices += patch.voices[voice].channel == 3;
+	}
+	CHECK(patch_muted_notes(&patch, 3) == 0 && chord_voices == 6 && count_status(0x90) == 1, "the tune ends and the cut note starts again on the freed voice");
+	moment(&patch, 3, 48, 6, false);
+	CHECK(free_voices(&patch) == 6, "and the chord ends with every voice free");
+
 	// A note and its note off at one moment.
 	const uint8_t on[3] = {0x90, 70, 100}, off[3] = {0x80, 70, 0};
 	patch_midi(&patch, on, 3, record, NULL);

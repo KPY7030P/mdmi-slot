@@ -666,6 +666,12 @@ static void set_muted(mdmi_patch *patch, int channel, int key, bool muted)
 	__atomic_store_n(&patch->muted_count[channel], (uint8_t)(patch->muted_count[channel] + (muted ? 1 : -1)), __ATOMIC_RELAXED);
 }
 
+static void mute(mdmi_patch *patch, int channel, int key, int velocity)
+{
+	set_muted(patch, channel, key, true);
+	patch->muted_velocity[channel][key] = (uint8_t)velocity;
+}
+
 int patch_muted_notes(const mdmi_patch *patch, int channel)
 {
 	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
@@ -717,7 +723,7 @@ static void cut_voice(mdmi_patch *patch, int voice, patch_emit_fn emit, void *co
 	if (taken->channel < 0) {
 		return;
 	}
-	set_muted(patch, taken->channel, taken->key, true);
+	mute(patch, taken->channel, taken->key, taken->velocity);
 	if (!taken->pending) {
 		emit_note(emit, context, 0x80, taken->channel, taken->key, 0);
 	}
@@ -792,6 +798,25 @@ static void note_on(mdmi_patch *patch, int channel, int key, int velocity, patch
 	patch->pending[patch->pending_count++] = (patch_note){(uint8_t)channel, (uint8_t)key, (uint8_t)velocity};
 }
 
+// A voice came free: held notes that found none start again on it, from their attack.
+static void revive(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	int free = 0;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		free += patch->voices[voice].channel < 0 && !plays_alone(patch, voice);
+	}
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS && free > 0; channel++) {
+		for (int key = 0; key < 128 && free > 0 && !plays_alone(patch, channel); key++) {
+			if (is_muted(patch, channel, key) && patch->pending_count < PATCH_PENDING_NOTES) {
+				set_muted(patch, channel, key, false);
+				patch->pending[patch->pending_count++] = (patch_note){(uint8_t)channel, (uint8_t)key, patch->muted_velocity[channel][key]};
+				free--;
+			}
+		}
+	}
+	patch_flush(patch, emit, context);
+}
+
 static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit, void *context)
 {
 	if (is_muted(patch, channel, key)) {
@@ -804,12 +829,14 @@ static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key && !(voice == channel && patch->held[channel])) {
 			free_voice(patch, voice, emit, context);
+			revive(patch, emit, context);
 			publish_voices(patch);
 			return;
 		}
 	}
 	if (patch->held[channel] && --patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
 		patch->voices[channel].channel = -1;
+		revive(patch, emit, context);
 	}
 	publish_voices(patch);
 }
@@ -898,7 +925,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 					dealt[patch->pending_count] = MOVED;
 					patch->pending[patch->pending_count++] = moved;
 				} else {
-					set_muted(patch, moved.channel, moved.key, true);
+					mute(patch, moved.channel, moved.key, moved.velocity);
 				}
 			}
 			take_voice(patch, note->channel, note, true, emit, context);
@@ -913,7 +940,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			}
 			int voice = cheapest_voice(patch, note->channel);
 			if (voice < 0) {
-				set_muted(patch, note->channel, note->key, true);
+				mute(patch, note->channel, note->key, note->velocity);
 				dealt[i] = MUTED;
 			} else {
 				take_voice(patch, voice, note, true, emit, context);
@@ -1144,6 +1171,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 			if ((cc == CC_ALL_NOTES_OFF || cc == CC_ALL_SOUND_OFF) && fm) {
 				// The ROM stops the notes of every voice the channel has, so the lent ones go home.
 				release_channel(patch, channel, emit, context);
+				revive(patch, emit, context);
 			}
 		}
 	} else {
