@@ -40,6 +40,17 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   first gets the channel's sound: notes of one moment wait until all their voices have it, a few ms, up to
   about 20 ms for a chord on voices that held other presets. Channels with Porta On, channel 3 in Ch3
   Special Mode and channel 6 with the DAC play only on their own voice and lend none.
+- Bank (D23): one bank of 128 places for the plugin, at first the ROM's GM presets. Place N is
+  program N: Preset, CC 3 and a clip's Pgm choose from it on any FM channel. The BANK page lists it.
+- Files (D25): a TFI, VGI or TYI dropped from Explorer on an FM channel's row gives that channel its
+  voice and name, like tweaks: the Preset stays, and the next preset step wipes it. Dropped on a place
+  of the BANK page, it replaces that place. LOAD opens an instrument for the selected channel, a
+  `.mdbank` for the bank or a `.mdsnap` for everything; SAVE writes the channel as VGI, the bank or a
+  snapshot, which is the project's own state. UNDO puts back what the last file replaced, and a second
+  UNDO brings the file back. `src/instrument.c` reads the formats, `src/files.c` and `src/state.c`
+  the rest.
+- A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
+  takes as long as 12 controllers (D24).
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays the ROM's drum samples, chosen by note, with no FM voice of its own.
 - PSG presets: the ROM has one envelope under every number except 81, 90 and 100, a square lead.

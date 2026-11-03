@@ -232,6 +232,11 @@ int patch_preset_value(const patch_bank *bank, int channel, int param, int prese
 	return param == PARAM_PRESET ? preset : channel_params[param].default_value;
 }
 
+const char *patch_gm_name(int place)
+{
+	return GM_NAMES[place & (PATCH_BANK_SIZE - 1)];
+}
+
 // What the ROM loads under a built-in program number.
 static void load_rom_preset(int16_t *voice, int program)
 {
@@ -1344,6 +1349,15 @@ void patch_save_names(mdmi_patch *patch, void *buffer)
 	memcpy(buffer, patch_view(patch)->names, sizeof(patch->model.names));
 }
 
+// A bank place from a file holds only what the knobs can.
+static void clean_place(patch_instrument *instrument)
+{
+	instrument->name[PATCH_NAME - 1] = 0;
+	for (int i = 0; i < PATCH_VOICE_PARAMS; i++) {
+		instrument->voice[i] = (int16_t)clamp(&channel_params[PARAM_ALGORITHM + i], instrument->voice[i]);
+	}
+}
+
 static void send_bank(mdmi_patch *patch)
 {
 	begin_incoming(patch);
@@ -1356,7 +1370,7 @@ void patch_load_bank(mdmi_patch *patch, const patch_bank *bank)
 {
 	patch->shown_bank = *bank;
 	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
-		patch->shown_bank.places[place].name[PATCH_NAME - 1] = 0;
+		clean_place(&patch->shown_bank.places[place]);
 	}
 	send_bank(patch);
 }
@@ -1365,7 +1379,7 @@ void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *inst
 {
 	patch_instrument *at = &patch->shown_bank.places[place & (PATCH_BANK_SIZE - 1)];
 	*at = *instrument;
-	at->name[PATCH_NAME - 1] = 0;
+	clean_place(at);
 	send_bank(patch);
 }
 

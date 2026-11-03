@@ -6,12 +6,11 @@
 #include "engine.h"
 #include "gui.h"
 #include "patch.h"
+#include "state.h"
 
 #define PLUGIN_ID "dev.mdmi-plugin.mega-drive"
 #define PLUGIN_NAME "MDMI Mega Drive"
 #define EDIT_QUEUE 256
-#define STATE_VERSION 3
-enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4 };
 
 static const char *const plugin_features[] = {
 	CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -54,8 +53,9 @@ typedef struct {
 	bool knobs_moved;
 	bool active;
 	mdmi_gui *gui;
-	int gui_page;
-	int gui_channel;
+	// The window's page and channel, saved with the project.
+	state_view view;
+	mdmi_files files;
 	// Single producer, the main thread; single consumer, the writer.
 	edit_command edits[EDIT_QUEUE];
 	uint32_t edits_written;
@@ -90,6 +90,16 @@ static void request_mark_dirty(mdmi_plugin *self)
 }
 
 static void release_notes(mdmi_plugin *self, int channel);
+static void after_load(mdmi_plugin *self, bool knobs);
+
+// A file the window opened went to the model. The project changed, and only a whole state is
+// told to the host as moved knobs (D19).
+static void files_handed(void *context, bool knobs)
+{
+	mdmi_plugin *self = context;
+	after_load(self, knobs);
+	request_mark_dirty(self);
+}
 
 static mdmi_plugin *self_of(const clap_plugin_t *plugin)
 {
@@ -106,6 +116,8 @@ static bool plugin_init(const clap_plugin_t *plugin)
 	self->host_params = self->host->get_extension(self->host, CLAP_EXT_PARAMS);
 	self->host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
 	patch_init(&self->patch);
+	const files_host files = {&self->patch, &self->view, files_handed, self};
+	files_init(&self->files, &files);
 	apply_filter(self);
 	return true;
 }
@@ -119,6 +131,7 @@ static void plugin_destroy(const clap_plugin_t *plugin)
 			stats.worst_wait_ms, stats.worst_run_ms, (unsigned long long)stats.worst_run_pos, (unsigned long long)stats.first_underrun_pos, (unsigned long long)stats.last_underrun_pos);
 	}
 	gui_destroy(self->gui);
+	files_free(&self->files);
 	mdmi_engine_destroy(self->engine);
 	free(self);
 }
@@ -583,133 +596,6 @@ static const clap_plugin_params_t params_ext = {
 	.flush = params_flush,
 };
 
-// A project is a version, then blocks of type, length and data: the knobs, the window's view, the
-// names of the FM channels and the bank. A snapshot file is the same bytes, a bank file has only the
-// bank (D25).
-#define NAMES_BYTES (PATCH_NUM_FM_CHANNELS * PATCH_NAME)
-#define BLOCK_HEAD (2 * sizeof(uint32_t))
-static_assert(sizeof(patch_instrument) == PATCH_NAME + PATCH_VOICE_PARAMS * 2, "a bank place has no padding");
-
-static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
-{
-	memcpy(out, &type, sizeof(type));
-	memcpy(out + sizeof(type), &length, sizeof(length));
-	return out + BLOCK_HEAD;
-}
-
-// Main thread. Freed by the caller.
-static uint8_t *build_state(mdmi_plugin *self, bool bank_only, size_t *size)
-{
-	const size_t most = sizeof(uint32_t) + 4 * BLOCK_HEAD + patch_save_size() + 2 + NAMES_BYTES + sizeof(patch_bank);
-	uint8_t *buffer = malloc(most);
-	if (!buffer) {
-		return NULL;
-	}
-	const uint32_t version = STATE_VERSION;
-	memcpy(buffer, &version, sizeof(version));
-	uint8_t *out = buffer + sizeof(version);
-	if (!bank_only) {
-		out = put_block_head(out, BLOCK_VALUES, (uint32_t)patch_save_size());
-		patch_save(&self->patch, out);
-		out = put_block_head(out + patch_save_size(), BLOCK_VIEW, 2);
-		out[0] = (uint8_t)self->gui_page;
-		out[1] = (uint8_t)self->gui_channel;
-		out = put_block_head(out + 2, BLOCK_NAMES, NAMES_BYTES);
-		patch_save_names(&self->patch, out);
-		out += NAMES_BYTES;
-	}
-	out = put_block_head(out, BLOCK_BANK, sizeof(patch_bank));
-	memcpy(out, patch_bank_view(&self->patch), sizeof(patch_bank));
-	*size = (size_t)(out + sizeof(patch_bank) - buffer);
-	return buffer;
-}
-
-static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream)
-{
-	size_t size;
-	uint8_t *buffer = build_state(self_of(plugin), false, &size);
-	if (!buffer) {
-		return false;
-	}
-	size_t written = 0;
-	while (written < size) {
-		int64_t count = stream->write(stream, buffer + written, size - written);
-		if (count <= 0) {
-			break;
-		}
-		written += (size_t)count;
-	}
-	free(buffer);
-	return written == size;
-}
-
-// Room for a newer build's blocks, which are skipped.
-#define STATE_READ_MAX 65536
-
-// Hands the model whatever blocks there are: the bank first, so channels without names are named
-// after it. False if nothing could be used.
-static bool read_blocks(mdmi_plugin *self, const uint8_t *buffer, size_t total)
-{
-	uint32_t version;
-	if (total < sizeof(version)) {
-		return false;
-	}
-	memcpy(&version, buffer, sizeof(version));
-	if (version != STATE_VERSION) {
-		return false;
-	}
-	const uint8_t *values = NULL, *view = NULL, *names = NULL, *bank = NULL;
-	uint32_t values_length = 0;
-	for (size_t at = sizeof(version); at + BLOCK_HEAD <= total;) {
-		uint32_t type, length;
-		memcpy(&type, buffer + at, sizeof(type));
-		memcpy(&length, buffer + at + sizeof(type), sizeof(length));
-		at += BLOCK_HEAD;
-		if (length > total - at) {
-			return false;
-		}
-		if (type == BLOCK_VALUES) {
-			values = buffer + at;
-			values_length = length;
-		} else if (type == BLOCK_VIEW && length >= 2) {
-			view = buffer + at;
-		} else if (type == BLOCK_NAMES && length == NAMES_BYTES) {
-			names = buffer + at;
-		} else if (type == BLOCK_BANK && length == sizeof(patch_bank)) {
-			bank = buffer + at;
-		}
-		at += length;
-	}
-	if (!values && !bank) {
-		return false;
-	}
-	if (bank) {
-		patch_bank *copy = malloc(sizeof(patch_bank));
-		if (!copy) {
-			return false;
-		}
-		memcpy(copy, bank, sizeof(*copy));
-		patch_load_bank(&self->patch, copy);
-		free(copy);
-	}
-	if (values) {
-		char (*copied)[PATCH_NAME] = NULL;
-		char name_copy[PATCH_NUM_FM_CHANNELS][PATCH_NAME];
-		if (names) {
-			memcpy(name_copy, names, sizeof(name_copy));
-			copied = name_copy;
-		}
-		if (!patch_load(&self->patch, values, values_length, (const char (*)[PATCH_NAME])copied)) {
-			return false;
-		}
-	}
-	if (view) {
-		self->gui_page = view[0] <= 2 ? view[0] : 0;
-		self->gui_channel = view[1] < PATCH_NUM_CHANNELS ? view[1] : 0;
-	}
-	return true;
-}
-
 // After a project, a bank or a snapshot went to the model, or a file's voice did.
 static void after_load(mdmi_plugin *self, bool knobs)
 {
@@ -727,6 +613,26 @@ static void after_load(mdmi_plugin *self, bool knobs)
 	}
 }
 
+static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream)
+{
+	mdmi_plugin *self = self_of(plugin);
+	size_t size;
+	uint8_t *buffer = state_build(&self->patch, &self->view, &size);
+	if (!buffer) {
+		return false;
+	}
+	size_t written = 0;
+	while (written < size) {
+		int64_t count = stream->write(stream, buffer + written, size - written);
+		if (count <= 0) {
+			break;
+		}
+		written += (size_t)count;
+	}
+	free(buffer);
+	return written == size;
+}
+
 static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream)
 {
 	mdmi_plugin *self = self_of(plugin);
@@ -740,12 +646,13 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
 		count = stream->read(stream, buffer + total, STATE_READ_MAX - total);
 		total += count > 0 ? (size_t)count : 0;
 	}
-	bool loaded = count >= 0 && read_blocks(self, buffer, total);
+	bool knobs;
+	bool loaded = count >= 0 && state_read(&self->patch, buffer, total, &self->view, &knobs);
 	free(buffer);
 	if (!loaded) {
 		return false;
 	}
-	after_load(self, true);
+	after_load(self, knobs);
 	return true;
 }
 
@@ -779,8 +686,9 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.patch = &self->patch,
 		.notes = self->notes,
 		.version = plugin_descriptor.version,
-		.page = &self->gui_page,
-		.channel = &self->gui_channel,
+		.page = &self->view.page,
+		.channel = &self->view.channel,
+		.files = &self->files,
 		.edit = gui_edit,
 		.context = self,
 	};

@@ -22,7 +22,7 @@
 #define TABLE_BOTTOM 480
 #define BOOT_TIMEOUT_MS 30000
 #define BUTTON_EDITOR_X 100
-#define BUTTON_ROM_X 180
+#define BUTTON_ROM_X 260
 #define BUTTON_Y 12
 // Channel 4 in the rail, Op1 TL on the FM page, and the ids of Op1 TL on channels 3 and 4.
 #define RAIL_X 100
@@ -36,6 +36,12 @@
 #define LFO_RATE_X 160
 #define LFO_RATE_Y 484
 #define LFO_RATE 3
+// The bank page's button, its third place, and channel 4's Preset.
+#define BUTTON_BANK_X 180
+#define BANK_ROW_X 400
+#define BANK_ROW3_Y 122
+#define CH4_PRESET 1400
+#define COLOR_FM_DARK 0x222266
 
 static int failures;
 
@@ -395,6 +401,19 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(LFO_RATE_X, LFO_RATE_Y));
 		run_ms(100);
 		CHECK(first == 1 && get_value(LFO_RATE) == 0, "a click steps LFO Rate to the next value, eight clicks go round to the first");
+
+		// The bank: a click on a place sets the selected channel's Preset, as one gesture.
+		click(window, BUTTON_BANK_X, BUTTON_Y);
+		run_ms(100);
+		memset(pushed, 0, sizeof(pushed));
+		click(window, BANK_ROW_X, BANK_ROW3_Y);
+		run_ms(100);
+		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_PRESET && get_value(CH4_PRESET) == 2, "a click on place 3 of the bank sets channel 4's Preset to it");
+		capture(window);
+		CHECK(count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK) > 1000, "and lights its row");
+		save_bmp(argv[2], "bank");
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(100);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

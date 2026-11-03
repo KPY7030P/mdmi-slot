@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "engine.h"
+#include "files.h"
 #include "patch.h"
 
 // The plugin's window: everything is drawn by our own code into a pixel buffer. All of this runs
@@ -32,6 +33,8 @@ typedef struct {
 	// window and are saved with the project. Only a view: no knob depends on them.
 	int *page;
 	int *channel;
+	// What the window does with dropped and opened files.
+	mdmi_files *files;
 	void (*edit)(void *context, int kind, uint32_t id, int value);
 	void *context;
 } gui_source;

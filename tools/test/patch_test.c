@@ -1,12 +1,13 @@
 // The model without an emulator: what patch.c sends for each thing that can happen, and whether
 // the main thread can ever read half a preset while the writer works.
 //
-//   patch_test
+//   patch_test [folder of the test instrument files]
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
+#include "files.h"
 #include "patch.h"
 #include "presets_gm.h"
 
@@ -520,8 +521,141 @@ static void test_dealer(void)
 	CHECK(sent[0] == 0xB3 && sent[1] == 123 && free_voices(&patch) == 6, "a reset stops the chord first and sends its voices home");
 }
 
-int main(void)
+// Stage 5: files on the main thread, with the writer taking them at once.
+static const char *files_dir = "../../tools/test/files";
+static char temp_dir[MAX_PATH];
+static mdmi_patch files_patch;
+static state_view files_view;
+static int handed_knobs;
+
+static void take_now(void *context, bool knobs)
 {
+	(void)context;
+	patch_take_incoming(&files_patch);
+	handed_knobs += knobs;
+}
+
+static void path_in(char *path, size_t size, const char *dir, const char *name)
+{
+	snprintf(path, size, "%s/%s", dir, name);
+}
+
+static void write_bytes(const char *name, const uint8_t *bytes, size_t size)
+{
+	char path[MAX_PATH];
+	path_in(path, sizeof(path), temp_dir, name);
+	FILE *file = fopen(path, "wb");
+	fwrite(bytes, 1, size, file);
+	fclose(file);
+}
+
+static bool open_file(mdmi_files *files, const char *dir, const char *name, int channel, int place, char *message)
+{
+	char path[MAX_PATH];
+	path_in(path, sizeof(path), dir, name);
+	return files_open(files, path, channel, place, message, FILES_MESSAGE);
+}
+
+static bool same_model(const patch_values *a, const patch_values *b)
+{
+	return !memcmp(a->globals, b->globals, sizeof(a->globals)) && !memcmp(a->channels, b->channels, sizeof(a->channels)) && !memcmp(a->names, b->names, sizeof(a->names));
+}
+
+static void test_files(void)
+{
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	GetTempPathA(sizeof(temp_dir), temp_dir);
+	strcat(temp_dir, "mdmi-patch-test");
+	CreateDirectoryA(temp_dir, NULL);
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	patch_values gm = patch->model;
+
+	CHECK(open_file(&files, files_dir, "Duck Guitar.tfi", 3, -1, message) && !strcmp(patch->model.names[3], "Duck Guitar") && patch->model.channels[3][PARAM_ALGORITHM] == 0 && patch->model.channels[3][PARAM_FEEDBACK] == 4,
+		"a TFI on channel 4: %s", message);
+	CHECK(patch->model.channels[3][PARAM_PRESET] == 0 && !strcmp(patch_bank_view(patch)->places[0].name, "Grand Piano"), "the Preset and the bank stay");
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH4 back to Grand Piano"), "undo says what it puts back: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	patch_values duck = patch->model;
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &gm), "undo puts the channel back: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &duck), "and again brings the file back");
+
+	// Bad files leave everything as it was.
+	patch_values before = patch->model;
+	static patch_bank bank_before;
+	bank_before = *patch_bank_view(patch);
+	uint8_t junk[42];
+	memset(junk, 0x7F, sizeof(junk));
+	write_bytes("short.tfi", junk, 41);
+	write_bytes("junk.tfi", junk, 42);
+	write_bytes("song.mid", junk, 42);
+	write_bytes("junk.mdsnap", junk, 42);
+	struct {
+		const char *dir, *name;
+		int channel, place;
+	} bad[] = {
+		{temp_dir, "short.tfi", 0, -1}, {temp_dir, "junk.tfi", 0, -1}, {temp_dir, "song.mid", 0, -1}, {temp_dir, "junk.mdsnap", 0, -1},
+		{temp_dir, "missing.vgi", 0, -1}, {files_dir, "BAS_PSG2.vgi", 6, -1}, {temp_dir, "junk.tfi", -1, 5},
+	};
+	for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
+		bool opened = open_file(&files, bad[i].dir, bad[i].name, bad[i].channel, bad[i].place, message);
+		CHECK(!opened && same_model(&patch->model, &before) && !memcmp(patch_bank_view(patch), &bank_before, sizeof(bank_before)) && !memcmp(&patch->bank, &bank_before, sizeof(bank_before)),
+			"refused, nothing changed: %s", message);
+	}
+
+	// A file in a place of the bank, then the bank saved, everything changed, and the bank loaded.
+	char bank_path[MAX_PATH], snap_path[MAX_PATH], vgi_path[MAX_PATH];
+	path_in(bank_path, sizeof(bank_path), temp_dir, "test.mdbank");
+	path_in(snap_path, sizeof(snap_path), temp_dir, "test.mdsnap");
+	path_in(vgi_path, sizeof(vgi_path), temp_dir, "Thunder again.vgi");
+	CHECK(open_file(&files, files_dir, "Thunder Guitar 03.tyi", 0, 9, message) && !strcmp(patch->bank.places[9].name, "Thunder Guitar 03"), "a TYI in place 10: %s", message);
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "slot 10 back to Glockenspiel"), "undo would put back: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	static patch_bank thunder;
+	thunder = patch->bank;
+	CHECK(files_save(&files, bank_path, FILES_BANK, 0, message, sizeof(message)), "the bank saved: %s", message);
+	open_file(&files, files_dir, "Duck Guitar.tfi", 0, 9, message);
+	open_file(&files, files_dir, "Duck Guitar.tfi", 0, 20, message);
+	CHECK(files_open(&files, bank_path, 0, -1, message, sizeof(message)) && !memcmp(&patch->bank, &thunder, sizeof(thunder)) && !memcmp(patch_bank_view(patch), &thunder, sizeof(thunder)), "and loaded back: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && !strcmp(patch->bank.places[20].name, "Duck Guitar"), "undo of a bank puts the bank before it back");
+	files_undo(&files, message, sizeof(message));
+
+	// A snapshot: bank, channels and their values.
+	open_file(&files, files_dir, "GTR_Dis._'94.vgi", 2, -1, message);
+	patch_set(patch, PATCH_CHANNEL_ID(2, PARAM_OP_BASE), 33);
+	patch_set(patch, PATCH_CHANNEL_ID(7, PARAM_VOLUME), 50);
+	patch_set(patch, GLOBAL_LFO_RATE, 6);
+	patch_publish(patch);
+	files_view = (state_view){0, 2};
+	patch_values snapped = patch->model;
+	CHECK(files_save(&files, snap_path, FILES_SNAPSHOT, 0, message, sizeof(message)), "a snapshot saved: %s", message);
+	open_file(&files, files_dir, "BAS_PSG2.vgi", 2, -1, message);
+	open_file(&files, files_dir, "BAS_PSG2.vgi", 0, 9, message);
+	patch_set(patch, PATCH_CHANNEL_ID(7, PARAM_VOLUME), 100);
+	patch_set(patch, GLOBAL_LFO_RATE, 1);
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 9);
+	patch_publish(patch);
+	files_view = (state_view){1, 5};
+	handed_knobs = 0;
+	CHECK(files_open(&files, snap_path, 0, -1, message, sizeof(message)) && same_model(&patch->model, &snapped) && !memcmp(&patch->bank, &thunder, sizeof(thunder)), "and loaded back: values, names and bank: %s", message);
+	CHECK(files_view.page == 0 && files_view.channel == 2 && handed_knobs == 1, "with the view, and the host told to re-read the knobs");
+
+	// A channel saved as VGI is the same voice when it comes back.
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 9);
+	patch_publish(patch);
+	CHECK(files_save(&files, vgi_path, FILES_INSTRUMENT, 0, message, sizeof(message)), "channel 1 saved as VGI: %s", message);
+	CHECK(files_open(&files, vgi_path, 4, -1, message, sizeof(message)) && !memcmp(patch->model.channels[4] + PARAM_ALGORITHM, patch->model.channels[0] + PARAM_ALGORITHM, PATCH_VOICE_PARAMS * sizeof(int16_t)) && !strcmp(patch->model.names[4], "Thunder again"),
+		"and loads on channel 5 as the same voice");
+	CHECK(!files_save(&files, vgi_path, FILES_INSTRUMENT, 7, message, sizeof(message)), "a PSG channel has no instrument to save: %s", message);
+	files_free(&files);
+}
+
+int main(int argc, char **argv)
+{
+	if (argc > 1) {
+		files_dir = argv[1];
+	}
 	setvbuf(stdout, NULL, _IONBF, 0);
 	patch_global_init();
 	test_nothing_to_send();
@@ -532,6 +666,7 @@ int main(void)
 	test_incoming();
 	test_load();
 	test_dealer();
+	test_files();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

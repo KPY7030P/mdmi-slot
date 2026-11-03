@@ -175,6 +175,8 @@ bool patch_channel_has(int channel, int param);
 const patch_param_info *patch_param(uint32_t id);
 void patch_param_name(uint32_t id, char *name, size_t size);
 uint32_t patch_param_id_at(uint32_t panel_index);
+// The name a place of the bank has in the ROM's GM presets.
+const char *patch_gm_name(int place);
 // The value a param has in a place of the bank, which a reset returns to.
 int patch_preset_value(const patch_bank *bank, int channel, int param, int preset);
 

@@ -542,7 +542,8 @@ static void test_voices(void)
 }
 
 typedef struct {
-	uint8_t data[8192];
+	// A project holds the bank, about 17 KB.
+	uint8_t data[65536];
 	size_t size, pos;
 } memory_stream;
 

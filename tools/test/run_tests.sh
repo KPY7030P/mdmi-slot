@@ -85,7 +85,7 @@ python -I "$WIN_ROOT/tools/test/check_wav.py" "$WIN_OUT/vst3.log" "$WIN_OUT/vst3
 
 echo "=== model"
 log="$OUT/patch_test.log"
-timeout 60 ./patch_test.exe > "$log" 2>&1
+timeout 60 ./patch_test.exe "$WIN_ROOT/tools/test/files" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "patch_test: exit $code"

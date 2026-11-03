@@ -1,0 +1,257 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <windows.h>
+#include "files.h"
+#include "instrument.h"
+
+#define INSTRUMENT_MAX 64
+
+void files_init(mdmi_files *files, const files_host *host)
+{
+	memset(files, 0, sizeof(*files));
+	files->host = *host;
+}
+
+void files_free(mdmi_files *files)
+{
+	free(files->undo_state);
+	files->undo_state = NULL;
+	files->undo = UNDO_NONE;
+}
+
+static const char *extension_of(const char *path)
+{
+	const char *base = path;
+	for (const char *c = path; *c; c++) {
+		if (*c == '/' || *c == '\\') {
+			base = c + 1;
+		}
+	}
+	const char *dot = strrchr(base, '.');
+	return dot ? dot + 1 : "";
+}
+
+static const char *base_of(const char *path)
+{
+	const char *base = path;
+	for (const char *c = path; *c; c++) {
+		if (*c == '/' || *c == '\\') {
+			base = c + 1;
+		}
+	}
+	return base;
+}
+
+int files_kind(const char *path)
+{
+	const char *extension = extension_of(path);
+	if (!_stricmp(extension, "tfi") || !_stricmp(extension, "vgi") || !_stricmp(extension, "tyi")) {
+		return FILES_INSTRUMENT;
+	}
+	if (!_stricmp(extension, "mdbank")) {
+		return FILES_BANK;
+	}
+	if (!_stricmp(extension, "mdsnap")) {
+		return FILES_SNAPSHOT;
+	}
+	return -1;
+}
+
+static FILE *open_utf8(const char *path, const wchar_t *mode)
+{
+	wchar_t wide[MAX_PATH * 2];
+	if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH * 2)) {
+		return NULL;
+	}
+	return _wfopen(wide, mode);
+}
+
+// The whole file, if it is no larger than the most a state can be. Freed by the caller.
+static uint8_t *read_all(const char *path, size_t *size)
+{
+	FILE *file = open_utf8(path, L"rb");
+	if (!file) {
+		return NULL;
+	}
+	uint8_t *bytes = malloc(STATE_READ_MAX + 1);
+	if (bytes) {
+		*size = fread(bytes, 1, STATE_READ_MAX + 1, file);
+	}
+	fclose(file);
+	if (bytes && *size > STATE_READ_MAX) {
+		free(bytes);
+		return NULL;
+	}
+	return bytes;
+}
+
+static bool write_all(const char *path, const uint8_t *bytes, size_t size)
+{
+	FILE *file = open_utf8(path, L"wb");
+	if (!file) {
+		return false;
+	}
+	bool written = fwrite(bytes, 1, size, file) == size;
+	return fclose(file) == 0 && written;
+}
+
+// What a channel has now, as an instrument.
+static void channel_instrument(mdmi_patch *patch, int channel, patch_instrument *out)
+{
+	const patch_values *values = patch_view(patch);
+	memcpy(out->name, values->names[channel], PATCH_NAME);
+	memcpy(out->voice, values->channels[channel] + PARAM_ALGORITHM, sizeof(out->voice));
+}
+
+static void remember(mdmi_files *files, int undo, int target, const patch_instrument *instrument, uint8_t *state, size_t state_size)
+{
+	free(files->undo_state);
+	files->undo = undo;
+	files->undo_target = target;
+	files->undo_state = state;
+	files->undo_state_size = state_size;
+	if (instrument) {
+		files->undo_instrument = *instrument;
+	}
+	switch (undo) {
+	case UNDO_CHANNEL:
+		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d back to %s", target + 1, instrument->name);
+		break;
+	case UNDO_PLACE:
+		snprintf(files->undo_text, sizeof(files->undo_text), "slot %d back to %s", target + 1, instrument->name);
+		break;
+	default:
+		snprintf(files->undo_text, sizeof(files->undo_text), target == FILES_BANK ? "the bank back" : "everything back");
+		break;
+	}
+}
+
+static void put_on_channel(mdmi_files *files, int channel, const patch_instrument *instrument)
+{
+	patch_instrument before;
+	channel_instrument(files->host.patch, channel, &before);
+	patch_load_voice(files->host.patch, channel, instrument);
+	remember(files, UNDO_CHANNEL, channel, &before, NULL, 0);
+	files->host.handed(files->host.context, false);
+}
+
+static void put_in_place(mdmi_files *files, int place, const patch_instrument *instrument)
+{
+	patch_instrument before = patch_bank_view(files->host.patch)->places[place];
+	patch_load_place(files->host.patch, place, instrument);
+	remember(files, UNDO_PLACE, place, &before, NULL, 0);
+	files->host.handed(files->host.context, false);
+}
+
+// A bank, or everything. False with the state untouched if the bytes are no state.
+static bool put_state(mdmi_files *files, int kind, const uint8_t *bytes, size_t size)
+{
+	size_t before_size;
+	uint8_t *before = state_build(files->host.patch, kind == FILES_SNAPSHOT ? files->host.view : NULL, &before_size);
+	bool knobs;
+	state_view view = *files->host.view;
+	if (!before || !state_read(files->host.patch, bytes, size, &view, &knobs)) {
+		free(before);
+		return false;
+	}
+	*files->host.view = view;
+	remember(files, UNDO_STATE, kind, NULL, before, before_size);
+	files->host.handed(files->host.context, knobs);
+	return true;
+}
+
+bool files_open(mdmi_files *files, const char *path, int channel, int place, char *message, size_t size)
+{
+	const char *name = base_of(path);
+	const int kind = files_kind(path);
+	if (kind < 0) {
+		snprintf(message, size, "%s: not TFI, VGI or TYI", name);
+		return false;
+	}
+	if (kind == FILES_INSTRUMENT && place < 0 && (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS)) {
+		snprintf(message, size, "FM file: select CH1-6");
+		return false;
+	}
+	size_t length = 0;
+	uint8_t *bytes = read_all(path, &length);
+	if (!bytes) {
+		snprintf(message, size, "%s: can't be read", name);
+		return false;
+	}
+	bool done;
+	if (kind == FILES_INSTRUMENT) {
+		patch_instrument instrument;
+		char error[FILES_MESSAGE];
+		done = instrument_parse(path, bytes, length, &instrument, error, sizeof(error));
+		if (!done) {
+			snprintf(message, size, "%s: %s", name, error);
+		} else if (place >= 0) {
+			put_in_place(files, place & (PATCH_BANK_SIZE - 1), &instrument);
+			snprintf(message, size, "Loaded %s to slot %d", instrument.name, place + 1);
+		} else {
+			put_on_channel(files, channel, &instrument);
+			snprintf(message, size, "Loaded %s to CH%d", instrument.name, channel + 1);
+		}
+	} else {
+		done = put_state(files, kind, bytes, length);
+		snprintf(message, size, done ? "Loaded %s" : "%s: not an MDMI bank or snapshot", name);
+	}
+	free(bytes);
+	return done;
+}
+
+bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size)
+{
+	const char *name = base_of(path);
+	bool written;
+	if (kind == FILES_INSTRUMENT) {
+		if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
+			snprintf(message, size, "Select CH1-6 to save an instrument");
+			return false;
+		}
+		patch_instrument instrument;
+		channel_instrument(files->host.patch, channel, &instrument);
+		uint8_t vgi[INSTRUMENT_VGI_SIZE];
+		instrument_write_vgi(&instrument, vgi);
+		written = write_all(path, vgi, sizeof(vgi));
+	} else {
+		size_t length;
+		uint8_t *bytes = state_build(files->host.patch, kind == FILES_SNAPSHOT ? files->host.view : NULL, &length);
+		written = bytes && write_all(path, bytes, length);
+		free(bytes);
+	}
+	snprintf(message, size, written ? "Saved %s" : "%s: can't be written", name);
+	return written;
+}
+
+bool files_undo(mdmi_files *files, char *message, size_t size)
+{
+	const int undo = files->undo, target = files->undo_target;
+	if (undo == UNDO_NONE) {
+		return false;
+	}
+	snprintf(message, size, "Undone: %s", files->undo_text);
+	if (undo == UNDO_CHANNEL) {
+		patch_instrument back = files->undo_instrument;
+		put_on_channel(files, target, &back);
+	} else if (undo == UNDO_PLACE) {
+		patch_instrument back = files->undo_instrument;
+		put_in_place(files, target, &back);
+	} else {
+		uint8_t *back = files->undo_state;
+		files->undo_state = NULL;
+		bool done = put_state(files, target, back, files->undo_state_size);
+		free(back);
+		if (!done) {
+			files->undo = UNDO_NONE;
+			return false;
+		}
+	}
+	return true;
+}
+
+const char *files_undo_text(const mdmi_files *files)
+{
+	return files->undo == UNDO_NONE ? NULL : files->undo_text;
+}
