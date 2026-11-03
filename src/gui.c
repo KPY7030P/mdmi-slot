@@ -727,9 +727,10 @@ static void on_up(mdmi_gui *g)
 	if (!g->dragging) {
 		return;
 	}
-	// A click without moving flips a switch.
-	if (!g->drag_moved && patch_param(g->drag_id)->max == 1) {
-		g->drag_value = !g->drag_start;
+	// A click without moving steps a short range round, which flips a switch.
+	const int max = patch_param(g->drag_id)->max;
+	if (!g->drag_moved && max + 1 <= 8) {
+		g->drag_value = g->drag_start < max ? g->drag_start + 1 : 0;
 		edit(g, GUI_EDIT_SET, g->drag_id, g->drag_value);
 	}
 	edit(g, GUI_EDIT_END, g->drag_id, 0);

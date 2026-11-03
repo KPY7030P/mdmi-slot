@@ -32,6 +32,8 @@
 #define OP1_TL_Y 212
 #define CH3_OP1_TL 1311
 #define CH4_OP1_TL 1411
+#define POLYPHONY_X 40
+#define POLYPHONY_Y 484
 
 static int failures;
 
@@ -353,6 +355,14 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
 		run_ms(100);
 		CHECK(get_value(CH4_OP1_TL) == ch4_before, "a double click returns it to the preset's value");
+		click(window, POLYPHONY_X, POLYPHONY_Y);
+		run_ms(100);
+		const int first = get_value(0);
+		for (int i = 0; i < 6; i++) {
+			click(window, POLYPHONY_X, POLYPHONY_Y);
+		}
+		run_ms(100);
+		CHECK(first == 1 && get_value(0) == 0, "a click steps Polyphony to Ch 1, seven clicks go round to Off");
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);
