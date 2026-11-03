@@ -36,6 +36,9 @@
 #define YM_REG_SUSTAIN_RATE 0x70
 #define SYSEX_REMAP 0x00
 #define SYSEX_DYNAMIC 0x03
+// The ROM applies LFO and DAC controllers once per voice of the channel they come on. Channel 7's
+// PSG voice is never remapped, so there they apply exactly once whatever Polyphony does.
+#define GLOBAL_CC_CHANNEL 6
 // Stored voices shadow the ROM's built-in programs from here on, two numbers per FM channel.
 #define FIRST_SERVICE_PROGRAM 116
 #define VOICE_SYSEX_HEAD 7
@@ -642,7 +645,7 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 	if (model_globals[GLOBAL_DAC] != rom_globals[GLOBAL_DAC]) {
 		// The ROM swaps the Z80 driver for this, and the Z80's reset line also clears the YM2612.
 		// The ROM doesn't know, so FM stays silent until its registers are written again.
-		emit_cc(emit, context, 0, CC_DAC, model_globals[GLOBAL_DAC] ? CC_ON : 0);
+		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_DAC, model_globals[GLOBAL_DAC] ? CC_ON : 0);
 		rom_globals[GLOBAL_DAC] = model_globals[GLOBAL_DAC];
 		rom_globals[GLOBAL_LFO_ON] = rom_globals[GLOBAL_LFO_RATE] = rom_globals[GLOBAL_CH3_MODE] = PATCH_UNKNOWN;
 		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
@@ -651,15 +654,15 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 	}
 	sync_voice_owners(model_globals, receiver, emit, context);
 	if (model_globals[GLOBAL_LFO_ON] != rom_globals[GLOBAL_LFO_ON]) {
-		emit_cc(emit, context, 0, CC_LFO_ON, model_globals[GLOBAL_LFO_ON] ? CC_ON : 0);
+		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_ON, model_globals[GLOBAL_LFO_ON] ? CC_ON : 0);
 		rom_globals[GLOBAL_LFO_ON] = model_globals[GLOBAL_LFO_ON];
 	}
 	if (model_globals[GLOBAL_LFO_RATE] != rom_globals[GLOBAL_LFO_RATE]) {
-		emit_cc(emit, context, 0, CC_LFO_RATE, model_globals[GLOBAL_LFO_RATE] * (128 / 8));
+		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_RATE, model_globals[GLOBAL_LFO_RATE] * (128 / 8));
 		rom_globals[GLOBAL_LFO_RATE] = model_globals[GLOBAL_LFO_RATE];
 	}
 	if (model_globals[GLOBAL_CH3_MODE] != rom_globals[GLOBAL_CH3_MODE]) {
-		emit_cc(emit, context, 0, CC_CH3_MODE, model_globals[GLOBAL_CH3_MODE] ? CC_ON : 0);
+		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_CH3_MODE, model_globals[GLOBAL_CH3_MODE] ? CC_ON : 0);
 		rom_globals[GLOBAL_CH3_MODE] = model_globals[GLOBAL_CH3_MODE];
 	}
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {

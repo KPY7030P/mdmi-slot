@@ -693,6 +693,8 @@ static void on_down(mdmi_gui *g, int x, int y)
 	g->drag_y = y;
 	g->drag_start = g->drag_value = patch_get(g->source.patch, c->id);
 	edit(g, GUI_EDIT_BEGIN, c->id, 0);
+	// A touch alone is a change to the host, so Configure in Live picks the knob up.
+	edit(g, GUI_EDIT_SET, c->id, g->drag_value);
 	if (g->window) {
 		SetCapture(g->window);
 	}

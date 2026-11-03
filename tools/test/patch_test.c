@@ -254,7 +254,7 @@ static void test_modes(void)
 	CHECK(sent_bytes == 0 && patch.model.channels[1][op_param(0, OP_TL)] == 50, "a CC on a channel without a voice changes its model only");
 	clear();
 	set(&patch, GLOBAL_DAC, 1);
-	CHECK(sent[0] == 0xB0 && sent[1] == 78 && count_sysex(0x00) == 1 && remapped(5, 5), "the DAC takes voice 6 back for channel 6");
+	CHECK(sent[0] == 0xB6 && sent[1] == 78 && count_sysex(0x00) == 1 && remapped(5, 5), "the DAC takes voice 6 back for channel 6");
 	clear();
 	set(&patch, GLOBAL_DAC, 0);
 	CHECK(count_sysex(0x00) == 1 && remapped(5, 3), "and gives it to channel 4 again");
@@ -271,7 +271,7 @@ static void test_modes(void)
 	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 0, "but turning it off works from anywhere");
 	clear();
 	set(&patch, GLOBAL_DAC, 1);
-	CHECK(count_voices() == 6 && sent[0] == 0xB0 && sent[1] == 78, "the DAC comes first, then all six voices");
+	CHECK(count_voices() == 6 && sent[0] == 0xB6 && sent[1] == 78, "the DAC comes first, on channel 7 where it applies once, then all six voices");
 	clear();
 	midi(&patch, 0xB0, 78, 0);
 	CHECK(count_voices() == 6 && patch.model.globals[GLOBAL_DAC] == 0, "the same from a clip's CC78");

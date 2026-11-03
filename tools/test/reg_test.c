@@ -136,9 +136,11 @@ static void check_globals(const char *what)
 	patch_publish(patch);
 	int lfo = patch_get(patch, GLOBAL_LFO_ON) << 3 | patch_get(patch, GLOBAL_LFO_RATE);
 	int ch3 = patch_get(patch, GLOBAL_CH3_MODE) << 6;
+	int dac = patch_get(patch, GLOBAL_DAC) << 7;
 	int got_lfo = mdmi_engine_test_ym(engine, 0, 0x22), got_ch3 = mdmi_engine_test_ym(engine, 0, 0x27) & 0xC0;
-	bool same = got_lfo == lfo && got_ch3 == ch3;
-	printf("  %s: %s, LFO register %d model %d, Ch3 mode %d model %d\n", same ? "ok  " : "FAIL", what, got_lfo, lfo, got_ch3, ch3);
+	int got_dac = mdmi_engine_test_ym(engine, 0, 0x2B) & 0x80;
+	bool same = got_lfo == lfo && got_ch3 == ch3 && got_dac == dac;
+	printf("  %s: %s, LFO register %d model %d, Ch3 mode %d model %d, DAC %d model %d\n", same ? "ok  " : "FAIL", what, got_lfo, lfo, got_ch3, ch3, got_dac, dac);
 	if (!same) {
 		failures++;
 	}
@@ -377,8 +379,29 @@ static void test_dac(void)
 	wait_for_voices(FM_CHANNELS - 1);
 	check_voices("DAC off: all six come back", 0, FM_CHANNELS - 1, -1);
 	check_globals("and the LFO and Ch3 mode");
+
+	// The ROM applies these controllers once per voice of the channel they come on, and with
+	// Polyphony on channel 4 the other FM channels have none.
+	set_global(GLOBAL_POLYPHONY, 4);
+	set_global(GLOBAL_LFO_RATE, 3);
+	set_global(GLOBAL_LFO_ON, 0);
+	sync_and_settle();
+	check_globals("polyphony on channel 4: LFO by knob");
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	check_globals("and the DAC turns on");
+	check_voices("and five voices come back with channel 4's values", 0, FM_CHANNELS - 2, 3);
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	check_globals("and off");
+	check_voices("and all six come back with channel 4's values", 0, FM_CHANNELS - 1, 3);
+	set_global(GLOBAL_POLYPHONY, 0);
+	set_global(GLOBAL_LFO_ON, 1);
 	set_global(GLOBAL_CH3_MODE, 0);
 	sync_and_settle();
+	check_voices("polyphony off: every channel has its own voice back", 0, FM_CHANNELS - 1, -1);
 }
 
 static void test_load(void)

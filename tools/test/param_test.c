@@ -838,6 +838,31 @@ static void test_mode_knobs(void)
 	destroy_instance(in);
 }
 
+// The VST3 wrapper hands notes over before knobs of the same moment. A preset point exactly on a
+// note's start must still be meant for that note.
+static void test_same_moment(void)
+{
+	printf("a preset at the start of a note\n");
+	instance *first = create_instance();
+	settle(first, 0.4);
+	queue_param(first, P_PRESET, 80);
+	settle(first, 0.1);
+	float *expected = play_note(first, 0, 60, 0.7);
+	destroy_instance(first);
+	instance *plain = create_instance();
+	settle(plain, 0.4);
+	float *other = play_note(plain, 0, 60, 0.7);
+	destroy_instance(plain);
+	instance *same = create_instance();
+	settle(same, 0.4);
+	queue_midi(same, 0x90, 60, 127);
+	queue_param(same, P_PRESET, 80);
+	float *together = render(same, (uint32_t)(0.7 * RATE));
+	destroy_instance(same);
+	double *a = spectrum(expected, 4000), *b = spectrum(together, 4000), *c = spectrum(other, 4000);
+	CHECK(similarity(a, b) > 0.97 && similarity(c, b) < 0.95, "the note sounds with the new preset: %.3f, with the old one %.3f", similarity(a, b), similarity(c, b));
+}
+
 static void test_midi_tracking(void)
 {
 	printf("knobs follow MIDI from clips\n");
@@ -917,6 +942,7 @@ int main(int argc, char **argv)
 	test_polyphony();
 	test_state();
 	test_midi_tracking();
+	test_same_moment();
 	test_tuning_knobs();
 	test_mode_knobs();
 
