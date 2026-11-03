@@ -71,6 +71,10 @@ bend and pedal up, because the ROM would also reset the channel's program and vo
 At the same moment, knob changes and controllers come before notes start, so a preset point exactly on a note's
 start is meant for that note.
 
+The plugin tells the host only about edits in its window and a loaded project (D19). Knobs that a preset or MIDI
+moved are shown in the window but not reported, because Live turns automation off for any value a plugin reports.
+So after a preset step, a TL lane takes over again at its next point: put that point just after the step.
+
 ## Building
 
 Needs Docker, Git Bash, and Python with numpy for the tests. All outside code is pinned in `tools/deps.lock`:

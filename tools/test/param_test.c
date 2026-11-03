@@ -909,9 +909,9 @@ static void test_midi_tracking(void)
 	callbacks_requested = 0;
 	queue_param(in, P_PRESET, 12);
 	settle(in, 0.05);
-	CHECK(callbacks_requested > 0, "preset change asks for the main thread");
+	CHECK(callbacks_requested > 0, "preset change asks for the main thread, to mark the project changed");
 	in->plugin->on_main_thread(in->plugin);
-	CHECK(rescans == before + 1, "main thread tells the host to re-read the knobs");
+	CHECK(rescans == before, "but the host isn't asked to re-read the knobs, which would stop Live's automation");
 	destroy_instance(in);
 }
 

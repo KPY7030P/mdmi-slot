@@ -48,7 +48,7 @@ typedef struct {
 	const clap_host_state_t *host_state;
 	mdmi_patch patch;
 	uint32_t sync_pending;
-	uint32_t rescan_pending;
+	uint32_t dirty_pending;
 	bool knobs_moved;
 	bool active;
 	mdmi_gui *gui;
@@ -78,10 +78,12 @@ static void apply_filter(mdmi_plugin *self)
 	mdmi_engine_set_filter(self->engine, patch_model_filter_hz(&self->patch));
 }
 
-// The host learns about knobs it didn't move itself on the main thread.
-static void request_rescan(mdmi_plugin *self)
+// Knobs the host didn't move itself, by a preset or MIDI, are not reported: Live takes any value
+// from the plugin as a manual change and turns automation off (D19). The window shows them, and
+// the project only has to know it changed.
+static void request_mark_dirty(mdmi_plugin *self)
 {
-	__atomic_store_n(&self->rescan_pending, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&self->dirty_pending, 1, __ATOMIC_RELEASE);
 	self->host->request_callback(self->host);
 }
 
@@ -278,7 +280,7 @@ static void take_edits(mdmi_plugin *self, const clap_output_events_t *out, bool 
 			if (processing) {
 				set_param(self, command->id, command->value, 0);
 			} else if (patch_set(&self->patch, command->id, command->value)) {
-				request_rescan(self);
+				request_mark_dirty(self);
 			}
 			clap_event_param_value_t event = {{sizeof(event), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, command->id, NULL, -1, -1, -1, -1, command->value};
 			out->try_push(out, &event.header);
@@ -388,7 +390,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 	patch_publish(&self->patch);
 	if (self->knobs_moved) {
 		self->knobs_moved = false;
-		request_rescan(self);
+		request_mark_dirty(self);
 	}
 	// A host may switch the output off. The emulator keeps its time anyway.
 	const clap_audio_buffer_t *out = process->audio_outputs_count ? &process->audio_outputs[0] : NULL;
@@ -552,7 +554,7 @@ static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t 
 		if (header->space_id == CLAP_CORE_EVENT_SPACE_ID && header->type == CLAP_EVENT_PARAM_VALUE) {
 			const clap_event_param_value_t *event = (const clap_event_param_value_t *)header;
 			if (patch_set(&self->patch, event->param_id, (int)(event->value + 0.5))) {
-				request_rescan(self);
+				request_mark_dirty(self);
 			}
 		}
 	}
@@ -834,10 +836,7 @@ static const void *plugin_get_extension(const clap_plugin_t *plugin, const char 
 static void plugin_on_main_thread(const clap_plugin_t *plugin)
 {
 	mdmi_plugin *self = self_of(plugin);
-	if (__atomic_exchange_n(&self->rescan_pending, 0, __ATOMIC_ACQ_REL)) {
-		if (self->host_params) {
-			self->host_params->rescan(self->host, CLAP_PARAM_RESCAN_VALUES);
-		}
+	if (__atomic_exchange_n(&self->dirty_pending, 0, __ATOMIC_ACQ_REL)) {
 		if (self->host_state) {
 			self->host_state->mark_dirty(self->host);
 		}
