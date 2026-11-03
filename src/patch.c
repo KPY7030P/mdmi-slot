@@ -781,16 +781,16 @@ static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit
 		return;
 	}
 	emit_note(emit, context, 0x80, channel, key, 0);
-	if (patch->held[channel]) {
-		if (--patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
-			patch->voices[channel].channel = -1;
-		}
-		return;
-	}
+	// A note dealt its own voice, also when the channel came to play alone since. The channel's
+	// own voice, while it plays alone, is free only once none of its keys is held.
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key) {
+		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key && !(voice == channel && patch->held[channel])) {
 			free_voice(patch, voice, emit, context);
+			return;
 		}
+	}
+	if (patch->held[channel] && --patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
+		patch->voices[channel].channel = -1;
 	}
 }
 

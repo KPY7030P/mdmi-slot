@@ -544,9 +544,9 @@ static void test_voice_by_hand(void)
 
 // Stage 4 through the dealer in patch.c, the way the plugin plays (D20, D21).
 
-#define SNAPSHOT_REGS 30
+#define SNAPSHOT_REGS 32
 
-// Everything of a voice's sound the chip holds.
+// Everything of a voice's sound the chip holds, and the pitch it plays.
 static void snapshot(int voice, uint8_t *regs)
 {
 	int n = 0;
@@ -557,6 +557,8 @@ static void snapshot(int voice, uint8_t *regs)
 	}
 	regs[n++] = read_reg(voice, 0xB0, 0);
 	regs[n++] = read_reg(voice, 0xB4, 0);
+	regs[n++] = read_reg(voice, 0xA0, 0);
+	regs[n++] = read_reg(voice, 0xA4, 0);
 }
 
 static void snapshot_all(uint8_t regs[FM_CHANNELS][SNAPSHOT_REGS])

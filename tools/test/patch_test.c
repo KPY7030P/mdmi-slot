@@ -437,6 +437,19 @@ static void test_dealer(void)
 	patch_flush(&patch, record, NULL);
 	CHECK(free_voices(&patch) == 6, "a note ending where it starts holds no voice");
 
+	// Porta On switched while notes are held, either way.
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	moment(&patch, 0, 60, 1, true);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	moment(&patch, 0, 64, 1, true);
+	moment(&patch, 0, 64, 1, false);
+	moment(&patch, 0, 60, 1, false);
+	moment(&patch, 0, 60, 3, true);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	moment(&patch, 0, 60, 3, false);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	CHECK(free_voices(&patch) == 6, "Porta On switched over held notes leaves no voice taken");
+
 	// Ten tweaks by CC on channel 4, every other channel on another preset: the worst a lent voice
 	// costs the console without 0A.
 	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
