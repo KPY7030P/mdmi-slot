@@ -261,6 +261,7 @@ void patch_init(mdmi_patch *patch)
 		memcpy(patch->rom.voices[voice], patch->model.channels[voice], sizeof(patch->rom.voices[voice]));
 		patch->voices[voice].channel = -1;
 		patch->voices[voice].sound = (int8_t)voice;
+		patch->playing[voice] = -1;
 	}
 	// Nothing is stored yet, so a service number still loads its built-in preset.
 	for (int i = 0; i < PATCH_SERVICE_PROGRAMS; i++) {
@@ -673,6 +674,23 @@ int patch_muted_notes(const mdmi_patch *patch, int channel)
 	return __atomic_load_n(&patch->muted_count[channel], __ATOMIC_RELAXED);
 }
 
+int patch_voice_player(const mdmi_patch *patch, int voice)
+{
+	if (voice < 0 || voice >= PATCH_NUM_FM_CHANNELS) {
+		return -1;
+	}
+	return __atomic_load_n(&patch->playing[voice], __ATOMIC_RELAXED);
+}
+
+// Shows the window who plays where, once the notes are out.
+static void publish_voices(mdmi_patch *patch)
+{
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		const patch_voice *v = &patch->voices[voice];
+		__atomic_store_n(&patch->playing[voice], (int8_t)(v->pending ? -1 : v->channel), __ATOMIC_RELAXED);
+	}
+}
+
 static void remap(patch_receiver *receiver, int channel, int voice, patch_emit_fn emit, void *context)
 {
 	if (receiver->voice_owner[voice] == channel) {
@@ -786,12 +804,14 @@ static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key && !(voice == channel && patch->held[channel])) {
 			free_voice(patch, voice, emit, context);
+			publish_voices(patch);
 			return;
 		}
 	}
 	if (patch->held[channel] && --patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
 		patch->voices[channel].channel = -1;
 	}
+	publish_voices(patch);
 }
 
 // After the ROM stopped a channel's notes.
@@ -805,6 +825,7 @@ static void release_channel(mdmi_patch *patch, int channel, patch_emit_fn emit, 
 	patch->held[channel] = 0;
 	memset(patch->muted[channel], 0, sizeof(patch->muted[channel]));
 	__atomic_store_n(&patch->muted_count[channel], 0, __ATOMIC_RELAXED);
+	publish_voices(patch);
 }
 
 static void stop_channel(mdmi_patch *patch, int channel, patch_emit_fn emit, void *context)
@@ -840,9 +861,10 @@ void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	}
 }
 
-// The moment is complete. First every note that can play on its own channel's voice takes it,
-// cutting a chord's note there; then the other notes borrow free voices in their order (D20).
-// The borrowed voices get their sound in one go, then the notes start (D21).
+// The moment is complete. First every note whose channel's own voice is free takes it; then the
+// other notes borrow free voices in their order. With none free, a note takes its channel's own
+// voice back from a chord and cuts the chord's note there (D20, D22). The borrowed voices get
+// their sound in one go, then the notes start (D21).
 void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 {
 	if (patch->pending_count == 0) {
@@ -862,8 +884,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 				patch->held[note->channel]++;
 			}
 			dealt[i] = ALONE;
-		} else if (patch->voices[note->channel].channel != note->channel) {
-			cut_voice(patch, note->channel, emit, context);
+		} else if (patch->voices[note->channel].channel < 0) {
 			take_voice(patch, note->channel, note->channel, note->key, true, emit, context);
 			dealt[i] = OWN;
 		}
@@ -872,6 +893,11 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 		const patch_note *note = &patch->pending[i];
 		if (dealt[i] == WAITS) {
 			int voice = cheapest_voice(patch, note->channel);
+			int own = patch->voices[note->channel].channel;
+			if (voice < 0 && own >= 0 && own != note->channel) {
+				cut_voice(patch, note->channel, emit, context);
+				voice = note->channel;
+			}
 			if (voice < 0) {
 				set_muted(patch, note->channel, note->key, true);
 				dealt[i] = MUTED;
@@ -897,7 +923,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 				}
 			}
 			if (waiting < 0) {
-				// Every note dealt a voice above has one waiting; nothing else to start.
+				// Its voice went to a later note of this moment that took its own voice back.
 				continue;
 			}
 			patch->voices[waiting].key = patch->voices[first].key;
@@ -907,6 +933,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 		emit_note(emit, context, 0x90, note->channel, note->key, note->velocity);
 	}
 	patch->pending_count = 0;
+	publish_voices(patch);
 }
 
 void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context)

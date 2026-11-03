@@ -114,6 +114,8 @@ typedef struct {
 	uint32_t muted[PATCH_NUM_FM_CHANNELS][4];
 	// How many of them, for the window. Written by the writer only.
 	uint8_t muted_count[PATCH_NUM_FM_CHANNELS];
+	// The channel playing on each voice, or -1, for the window.
+	int8_t playing[PATCH_NUM_FM_CHANNELS];
 	patch_note pending[PATCH_PENDING_NOTES];
 	uint32_t pending_count;
 	// The RPN each MIDI channel last selected, to recognize a pitch bend range coming from a clip.
@@ -168,6 +170,8 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context);
 void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // Any thread: how many held notes of a channel don't sound.
 int patch_muted_notes(const mdmi_patch *patch, int channel);
+// Any thread: the channel playing on an FM voice, or -1.
+int patch_voice_player(const mdmi_patch *patch, int voice);
 // True if a loaded state became the model. Sync afterwards.
 bool patch_take_incoming(mdmi_patch *patch);
 double patch_model_filter_hz(const mdmi_patch *patch);

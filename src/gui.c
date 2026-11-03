@@ -213,7 +213,10 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	}
 
 	uint32_t note = __atomic_load_n(&g->source.notes[channel], __ATOMIC_ACQUIRE);
-	if (GUI_NOTE_SEEN(note)) {
+	// A row whose voice another channel's chord plays shows the bracket, not its own last note.
+	const int player = patch_voice_player(g->source.patch, channel);
+	const bool lent = player >= 0 && player != channel;
+	if (GUI_NOTE_SEEN(note) && !(lent && GUI_NOTE_HELD(note) == 0)) {
 		const int held = (int)GUI_NOTE_HELD(note);
 		note_name(GUI_NOTE_KEY(note), buffer, sizeof(buffer));
 		int left = RAIL_W - 6 - (int)strlen(buffer) * 12;
@@ -228,6 +231,55 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		if (muted > 0) {
 			snprintf(buffer, sizeof(buffer), "%d CUT", muted);
 			text(g, left - 6 - (int)strlen(buffer) * 6, y + 7, buffer, C_ERROR, 1);
+		}
+	}
+}
+
+// Brackets from a channel playing a chord to the rows whose voices it borrowed, between the big
+// numbers and the names. Green like a held note: those voices sound. The bracket spanning fewer
+// rows sits nearest the names, so nested ones don't cross.
+#define LEND_LANE_X 44
+#define LEND_LANE_STEP 7
+#define LEND_TIP_X 49
+static void draw_lends(mdmi_gui *g)
+{
+	int top[PATCH_NUM_FM_CHANNELS], bottom[PATCH_NUM_FM_CHANNELS];
+	bool lends[PATCH_NUM_FM_CHANNELS] = {false};
+	int player[PATCH_NUM_FM_CHANNELS];
+	for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
+		top[c] = bottom[c] = c;
+	}
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		int c = player[voice] = patch_voice_player(g->source.patch, voice);
+		if (c >= 0 && c < PATCH_NUM_FM_CHANNELS && c != voice) {
+			lends[c] = true;
+			top[c] = voice < top[c] ? voice : top[c];
+			bottom[c] = voice > bottom[c] ? voice : bottom[c];
+		}
+	}
+	for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
+		if (!lends[c]) {
+			continue;
+		}
+		int lane = 0;
+		for (int other = 0; other < PATCH_NUM_FM_CHANNELS; other++) {
+			int span = bottom[c] - top[c], other_span = bottom[other] - top[other];
+			lane += other != c && lends[other] && (other_span < span || (other_span == span && other < c));
+		}
+		const int x = LEND_LANE_X - lane * LEND_LANE_STEP;
+		const int y_top = row_y(top[c]) + ROW_H / 2, y_bottom = row_y(bottom[c]) + ROW_H / 2;
+		fill(g, x, y_top, 2, y_bottom - y_top + 1, C_PLAYING);
+		for (int row = top[c]; row <= bottom[c]; row++) {
+			if (row != c && player[row] != c) {
+				continue;
+			}
+			const int y = row_y(row) + ROW_H / 2;
+			fill(g, x, y, LEND_TIP_X - x, 1, C_PLAYING);
+			if (row != c) {
+				fill(g, LEND_TIP_X, y - 2, 1, 5, C_PLAYING);
+				fill(g, LEND_TIP_X + 1, y - 1, 1, 3, C_PLAYING);
+				fill(g, LEND_TIP_X + 2, y, 1, 1, C_PLAYING);
+			}
 		}
 	}
 }
@@ -513,6 +565,7 @@ static void draw_editor(mdmi_gui *g)
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		draw_row(g, values, channel);
 	}
+	draw_lends(g);
 	fill(g, 0, GLOBALS_Y, GUI_WIDTH, FOOTER_Y - GLOBALS_Y, C_BG);
 	fill(g, 0, GLOBALS_Y, GUI_WIDTH, 1, C_LINE);
 	for (int i = 0; i < g->cell_count; i++) {

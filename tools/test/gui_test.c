@@ -167,6 +167,17 @@ static int count_color(int top, int bottom, uint32_t color)
 	return count;
 }
 
+static int count_color_in(int left, int right, int top, int bottom, uint32_t color)
+{
+	int count = 0;
+	for (int y = top; y < bottom; y++) {
+		for (int x = left; x < right; x++) {
+			count += (pixels[y * WIDTH + x] & 0xFFFFFF) == color;
+		}
+	}
+	return count;
+}
+
 static int count_not_black(int top, int bottom)
 {
 	int count = 0;
@@ -315,6 +326,22 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(count_color(HEADER_H, HEIGHT, COLOR_PLAYING) == 0, "table goes dark after note off");
+
+		// A chord on channel 4 borrows voices: a bracket joins the rows, between numbers and names.
+		send_midi(0x93, 60, 110);
+		send_midi(0x93, 64, 110);
+		send_midi(0x93, 67, 110);
+		run_ms(300);
+		capture(window);
+		int bracket = count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING);
+		CHECK(bracket > 40, "a chord's borrowed voices are joined by a bracket (%d pixels)", bracket);
+		save_bmp(argv[2], "voices");
+		send_midi(0x83, 60, 0);
+		send_midi(0x83, 64, 0);
+		send_midi(0x83, 67, 0);
+		run_ms(300);
+		capture(window);
+		CHECK(count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING) == 0, "and the bracket goes with the chord");
 		memcpy(before, pixels, sizeof(pixels));
 
 		// Closing and opening the window again, as a host does, with the sound running.

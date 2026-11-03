@@ -678,19 +678,35 @@ static void test_dealer(void)
 	moment(3, 60, 4, false);
 	render(SETTLE_BLOCKS);
 
-	// A chord of 5 takes voice 2, and channel 2's tune takes it back.
+	// A chord of 5 leaves one voice free. A tune on a channel whose voice the chord holds takes the
+	// free one, and nothing is cut.
 	moment(3, 60, 5, true);
 	render(SETTLE_BLOCKS);
-	check(patch->voices[1].channel == 3, "a chord of 5 lends voice 2");
+	int lender = -1;
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		lender = lender < 0 && voice != 3 && patch->voices[voice].channel == 3 ? voice : lender;
+	}
 	uint8_t before[FM_CHANNELS][SNAPSHOT_REGS];
+	moment(lender, 84, 1, true);
+	render(SETTLE_BLOCKS);
+	int tune[FM_CHANNELS];
+	check(voices_of(lender, tune) == 1 && tune[0] != lender && compare(tune[0], lender, "tune") == 0, "a tune whose voice a chord holds takes a free voice with its own sound");
+	check(chord_equals_model(3) == 5 && patch_muted_notes(patch, 3) == 0, "and the chord plays on, nothing cut");
+	moment(lender, 84, 1, false);
+	moment(3, 60, 5, false);
+	render(SETTLE_BLOCKS);
+
+	// A chord of 6 leaves nothing free, so channel 2's tune takes its voice back.
+	moment(3, 48, 6, true);
+	render(SETTLE_BLOCKS);
 	snapshot_all(before);
 	midi(0x91, 72, 127);
 	render(SETTLE_BLOCKS);
-	check_voices("channel 2's note takes its voice back with its own sound", 1, 1, -1);
-	check(changed_voices(before, 1) == 0 && chord_equals_model(3) == 4, "and the rest of the chord is untouched");
+	check_voices("with no voice free, channel 2's note takes its own back with its own sound", 1, 1, -1);
+	check(changed_voices(before, 1) == 0 && chord_equals_model(3) == 5, "and the rest of the chord is untouched, pitch too");
 	check(patch_muted_notes(patch, 3) == 1, "the cut note is marked");
 	midi(0x81, 72, 0);
-	moment(3, 60, 5, false);
+	moment(3, 48, 6, false);
 	render(SETTLE_BLOCKS);
 	check(patch_muted_notes(patch, 3) == 0, "no mark when the chord ends");
 
