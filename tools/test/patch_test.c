@@ -90,9 +90,39 @@ static int count_voices(void)
 	return count;
 }
 
-static int op_id(int op, int field)
+static int op_param(int op, int field)
 {
 	return PARAM_OP_BASE + op * OP_FIELDS + field;
+}
+
+static uint32_t op_id(int channel, int op, int field)
+{
+	return PATCH_CHANNEL_ID(channel, op_param(op, field));
+}
+
+#define PRESET_ID(channel) PATCH_CHANNEL_ID(channel, PARAM_PRESET)
+
+// How many of our SysEx with a command went out.
+static int count_sysex(uint8_t command)
+{
+	int count = 0;
+	for (size_t i = 0; i + 4 < sent_bytes; i++) {
+		if (sent[i] == 0xF0 && sent[i + 1] == 0x00 && sent[i + 4] == command) {
+			count++;
+		}
+	}
+	return count;
+}
+
+// Whether a remap gave a voice to a channel.
+static bool remapped(int voice, int channel)
+{
+	for (size_t i = 0; i + 7 < sent_bytes; i++) {
+		if (sent[i] == 0xF0 && sent[i + 1] == 0x00 && sent[i + 4] == 0x00 && sent[i + 5] == channel && sent[i + 6] == voice) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static void test_nothing_to_send(void)
@@ -111,17 +141,17 @@ static void test_preset_and_tweaks(void)
 	static mdmi_patch patch;
 	patch_init(&patch);
 	clear();
-	set(&patch, PARAM_PRESET, 5);
+	set(&patch, PRESET_ID(0), 5);
 	CHECK(sent_bytes == 2 && sent[0] == 0xC0 && sent[1] == 5, "a new preset is one plain Program Change, %d bytes", (int)sent_bytes);
 
 	clear();
 	int tweaked = PRESETS_GM[5][4 + 9] > 60 ? 10 : 100;
-	set(&patch, op_id(0, OP_TL), tweaked);
+	set(&patch, op_id(0, 0, OP_TL), tweaked);
 	CHECK(sent_bytes == 3 && sent[0] == 0xB0 && sent[1] == 16 && sent[2] == tweaked, "a tweak is one CC");
 
 	clear();
-	set(&patch, PARAM_PRESET, 5);
-	CHECK(sent_bytes == 0 && patch.model.channels[0][op_id(0, OP_TL) - PARAM_PRESET] == tweaked, "a lane repeating the preset keeps the tweak and sends nothing");
+	set(&patch, PRESET_ID(0), 5);
+	CHECK(sent_bytes == 0 && patch.model.channels[0][op_param(0, OP_TL)] == tweaked, "a lane repeating the preset keeps the tweak and sends nothing");
 
 	clear();
 	midi(&patch, 0xC0, 5, 0);
@@ -137,6 +167,13 @@ static void test_preset_and_tweaks(void)
 	clear();
 	midi(&patch, 0xC6, 62, 0);
 	CHECK(sent_bytes == 0, "and only once");
+
+	set(&patch, op_id(0, 0, OP_TL), tweaked);
+	clear();
+	midi(&patch, 0xB0, 3, 5);
+	CHECK(sent_bytes == 0 && patch.model.channels[0][op_param(0, OP_TL)] == tweaked, "the preset CC with the same preset keeps the tweak");
+	midi(&patch, 0xB3, 3, 40);
+	CHECK(count_status(0xC0) == 1 && sent[0] == 0xC3 && patch.model.channels[3][PARAM_PRESET] == 40, "and a new one on channel 4 is a program there");
 }
 
 static void test_shadowed_presets(void)
@@ -145,14 +182,14 @@ static void test_shadowed_presets(void)
 	static mdmi_patch patch;
 	patch_init(&patch);
 	clear();
-	set(&patch, PARAM_PRESET, 120);
+	set(&patch, PRESET_ID(0), 120);
 	CHECK(count_voices() == 1 && count_status(0xC0) == 1 && sent[sent_bytes - 2] == 0xC0 && sent[sent_bytes - 1] == 116, "preset 120 goes as a voice under service number 116, %d", sent[sent_bytes - 1]);
 	CHECK(memcmp(sent + 7, PRESETS_GM[120], 48) == 0, "the voice bytes are the preset's");
 	clear();
-	set(&patch, PARAM_PRESET, 121);
+	set(&patch, PRESET_ID(0), 121);
 	CHECK(count_voices() == 1 && sent[sent_bytes - 1] == 117, "the next voice takes the channel's other number, %d", sent[sent_bytes - 1]);
 	clear();
-	set(&patch, PARAM_PRESET, 3);
+	set(&patch, PRESET_ID(0), 3);
 	CHECK(sent_bytes == 2 && sent[0] == 0xC0, "back below them is a plain program again");
 }
 
@@ -162,27 +199,32 @@ static void test_sustain_rate(void)
 	static mdmi_patch patch;
 	patch_init(&patch);
 	clear();
-	set(&patch, op_id(1, OP_SR), 25);
+	set(&patch, op_id(0, 1, OP_SR), 25);
 	// Operator 2 of channel 1 lives in register 0x78, because registers run 1, 3, 2, 4.
 	static const uint8_t expected[10] = {0xF0, 0x00, 0x22, 0x77, 0x08, 0x07, 0x08, 0x01, 0x09, 0xF7};
 	CHECK(sent_bytes == 10 && memcmp(sent, expected, 10) == 0, "SR 25 on channel 1 is a register write");
 	clear();
-	set(&patch, op_id(1, OP_SR), 25);
+	set(&patch, op_id(0, 1, OP_SR), 25);
 	CHECK(sent_bytes == 0, "and only once");
 	clear();
-	set(&patch, op_id(1, OP_SR), 7);
+	set(&patch, op_id(0, 1, OP_SR), 7);
 	CHECK(sent_bytes == 3 && sent[0] == 0xB0, "SR 7 is a CC");
 	clear();
-	patch_set(&patch, PARAM_EDIT_CHANNEL, 4);
-	set(&patch, op_id(0, OP_SR), 31);
+	set(&patch, op_id(4, 0, OP_SR), 31);
 	CHECK(sent_bytes == 10 && sent[4] == 0x09 && sent[6] == 0x01, "channel 5 uses the chip's second part");
+	set(&patch, GLOBAL_POLYPHONY, 4);
 	clear();
-	patch_set(&patch, PARAM_EDIT_CHANNEL, 0);
-	patch_set(&patch, PARAM_POLYPHONY, 1);
-	sync(&patch);
+	set(&patch, op_id(3, 0, OP_SR), 28);
+	CHECK(count_status(0xF0) == 6, "with polyphony on channel 4 it goes to all six voices, %d", count_status(0xF0));
+	set(&patch, GLOBAL_DAC, 1);
 	clear();
-	set(&patch, op_id(0, OP_SR), 28);
-	CHECK(count_status(0xF0) == 6, "with polyphony it goes to all six voices, %d", count_status(0xF0));
+	set(&patch, op_id(3, 0, OP_SR), 29);
+	// Voice 6 is the second part's third channel: register 0x72.
+	bool voice6 = false;
+	for (size_t i = 0; i + 9 < sent_bytes; i += 10) {
+		voice6 = voice6 || (sent[i + 4] == 0x09 && sent[i + 6] == 0x02);
+	}
+	CHECK(count_status(0xF0) == 5 && !voice6, "with the DAC on too, to five, never voice 6");
 }
 
 static void test_modes(void)
@@ -191,20 +233,48 @@ static void test_modes(void)
 	static mdmi_patch patch;
 	patch_init(&patch);
 	clear();
-	set(&patch, PARAM_POLYPHONY, 1);
-	CHECK(count_voices() == 1, "polyphony on sends channel 1 whole, %d voices", count_voices());
+	set(&patch, GLOBAL_POLYPHONY, 1);
+	CHECK(count_sysex(0x00) == 5 && remapped(1, 0) && remapped(5, 0) && count_voices() == 1 && count_status(0xC0) == 1,
+		"polyphony on channel 1 gives it the other five voices and sends it whole, %d remaps", count_sysex(0x00));
 	clear();
-	set(&patch, PARAM_POLYPHONY, 0);
-	CHECK(count_voices() == 6, "polyphony off sends all six whole, %d voices", count_voices());
+	set(&patch, GLOBAL_POLYPHONY, 0);
+	CHECK(count_sysex(0x00) == 5 && remapped(3, 3) && count_voices() == 5, "polyphony off gives five voices back, each sent whole, %d voices", count_voices());
 	clear();
 	sync(&patch);
 	CHECK(sent_bytes == 0, "after that nothing is left to send");
+
+	set(&patch, op_id(1, 0, OP_TL), 33);
 	clear();
-	set(&patch, PARAM_DAC, 1);
+	set(&patch, GLOBAL_POLYPHONY, 4);
+	CHECK(count_sysex(0x00) == 5 && remapped(0, 3) && remapped(5, 3) && !remapped(3, 3) && count_voices() == 1,
+		"polyphony on channel 4 gives it the other five voices and sends it whole");
+	CHECK(count_status(0xB0) >= 5, "notes left on voices that change hands are stopped");
+	clear();
+	midi(&patch, 0xB1, 16, 50);
+	CHECK(sent_bytes == 0 && patch.model.channels[1][op_param(0, OP_TL)] == 50, "a CC on a channel without a voice changes its model only");
+	clear();
+	set(&patch, GLOBAL_DAC, 1);
+	CHECK(sent[0] == 0xB0 && sent[1] == 78 && count_sysex(0x00) == 1 && remapped(5, 5), "the DAC takes voice 6 back for channel 6");
+	clear();
+	set(&patch, GLOBAL_DAC, 0);
+	CHECK(count_sysex(0x00) == 1 && remapped(5, 3), "and gives it to channel 4 again");
+	clear();
+	set(&patch, GLOBAL_POLYPHONY, 0);
+	CHECK(patch.rom.values.channels[1][op_param(0, OP_TL)] == 50, "polyphony off: channel 2 gets its own values back");
+	clear();
+	midi(&patch, 0xB2, 84, 127);
+	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 3 && count_sysex(0x00) == 5, "CC84 on channel 3 gives it the voices");
+	clear();
+	midi(&patch, 0xB7, 84, 127);
+	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 3 && sent_bytes == 0, "CC84 on a PSG channel can't");
+	midi(&patch, 0xB7, 84, 0);
+	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 0, "but turning it off works from anywhere");
+	clear();
+	set(&patch, GLOBAL_DAC, 1);
 	CHECK(count_voices() == 6 && sent[0] == 0xB0 && sent[1] == 78, "the DAC comes first, then all six voices");
 	clear();
 	midi(&patch, 0xB0, 78, 0);
-	CHECK(count_voices() == 6 && patch.model.globals[PATCH_NUM_GLOBALS - 1] == 0, "the same from a clip's CC78");
+	CHECK(count_voices() == 6 && patch.model.globals[GLOBAL_DAC] == 0, "the same from a clip's CC78");
 }
 
 static void test_incoming(void)
@@ -214,7 +284,7 @@ static void test_incoming(void)
 	patch_init(&patch);
 	clear();
 	midi(&patch, 0xB2, 16, 99);
-	CHECK(sent_bytes == 3 && sent[0] == 0xB2 && sent[2] == 99 && patch.model.channels[2][op_id(0, OP_TL) - PARAM_PRESET] == 99, "a CC goes into its channel's model and out once");
+	CHECK(sent_bytes == 3 && sent[0] == 0xB2 && sent[2] == 99 && patch.model.channels[2][op_param(0, OP_TL)] == 99, "a CC goes into its channel's model and out once");
 	clear();
 	midi(&patch, 0xB2, 16, 99);
 	CHECK(sent_bytes == 0, "the same CC again sends nothing");
@@ -225,7 +295,7 @@ static void test_incoming(void)
 	CHECK(sent_bytes == 9 && sent[0] == 0x91 && sent[3] == 0xE1 && sent[6] == 0xB1, "what plays passes through");
 	clear();
 	midi(&patch, 0xB0, 121, 0);
-	CHECK(count_status(0xE0) == 1 && count_status(0xB0) == 1 && sent[4] == 64 && patch.model.channels[2][op_id(0, OP_TL) - PARAM_PRESET] == 99, "reset all controllers keeps the voice");
+	CHECK(count_status(0xE0) == 1 && count_status(0xB0) == 1 && sent[4] == 64 && patch.model.channels[2][op_param(0, OP_TL)] == 99, "reset all controllers keeps the voice");
 	clear();
 	midi(&patch, 0xB3, 77, 64);
 	CHECK(sent_bytes == 3 && sent[1] == 10 && sent[2] == 0, "stereo bits move the Pan knob");
@@ -238,12 +308,12 @@ static void test_incoming(void)
 	clear();
 	const uint8_t reset = 0xFF;
 	patch_midi(&patch, &reset, 1, record, NULL);
-	CHECK(sent[0] == 0xFF && count_voices() == 6, "a reset goes through and every voice follows, %d", count_voices());
-	CHECK(patch.model.channels[2][op_id(0, OP_TL) - PARAM_PRESET] == 99, "the model survives the reset");
+	CHECK(sent[0] == 0xFF && count_voices() == 6 && count_sysex(0x03) == 1, "a reset goes through, then static mapping and every voice, %d", count_voices());
+	CHECK(patch.model.channels[2][op_param(0, OP_TL)] == 99, "the model survives the reset");
 	clear();
 	const uint8_t sysex[6] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
 	patch_midi(&patch, sysex, sizeof(sysex), record, NULL);
-	CHECK(memcmp(sent, sysex, sizeof(sysex)) == 0 && count_voices() == 6, "SysEx we can't read goes through and every voice follows");
+	CHECK(memcmp(sent, sysex, sizeof(sysex)) == 0 && count_voices() == 6 && count_sysex(0x03) == 1, "a GM reset goes through, then static mapping and every voice");
 	clear();
 	sync(&patch);
 	CHECK(sent_bytes == 0, "after that nothing is left to send");
@@ -255,21 +325,32 @@ static void test_load(void)
 	static mdmi_patch patch, other;
 	patch_init(&patch);
 	patch_init(&other);
-	set(&patch, PARAM_PRESET, 9);
-	set(&patch, op_id(2, OP_TL), 77);
+	set(&patch, PRESET_ID(0), 9);
+	set(&patch, op_id(0, 2, OP_TL), 77);
+	set(&patch, PATCH_CHANNEL_ID(9, PARAM_VOLUME), 50);
+	set(&patch, GLOBAL_POLYPHONY, 5);
 	patch_publish(&patch);
-	uint8_t state[sizeof(uint32_t) + sizeof(patch_values)];
+	static uint8_t state[PATCH_NUM_IDS * 6];
+	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
 	patch_save(&patch, state);
 	CHECK(patch_load(&other, state, sizeof(state)), "a saved state loads");
-	CHECK(patch_get(&other, PARAM_PRESET) == 9, "the main thread sees it before it is taken");
-	CHECK(other.model.channels[0][0] == 0, "the writer's model is untouched until then");
-	clear();
+	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
+	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
 	CHECK(patch_take_incoming(&other) && !patch_take_incoming(&other), "it is taken once");
-	sync(&other);
-	CHECK(count_status(0xC0) == 1 && count_status(0xB0) == 1 && count_voices() == 0, "the ROM gets only the difference");
-	CHECK(patch_get(&other, PARAM_PRESET) == 9 && patch_get(&other, op_id(2, OP_TL)) == 77, "the snapshot holds it afterwards");
-	state[sizeof(uint32_t)] = 100;
-	CHECK(!patch_load(&other, state, sizeof(state)), "a value out of range is refused");
+	CHECK(patch_get(&other, PRESET_ID(0)) == 9 && patch_get(&other, op_id(0, 2, OP_TL)) == 77 && patch_get(&other, GLOBAL_POLYPHONY) == 5
+		&& patch_get(&other, PATCH_CHANNEL_ID(9, PARAM_VOLUME)) == 50, "the snapshot holds it afterwards, on every channel");
+	// An unknown knob is skipped and a value out of range is clamped.
+	static uint8_t odd[12];
+	const uint32_t unknown = 1999, polyphony = GLOBAL_POLYPHONY;
+	const int16_t big = 99, any = 1;
+	memcpy(odd, &unknown, 4);
+	memcpy(odd + 4, &any, 2);
+	memcpy(odd + 6, &polyphony, 4);
+	memcpy(odd + 10, &big, 2);
+	CHECK(patch_load(&other, odd, sizeof(odd)) && patch_take_incoming(&other) && other.model.globals[GLOBAL_POLYPHONY] == PATCH_NUM_FM_CHANNELS,
+		"an unknown knob is skipped, a value out of range clamped");
+	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
+	CHECK(!patch_load(&other, odd, 7), "a cut state is refused");
 }
 
 static void discard(void *context, const uint8_t *bytes, size_t length)
@@ -277,6 +358,21 @@ static void discard(void *context, const uint8_t *bytes, size_t length)
 	(void)context;
 	(void)bytes;
 	(void)length;
+}
+
+// A value from a saved state.
+static int saved(const uint8_t *state, uint32_t id)
+{
+	for (int i = 0; i < PATCH_NUM_IDS; i++) {
+		uint32_t at;
+		int16_t value;
+		memcpy(&at, state + i * 6, 4);
+		memcpy(&value, state + i * 6 + 4, 2);
+		if (at == id) {
+			return value;
+		}
+	}
+	return -1;
 }
 
 static volatile LONG stop_writer;
@@ -293,7 +389,7 @@ static DWORD WINAPI writer_thread(LPVOID unused)
 		const uint8_t message[2] = {0xC0, (uint8_t)program};
 		patch_midi(&stress, message, sizeof(message), discard, NULL);
 		patch_publish(&stress);
-		patch_set(&stress, PARAM_PRESET, (program * 3) & 63);
+		patch_set(&stress, PRESET_ID(0), (program * 3) & 63);
 		patch_sync(&stress, &stress.rom, discard, NULL);
 		patch_publish(&stress);
 	}
@@ -305,18 +401,16 @@ static void test_threads(void)
 	printf("Main thread against a busy writer, %d ms\n", STRESS_MS);
 	patch_init(&stress);
 	HANDLE writer = CreateThread(NULL, 0, writer_thread, NULL, 0, NULL);
-	static uint8_t state[sizeof(uint32_t) + sizeof(patch_values)];
-	static uint8_t loaded[sizeof(uint32_t) + sizeof(patch_values)];
+	static uint8_t state[PATCH_NUM_IDS * 6];
+	static uint8_t loaded[PATCH_NUM_IDS * 6];
 	int torn = 0, reads = 0;
 	DWORD start = GetTickCount();
 	while (GetTickCount() - start < STRESS_MS) {
 		patch_save(&stress, state);
-		const patch_values *values = (const patch_values *)(state + sizeof(uint32_t));
-		const int16_t *channel = values->channels[0];
-		int preset = channel[0];
-		bool same = channel[PARAM_ALGORITHM - PARAM_PRESET] == PRESETS_GM[preset][0];
+		int preset = saved(state, PRESET_ID(0));
+		bool same = saved(state, PATCH_CHANNEL_ID(0, PARAM_ALGORITHM)) == PRESETS_GM[preset][0];
 		for (int op = 0; op < PATCH_OPS; op++) {
-			same = same && channel[op_id(op, OP_TL) - PARAM_PRESET] == PRESETS_GM[preset][4 + op * OP_FIELDS + 9];
+			same = same && saved(state, op_id(0, op, OP_TL)) == PRESETS_GM[preset][4 + op * OP_FIELDS + 9];
 		}
 		if (!same) {
 			torn++;

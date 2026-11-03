@@ -14,14 +14,28 @@
 #define BLOCK 256
 #define MAX_EVENTS 512
 #define FFT_SIZE 16384
-#define NUM_PARAMS 62
+#define NUM_PARAMS 360
 
-enum { P_EDIT, P_POLY, P_FILTER, P_LFO_ON, P_LFO_RATE, P_PRESET, P_VOLUME, P_PAN, P_ALG, P_FB, P_AMS, P_FMS, P_OP };
+// Ids by D3: a global's id is its index, a channel's knob 1000 + channel number * 100 + param.
+enum { P_POLY, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC };
+enum { Q_PRESET, Q_VOLUME, Q_PAN, Q_FINE, Q_BEND, Q_PORTA_ON, Q_PORTA_TIME, Q_ALG, Q_FB, Q_AMS, Q_FMS, Q_OP };
+#define ID(channel, param) (1000 + ((channel) + 1) * 100 + (param))
 #define OP_SR 6
 #define OP_SSG 10
 #define OP_FIELDS 11
+// Channel 1's knobs.
+#define P_PRESET ID(0, Q_PRESET)
+#define P_VOLUME ID(0, Q_VOLUME)
+#define P_PAN ID(0, Q_PAN)
+#define P_FINE ID(0, Q_FINE)
+#define P_BEND ID(0, Q_BEND)
+#define P_PORTA_ON ID(0, Q_PORTA_ON)
+#define P_PORTA_TIME ID(0, Q_PORTA_TIME)
+#define P_ALG ID(0, Q_ALG)
+#define P_FB ID(0, Q_FB)
+#define P_OP ID(0, Q_OP)
 #define P_OP_END (P_OP + 4 * OP_FIELDS)
-enum { P_CH3 = P_OP_END, P_DAC, P_FINE, P_BEND, P_PORTA_ON, P_PORTA_TIME };
+#define MAX_ID 2100
 
 static int failures;
 static int callbacks_requested, rescans;
@@ -288,23 +302,27 @@ static void test_listing(void)
 	printf("listing\n");
 	instance *in = create_instance();
 	uint32_t count = in->params->count(in->plugin);
-	CHECK(count == NUM_PARAMS, "%u parameters, Live's automatic panel allows 64", count);
-	bool seen[NUM_PARAMS] = {false};
+	CHECK(count == NUM_PARAMS, "%u parameters: 6 global, 55 on each FM channel, 6 on each PSG channel", count);
+	static bool seen[MAX_ID];
 	bool ids_valid = true;
 	for (uint32_t i = 0; i < count; i++) {
 		clap_param_info_t info;
 		in->params->get_info(in->plugin, i, &info);
 		char text[64] = "";
 		in->params->value_to_text(in->plugin, info.id, info.default_value, text, sizeof(text));
-		ids_valid = ids_valid && info.id < NUM_PARAMS && !seen[info.id];
-		if (info.id < NUM_PARAMS) {
+		ids_valid = ids_valid && info.id < MAX_ID && !seen[info.id];
+		if (info.id < MAX_ID) {
 			seen[info.id] = true;
 		}
-		if (i < 18 + OP_FIELDS) {
-			printf("    %-18s id %2u  0..%-5.0f default %s\n", info.name, info.id, info.max_value, text);
+		if (i < 6 + 18 || i >= count - 6) {
+			printf("    %-18s id %4u  0..%-5.0f default %s\n", info.name, info.id, info.max_value, text);
 		}
 	}
 	CHECK(ids_valid, "every knob has a unique id");
+	CHECK(seen[ID(3, Q_OP)] && seen[ID(9, Q_VOLUME)] && !seen[ID(9, Q_PAN)] && !seen[ID(6, Q_ALG)], "channel 4 has Op1 TL at 1411, PSG channels have no pan or FM");
+	clap_param_info_t info;
+	in->params->get_info(in->plugin, 6 + 55 * 3 + Q_OP, &info);
+	CHECK(info.id == ID(3, Q_OP) && !strcmp(info.name, "Ch4 Op1 TL"), "knobs are named by channel: %s", info.name);
 	char ssg[64];
 	in->params->value_to_text(in->plugin, P_OP + OP_SSG, 7, ssg, sizeof(ssg));
 	CHECK(!strcmp(ssg, "Off"), "SSG 7 reads %s", ssg);
@@ -312,6 +330,8 @@ static void test_listing(void)
 	CHECK(!strcmp(ssg, "Env 1"), "SSG 8 reads %s", ssg);
 	in->params->value_to_text(in->plugin, P_OP + OP_SSG, 15, ssg, sizeof(ssg));
 	CHECK(!strcmp(ssg, "Env 8"), "SSG 15 reads %s", ssg);
+	in->params->value_to_text(in->plugin, P_POLY, 4, ssg, sizeof(ssg));
+	CHECK(!strcmp(ssg, "Ch 4"), "Polyphony 4 reads %s", ssg);
 	destroy_instance(in);
 }
 
@@ -327,7 +347,7 @@ static void test_preset_table(void)
 		settle(rom, 0.4);
 		queue_param(rom, P_PRESET, program);
 		settle(rom, 0.1);
-		int values[NUM_PARAMS];
+		int values[P_OP_END];
 		bool reachable = true;
 		for (int id = P_ALG; id < P_OP_END; id++) {
 			values[id] = get_value(rom, id);
@@ -423,23 +443,18 @@ static void test_knob_effects(void)
 	destroy_instance(in);
 }
 
-static void test_edit_channel(void)
+static void test_channels(void)
 {
-	printf("each channel keeps its own knobs\n");
+	printf("each channel has its own knobs\n");
 	instance *in = create_instance();
 	settle(in, 0.4);
 	int default_alg = get_value(in, P_ALG);
-	queue_param(in, P_EDIT, 1);
-	queue_param(in, P_PRESET, 40);
+	queue_param(in, ID(1, Q_PRESET), 40);
 	settle(in, 0.05);
-	int ch2_alg = get_value(in, P_ALG);
 	char text[64];
-	in->params->value_to_text(in->plugin, P_PRESET, 40, text, sizeof(text));
-	CHECK(get_value(in, P_PRESET) == 40, "channel 2 shows preset %s", text);
-
-	queue_param(in, P_EDIT, 0);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_PRESET) == 0 && get_value(in, P_ALG) == default_alg, "channel 1 still shows preset 0, algorithm %d", get_value(in, P_ALG));
+	in->params->value_to_text(in->plugin, ID(1, Q_PRESET), 40, text, sizeof(text));
+	CHECK(get_value(in, ID(1, Q_PRESET)) == 40, "channel 2 shows preset %s", text);
+	CHECK(get_value(in, P_PRESET) == 0 && get_value(in, P_ALG) == default_alg, "channel 1 still has preset 0, algorithm %d", get_value(in, P_ALG));
 
 	float *ch1 = play_note(in, 0, 60, 0.7);
 	float *ch2 = play_note(in, 1, 60, 0.7);
@@ -447,17 +462,27 @@ static void test_edit_channel(void)
 	double sim = similarity(a, b);
 	CHECK(sim < 0.95, "channels 1 and 2 sound different: spectrum %.3f", sim);
 
-	queue_param(in, P_EDIT, 1);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_ALG) == ch2_alg && get_value(in, P_PRESET) == 40, "back on channel 2: preset %d", get_value(in, P_PRESET));
+	// Op1 TL of channel 4 changes channel 4 and nothing else. Long pauses, so no release is left.
+	settle(in, 1.5);
+	float *ch3_before = play_note(in, 2, 60, 0.7);
+	settle(in, 1.5);
+	float *ch4_before = play_note(in, 3, 60, 0.7);
+	queue_param(in, ID(3, Q_OP), 0);
+	queue_param(in, ID(3, Q_ALG), 7);
+	settle(in, 1.5);
+	float *ch3_after = play_note(in, 2, 60, 0.7);
+	settle(in, 1.5);
+	float *ch4_after = play_note(in, 3, 60, 0.7);
+	double *s3a = spectrum(ch3_before, 4000), *s3b = spectrum(ch3_after, 4000);
+	double *s4a = spectrum(ch4_before, 4000), *s4b = spectrum(ch4_after, 4000);
+	CHECK(similarity(s4a, s4b) < 0.95 && similarity(s3a, s3b) > 0.97, "channel 4's knobs change channel 4 (%.3f), not channel 3 (%.3f)", similarity(s4a, s4b), similarity(s3a, s3b));
 
-	queue_param(in, P_EDIT, 6);
-	queue_param(in, P_ALG, 5);
+	in->params->value_to_text(in->plugin, ID(6, Q_PRESET), 80, text, sizeof(text));
+	CHECK(strstr(text, "Square") != NULL, "PSG channel names its presets: %s", text);
+	queue_param(in, ID(6, Q_VOLUME), 127);
 	settle(in, 0.05);
-	in->params->value_to_text(in->plugin, P_PRESET, 3, text, sizeof(text));
-	CHECK(strstr(text, "Envelope") != NULL, "PSG channel names its presets: %s", text);
 	float *psg = play_note(in, 6, 72, 0.5);
-	CHECK(rms(psg, 4000, 8000) > 0.005, "PSG still plays after an FM knob on its channel: rms %.4f", rms(psg, 4000, 8000));
+	CHECK(rms(psg, 4000, 8000) > 0.005, "PSG plays: rms %.4f", rms(psg, 4000, 8000));
 	destroy_instance(in);
 }
 
@@ -471,13 +496,16 @@ static void test_polyphony(void)
 {
 	printf("polyphony\n");
 	static const uint8_t chord[3] = {60, 64, 67};
-	for (int poly = 0; poly < 2; poly++) {
+	// Off, then all voices to channel 1, then to channel 4.
+	static const int owners[3] = {0, 1, 4};
+	for (int i = 0; i < 3; i++) {
 		instance *in = create_instance();
 		settle(in, 0.4);
-		queue_param(in, P_POLY, poly);
+		queue_param(in, P_POLY, owners[i]);
 		settle(in, 0.1);
+		const uint8_t channel = (uint8_t)(owners[i] ? owners[i] - 1 : 0);
 		for (int n = 0; n < 3; n++) {
-			queue_midi(in, 0x90, chord[n], 127);
+			queue_midi(in, 0x90 | channel, chord[n], 127);
 		}
 		float *audio = render(in, RATE);
 		double *mag = spectrum(audio, 6000);
@@ -490,33 +518,45 @@ static void test_polyphony(void)
 		for (int n = 0; n < 3; n++) {
 			sounding += e[n] > top * 0.1;
 		}
-		CHECK(poly ? sounding == 3 : sounding == 1, "polyphony %s: %d of 3 chord notes sound", poly ? "on" : "off", sounding);
+		CHECK(owners[i] ? sounding == 3 : sounding == 1, "polyphony %d: %d of 3 chord notes sound on channel %d", owners[i], sounding, channel + 1);
 		destroy_instance(in);
 	}
 
-	// A knob must reach every voice, not only the first.
+	// A knob must reach every voice, and a channel without voices stays silent.
 	instance *in = create_instance();
 	settle(in, 0.4);
-	queue_param(in, P_POLY, 1);
+	queue_param(in, P_POLY, 4);
 	settle(in, 0.1);
 	static const uint8_t six[6] = {48, 52, 55, 60, 64, 67};
 	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x90, six[n], 127);
+		queue_midi(in, 0x93, six[n], 127);
 	}
 	float *loud = render(in, RATE / 2);
 	double loud_level = rms(loud, 4000, 8000);
 	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x80, six[n], 0);
+		queue_midi(in, 0x83, six[n], 0);
 	}
 	settle(in, 0.4);
-	queue_param(in, P_VOLUME, 20);
+	queue_param(in, ID(3, Q_VOLUME), 20);
 	settle(in, 0.05);
 	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x90, six[n], 127);
+		queue_midi(in, 0x93, six[n], 127);
 	}
 	float *soft = render(in, RATE / 2);
 	double soft_level = rms(soft, 4000, 8000);
-	CHECK(soft_level < loud_level * 0.25, "volume reaches all 6 voices: level %.4f vs %.4f", soft_level, loud_level);
+	CHECK(soft_level < loud_level * 0.25, "volume of channel 4 reaches all 6 voices: level %.4f vs %.4f", soft_level, loud_level);
+	for (int n = 0; n < 6; n++) {
+		queue_midi(in, 0x83, six[n], 0);
+	}
+	settle(in, 0.4);
+	float *silent = play_note(in, 1, 60, 0.5);
+	CHECK(rms(silent, 4000, 8000) < 0.0005, "channel 2 has no voice and stays silent: rms %.5f", rms(silent, 4000, 8000));
+	float *psg = play_note(in, 6, 72, 0.5);
+	CHECK(rms(psg, 4000, 8000) > 0.005, "PSG channel 7 keeps its voice: rms %.4f", rms(psg, 4000, 8000));
+	queue_param(in, P_POLY, 0);
+	settle(in, 0.1);
+	float *back = play_note(in, 1, 60, 0.5);
+	CHECK(rms(back, 4000, 8000) > 0.005, "polyphony off: channel 2 plays again: rms %.4f", rms(back, 4000, 8000));
 	destroy_instance(in);
 }
 
@@ -553,10 +593,8 @@ static void test_state(void)
 	queue_param(a, P_FB, 6);
 	queue_param(a, P_OP, 20);
 	queue_param(a, P_FILTER, 800);
-	queue_param(a, P_EDIT, 1);
-	queue_param(a, P_PRESET, 81);
-	settle(a, 0.05);
-	queue_param(a, P_EDIT, 0);
+	queue_param(a, ID(1, Q_PRESET), 81);
+	queue_param(a, ID(8, Q_VOLUME), 33);
 	settle(a, 0.05);
 	float *original = play_note(a, 0, 48, 0.7);
 
@@ -580,8 +618,10 @@ static void test_state(void)
 	b->plugin->start_processing(b->plugin);
 
 	int mismatched = 0;
-	for (int id = 0; id < NUM_PARAMS; id++) {
-		mismatched += get_value(a, id) != get_value(b, id);
+	for (uint32_t i = 0; i < NUM_PARAMS; i++) {
+		clap_param_info_t info;
+		a->params->get_info(a->plugin, i, &info);
+		mismatched += get_value(a, info.id) != get_value(b, info.id);
 	}
 	CHECK(mismatched == 0, "%d of %d knobs differ after restore", mismatched, NUM_PARAMS);
 	settle(b, 0.4);
@@ -589,9 +629,7 @@ static void test_state(void)
 	double *sa = spectrum(original, 4000), *sb = spectrum(restored, 4000);
 	double sim = similarity(sa, sb);
 	CHECK(sim > 0.97, "restored sound matches: spectrum %.4f", sim);
-	queue_param(b, P_EDIT, 1);
-	settle(b, 0.05);
-	CHECK(get_value(b, P_PRESET) == 81, "other channels are restored too: preset %d", get_value(b, P_PRESET));
+	CHECK(get_value(b, ID(1, Q_PRESET)) == 81 && get_value(b, ID(8, Q_VOLUME)) == 33, "other channels are restored too: preset %d", get_value(b, ID(1, Q_PRESET)));
 
 	// Loading into a running instance, with nothing else telling it to send anything.
 	instance *c = create_instance();
@@ -715,10 +753,7 @@ static void test_mode_knobs(void)
 	queue_param(in, P_FB, 6);
 	queue_param(in, P_OP + 1, 3);
 	settle(in, 0.05);
-	queue_param(in, P_EDIT, 1);
-	queue_param(in, P_PRESET, 16);
-	settle(in, 0.05);
-	queue_param(in, P_EDIT, 0);
+	queue_param(in, ID(1, Q_PRESET), 16);
 	settle(in, 0.05);
 	float *ch1_before = play_note(in, 0, 60, 0.7);
 	double *ch1_spec = spectrum(ch1_before, 4000);
@@ -803,40 +838,6 @@ static void test_mode_knobs(void)
 	destroy_instance(in);
 }
 
-// A project saved by the 56-knob version must keep working.
-static void test_old_state(void)
-{
-	printf("projects saved before these knobs\n");
-	instance *in = create_instance();
-	settle(in, 0.4);
-	static memory_stream old;
-	old.size = old.pos = 0;
-	uint32_t version = 1;
-	memcpy(old.data, &version, 4);
-	int16_t values[5 + 10 * 51];
-	for (int id = 0; id < 5; id++) {
-		values[id] = (int16_t)get_value(in, id);
-	}
-	for (int channel = 0; channel < 10; channel++) {
-		for (int id = 5; id < 56; id++) {
-			values[5 + channel * 51 + (id - 5)] = (int16_t)get_value(in, id);
-		}
-	}
-	values[5 + (P_ALG - 5)] = 5;
-	values[5 + 51 + (P_PRESET - 5)] = 77;
-	memcpy(old.data + 4, values, sizeof(values));
-	old.size = 4 + sizeof(values);
-	clap_istream_t stream = {.ctx = &old, .read = stream_read};
-	CHECK(in->state->load(in->plugin, &stream), "%zu byte old state loads", old.size);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_ALG) == 5, "algorithm restored to %d", get_value(in, P_ALG));
-	CHECK(get_value(in, P_FINE) == 64 && get_value(in, P_BEND) == 2 && get_value(in, P_PORTA_ON) == 0, "new knobs start at their defaults");
-	queue_param(in, P_EDIT, 1);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_PRESET) == 77, "channel 2 preset restored to %d", get_value(in, P_PRESET));
-	destroy_instance(in);
-}
-
 static void test_midi_tracking(void)
 {
 	printf("knobs follow MIDI from clips\n");
@@ -853,7 +854,31 @@ static void test_midi_tracking(void)
 	CHECK(get_value(in, P_PRESET) == 33, "program change moves Preset to %d", get_value(in, P_PRESET));
 	queue_midi(in, 0xB0, 84, 127);
 	settle(in, 0.05);
-	CHECK(get_value(in, P_POLY) == 1, "CC84 moves Polyphony to %d", get_value(in, P_POLY));
+	CHECK(get_value(in, P_POLY) == 1, "CC84 on channel 1 moves Polyphony to %d", get_value(in, P_POLY));
+	queue_midi(in, 0xB3, 84, 127);
+	settle(in, 0.05);
+	CHECK(get_value(in, P_POLY) == 4, "CC84 on channel 4 moves it to %d", get_value(in, P_POLY));
+	queue_midi(in, 0xB3, 84, 0);
+	settle(in, 0.05);
+	CHECK(get_value(in, P_POLY) == 0, "and off to %d", get_value(in, P_POLY));
+	const int ch1_tl = get_value(in, P_OP), ch1_volume = get_value(in, P_VOLUME);
+	queue_midi(in, 0xB2, 16, 77);
+	queue_midi(in, 0xB2, 7, 90);
+	queue_midi(in, 0xB8, 7, 50);
+	settle(in, 0.05);
+	CHECK(get_value(in, ID(2, Q_OP)) == 77 && get_value(in, ID(2, Q_VOLUME)) == 90 && get_value(in, ID(8, Q_VOLUME)) == 50
+		&& get_value(in, P_OP) == ch1_tl && get_value(in, P_VOLUME) == ch1_volume,
+		"a CC moves the knob of its own channel only");
+	queue_midi(in, 0xB2, 3, 50);
+	settle(in, 0.05);
+	CHECK(get_value(in, ID(2, Q_PRESET)) == 50 && get_value(in, ID(2, Q_OP)) != 77, "the preset CC loads a new preset on channel 3");
+	queue_param(in, ID(2, Q_OP), 77);
+	queue_midi(in, 0xB2, 3, 50);
+	settle(in, 0.05);
+	CHECK(get_value(in, ID(2, Q_OP)) == 77, "and the same preset again keeps the tweak");
+	queue_midi(in, 0xC2, 50, 0);
+	settle(in, 0.05);
+	CHECK(get_value(in, ID(2, Q_OP)) != 77, "a program change wipes it");
 
 	int before = rescans;
 	callbacks_requested = 0;
@@ -888,13 +913,12 @@ int main(int argc, char **argv)
 	test_listing();
 	test_preset_table();
 	test_knob_effects();
-	test_edit_channel();
+	test_channels();
 	test_polyphony();
 	test_state();
 	test_midi_tracking();
 	test_tuning_knobs();
 	test_mode_knobs();
-	test_old_state();
 
 	entry->deinit();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);

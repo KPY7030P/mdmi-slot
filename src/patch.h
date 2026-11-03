@@ -13,40 +13,48 @@
 // read the published snapshot, and a loaded state waits in its own slot until the writer takes it.
 #define PATCH_OPS 4
 #define PATCH_OP_PARAMS 11
+// MIDI channels 1-6 are FM, 7-9 PSG tone, 10 PSG noise.
+#define PATCH_NUM_CHANNELS 10
+#define PATCH_NUM_FM_CHANNELS 6
 
-// Hosts store automation by id, so ids never change. Knobs added later get the next free id,
-// and patch_param_id_at() puts them in their logical place on the panel.
+// Settings of the whole console.
 enum {
-	PARAM_EDIT_CHANNEL,
-	PARAM_POLYPHONY,
-	PARAM_FILTER,
-	PARAM_LFO_ON,
-	PARAM_LFO_RATE,
+	GLOBAL_POLYPHONY,
+	GLOBAL_FILTER,
+	GLOBAL_LFO_ON,
+	GLOBAL_LFO_RATE,
+	GLOBAL_CH3_MODE,
+	GLOBAL_DAC,
+	PATCH_NUM_GLOBALS,
+};
+
+// What a MIDI channel has. PSG channels have the first ones except Pan; the rest are the FM voice.
+enum {
 	PARAM_PRESET,
 	PARAM_VOLUME,
 	PARAM_PAN,
+	PARAM_FINE_TUNE,
+	PARAM_BEND_RANGE,
+	PARAM_PORTA_ON,
+	PARAM_PORTA_TIME,
 	PARAM_ALGORITHM,
 	PARAM_FEEDBACK,
 	PARAM_AMS,
 	PARAM_FMS,
 	PARAM_OP_BASE,
-	PARAM_CH3_MODE = PARAM_OP_BASE + PATCH_OPS * PATCH_OP_PARAMS,
-	PARAM_DAC,
-	PARAM_FINE_TUNE,
-	PARAM_BEND_RANGE,
-	PARAM_PORTA_ON,
-	PARAM_PORTA_TIME,
-	PATCH_NUM_PARAMS,
+	PATCH_NUM_CHANNEL_PARAMS = PARAM_OP_BASE + PATCH_OPS * PATCH_OP_PARAMS,
 };
 
-#define PATCH_NUM_GLOBALS 7
-#define PATCH_NUM_CHANNEL_PARAMS (PATCH_NUM_PARAMS - PATCH_NUM_GLOBALS)
-// MIDI channels 1-6 are FM, 7-9 PSG tone, 10 PSG noise.
-#define PATCH_NUM_CHANNELS 10
-#define PATCH_NUM_FM_CHANNELS 6
+// Hosts store automation by id, so ids never change (D3). A global's id is its index, and a channel's
+// knob is 1000 + channel number * 100 + param: 1411 is Op1 TL of channel 4. A new knob takes the next
+// free number and patch_param_id_at() puts it in its place on the panel.
+#define PATCH_CHANNEL_ID(channel, param) (1000u + ((uint32_t)(channel) + 1) * 100u + (uint32_t)(param))
+// Everything before the FM voice, without Pan.
+#define PATCH_NUM_PSG_PARAMS (PARAM_ALGORITHM - 1)
+#define PATCH_NUM_IDS (PATCH_NUM_GLOBALS + PATCH_NUM_FM_CHANNELS * PATCH_NUM_CHANNEL_PARAMS + (PATCH_NUM_CHANNELS - PATCH_NUM_FM_CHANNELS) * PATCH_NUM_PSG_PARAMS)
 
 typedef struct {
-	char name[32];
+	char name[24];
 	int16_t max;
 	int16_t default_value;
 	bool stepped;
@@ -61,6 +69,8 @@ typedef struct {
 #define PATCH_UNKNOWN (-1)
 typedef struct {
 	patch_values values;
+	// The MIDI channel each FM voice answers to.
+	int8_t voice_owner[PATCH_NUM_FM_CHANNELS];
 	// Which of its two service programs each FM channel uses next.
 	bool alternate[PATCH_NUM_FM_CHANNELS];
 } patch_receiver;
@@ -84,20 +94,30 @@ typedef struct {
 typedef void (*patch_emit_fn)(void *context, const uint8_t *bytes, size_t length);
 
 void patch_global_init(void);
+// Splits an id into a channel and a param. The channel is -1 for a global, and false means no such knob.
+bool patch_id_split(uint32_t id, int *channel, int *param);
+bool patch_channel_has(int channel, int param);
 const patch_param_info *patch_param(uint32_t id);
+void patch_param_name(uint32_t id, char *name, size_t size);
 uint32_t patch_param_id_at(uint32_t panel_index);
+// The value a param has in a preset, which a reset returns to.
+int patch_preset_value(int channel, int param, int preset);
+// How many FM voices a MIDI channel plays with these settings: 1, 0 while Polyphony gives them
+// to another channel, and 6, or 5 with the DAC on, for the channel that has them.
+int patch_voice_count(const int16_t *globals, int channel);
 
 void patch_init(mdmi_patch *patch);
 
 // The main thread's view: the snapshot, or a loaded state not taken yet.
+const patch_values *patch_view(mdmi_patch *patch);
 int patch_get(mdmi_patch *patch, uint32_t id);
-int patch_get_channel(mdmi_patch *patch, int channel, uint32_t id);
 void patch_format_preset(int channel, int value, char *text, size_t size);
-void patch_format(mdmi_patch *patch, uint32_t id, int value, char *text, size_t size);
+void patch_format(uint32_t id, int value, char *text, size_t size);
 double patch_filter_hz(int value);
-size_t patch_state_size(void);
+// Saved values are pairs of id and value, so knobs can be added without breaking projects.
+size_t patch_save_size(void);
 void patch_save(mdmi_patch *patch, void *buffer);
-// Checks a saved state and leaves it for the writer to take.
+// Takes what it knows from a saved state and leaves it for the writer to take.
 bool patch_load(mdmi_patch *patch, const void *buffer, size_t size);
 
 // The writer's. Sets a knob; true if other knobs now show different values.

@@ -24,6 +24,14 @@
 #define BUTTON_EDITOR_X 100
 #define BUTTON_ROM_X 180
 #define BUTTON_Y 12
+// Channel 4 in the rail, Op1 TL on the FM page, and the ids of Op1 TL on channels 3 and 4.
+#define RAIL_X 100
+#define RAIL_CH2_Y 104
+#define RAIL_CH4_Y 184
+#define OP1_TL_X 300
+#define OP1_TL_Y 212
+#define CH3_OP1_TL 1311
+#define CH4_OP1_TL 1411
 
 static int failures;
 
@@ -63,10 +71,24 @@ static const clap_event_header_t *in_get(const clap_input_events_t *list, uint32
 	return list->ctx;
 }
 
+// What the plugin told the host: gesture begins, values and ends, with the last id of each.
+static int pushed[3];
+static uint32_t pushed_id[3];
+static double pushed_value;
+
 static bool out_try_push(const clap_output_events_t *list, const clap_event_header_t *event)
 {
 	(void)list;
-	(void)event;
+	int kind = event->type == CLAP_EVENT_PARAM_GESTURE_BEGIN ? 0 : event->type == CLAP_EVENT_PARAM_VALUE ? 1 : event->type == CLAP_EVENT_PARAM_GESTURE_END ? 2 : -1;
+	if (kind == 1) {
+		pushed_id[1] = ((const clap_event_param_value_t *)event)->param_id;
+		pushed_value = ((const clap_event_param_value_t *)event)->value;
+	} else if (kind >= 0) {
+		pushed_id[kind] = ((const clap_event_param_gesture_t *)event)->param_id;
+	}
+	if (kind >= 0) {
+		pushed[kind]++;
+	}
 	return true;
 }
 
@@ -180,6 +202,23 @@ static void click(HWND window, int x, int y)
 	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
 }
 
+static void drag(HWND window, int x, int y, int to_y)
+{
+	SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+	for (int step = 1; step <= 4; step++) {
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, y + (to_y - y) * step / 4));
+	}
+	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, to_y));
+}
+
+static int get_value(clap_id id)
+{
+	const clap_plugin_params_t *params = plugin->get_extension(plugin, CLAP_EXT_PARAMS);
+	double value = -1;
+	params->get_value(plugin, id, &value);
+	return (int)value;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 3) {
@@ -291,6 +330,29 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(memcmp(before + HEADER_H * WIDTH, pixels + HEADER_H * WIDTH, (TABLE_BOTTOM - HEADER_H) * WIDTH * sizeof(uint32_t)) == 0, "the table looks the same after the ROM page");
+
+		// Editing by mouse: the view is not a knob, a drag is one gesture on one channel's knob.
+		memset(pushed, 0, sizeof(pushed));
+		click(window, RAIL_X, RAIL_CH4_Y);
+		run_ms(100);
+		CHECK(pushed[0] + pushed[1] + pushed[2] == 0, "choosing channel 4 in the window tells the host nothing");
+		const int ch3_before = get_value(CH3_OP1_TL), ch4_before = get_value(CH4_OP1_TL);
+		drag(window, OP1_TL_X, OP1_TL_Y, OP1_TL_Y - 20);
+		run_ms(100);
+		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_OP1_TL && pushed_id[2] == CH4_OP1_TL, "a drag is one gesture on channel 4's Op1 TL");
+		CHECK(pushed[1] > 0 && pushed_id[1] == CH4_OP1_TL && (int)pushed_value == get_value(CH4_OP1_TL), "the host is told each value");
+		CHECK(get_value(CH4_OP1_TL) == ch4_before + 10 && get_value(CH3_OP1_TL) == ch3_before, "20 px up raises it by 10, from %d to %d, channel 3 untouched", ch4_before, get_value(CH4_OP1_TL));
+		capture(window);
+		save_bmp(argv[2], "fm");
+		memset(pushed, 0, sizeof(pushed));
+		click(window, RAIL_X, RAIL_CH2_Y);
+		run_ms(100);
+		CHECK(pushed[0] + pushed[1] + pushed[2] == 0 && get_value(CH4_OP1_TL) == ch4_before + 10, "choosing another channel changes no knob");
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		click(window, RAIL_X, RAIL_CH4_Y);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		run_ms(100);
+		CHECK(get_value(CH4_OP1_TL) == ch4_before, "a double click returns it to the preset's value");
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

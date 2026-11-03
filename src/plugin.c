@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,9 @@
 
 #define PLUGIN_ID "dev.mdmi-plugin.mega-drive"
 #define PLUGIN_NAME "MDMI Mega Drive"
+#define EDIT_QUEUE 256
+#define STATE_VERSION 3
+enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2 };
 
 static const char *const plugin_features[] = {
 	CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -29,6 +33,13 @@ static const clap_plugin_descriptor_t plugin_descriptor = {
 	.features = plugin_features,
 };
 
+// A change from the window, waiting for the writer (D4).
+typedef struct {
+	uint8_t kind;
+	int16_t value;
+	uint32_t id;
+} edit_command;
+
 typedef struct {
 	clap_plugin_t plugin;
 	const clap_host_t *host;
@@ -42,6 +53,11 @@ typedef struct {
 	bool active;
 	mdmi_gui *gui;
 	int gui_page;
+	int gui_channel;
+	// Single producer, the main thread; single consumer, the writer.
+	edit_command edits[EDIT_QUEUE];
+	uint32_t edits_written;
+	uint32_t edits_read;
 	uint32_t notes[GUI_NUM_MIDI_CHANNELS];
 	uint8_t held[GUI_NUM_MIDI_CHANNELS];
 } mdmi_plugin;
@@ -201,17 +217,76 @@ static void handle_midi(mdmi_plugin *self, uint32_t time, const uint8_t *bytes, 
 	}
 }
 
-static void handle_param(mdmi_plugin *self, const clap_event_param_value_t *event)
+static void set_param(mdmi_plugin *self, uint32_t id, int value, uint32_t time)
 {
-	int value = (int)(event->value + 0.5);
-	if (patch_set(&self->patch, event->param_id, value)) {
+	if (patch_set(&self->patch, id, value)) {
 		self->knobs_moved = true;
 	}
-	if (event->param_id == PARAM_FILTER) {
+	if (id == GLOBAL_FILTER) {
 		apply_filter(self);
 	}
-	emit_target target = {self->engine, event->header.time};
+	emit_target target = {self->engine, time};
 	patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
+}
+
+static void handle_param(mdmi_plugin *self, const clap_event_param_value_t *event)
+{
+	set_param(self, event->param_id, (int)(event->value + 0.5), event->header.time);
+}
+
+// Main thread. The window's changes go to the writer, which tells the host as if a knob moved, so
+// Configure and automation recording see them.
+static void gui_edit(void *context, int kind, uint32_t id, int value)
+{
+	mdmi_plugin *self = context;
+	uint32_t written = self->edits_written;
+	if (written - __atomic_load_n(&self->edits_read, __ATOMIC_ACQUIRE) >= EDIT_QUEUE) {
+		return;
+	}
+	edit_command *command = &self->edits[written % EDIT_QUEUE];
+	command->kind = (uint8_t)kind;
+	command->id = id;
+	command->value = (int16_t)value;
+	__atomic_store_n(&self->edits_written, written + 1, __ATOMIC_RELEASE);
+	if (self->host_params) {
+		self->host_params->request_flush(self->host);
+	}
+}
+
+static void push_gesture(const clap_output_events_t *out, uint16_t type, uint32_t id)
+{
+	clap_event_param_gesture_t event = {{sizeof(event), 0, CLAP_CORE_EVENT_SPACE_ID, type, 0}, id};
+	out->try_push(out, &event.header);
+}
+
+// The writer's: applies what the window asked for and reports it to the host. Outside processing
+// nothing can reach the ROM, so values wait in the model for the next process call.
+static void take_edits(mdmi_plugin *self, const clap_output_events_t *out, bool processing)
+{
+	uint32_t read = self->edits_read;
+	uint32_t written = __atomic_load_n(&self->edits_written, __ATOMIC_ACQUIRE);
+	for (; read != written; read++) {
+		const edit_command *command = &self->edits[read % EDIT_QUEUE];
+		switch (command->kind) {
+		case GUI_EDIT_BEGIN:
+			push_gesture(out, CLAP_EVENT_PARAM_GESTURE_BEGIN, command->id);
+			break;
+		case GUI_EDIT_END:
+			push_gesture(out, CLAP_EVENT_PARAM_GESTURE_END, command->id);
+			break;
+		default: {
+			if (processing) {
+				set_param(self, command->id, command->value, 0);
+			} else if (patch_set(&self->patch, command->id, command->value)) {
+				request_rescan(self);
+			}
+			clap_event_param_value_t event = {{sizeof(event), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, command->id, NULL, -1, -1, -1, -1, command->value};
+			out->try_push(out, &event.header);
+			break;
+		}
+		}
+	}
+	__atomic_store_n(&self->edits_read, read, __ATOMIC_RELEASE);
 }
 
 static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
@@ -264,6 +339,21 @@ static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
 	}
 }
 
+static bool starts_note(const clap_event_header_t *header)
+{
+	if (header->space_id != CLAP_CORE_EVENT_SPACE_ID) {
+		return false;
+	}
+	if (header->type == CLAP_EVENT_NOTE_ON) {
+		return true;
+	}
+	if (header->type != CLAP_EVENT_MIDI) {
+		return false;
+	}
+	const uint8_t *data = ((const clap_event_midi_t *)header)->data;
+	return (data[0] & 0xF0) == 0x90 && data[2] != 0;
+}
+
 static clap_process_status plugin_process(const clap_plugin_t *plugin, const clap_process_t *process)
 {
 	mdmi_plugin *self = self_of(plugin);
@@ -274,9 +364,26 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		emit_target target = {engine, 0};
 		patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
 	}
-	const uint32_t event_count = process->in_events->size(process->in_events);
-	for (uint32_t i = 0; i < event_count; i++) {
-		handle_event(self, process->in_events->get(process->in_events, i));
+	take_edits(self, process->out_events, true);
+	// The VST3 wrapper puts notes before knobs and controllers of the same moment. A preset point
+	// exactly on a note's start is meant for that note, so at each moment notes start last.
+	const clap_input_events_t *in = process->in_events;
+	const uint32_t event_count = in->size(in);
+	for (uint32_t first = 0; first < event_count;) {
+		uint32_t end = first + 1;
+		const uint32_t time = in->get(in, first)->time;
+		while (end < event_count && in->get(in, end)->time == time) {
+			end++;
+		}
+		for (int pass = 0; pass < 2; pass++) {
+			for (uint32_t i = first; i < end; i++) {
+				const clap_event_header_t *header = in->get(in, i);
+				if (starts_note(header) == (pass == 1)) {
+					handle_event(self, header);
+				}
+			}
+		}
+		first = end;
 	}
 	patch_publish(&self->patch);
 	if (self->knobs_moved) {
@@ -382,7 +489,7 @@ static const clap_plugin_render_t render_ext = {
 static uint32_t params_count(const clap_plugin_t *plugin)
 {
 	(void)plugin;
-	return PATCH_NUM_PARAMS;
+	return PATCH_NUM_IDS;
 }
 
 static bool params_get_info(const clap_plugin_t *plugin, uint32_t index, clap_param_info_t *info)
@@ -396,7 +503,7 @@ static bool params_get_info(const clap_plugin_t *plugin, uint32_t index, clap_pa
 	memset(info, 0, sizeof(*info));
 	info->id = id;
 	info->flags = CLAP_PARAM_IS_AUTOMATABLE | (param->stepped ? CLAP_PARAM_IS_STEPPED : 0);
-	strncpy(info->name, param->name, sizeof(info->name) - 1);
+	patch_param_name(id, info->name, sizeof(info->name));
 	info->min_value = 0;
 	info->max_value = param->max;
 	info->default_value = param->default_value;
@@ -417,7 +524,8 @@ static bool params_value_to_text(const clap_plugin_t *plugin, clap_id id, double
 	if (!patch_param(id)) {
 		return false;
 	}
-	patch_format(&self_of(plugin)->patch, id, (int)(value + 0.5), text, size);
+	(void)plugin;
+	patch_format(id, (int)(value + 0.5), text, size);
 	return true;
 }
 
@@ -437,7 +545,6 @@ static bool params_text_to_value(const clap_plugin_t *plugin, clap_id id, const 
 static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t *in, const clap_output_events_t *out)
 {
 	mdmi_plugin *self = self_of(plugin);
-	(void)out;
 	patch_take_incoming(&self->patch);
 	const uint32_t count = in->size(in);
 	for (uint32_t i = 0; i < count; i++) {
@@ -449,6 +556,7 @@ static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t 
 			}
 		}
 	}
+	take_edits(self, out, false);
 	apply_filter(self);
 	patch_publish(&self->patch);
 	__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
@@ -463,13 +571,32 @@ static const clap_plugin_params_t params_ext = {
 	.flush = params_flush,
 };
 
+// A project is a version, then blocks of type, length and data: the knobs, and the window's view.
+#define STATE_MAX (3 * sizeof(uint32_t) + PATCH_NUM_IDS * 6 + 2 * sizeof(uint32_t) + 2)
+
+static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
+{
+	memcpy(out, &type, sizeof(type));
+	memcpy(out + sizeof(type), &length, sizeof(length));
+	return out + 2 * sizeof(uint32_t);
+}
+
 static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream)
 {
-	uint8_t buffer[sizeof(uint32_t) + sizeof(patch_values)];
-	patch_save(&self_of(plugin)->patch, buffer);
+	mdmi_plugin *self = self_of(plugin);
+	static_assert(STATE_MAX < 4096, "state fits on the stack");
+	uint8_t buffer[STATE_MAX];
+	const uint32_t version = STATE_VERSION;
+	memcpy(buffer, &version, sizeof(version));
+	uint8_t *out = put_block_head(buffer + sizeof(version), BLOCK_VALUES, (uint32_t)patch_save_size());
+	patch_save(&self->patch, out);
+	out = put_block_head(out + patch_save_size(), BLOCK_VIEW, 2);
+	out[0] = (uint8_t)self->gui_page;
+	out[1] = (uint8_t)self->gui_channel;
+	const size_t size = (size_t)(out + 2 - buffer);
 	size_t written = 0;
-	while (written < sizeof(buffer)) {
-		int64_t count = stream->write(stream, buffer + written, sizeof(buffer) - written);
+	while (written < size) {
+		int64_t count = stream->write(stream, buffer + written, size - written);
 		if (count <= 0) {
 			return false;
 		}
@@ -478,22 +605,58 @@ static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream
 	return true;
 }
 
+// Room for a newer build's blocks, which are skipped.
+#define STATE_READ_MAX 65536
+
+static bool read_blocks(mdmi_plugin *self, const uint8_t *buffer, size_t total)
+{
+	uint32_t version;
+	if (total < sizeof(version)) {
+		return false;
+	}
+	memcpy(&version, buffer, sizeof(version));
+	if (version != STATE_VERSION) {
+		return false;
+	}
+	bool values = false;
+	for (size_t at = sizeof(version); at + 2 * sizeof(uint32_t) <= total;) {
+		uint32_t type, length;
+		memcpy(&type, buffer + at, sizeof(type));
+		memcpy(&length, buffer + at + sizeof(type), sizeof(length));
+		at += 2 * sizeof(uint32_t);
+		if (length > total - at) {
+			return false;
+		}
+		if (type == BLOCK_VALUES) {
+			if (!patch_load(&self->patch, buffer + at, length)) {
+				return false;
+			}
+			values = true;
+		} else if (type == BLOCK_VIEW && length >= 2) {
+			self->gui_page = buffer[at] == 1;
+			self->gui_channel = buffer[at + 1] < PATCH_NUM_CHANNELS ? buffer[at + 1] : 0;
+		}
+		at += length;
+	}
+	return values;
+}
+
 static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream)
 {
 	mdmi_plugin *self = self_of(plugin);
-	uint8_t buffer[sizeof(uint32_t) + sizeof(patch_values)];
-	size_t total = 0;
-	while (total < sizeof(buffer)) {
-		int64_t count = stream->read(stream, buffer + total, sizeof(buffer) - total);
-		if (count < 0) {
-			return false;
-		}
-		if (count == 0) {
-			break;
-		}
-		total += (size_t)count;
+	uint8_t *buffer = malloc(STATE_READ_MAX);
+	if (!buffer) {
+		return false;
 	}
-	if (!patch_load(&self->patch, buffer, total)) {
+	size_t total = 0;
+	int64_t count = 1;
+	while (total < STATE_READ_MAX && count > 0) {
+		count = stream->read(stream, buffer + total, STATE_READ_MAX - total);
+		total += count > 0 ? (size_t)count : 0;
+	}
+	bool loaded = count >= 0 && read_blocks(self, buffer, total);
+	free(buffer);
+	if (!loaded) {
 		return false;
 	}
 	if (self->active) {
@@ -542,6 +705,9 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.notes = self->notes,
 		.version = plugin_descriptor.version,
 		.page = &self->gui_page,
+		.channel = &self->gui_channel,
+		.edit = gui_edit,
+		.context = self,
 	};
 	self->gui = gui_create(&source);
 	return self->gui != NULL;

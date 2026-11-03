@@ -7,7 +7,7 @@
 #include "patch.h"
 
 // The plugin's window: everything is drawn by our own code into a pixel buffer. All of this runs
-// on the host's main thread. The window only reads; nothing here changes the sound.
+// on the host's main thread. The window reads the model's snapshot and asks for changes through edit().
 #define GUI_WIDTH 720
 #define GUI_HEIGHT 528
 #define GUI_NUM_MIDI_CHANNELS 16
@@ -20,14 +20,20 @@
 #define GUI_NOTE_PACK(key, velocity, held) \
 	((uint32_t)(key) | ((uint32_t)(velocity) << 8) | ((uint32_t)(held) << 16) | (1u << 24))
 
+// What edit() asks for: a gesture around one or more values, as a host records a knob.
+enum { GUI_EDIT_BEGIN, GUI_EDIT_SET, GUI_EDIT_END };
 
 typedef struct {
 	mdmi_engine *engine;
 	mdmi_patch *patch;
 	const uint32_t *notes;
 	const char *version;
-	// Which page is open. Belongs to the plugin instance, so it outlives the window.
+	// Which page and channel are open. They belong to the plugin instance, so they outlive the
+	// window and are saved with the project. Only a view: no knob depends on them.
 	int *page;
+	int *channel;
+	void (*edit)(void *context, int kind, uint32_t id, int value);
+	void *context;
 } gui_source;
 
 typedef struct mdmi_gui mdmi_gui;

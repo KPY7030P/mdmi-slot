@@ -18,24 +18,58 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 
 ## Knobs
 
-`Edit Channel` picks which MIDI channel (1-10) the channel knobs show and change. Each channel remembers its own
-values, and the project saves them all. With `Polyphony` on, FM voices all belong to channel 1, so FM editing goes there.
+Every MIDI channel is an instrument of its own: its knobs always mean that channel, so lanes for several channels
+can run at once. There are 360 of them, too many for Live to fill its panel by itself: use Configure and touch a
+cell in the window. Choosing a channel in the window only changes the view, no knob or lane.
 
-- Global: Edit Channel, Polyphony, Filter (3392 Hz matches the original console, top is off), LFO On, LFO Rate,
+- Global: Polyphony, Filter (3392 Hz matches the original console, top is off), LFO On, LFO Rate,
   Ch3 Special Mode, DAC Enable
-- Channel: Preset, Volume, Pan, Fine Tune, Pitch Bend Range, Portamento On, Portamento Time
-- FM channel: Algorithm, Feedback, AMS, FMS, and for each of 4 operators TL, MUL, DT, RS, AR, DR, SR, SL, RR, AM, SSG
+- Every channel: Preset, Volume, Fine Tune, Bend Range, Porta On, Porta Time
+- FM channels 1-6 also: Pan, Algorithm, Feedback, AMS, FMS, and for each of 4 operators TL, MUL, DT, RS, AR, DR,
+  SR, SL, RR, AM, SSG
 
-MDMI sets the limits: Pan has three positions and does nothing on PSG. Portamento only works without Polyphony.
+Knob ids never change, because hosts store automation by id: a global's id is its number above, a channel's knob is
+1000 + channel * 100 + its place in `src/patch.h`, so 1411 is Op1 TL of channel 4. New knobs take the next free
+number. A project stores pairs of id and value, so a knob added later starts at its default in an older project.
 
+- Polyphony: Off, or the FM channel 1-6 that gets all six FM voices, five with the DAC on. The other FM channels then
+  have no voice and stay silent; their notes take nothing. PSG channels keep theirs. Portamento needs one voice.
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays the ROM's drum samples, chosen by note, with no FM voice of its own.
+- PSG presets: the ROM has one envelope under every number except 81, 90 and 100, a square lead.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
 the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.
 
-Knob ids never change, because hosts store automation by id. New knobs take the next id, and
-`patch_param_id_at()` places them on the panel. Saved state has a version, and older projects still load.
+### From a MIDI track
+
+A MIDI track sending to the plugin's channel changes that channel's knobs with these controllers, for example from a
+clip envelope or Live's CC Control. Values are 0-127 and scaled to the knob's range. The window shows the new value.
+
+| CC | Knob | Channels |
+|---|---|---|
+| Program Change | Preset, loads the preset's values and wipes tweaks | 1-10 |
+| 3 | Preset, but the same preset again keeps tweaks | 1-10 |
+| 7 | Volume | 1-10 |
+| 10, 77 | Pan | 1-6 |
+| 85 | Fine Tune | 1-10 |
+| RPN 0,0 (101, 100, then 6) | Bend Range | 1-10 |
+| 65 | Porta On | 1-10 |
+| 5 | Porta Time | 1-10 |
+| 14, 15, 76, 75 | Algorithm, Feedback, AMS, FMS | 1-6 |
+| 16-19 | TL of operators 1-4 | 1-6 |
+| 20-23, 24-27 | MUL, DT | 1-6 |
+| 39-42, 43-46, 47-50 | RS, AR, DR | 1-6 |
+| 51-54, 55-58, 59-62 | SR, SL, RR. SR above 15 only by knob, CC reaches 0-15 | 1-6 |
+| 70-73, 90-93 | AM, SSG | 1-6 |
+| 84 | Polyphony: 64 and up gives the voices to this channel, below 64 turns it off | 1-6, off from any |
+| 74, 1, 80, 78 | LFO On, LFO Rate, Ch3 Special Mode, DAC Enable | any |
+
+Notes, pitch bend and other controllers pass to the ROM. CC 121 is turned into what the standard means by it, centre
+bend and pedal up, because the ROM would also reset the channel's program and voices. CC 87 is dropped.
+
+At the same moment, knob changes and controllers come before notes start, so a preset point exactly on a note's
+start is meant for that note.
 
 ## Building
 
