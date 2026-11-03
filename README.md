@@ -33,8 +33,8 @@ Knob ids never change, because hosts store automation by id: a global's id is it
 number. A project stores pairs of id and value, so a knob added later starts at its default in an older project.
 
 - Voices (D20, D21): each FM channel plays on its own voice, and a chord borrows the voices of channels
-  that are silent, nothing to set up. A channel whose voice a chord holds plays on a free voice; only
-  when none is free it takes its own back and cuts the chord's note there (D22). Notes beyond the free
+  that are silent, nothing to set up. A channel always plays on its own voice: when a chord holds it,
+  the chord's note there moves to a free voice and starts again, and is cut only if none is free (D22). Notes beyond the free
   voices don't sound, and the window marks them as CUT. A green bracket in the window joins a chord's
   channel to the rows whose voices it plays. A borrowed voice
   first gets the channel's sound: notes of one moment wait until all their voices have it, a few ms, up to

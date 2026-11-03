@@ -430,6 +430,24 @@ static void test_dealer(void)
 	midi(&patch, 0xB3, 123, 0);
 	CHECK(count_sysex(0x00) == 5 && free_voices(&patch) == 6, "All Notes Off sends the lent voices home");
 
+	// A tune takes its voice back from a chord of 5: the chord's note moves to the free voice.
+	moment(&patch, 3, 60, 5, true);
+	int lender = -1;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		lender = lender < 0 && voice != 3 && patch.voices[voice].channel == 3 ? voice : lender;
+	}
+	int moved_key = patch.voices[lender].key;
+	clear();
+	moment(&patch, lender, 90, 1, true);
+	bool moved = false;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		moved = moved || (voice != lender && patch.voices[voice].channel == 3 && patch.voices[voice].key == moved_key);
+	}
+	CHECK(patch.voices[lender].channel == lender && moved && free_voices(&patch) == 0 && patch_muted_notes(&patch, 3) == 0 && count_status(0x80) == 1 && count_status(0x90) == 2, "a tune takes its own voice, the chord's note there stops and starts again on the free voice");
+	moment(&patch, lender, 90, 1, false);
+	moment(&patch, 3, 60, 5, false);
+	CHECK(free_voices(&patch) == 6, "and all of it ends without a voice left taken");
+
 	// A note and its note off at one moment.
 	const uint8_t on[3] = {0x90, 70, 100}, off[3] = {0x80, 70, 0};
 	patch_midi(&patch, on, 3, record, NULL);

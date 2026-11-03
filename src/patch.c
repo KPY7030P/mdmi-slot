@@ -762,10 +762,10 @@ static int cheapest_voice(const mdmi_patch *patch, int channel)
 	return best;
 }
 
-static void take_voice(mdmi_patch *patch, int voice, int channel, int key, bool pending, patch_emit_fn emit, void *context)
+static void take_voice(mdmi_patch *patch, int voice, const patch_note *note, bool pending, patch_emit_fn emit, void *context)
 {
-	remap(&patch->rom, channel, voice, emit, context);
-	patch->voices[voice] = (patch_voice){(int8_t)channel, (uint8_t)key, pending, patch->voices[voice].sound};
+	remap(&patch->rom, note->channel, voice, emit, context);
+	patch->voices[voice] = (patch_voice){(int8_t)note->channel, note->key, pending, patch->voices[voice].sound, note->velocity};
 }
 
 // A note waits for the end of its moment, when the voices are dealt.
@@ -861,48 +861,62 @@ void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	}
 }
 
-// The moment is complete. First every note whose channel's own voice is free takes it; then the
-// other notes borrow free voices in their order. With none free, a note takes its channel's own
-// voice back from a chord and cuts the chord's note there (D20, D22). The borrowed voices get
-// their sound in one go, then the notes start (D21).
+// The moment is complete. First every note takes its channel's own voice if that voice is free or
+// plays another channel's chord; the chord's note there stops and moves to a free voice, where it
+// starts again (D20, D22). Then the moved notes and the other notes borrow free voices, in that
+// order, and what finds none is cut. The borrowed voices get their sound in one go, then the
+// notes start (D21).
 void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 {
 	if (patch->pending_count == 0) {
 		return;
 	}
-	enum { WAITS, OWN, ALONE, MUTED };
+	enum { WAITS, MOVED, OWN, ALONE, MUTED };
 	uint8_t dealt[PATCH_PENDING_NOTES];
+	memset(dealt, WAITS, sizeof(dealt));
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const patch_note *note = &patch->pending[i];
-		dealt[i] = WAITS;
+		if (dealt[i] == MOVED) {
+			continue;
+		}
 		if (plays_alone(patch, note->channel)) {
 			if (patch->voices[note->channel].channel != note->channel) {
 				cut_voice(patch, note->channel, emit, context);
 			}
-			take_voice(patch, note->channel, note->channel, note->key, false, emit, context);
+			take_voice(patch, note->channel, note, false, emit, context);
 			if (patch->held[note->channel] < 255) {
 				patch->held[note->channel]++;
 			}
 			dealt[i] = ALONE;
-		} else if (patch->voices[note->channel].channel < 0) {
-			take_voice(patch, note->channel, note->channel, note->key, true, emit, context);
+		} else if (patch->voices[note->channel].channel != note->channel) {
+			const patch_voice *chord = &patch->voices[note->channel];
+			if (chord->channel >= 0) {
+				const patch_note moved = {(uint8_t)chord->channel, chord->key, chord->velocity};
+				emit_note(emit, context, 0x80, moved.channel, moved.key, 0);
+				free_voice(patch, note->channel, emit, context);
+				if (patch->pending_count < PATCH_PENDING_NOTES) {
+					dealt[patch->pending_count] = MOVED;
+					patch->pending[patch->pending_count++] = moved;
+				} else {
+					set_muted(patch, moved.channel, moved.key, true);
+				}
+			}
+			take_voice(patch, note->channel, note, true, emit, context);
 			dealt[i] = OWN;
 		}
 	}
-	for (uint32_t i = 0; i < patch->pending_count; i++) {
-		const patch_note *note = &patch->pending[i];
-		if (dealt[i] == WAITS) {
-			int voice = cheapest_voice(patch, note->channel);
-			int own = patch->voices[note->channel].channel;
-			if (voice < 0 && own >= 0 && own != note->channel) {
-				cut_voice(patch, note->channel, emit, context);
-				voice = note->channel;
+	for (int moved = 1; moved >= 0; moved--) {
+		for (uint32_t i = 0; i < patch->pending_count; i++) {
+			const patch_note *note = &patch->pending[i];
+			if (dealt[i] != (moved ? MOVED : WAITS)) {
+				continue;
 			}
+			int voice = cheapest_voice(patch, note->channel);
 			if (voice < 0) {
 				set_muted(patch, note->channel, note->key, true);
 				dealt[i] = MUTED;
 			} else {
-				take_voice(patch, voice, note->channel, note->key, true, emit, context);
+				take_voice(patch, voice, note, true, emit, context);
 			}
 		}
 	}
@@ -923,7 +937,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 				}
 			}
 			if (waiting < 0) {
-				// Its voice went to a later note of this moment that took its own voice back.
+				// No voice waits for it.
 				continue;
 			}
 			patch->voices[waiting].key = patch->voices[first].key;

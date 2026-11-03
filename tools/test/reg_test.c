@@ -678,8 +678,8 @@ static void test_dealer(void)
 	moment(3, 60, 4, false);
 	render(SETTLE_BLOCKS);
 
-	// A chord of 5 leaves one voice free. A tune on a channel whose voice the chord holds takes the
-	// free one, and nothing is cut.
+	// A chord of 5 leaves one voice free. A tune on a channel whose voice the chord holds takes its
+	// own voice back, and the chord's note there moves to the free one.
 	moment(3, 60, 5, true);
 	render(SETTLE_BLOCKS);
 	int lender = -1;
@@ -690,8 +690,8 @@ static void test_dealer(void)
 	moment(lender, 84, 1, true);
 	render(SETTLE_BLOCKS);
 	int tune[FM_CHANNELS];
-	check(voices_of(lender, tune) == 1 && tune[0] != lender && compare(tune[0], lender, "tune") == 0, "a tune whose voice a chord holds takes a free voice with its own sound");
-	check(chord_equals_model(3) == 5 && patch_muted_notes(patch, 3) == 0, "and the chord plays on, nothing cut");
+	check(voices_of(lender, tune) == 1 && tune[0] == lender && compare(lender, lender, "tune") == 0, "a tune whose voice a chord holds takes it back with its own sound");
+	check(chord_equals_model(3) == 5 && patch_muted_notes(patch, 3) == 0, "and the chord's note moves to the free voice, nothing cut");
 	moment(lender, 84, 1, false);
 	moment(3, 60, 5, false);
 	render(SETTLE_BLOCKS);

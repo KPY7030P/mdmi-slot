@@ -94,6 +94,7 @@ typedef struct {
 	bool pending;
 	// The channel whose sound the voice was last given.
 	int8_t sound;
+	uint8_t velocity;
 } patch_voice;
 
 #define PATCH_PENDING_NOTES 32
