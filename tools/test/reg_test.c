@@ -2,12 +2,13 @@
 // reads the chip's registers, which no test by ear can do. A channel keeps the velocity of its last
 // note, and that scales the TL of the carriers, so notes here are at full velocity.
 //
-//   reg_test
+//   reg_test [folder of the test instrument files]
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "engine.h"
+#include "instrument.h"
 #include "patch.h"
 
 #define RATE 48000
@@ -268,7 +269,7 @@ static void test_load(void)
 	set_on(0, PARAM_PRESET, 99);
 	set_on(1, PARAM_OP_BASE + F_TL, 12);
 	set_on(5, PARAM_OP_BASE + F_SR, 30);
-	patch_load(patch, state, sizeof(state));
+	patch_load(patch, state, sizeof(state), NULL);
 	patch_take_incoming(patch);
 	sync_and_settle();
 	check_voices("a loaded state reaches the chip", 0, FM_CHANNELS - 1, -1);
@@ -320,7 +321,7 @@ static int send_difference(int voice, int channel, const int16_t *from)
 	raw3((uint8_t)(0xC0 | channel), (uint8_t)program, 0);
 	bytes += 2;
 	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
-		int had = loads ? patch_preset_value(channel, param, program) : from[param];
+		int had = loads ? patch_preset_value(&patch->bank, channel, param, program) : from[param];
 		int want = model_value(channel, param);
 		if (had == want) {
 			continue;
@@ -784,6 +785,264 @@ static void test_dealer(void)
 	wait_for_voices(FM_CHANNELS - 1);
 }
 
+// Stage 5: instrument files. What each file means for the chip is worked out here straight from its
+// bytes by the formats' specs, not by the loader, so a loader error can't check itself.
+
+#define FILE_MAX 64
+
+typedef struct {
+	const char *name;
+	// The registers of each operator slot in register order, 30 40 50 60 70 80 90, then B0 and B4's low bits.
+	uint8_t regs[4][7];
+	uint8_t b0, b4;
+} file_regs;
+
+static const char *files_dir = "../../tools/test/files";
+
+static size_t read_file(const char *name, uint8_t *bytes)
+{
+	char path[512];
+	snprintf(path, sizeof(path), "%s/%s", files_dir, name);
+	FILE *file = fopen(path, "rb");
+	if (!file) {
+		return 0;
+	}
+	size_t size = fread(bytes, 1, FILE_MAX, file);
+	fclose(file);
+	return size;
+}
+
+// TFI and VGI: per operator mul dt tl rs ar dr sr rr sl ssg, detune centred on 3, operators in
+// register order. VGI has fms | ams << 4 in byte 2 and AM in the top bit of DR.
+static void regs_centred(const uint8_t *bytes, bool vgi, file_regs *out)
+{
+	static const uint8_t DT[8] = {7, 6, 5, 0, 1, 2, 3, 4};
+	const uint8_t *op = bytes + (vgi ? 3 : 2);
+	for (int slot = 0; slot < 4; slot++, op += 10) {
+		uint8_t *r = out->regs[slot];
+		r[0] = (uint8_t)(DT[op[1]] << 4 | op[0]);
+		r[1] = op[2];
+		r[2] = (uint8_t)(op[3] << 6 | op[4]);
+		r[3] = op[5];
+		r[4] = op[6];
+		r[5] = (uint8_t)(op[8] << 4 | op[7]);
+		r[6] = op[9];
+	}
+	out->b0 = (uint8_t)(bytes[1] << 3 | bytes[0]);
+	out->b4 = vgi ? bytes[2] : 0;
+}
+
+// TYI: register values, four of each register in register order, then FB/ALG and AMS/FMS.
+static void regs_tyi(const uint8_t *bytes, file_regs *out)
+{
+	for (int slot = 0; slot < 4; slot++) {
+		for (int reg = 0; reg < 7; reg++) {
+			out->regs[slot][reg] = bytes[reg * 4 + slot];
+		}
+	}
+	out->b0 = bytes[28];
+	out->b4 = bytes[29];
+}
+
+static bool file_regs_of(const char *name, file_regs *out)
+{
+	uint8_t bytes[FILE_MAX];
+	size_t size = read_file(name, bytes);
+	const char *dot = strrchr(name, '.');
+	out->name = name;
+	if (size == 42 && !strcmp(dot, ".tfi")) {
+		regs_centred(bytes, false, out);
+	} else if (size == 43 && !strcmp(dot, ".vgi")) {
+		regs_centred(bytes, true, out);
+	} else if (size == 32 && !strcmp(dot, ".tyi")) {
+		regs_tyi(bytes, out);
+	} else {
+		printf("  FAIL: %s can't be read from %s\n", name, files_dir);
+		failures++;
+		return false;
+	}
+	return true;
+}
+
+// How many registers of a voice differ from what the file means.
+static int compare_file(int voice, const file_regs *file, bool say)
+{
+	static const char *const NAMES[7] = {"DT/MUL", "TL", "RS/AR", "AM/DR", "SR", "SL/RR", "SSG"};
+	int wrong = 0;
+	for (int slot = 0; slot < 4; slot++) {
+		for (int reg = 0; reg < 7; reg++) {
+			int got = read_reg(voice, 0x30 + reg * 0x10, slot), want = file->regs[slot][reg];
+			if (got != want) {
+				if (say && wrong < 2) {
+					printf("    %s voice %d slot %d %s: register %d, file %d\n", file->name, voice + 1, slot + 1, NAMES[reg], got, want);
+				}
+				wrong++;
+			}
+		}
+	}
+	wrong += read_reg(voice, 0xB0, 0) != file->b0;
+	wrong += (read_reg(voice, 0xB4, 0) & 0x37) != file->b4;
+	return wrong;
+}
+
+static bool load_file(const char *name, patch_instrument *instrument)
+{
+	uint8_t bytes[FILE_MAX];
+	size_t size = read_file(name, bytes);
+	char error[96];
+	if (!instrument_parse(name, bytes, size, instrument, error, sizeof(error))) {
+		printf("  FAIL: %s: %s\n", name, error);
+		failures++;
+		return false;
+	}
+	return true;
+}
+
+// A plain note on voice 6 just before, so the time is what the transition adds to every note.
+static double drop_and_play(int channel, const patch_instrument *instrument)
+{
+	moment(FM_CHANNELS - 1, 96, 1, true);
+	patch_load_voice(patch, channel, instrument);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	moment(channel, 60, 1, true);
+	double ms = time_to_key_on(FM_CHANNELS - 1, channel);
+	render(SETTLE_BLOCKS);
+	moment(channel, 60, 1, false);
+	moment(FM_CHANNELS - 1, 96, 1, false);
+	render(SETTLE_BLOCKS);
+	return ms;
+}
+
+static const char *const FILES[] = {
+	"Duck Guitar.tfi", "Turtles Brass 02.tfi", "Turtles Guitar.tfi",
+	"BAS_Magical_Bass.vgi", "BAS_PSG2.vgi", "DGL_4_o4a.vgi", "GTR_Dis._'94.vgi", "GTR_New_Dis..vgi", "OTHER_chip2.vgi",
+	"2019 Bass 02.tyi", "Thunder Guitar 03.tyi",
+};
+#define FILE_COUNT (int)(sizeof(FILES) / sizeof(*FILES))
+
+static void test_files(void)
+{
+	printf("  instrument files\n");
+	double slowest = 0;
+	for (int i = 0; i < FILE_COUNT; i++) {
+		file_regs expected;
+		patch_instrument instrument;
+		if (!file_regs_of(FILES[i], &expected) || !load_file(FILES[i], &instrument)) {
+			continue;
+		}
+		const int channel = i % 5;
+		double ms = drop_and_play(channel, &instrument);
+		slowest = ms > slowest ? ms : slowest;
+		int wrong = compare_file(channel, &expected, true);
+		bool named = !strncmp(patch->model.names[channel], FILES[i], strlen(patch->model.names[channel])) && patch->model.names[channel][0];
+		printf("  %s: %s on channel %d, %d registers differ, key on %.2f ms after a plain note, named \"%s\"\n", wrong || !named ? "FAIL" : "ok  ", FILES[i], channel + 1, wrong, ms, patch->model.names[channel]);
+		failures += wrong || !named;
+	}
+	check(slowest <= 15, "a dropped file reaches the ROM within 15 ms");
+	printf("    slowest %.2f ms\n", slowest);
+
+	// What the threshold of D24 weighs: the same note after a few values changed, which go as CC.
+	for (int changed = 4; changed <= 16; changed += 4) {
+		moment(FM_CHANNELS - 1, 96, 1, true);
+		for (int i = 0; i < changed; i++) {
+			int param = PARAM_OP_BASE + (i % PATCH_OPS) * PATCH_OP_PARAMS + (i / PATCH_OPS == 0 ? F_TL : i / PATCH_OPS == 1 ? F_MUL : i / PATCH_OPS == 2 ? F_AR : F_RR);
+			patch_set(patch, PATCH_CHANNEL_ID(0, param), (model_value(0, param) + 1) % 8);
+		}
+		patch_sync(patch, &patch->rom, emit, NULL);
+		moment(0, 60, 1, true);
+		double ms = time_to_key_on(FM_CHANNELS - 1, 0);
+		render(SETTLE_BLOCKS);
+		moment(0, 60, 1, false);
+		moment(FM_CHANNELS - 1, 96, 1, false);
+		render(SETTLE_BLOCKS);
+		printf("    %d values changed: key on %.2f ms after a plain note\n", changed, ms);
+	}
+	check_voices("and the voice holds them", 0, 0, -1);
+
+	// What other programs agree on, written down by hand. Duck Guitar is one of the six sounds of
+	// AriaHivi(ACSTC)2.vgm, which holds the very registers for its first operator.
+	patch_instrument instrument;
+	if (load_file("Duck Guitar.tfi", &instrument)) {
+		drop_and_play(0, &instrument);
+		const uint8_t VGM[7] = {0x51, 0x12, 0x1D, 0x00, 0x01, 0x10, 0x00};
+		bool same = read_reg(0, 0xB0, 0) == (4 << 3 | 0);
+		for (int reg = 0; reg < 7; reg++) {
+			same = same && read_reg(0, 0x30 + reg * 0x10, 0) == VGM[reg];
+		}
+		check(same, "Duck Guitar's first operator holds the registers of the VGM it came from: detune centred on 3");
+	}
+	if (load_file("Thunder Guitar 03.tyi", &instrument)) {
+		drop_and_play(1, &instrument);
+		check(read_reg(1, 0x70, 3) == 29 && read_reg(1, 0x30, 1) >> 4 == 7, "Thunder Guitar: SR 29 above 15 and raw detune 7 reach the chip");
+	}
+	if (load_file("2019 Bass 02.tyi", &instrument)) {
+		drop_and_play(4, &instrument);
+		check(read_reg(4, 0x70, 3) == 18, "2019 Bass: SR 18 on the chip's second part");
+	}
+
+	// Algorithm 4: operators 2 and 4 are the carriers, so swapping 2 and 3 is heard at once. Every
+	// operator gets its own values, saved as VGI and read back.
+	patch_instrument made = {"Algo 4", {0}};
+	made.voice[0] = 4;
+	made.voice[1] = 5;
+	made.voice[2] = 2;
+	made.voice[3] = 3;
+	for (int op = 0; op < PATCH_OPS; op++) {
+		int16_t *values = made.voice + 4 + op * PATCH_OP_PARAMS;
+		values[F_TL] = (int16_t)(10 + op * 20);
+		values[F_MUL] = (int16_t)(op + 1);
+		values[F_DT] = (int16_t)(op + 4);
+		values[F_RS] = (int16_t)op;
+		values[F_AR] = (int16_t)(31 - op);
+		values[F_DR] = (int16_t)(20 + op);
+		values[F_SR] = (int16_t)(16 + op * 4);
+		values[F_SL] = (int16_t)(op + 2);
+		values[F_RR] = (int16_t)(15 - op);
+		values[F_AM] = (int16_t)(op & 1);
+		values[F_SSG] = op == 3 ? 9 : 0;
+	}
+	uint8_t vgi[INSTRUMENT_VGI_SIZE];
+	instrument_write_vgi(&made, vgi);
+	patch_instrument back;
+	char error[96];
+	bool read = instrument_parse("Algo 4.vgi", vgi, sizeof(vgi), &back, error, sizeof(error));
+	// Register detune 4 is none, like 0, and comes back as 0.
+	made.voice[4 + F_DT] = 0;
+	check(read && !memcmp(back.voice, made.voice, sizeof(made.voice)), "a voice saved as VGI reads back the same");
+	drop_and_play(3, &back);
+	check_voices("and an algorithm 4 voice from it reaches the chip, operators in their places", 3, 3, -1);
+	check(read_reg(3, 0x40, 1) == 50 && read_reg(3, 0x40, 2) == 30, "operator 3's TL in register slot 2, operator 2's in slot 3");
+}
+
+// A file in a place of the bank is what a program change or the Preset lane chooses, on lent voices too.
+static void test_bank_place(void)
+{
+	file_regs expected;
+	patch_instrument instrument;
+	if (!file_regs_of("Thunder Guitar 03.tyi", &expected) || !load_file("Thunder Guitar 03.tyi", &instrument)) {
+		return;
+	}
+	patch_load_place(patch, 20, &instrument);
+	patch_take_incoming(patch);
+	midi(0xC0, 20, 0);
+	set_on(2, PARAM_PRESET, 20);
+	play_each_channel();
+	check(compare_file(0, &expected, true) == 0 && compare_file(2, &expected, true) == 0, "a file in place 21, by a clip's program on channel 1 and the Preset lane on channel 3");
+	check(!strcmp(patch->model.names[0], "Thunder Guitar 03") && !strcmp(patch->model.names[2], "Thunder Guitar 03"), "both channels take its name");
+	moment(0, 60, 4, true);
+	render(SETTLE_BLOCKS);
+	int voices[FM_CHANNELS], count = voices_of(0, voices), same = 0;
+	for (int i = 0; i < count; i++) {
+		same += compare_file(voices[i], &expected, true) == 0;
+	}
+	check(count == 4 && same == 4, "a chord of 4 on channel 1 plays it on every voice it borrowed");
+	moment(0, 60, 4, false);
+	render(SETTLE_BLOCKS);
+	midi(0xC0, 0, 0);
+	set_on(2, PARAM_PRESET, 0);
+}
+
 static void test_reset(void)
 {
 	const uint8_t reset = 0xFF;
@@ -793,8 +1052,11 @@ static void test_reset(void)
 	check_voices("the ROM's reset: every voice comes back", 0, FM_CHANNELS - 1, -1);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	if (argc > 1) {
+		files_dir = argv[1];
+	}
 	static mdmi_patch model;
 	patch = &model;
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -826,6 +1088,9 @@ int main(void)
 	test_voice_by_hand();
 	test_reset();
 	test_dealer();
+	test_reset();
+	test_files();
+	test_bank_place();
 	test_reset();
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {

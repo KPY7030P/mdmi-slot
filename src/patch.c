@@ -48,6 +48,9 @@
 #define SNAPSHOT_INDEX 3u
 #define SNAPSHOT_NEW 4u
 #define SAVED_PAIR_BYTES 6
+// More differences than this go as a whole voice (D24). reg_test measures what a note waits for: 4
+// controllers 4.7 ms, 8 7.3 ms, 12 9.7 ms, a whole voice by SysEx 0A 9.3-9.7 ms.
+#define WHOLE_VOICE_DIFFERENCES 12
 enum { INCOMING_FREE, INCOMING_WRITING, INCOMING_READY, INCOMING_TAKING };
 
 #define FILTER_MIN_HZ 500.0
@@ -221,23 +224,49 @@ uint32_t patch_param_id_at(uint32_t panel_index)
 	return panel_index < PATCH_NUM_IDS ? panel_order[panel_index] : UINT32_MAX;
 }
 
-int patch_preset_value(int channel, int param, int preset)
+int patch_preset_value(const patch_bank *bank, int channel, int param, int preset)
 {
 	if (channel < PATCH_NUM_FM_CHANNELS && param >= PARAM_ALGORITHM) {
-		return PRESETS_GM[preset & (PRESETS - 1)][preset_field(param)];
+		return bank->places[preset & (PATCH_BANK_SIZE - 1)].voice[param - PARAM_ALGORITHM];
 	}
 	return param == PARAM_PRESET ? preset : channel_params[param].default_value;
 }
 
-static void load_preset(int16_t *channel, int program)
+// What the ROM loads under a built-in program number.
+static void load_rom_preset(int16_t *voice, int program)
 {
-	channel[PARAM_PRESET] = (int16_t)program;
+	voice[PARAM_PRESET] = (int16_t)program;
 	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
-		channel[param] = PRESETS_GM[program][preset_field(param)];
+		voice[param] = PRESETS_GM[program][preset_field(param)];
 	}
 }
 
-static void default_values(patch_values *values)
+static void gm_bank(patch_bank *bank)
+{
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		patch_instrument *instrument = &bank->places[place];
+		snprintf(instrument->name, sizeof(instrument->name), "%s", GM_NAMES[place]);
+		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+			instrument->voice[param - PARAM_ALGORITHM] = PRESETS_GM[place][preset_field(param)];
+		}
+	}
+}
+
+static void put_voice(patch_values *values, int channel, const patch_instrument *instrument)
+{
+	memcpy(values->channels[channel] + PARAM_ALGORITHM, instrument->voice, sizeof(instrument->voice));
+	memcpy(values->names[channel], instrument->name, PATCH_NAME);
+	values->names[channel][PATCH_NAME - 1] = 0;
+}
+
+// A place of the bank becomes the channel's sound, tweaks gone.
+static void load_place(const patch_bank *bank, patch_values *values, int channel, int place)
+{
+	values->channels[channel][PARAM_PRESET] = (int16_t)place;
+	put_voice(values, channel, &bank->places[place]);
+}
+
+static void default_values(const patch_bank *bank, patch_values *values)
 {
 	for (int g = 0; g < PATCH_NUM_GLOBALS; g++) {
 		values->globals[g] = globals[g].default_value;
@@ -247,12 +276,17 @@ static void default_values(patch_values *values)
 			values->channels[channel][param] = channel_params[param].default_value;
 		}
 	}
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		load_place(bank, values, channel, values->channels[channel][PARAM_PRESET]);
+	}
 }
 
 void patch_init(mdmi_patch *patch)
 {
 	memset(patch, 0, sizeof(*patch));
-	default_values(&patch->model);
+	gm_bank(&patch->bank);
+	patch->shown_bank = patch->bank;
+	default_values(&patch->bank, &patch->model);
 	// A booted ROM holds exactly these values, reg_test checks it.
 	patch->rom.values = patch->model;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
@@ -265,7 +299,7 @@ void patch_init(mdmi_patch *patch)
 	}
 	// Nothing is stored yet, so a service number still loads its built-in preset.
 	for (int i = 0; i < PATCH_SERVICE_PROGRAMS; i++) {
-		load_preset(patch->rom.stored[i], FIRST_SERVICE_PROGRAM + i);
+		load_rom_preset(patch->rom.stored[i], FIRST_SERVICE_PROGRAM + i);
 	}
 	memset(patch->rpn_msb, RPN_NULL, sizeof(patch->rpn_msb));
 	memset(patch->rpn_lsb, RPN_NULL, sizeof(patch->rpn_lsb));
@@ -289,8 +323,8 @@ void patch_publish(mdmi_patch *patch)
 const patch_values *patch_view(mdmi_patch *patch)
 {
 	uint32_t incoming = __atomic_load_n(&patch->incoming_state, __ATOMIC_ACQUIRE);
-	if (incoming == INCOMING_READY || incoming == INCOMING_TAKING) {
-		return &patch->incoming;
+	if ((incoming == INCOMING_READY || incoming == INCOMING_TAKING) && patch->incoming.parts & PATCH_INCOMING_VALUES) {
+		return &patch->incoming.values;
 	}
 	if (__atomic_load_n(&patch->snapshot_shared, __ATOMIC_ACQUIRE) & SNAPSHOT_NEW) {
 		patch->snapshot_front = __atomic_exchange_n(&patch->snapshot_shared, patch->snapshot_front, __ATOMIC_ACQ_REL) & SNAPSHOT_INDEX;
@@ -307,6 +341,11 @@ static int16_t *value_of(patch_values *values, uint32_t id)
 	return channel < 0 ? &values->globals[param] : &values->channels[channel][param];
 }
 
+const patch_bank *patch_bank_view(const mdmi_patch *patch)
+{
+	return &patch->shown_bank;
+}
+
 int patch_get(mdmi_patch *patch, uint32_t id)
 {
 	const int16_t *value = value_of((patch_values *)patch_view(patch), id);
@@ -318,10 +357,10 @@ double patch_model_filter_hz(const mdmi_patch *patch)
 	return patch_filter_hz(patch->model.globals[GLOBAL_FILTER]);
 }
 
-void patch_format_preset(int channel, int value, char *text, size_t size)
+void patch_format_preset(const patch_bank *bank, int channel, int value, char *text, size_t size)
 {
 	if (channel < PATCH_NUM_FM_CHANNELS) {
-		snprintf(text, size, "%d %s", value + 1, GM_NAMES[value & 127]);
+		snprintf(text, size, "%d %s", value + 1, bank->places[value & (PATCH_BANK_SIZE - 1)].name);
 	} else {
 		// The ROM's only other envelope sits under the GM numbers of square waves.
 		bool square = value == 80 || value == 89 || value == 99;
@@ -356,7 +395,7 @@ static void format_global(int global, int value, char *text, size_t size)
 	}
 }
 
-void patch_format(uint32_t id, int value, char *text, size_t size)
+void patch_format(const patch_bank *bank, uint32_t id, int value, char *text, size_t size)
 {
 	int channel, param;
 	if (!patch_id_split(id, &channel, &param)) {
@@ -378,7 +417,7 @@ void patch_format(uint32_t id, int value, char *text, size_t size)
 		snprintf(text, size, "%d st", value);
 		break;
 	case PARAM_PRESET:
-		patch_format_preset(channel, value, text, size);
+		patch_format_preset(bank, channel, value, text, size);
 		break;
 	case PARAM_PAN:
 		snprintf(text, size, "%s", value == 0 ? "Left" : value == 1 ? "Center" : "Right");
@@ -403,14 +442,15 @@ static int clamp(const patch_param_info *info, int value)
 }
 
 // A lane repeating its value must not wipe tweaks, so only a new preset loads. True if it did.
-static bool set_preset(int16_t *values, int channel, int value)
+static bool set_preset(mdmi_patch *patch, int channel, int value)
 {
+	int16_t *values = patch->model.channels[channel];
 	if (values[PARAM_PRESET] == value) {
 		return false;
 	}
 	values[PARAM_PRESET] = (int16_t)value;
 	if (channel < PATCH_NUM_FM_CHANNELS) {
-		load_preset(values, value);
+		load_place(&patch->bank, &patch->model, channel, value);
 		return true;
 	}
 	return false;
@@ -430,7 +470,7 @@ bool patch_set(mdmi_patch *patch, uint32_t id, int value)
 	}
 	int16_t *values = patch->model.channels[channel];
 	if (param == PARAM_PRESET) {
-		return set_preset(values, channel, value);
+		return set_preset(patch, channel, value);
 	}
 	values[param] = (int16_t)value;
 	return false;
@@ -465,7 +505,7 @@ static void load_program(const patch_receiver *receiver, int program, int16_t *v
 	if (program >= FIRST_SERVICE_PROGRAM) {
 		memcpy(voice + PARAM_ALGORITHM, receiver->stored[program - FIRST_SERVICE_PROGRAM] + PARAM_ALGORITHM, (PATCH_NUM_CHANNEL_PARAMS - PARAM_ALGORITHM) * sizeof(*voice));
 	} else {
-		load_preset(voice, program);
+		load_rom_preset(voice, program);
 	}
 }
 
@@ -538,6 +578,35 @@ static void sync_voice_param(const int16_t *model, patch_receiver *receiver, uns
 	}
 }
 
+// How many values of the voices still differ from the model once a program change to the program
+// reached them: a voice with that number keeps what it holds, and one we know nothing about stays
+// unknown, because the ROM may think it has the number already.
+static int differences_after(const patch_receiver *receiver, const int16_t *model, unsigned meant, int program)
+{
+	bool differs[PATCH_NUM_CHANNEL_PARAMS] = {false};
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		if (!(meant >> voice & 1)) {
+			continue;
+		}
+		int16_t after[PATCH_NUM_CHANNEL_PARAMS];
+		memcpy(after, receiver->voices[voice], sizeof(after));
+		if (program == PATCH_UNKNOWN || after[PARAM_PRESET] == PATCH_UNKNOWN) {
+			return PATCH_VOICE_PARAMS;
+		}
+		if (after[PARAM_PRESET] != program) {
+			load_program(receiver, program, after);
+		}
+		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+			differs[param] = differs[param] || after[param] != model[param];
+		}
+	}
+	int count = 0;
+	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+		count += differs[param];
+	}
+	return count;
+}
+
 // Brings the voices of the channel to the model: a voice that came from another channel gets the
 // channel's program number, then whatever still differs goes as controllers (D20). A free voice
 // that went home with another channel's sound waits for its own channel's next note, so its tail
@@ -546,17 +615,17 @@ static void sync_voice(mdmi_patch *patch, const int16_t *model, patch_receiver *
 {
 	int16_t *rom = receiver->values.channels[channel];
 	unsigned meant = 0;
-	bool unknown = false, other_program = false;
+	bool other_program = false;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		const patch_voice *dealt = &patch->voices[voice];
 		if (receiver->voice_owner[voice] == channel && (dealt->channel == channel || dealt->sound == channel)) {
 			meant |= 1u << voice;
-			unknown = unknown || receiver->voices[voice][PARAM_ALGORITHM] == PATCH_UNKNOWN;
 			other_program = other_program || receiver->voices[voice][PARAM_PRESET] != receiver->programs[channel];
 		}
 	}
 	bool new_preset = model[PARAM_PRESET] != rom[PARAM_PRESET];
-	if (unknown || receiver->programs[channel] == PATCH_UNKNOWN || (new_preset && model[PARAM_PRESET] >= FIRST_SERVICE_PROGRAM)) {
+	int program = new_preset ? model[PARAM_PRESET] : receiver->programs[channel];
+	if ((new_preset && program >= FIRST_SERVICE_PROGRAM) || differences_after(receiver, model, meant, program) > WHOLE_VOICE_DIFFERENCES) {
 		send_whole_voice(model, receiver, channel, emit, context);
 	} else if (new_preset) {
 		select_program(receiver, channel, model[PARAM_PRESET], emit, context);
@@ -1125,7 +1194,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		int16_t *model = patch->model.channels[channel];
 		model[PARAM_PRESET] = bytes[1];
 		if (fm) {
-			load_preset(model, bytes[1]);
+			load_place(&patch->bank, &patch->model, channel, bytes[1]);
 		}
 		changed = moved = true;
 	} else if (status == 0xB0 && length >= 3) {
@@ -1155,7 +1224,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		} else if (cc == CC_PRESET) {
 			// Like the Preset lane, so a clip envelope repeating the preset keeps the tweaks (D17).
 			if (is_channel) {
-				moved = set_preset(patch->model.channels[channel], channel, value * PRESETS / 128);
+				moved = set_preset(patch, channel, value * PRESETS / 128);
 				changed = true;
 			}
 		} else if (cc == CC_STEREO) {
@@ -1211,13 +1280,36 @@ void patch_save(mdmi_patch *patch, void *buffer)
 	}
 }
 
-bool patch_load(mdmi_patch *patch, const void *buffer, size_t size)
+// The incoming slot is the main thread's while it writes. Parts handed over before and not taken
+// yet stay, so a dropped file and a bank wait together.
+static void begin_incoming(mdmi_patch *patch)
+{
+	uint32_t expected;
+	for (;;) {
+		expected = INCOMING_FREE;
+		if (__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+			patch->incoming.parts = 0;
+			return;
+		}
+		expected = INCOMING_READY;
+		if (__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+			return;
+		}
+	}
+}
+
+static void end_incoming(mdmi_patch *patch)
+{
+	__atomic_store_n(&patch->incoming_state, INCOMING_READY, __ATOMIC_RELEASE);
+}
+
+bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME])
 {
 	if (size % SAVED_PAIR_BYTES) {
 		return false;
 	}
 	patch_values incoming;
-	default_values(&incoming);
+	default_values(&patch->shown_bank, &incoming);
 	const uint8_t *in = buffer;
 	for (size_t i = 0; i < size / SAVED_PAIR_BYTES; i++) {
 		uint32_t id;
@@ -1231,18 +1323,61 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size)
 			*slot = (int16_t)clamp(patch_param(id), value);
 		}
 	}
-	// A newer state replaces one that was never taken. Only a take in progress has to finish first.
-	uint32_t expected;
-	do {
-		expected = INCOMING_FREE;
-		if (__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-			break;
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		if (names) {
+			memcpy(incoming.names[channel], names[channel], PATCH_NAME);
+			incoming.names[channel][PATCH_NAME - 1] = 0;
+		} else {
+			memcpy(incoming.names[channel], patch->shown_bank.places[incoming.channels[channel][PARAM_PRESET]].name, PATCH_NAME);
 		}
-		expected = INCOMING_READY;
-	} while (!__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
-	patch->incoming = incoming;
-	__atomic_store_n(&patch->incoming_state, INCOMING_READY, __ATOMIC_RELEASE);
+	}
+	begin_incoming(patch);
+	// A loaded state replaces voices dropped before it.
+	patch->incoming.parts = (patch->incoming.parts & PATCH_INCOMING_BANK) | PATCH_INCOMING_VALUES;
+	patch->incoming.values = incoming;
+	end_incoming(patch);
 	return true;
+}
+
+void patch_save_names(mdmi_patch *patch, void *buffer)
+{
+	memcpy(buffer, patch_view(patch)->names, sizeof(patch->model.names));
+}
+
+static void send_bank(mdmi_patch *patch)
+{
+	begin_incoming(patch);
+	patch->incoming.parts |= PATCH_INCOMING_BANK;
+	patch->incoming.bank = patch->shown_bank;
+	end_incoming(patch);
+}
+
+void patch_load_bank(mdmi_patch *patch, const patch_bank *bank)
+{
+	patch->shown_bank = *bank;
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		patch->shown_bank.places[place].name[PATCH_NAME - 1] = 0;
+	}
+	send_bank(patch);
+}
+
+void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *instrument)
+{
+	patch_instrument *at = &patch->shown_bank.places[place & (PATCH_BANK_SIZE - 1)];
+	*at = *instrument;
+	at->name[PATCH_NAME - 1] = 0;
+	send_bank(patch);
+}
+
+void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument)
+{
+	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
+		return;
+	}
+	begin_incoming(patch);
+	patch->incoming.parts |= PATCH_INCOMING_VOICE << channel;
+	patch->incoming.voices[channel] = *instrument;
+	end_incoming(patch);
 }
 
 bool patch_take_incoming(mdmi_patch *patch)
@@ -1251,7 +1386,18 @@ bool patch_take_incoming(mdmi_patch *patch)
 	if (!__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_TAKING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 		return false;
 	}
-	patch->model = patch->incoming;
+	const patch_incoming *incoming = &patch->incoming;
+	if (incoming->parts & PATCH_INCOMING_VALUES) {
+		patch->model = incoming->values;
+	}
+	if (incoming->parts & PATCH_INCOMING_BANK) {
+		patch->bank = incoming->bank;
+	}
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		if (incoming->parts & PATCH_INCOMING_VOICE << channel) {
+			put_voice(&patch->model, channel, &incoming->voices[channel]);
+		}
+	}
 	patch->dirty = true;
 	patch_publish(patch);
 	__atomic_store_n(&patch->incoming_state, INCOMING_FREE, __ATOMIC_RELEASE);

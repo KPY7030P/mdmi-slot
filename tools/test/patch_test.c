@@ -279,7 +279,7 @@ static void test_load(void)
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
 	patch_save(&patch, state);
-	CHECK(patch_load(&other, state, sizeof(state)), "a saved state loads");
+	CHECK(patch_load(&other, state, sizeof(state), NULL), "a saved state loads");
 	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
 	CHECK(patch_take_incoming(&other) && !patch_take_incoming(&other), "it is taken once");
@@ -293,10 +293,10 @@ static void test_load(void)
 	memcpy(odd + 4, &any, 2);
 	memcpy(odd + 6, &rate, 4);
 	memcpy(odd + 10, &big, 2);
-	CHECK(patch_load(&other, odd, sizeof(odd)) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
+	CHECK(patch_load(&other, odd, sizeof(odd), NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
 		&& other.model.globals[GLOBAL_RETIRED] == 0, "the old Polyphony id is skipped, a value out of range clamped");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
-	CHECK(!patch_load(&other, odd, 7), "a cut state is refused");
+	CHECK(!patch_load(&other, odd, 7, NULL), "a cut state is refused");
 }
 
 static void discard(void *context, const uint8_t *bytes, size_t length)
@@ -364,7 +364,7 @@ static void test_threads(void)
 		reads++;
 		if (reads % 64 == 0) {
 			memcpy(loaded, state, sizeof(loaded));
-			patch_load(&stress, loaded, sizeof(loaded));
+			patch_load(&stress, loaded, sizeof(loaded), NULL);
 		}
 	}
 	stop_writer = 1;

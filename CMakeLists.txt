@@ -24,7 +24,7 @@ set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES FALSE)
 set(CLAP_WRAPPER_OUTPUT_NAME "MDMI Mega Drive")
 add_subdirectory(third_party/clap-wrapper EXCLUDE_FROM_ALL)
 
-add_library(mdmi_impl STATIC src/plugin.c src/engine.c src/patch.c src/resampler.c src/embed.c src/gui.c)
+add_library(mdmi_impl STATIC src/plugin.c src/engine.c src/patch.c src/instrument.c src/resampler.c src/embed.c src/gui.c)
 target_compile_options(mdmi_impl PRIVATE -Wall -Wextra -Wno-cast-function-type)
 target_include_directories(mdmi_impl PUBLIC "${CLAP_SDK_ROOT}/include" PRIVATE "${BLASTEM_DIR}")
 target_link_libraries(mdmi_impl PUBLIC m avrt user32 gdi32)

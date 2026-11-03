@@ -205,8 +205,13 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	if (dac) {
 		text(g, 54, y + 21, "Samples", C_LABEL, 2);
 	} else {
-		patch_format_preset(channel, values->channels[channel][PARAM_PRESET], buffer, sizeof(buffer));
-		const char *name = strchr(buffer, ' ') ? strchr(buffer, ' ') + 1 : buffer;
+		const char *name = buffer;
+		if (channel_is_fm(channel)) {
+			name = values->names[channel];
+		} else {
+			patch_format_preset(patch_bank_view(g->source.patch), channel, values->channels[channel][PARAM_PRESET], buffer, sizeof(buffer));
+			name = strchr(buffer, ' ') ? strchr(buffer, ' ') + 1 : buffer;
+		}
 		char cut[16];
 		snprintf(cut, sizeof(cut), "%.14s", name);
 		text(g, 54, y + 21, cut, C_LABEL, 2);
@@ -373,7 +378,7 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 		text(g, c->x + 7, c->y + 2, buffer, on ? C_TEXT : C_LABEL, 2);
 		return;
 	}
-	patch_format(c->id, value, buffer, sizeof(buffer));
+	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
 	const bool fm = c->id >= PATCH_NUM_GLOBALS && channel_is_fm(*g->source.channel);
 	uint32_t background = held ? C_LINE : c->kind == CELL_COLUMN ? C_CELL : fm ? C_FM_DARK : C_PSG_DARK;
 	fill(g, c->x, c->y, c->w, c->h, background);
@@ -810,7 +815,7 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		return;
 	}
 	int value = channel < 0 ? patch_param(id)->default_value
-		: patch_preset_value(channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET)));
+		: patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET)));
 	edit_once(g, id, value);
 }
 

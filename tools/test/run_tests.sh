@@ -92,7 +92,7 @@ grep -E "FAIL|PASSED|FAILED" "$log"
 
 echo "=== registers"
 log="$OUT/reg_test.log"
-timeout 300 ./reg_test.exe > "$log" 2>&1
+timeout 300 ./reg_test.exe "$WIN_ROOT/tools/test/files" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "reg_test: exit $code"
