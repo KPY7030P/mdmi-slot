@@ -358,9 +358,12 @@ int main(int argc, char **argv)
 		click(window, POLYPHONY_X, POLYPHONY_Y);
 		run_ms(100);
 		const int first = get_value(0);
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < 5; i++) {
 			click(window, POLYPHONY_X, POLYPHONY_Y);
+			run_ms(50);
 		}
+		// A quick second click reaches the window as a double click.
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(POLYPHONY_X, POLYPHONY_Y));
 		run_ms(100);
 		CHECK(first == 1 && get_value(0) == 0, "a click steps Polyphony to Ch 1, seven clicks go round to Off");
 

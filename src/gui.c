@@ -755,6 +755,12 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	if (channel >= 0 && param == PARAM_PRESET) {
 		return;
 	}
+	// Where a click steps, a quick second click is one more step.
+	if (patch_param(id)->max + 1 <= 8) {
+		on_down(g, x, y);
+		on_up(g);
+		return;
+	}
 	int value = channel < 0 ? patch_param(id)->default_value
 		: patch_preset_value(channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET)));
 	edit_once(g, id, value);
