@@ -558,6 +558,20 @@ static void test_polyphony(void)
 	float *back = play_note(in, 1, 60, 0.5);
 	CHECK(rms(back, 4000, 8000) > 0.005, "polyphony off: channel 2 plays again: rms %.4f", rms(back, 4000, 8000));
 	destroy_instance(in);
+
+	// A host may deactivate the plugin before the ROM got what was sent, as Live can when it opens a project.
+	in = create_instance();
+	settle(in, 0.4);
+	queue_param(in, P_POLY, 4);
+	settle(in, BLOCK / (double)RATE);
+	in->plugin->stop_processing(in->plugin);
+	in->plugin->deactivate(in->plugin);
+	in->plugin->activate(in->plugin, RATE, BLOCK, BLOCK);
+	in->plugin->start_processing(in->plugin);
+	settle(in, 0.2);
+	float *after = play_note(in, 1, 60, 0.5);
+	CHECK(rms(after, 4000, 8000) < 0.0005, "polyphony set just before a reactivation still takes channel 2's voice: rms %.5f", rms(after, 4000, 8000));
+	destroy_instance(in);
 }
 
 typedef struct {
