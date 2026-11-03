@@ -78,7 +78,7 @@ code=$?
 [ "$code" = 0 ] || { fail "vst3: host exit $code"; tail -5 "$log"; }
 label="$(tr -d '\r\n' < "$ROOT/build/label.txt")"
 tr -d '\r' < "$log" | grep -qFx "version=$label" || fail "vst3: version is not $label"
-grep -q "automatable=360 " "$log" || fail "vst3: expected 360 automatable controls"
+grep -q "automatable=359 " "$log" || fail "vst3: expected 359 automatable controls"
 grep -q "view=720x528 attached=1" "$log" || fail "vst3: window did not attach"
 grep -q "clean_shutdown=1" "$log" || fail "vst3: no clean shutdown"
 python -I "$WIN_ROOT/tools/test/check_wav.py" "$WIN_OUT/vst3.log" "$WIN_OUT/vst3-0.wav" || fail "vst3: audio"

@@ -114,17 +114,6 @@ static int count_sysex(uint8_t command)
 	return count;
 }
 
-// Whether a remap gave a voice to a channel.
-static bool remapped(int voice, int channel)
-{
-	for (size_t i = 0; i + 7 < sent_bytes; i++) {
-		if (sent[i] == 0xF0 && sent[i + 1] == 0x00 && sent[i + 4] == 0x00 && sent[i + 5] == channel && sent[i + 6] == voice) {
-			return true;
-		}
-	}
-	return false;
-}
-
 static void test_nothing_to_send(void)
 {
 	printf("Fresh model\n");
@@ -212,69 +201,25 @@ static void test_sustain_rate(void)
 	clear();
 	set(&patch, op_id(4, 0, OP_SR), 31);
 	CHECK(sent_bytes == 10 && sent[4] == 0x09 && sent[6] == 0x01, "channel 5 uses the chip's second part");
-	set(&patch, GLOBAL_POLYPHONY, 4);
-	clear();
-	set(&patch, op_id(3, 0, OP_SR), 28);
-	CHECK(count_status(0xF0) == 6, "with polyphony on channel 4 it goes to all six voices, %d", count_status(0xF0));
-	set(&patch, GLOBAL_DAC, 1);
-	clear();
-	set(&patch, op_id(3, 0, OP_SR), 29);
-	// Voice 6 is the second part's third channel: register 0x72.
-	bool voice6 = false;
-	for (size_t i = 0; i + 9 < sent_bytes; i += 10) {
-		voice6 = voice6 || (sent[i + 4] == 0x09 && sent[i + 6] == 0x02);
-	}
-	CHECK(count_status(0xF0) == 5 && !voice6, "with the DAC on too, to five, never voice 6");
 }
 
 static void test_modes(void)
 {
-	printf("Polyphony and DAC\n");
+	printf("DAC and global controllers\n");
 	static mdmi_patch patch;
 	patch_init(&patch);
-	clear();
-	set(&patch, GLOBAL_POLYPHONY, 1);
-	CHECK(count_sysex(0x00) == 5 && remapped(1, 0) && remapped(5, 0) && count_voices() == 1 && count_status(0xC0) == 1,
-		"polyphony on channel 1 gives it the other five voices and sends it whole, %d remaps", count_sysex(0x00));
-	clear();
-	set(&patch, GLOBAL_POLYPHONY, 0);
-	CHECK(count_sysex(0x00) == 5 && remapped(3, 3) && count_voices() == 5, "polyphony off gives five voices back, each sent whole, %d voices", count_voices());
-	clear();
-	sync(&patch);
-	CHECK(sent_bytes == 0, "after that nothing is left to send");
-
-	set(&patch, op_id(1, 0, OP_TL), 33);
-	clear();
-	set(&patch, GLOBAL_POLYPHONY, 4);
-	CHECK(count_sysex(0x00) == 5 && remapped(0, 3) && remapped(5, 3) && !remapped(3, 3) && count_voices() == 1,
-		"polyphony on channel 4 gives it the other five voices and sends it whole");
-	CHECK(count_status(0xB0) >= 5, "notes left on voices that change hands are stopped");
-	clear();
-	midi(&patch, 0xB1, 16, 50);
-	CHECK(sent_bytes == 0 && patch.model.channels[1][op_param(0, OP_TL)] == 50, "a CC on a channel without a voice changes its model only");
-	clear();
-	set(&patch, GLOBAL_DAC, 1);
-	CHECK(sent[0] == 0xB6 && sent[1] == 78 && count_sysex(0x00) == 1 && remapped(5, 5), "the DAC takes voice 6 back for channel 6");
-	clear();
-	set(&patch, GLOBAL_DAC, 0);
-	CHECK(count_sysex(0x00) == 1 && remapped(5, 3), "and gives it to channel 4 again");
-	clear();
-	set(&patch, GLOBAL_POLYPHONY, 0);
-	CHECK(patch.rom.values.channels[1][op_param(0, OP_TL)] == 50, "polyphony off: channel 2 gets its own values back");
-	clear();
-	midi(&patch, 0xB2, 84, 127);
-	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 3 && count_sysex(0x00) == 5, "CC84 on channel 3 gives it the voices");
-	clear();
-	midi(&patch, 0xB7, 84, 127);
-	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 3 && sent_bytes == 0, "CC84 on a PSG channel can't");
-	midi(&patch, 0xB7, 84, 0);
-	CHECK(patch.model.globals[GLOBAL_POLYPHONY] == 0, "but turning it off works from anywhere");
 	clear();
 	set(&patch, GLOBAL_DAC, 1);
 	CHECK(count_voices() == 6 && sent[0] == 0xB6 && sent[1] == 78, "the DAC comes first, on channel 7 where it applies once, then all six voices");
 	clear();
 	midi(&patch, 0xB0, 78, 0);
 	CHECK(count_voices() == 6 && patch.model.globals[GLOBAL_DAC] == 0, "the same from a clip's CC78");
+	clear();
+	midi(&patch, 0xB3, 74, 0);
+	CHECK(sent_bytes == 3 && sent[0] == 0xB6 && sent[1] == 74 && patch.model.globals[GLOBAL_LFO_ON] == 0, "LFO from any channel goes to channel 7");
+	clear();
+	midi(&patch, 0xB2, 84, 127);
+	CHECK(sent_bytes == 0, "CC84 stops here: it would let any note take any voice");
 }
 
 static void test_incoming(void)
@@ -328,7 +273,7 @@ static void test_load(void)
 	set(&patch, PRESET_ID(0), 9);
 	set(&patch, op_id(0, 2, OP_TL), 77);
 	set(&patch, PATCH_CHANNEL_ID(9, PARAM_VOLUME), 50);
-	set(&patch, GLOBAL_POLYPHONY, 5);
+	set(&patch, GLOBAL_LFO_RATE, 5);
 	patch_publish(&patch);
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
@@ -337,18 +282,18 @@ static void test_load(void)
 	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
 	CHECK(patch_take_incoming(&other) && !patch_take_incoming(&other), "it is taken once");
-	CHECK(patch_get(&other, PRESET_ID(0)) == 9 && patch_get(&other, op_id(0, 2, OP_TL)) == 77 && patch_get(&other, GLOBAL_POLYPHONY) == 5
+	CHECK(patch_get(&other, PRESET_ID(0)) == 9 && patch_get(&other, op_id(0, 2, OP_TL)) == 77 && patch_get(&other, GLOBAL_LFO_RATE) == 5
 		&& patch_get(&other, PATCH_CHANNEL_ID(9, PARAM_VOLUME)) == 50, "the snapshot holds it afterwards, on every channel");
 	// An unknown knob is skipped and a value out of range is clamped.
 	static uint8_t odd[12];
-	const uint32_t unknown = 1999, polyphony = GLOBAL_POLYPHONY;
+	const uint32_t unknown = GLOBAL_RETIRED, rate = GLOBAL_LFO_RATE;
 	const int16_t big = 99, any = 1;
 	memcpy(odd, &unknown, 4);
 	memcpy(odd + 4, &any, 2);
-	memcpy(odd + 6, &polyphony, 4);
+	memcpy(odd + 6, &rate, 4);
 	memcpy(odd + 10, &big, 2);
-	CHECK(patch_load(&other, odd, sizeof(odd)) && patch_take_incoming(&other) && other.model.globals[GLOBAL_POLYPHONY] == PATCH_NUM_FM_CHANNELS,
-		"an unknown knob is skipped, a value out of range clamped");
+	CHECK(patch_load(&other, odd, sizeof(odd)) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
+		&& other.model.globals[GLOBAL_RETIRED] == 0, "the old Polyphony id is skipped, a value out of range clamped");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
 	CHECK(!patch_load(&other, odd, 7), "a cut state is refused");
 }

@@ -17,9 +17,10 @@
 #define PATCH_NUM_CHANNELS 10
 #define PATCH_NUM_FM_CHANNELS 6
 
-// Settings of the whole console.
+// Settings of the whole console. Slot 0 held Polyphony until D20 replaced it: its id stays unused,
+// so a value saved under it means nothing.
 enum {
-	GLOBAL_POLYPHONY,
+	GLOBAL_RETIRED,
 	GLOBAL_FILTER,
 	GLOBAL_LFO_ON,
 	GLOBAL_LFO_RATE,
@@ -51,7 +52,7 @@ enum {
 #define PATCH_CHANNEL_ID(channel, param) (1000u + ((uint32_t)(channel) + 1) * 100u + (uint32_t)(param))
 // Everything before the FM voice, without Pan.
 #define PATCH_NUM_PSG_PARAMS (PARAM_ALGORITHM - 1)
-#define PATCH_NUM_IDS (PATCH_NUM_GLOBALS + PATCH_NUM_FM_CHANNELS * PATCH_NUM_CHANNEL_PARAMS + (PATCH_NUM_CHANNELS - PATCH_NUM_FM_CHANNELS) * PATCH_NUM_PSG_PARAMS)
+#define PATCH_NUM_IDS (PATCH_NUM_GLOBALS - 1 + PATCH_NUM_FM_CHANNELS * PATCH_NUM_CHANNEL_PARAMS + (PATCH_NUM_CHANNELS - PATCH_NUM_FM_CHANNELS) * PATCH_NUM_PSG_PARAMS)
 
 typedef struct {
 	char name[24];
@@ -69,7 +70,7 @@ typedef struct {
 #define PATCH_UNKNOWN (-1)
 typedef struct {
 	patch_values values;
-	// The MIDI channel each FM voice answers to.
+	// The MIDI channel each FM voice answers to. Each has its own until stage 4 lends them (D20).
 	int8_t voice_owner[PATCH_NUM_FM_CHANNELS];
 	// Which of its two service programs each FM channel uses next.
 	bool alternate[PATCH_NUM_FM_CHANNELS];
@@ -102,9 +103,6 @@ void patch_param_name(uint32_t id, char *name, size_t size);
 uint32_t patch_param_id_at(uint32_t panel_index);
 // The value a param has in a preset, which a reset returns to.
 int patch_preset_value(int channel, int param, int preset);
-// How many FM voices a MIDI channel plays with these settings: 1, 0 while Polyphony gives them
-// to another channel, and 6, or 5 with the DAC on, for the channel that has them.
-int patch_voice_count(const int16_t *globals, int channel);
 
 void patch_init(mdmi_patch *patch);
 

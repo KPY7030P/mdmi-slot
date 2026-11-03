@@ -14,10 +14,11 @@
 #define BLOCK 256
 #define MAX_EVENTS 512
 #define FFT_SIZE 16384
-#define NUM_PARAMS 360
+#define NUM_PARAMS 359
 
 // Ids by D3: a global's id is its index, a channel's knob 1000 + channel number * 100 + param.
-enum { P_POLY, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC };
+// Id 0 held Polyphony until D20 and stays unused.
+enum { P_RETIRED, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC };
 enum { Q_PRESET, Q_VOLUME, Q_PAN, Q_FINE, Q_BEND, Q_PORTA_ON, Q_PORTA_TIME, Q_ALG, Q_FB, Q_AMS, Q_FMS, Q_OP };
 #define ID(channel, param) (1000 + ((channel) + 1) * 100 + (param))
 #define OP_SR 6
@@ -302,7 +303,7 @@ static void test_listing(void)
 	printf("listing\n");
 	instance *in = create_instance();
 	uint32_t count = in->params->count(in->plugin);
-	CHECK(count == NUM_PARAMS, "%u parameters: 6 global, 55 on each FM channel, 6 on each PSG channel", count);
+	CHECK(count == NUM_PARAMS, "%u parameters: 5 global, 55 on each FM channel, 6 on each PSG channel", count);
 	static bool seen[MAX_ID];
 	bool ids_valid = true;
 	for (uint32_t i = 0; i < count; i++) {
@@ -314,14 +315,14 @@ static void test_listing(void)
 		if (info.id < MAX_ID) {
 			seen[info.id] = true;
 		}
-		if (i < 6 + 18 || i >= count - 6) {
+		if (i < 5 + 18 || i >= count - 6) {
 			printf("    %-18s id %4u  0..%-5.0f default %s\n", info.name, info.id, info.max_value, text);
 		}
 	}
 	CHECK(ids_valid, "every knob has a unique id");
-	CHECK(seen[ID(3, Q_OP)] && seen[ID(9, Q_VOLUME)] && !seen[ID(9, Q_PAN)] && !seen[ID(6, Q_ALG)], "channel 4 has Op1 TL at 1411, PSG channels have no pan or FM");
+	CHECK(seen[ID(3, Q_OP)] && seen[ID(9, Q_VOLUME)] && !seen[ID(9, Q_PAN)] && !seen[ID(6, Q_ALG)] && !seen[P_RETIRED], "channel 4 has Op1 TL at 1411, PSG channels have no pan or FM, id 0 is gone");
 	clap_param_info_t info;
-	in->params->get_info(in->plugin, 6 + 55 * 3 + Q_OP, &info);
+	in->params->get_info(in->plugin, 5 + 55 * 3 + Q_OP, &info);
 	CHECK(info.id == ID(3, Q_OP) && !strcmp(info.name, "Ch4 Op1 TL"), "knobs are named by channel: %s", info.name);
 	char ssg[64];
 	in->params->value_to_text(in->plugin, P_OP + OP_SSG, 7, ssg, sizeof(ssg));
@@ -330,8 +331,6 @@ static void test_listing(void)
 	CHECK(!strcmp(ssg, "Env 1"), "SSG 8 reads %s", ssg);
 	in->params->value_to_text(in->plugin, P_OP + OP_SSG, 15, ssg, sizeof(ssg));
 	CHECK(!strcmp(ssg, "Env 8"), "SSG 15 reads %s", ssg);
-	in->params->value_to_text(in->plugin, P_POLY, 4, ssg, sizeof(ssg));
-	CHECK(!strcmp(ssg, "Ch 4"), "Polyphony 4 reads %s", ssg);
 	destroy_instance(in);
 }
 
@@ -492,85 +491,52 @@ static double chord_note_energy(const double *mag, int note)
 	return band_energy(mag, hz * 0.985, hz * 1.015);
 }
 
-static void test_polyphony(void)
+// Each FM channel keeps its own voice: a chord on one channel takes no voice from another (D20 lends
+// them in stage 4).
+static void test_voices(void)
 {
-	printf("polyphony\n");
+	printf("each channel has one voice\n");
 	static const uint8_t chord[3] = {60, 64, 67};
-	// Off, then all voices to channel 1, then to channel 4.
-	static const int owners[3] = {0, 1, 4};
-	for (int i = 0; i < 3; i++) {
-		instance *in = create_instance();
-		settle(in, 0.4);
-		queue_param(in, P_POLY, owners[i]);
-		settle(in, 0.1);
-		const uint8_t channel = (uint8_t)(owners[i] ? owners[i] - 1 : 0);
-		for (int n = 0; n < 3; n++) {
-			queue_midi(in, 0x90 | channel, chord[n], 127);
-		}
-		float *audio = render(in, RATE);
-		double *mag = spectrum(audio, 6000);
-		double e[3], top = 0;
-		for (int n = 0; n < 3; n++) {
-			e[n] = chord_note_energy(mag, chord[n]);
-			top = e[n] > top ? e[n] : top;
-		}
-		int sounding = 0;
-		for (int n = 0; n < 3; n++) {
-			sounding += e[n] > top * 0.1;
-		}
-		CHECK(owners[i] ? sounding == 3 : sounding == 1, "polyphony %d: %d of 3 chord notes sound on channel %d", owners[i], sounding, channel + 1);
-		destroy_instance(in);
-	}
-
-	// A knob must reach every voice, and a channel without voices stays silent.
 	instance *in = create_instance();
 	settle(in, 0.4);
-	queue_param(in, P_POLY, 4);
+	for (int n = 0; n < 3; n++) {
+		queue_midi(in, 0x93, chord[n], 127);
+	}
+	queue_midi(in, 0x91, 72, 127);
+	float *audio = render(in, RATE);
+	double *mag = spectrum(audio, 6000);
+	double e[3], top = 0;
+	for (int n = 0; n < 3; n++) {
+		e[n] = chord_note_energy(mag, chord[n]);
+		top = e[n] > top ? e[n] : top;
+	}
+	int sounding = 0;
+	for (int n = 0; n < 3; n++) {
+		sounding += e[n] > top * 0.1;
+	}
+	double other = chord_note_energy(mag, 72);
+	CHECK(sounding == 1 && other > top * 0.1, "a chord on channel 4 plays one note, channel 2 plays its own: %d of 3", sounding);
+	queue_midi(in, 0xB3, 84, 127);
 	settle(in, 0.1);
-	static const uint8_t six[6] = {48, 52, 55, 60, 64, 67};
-	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x93, six[n], 127);
-	}
-	float *loud = render(in, RATE / 2);
-	double loud_level = rms(loud, 4000, 8000);
-	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x83, six[n], 0);
+	for (int n = 0; n < 3; n++) {
+		queue_midi(in, 0x80 | 3, chord[n], 0);
 	}
 	settle(in, 0.4);
-	queue_param(in, ID(3, Q_VOLUME), 20);
-	settle(in, 0.05);
-	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x93, six[n], 127);
+	for (int n = 0; n < 3; n++) {
+		queue_midi(in, 0x93, chord[n], 127);
 	}
-	float *soft = render(in, RATE / 2);
-	double soft_level = rms(soft, 4000, 8000);
-	CHECK(soft_level < loud_level * 0.25, "volume of channel 4 reaches all 6 voices: level %.4f vs %.4f", soft_level, loud_level);
-	for (int n = 0; n < 6; n++) {
-		queue_midi(in, 0x83, six[n], 0);
+	float *after = render(in, RATE);
+	double *mag2 = spectrum(after, 6000);
+	int sounding2 = 0;
+	double top2 = 0;
+	for (int n = 0; n < 3; n++) {
+		e[n] = chord_note_energy(mag2, chord[n]);
+		top2 = e[n] > top2 ? e[n] : top2;
 	}
-	settle(in, 0.4);
-	float *silent = play_note(in, 1, 60, 0.5);
-	CHECK(rms(silent, 4000, 8000) < 0.0005, "channel 2 has no voice and stays silent: rms %.5f", rms(silent, 4000, 8000));
-	float *psg = play_note(in, 6, 72, 0.5);
-	CHECK(rms(psg, 4000, 8000) > 0.005, "PSG channel 7 keeps its voice: rms %.4f", rms(psg, 4000, 8000));
-	queue_param(in, P_POLY, 0);
-	settle(in, 0.1);
-	float *back = play_note(in, 1, 60, 0.5);
-	CHECK(rms(back, 4000, 8000) > 0.005, "polyphony off: channel 2 plays again: rms %.4f", rms(back, 4000, 8000));
-	destroy_instance(in);
-
-	// A host may deactivate the plugin before the ROM got what was sent, as Live can when it opens a project.
-	in = create_instance();
-	settle(in, 0.4);
-	queue_param(in, P_POLY, 4);
-	settle(in, BLOCK / (double)RATE);
-	in->plugin->stop_processing(in->plugin);
-	in->plugin->deactivate(in->plugin);
-	in->plugin->activate(in->plugin, RATE, BLOCK, BLOCK);
-	in->plugin->start_processing(in->plugin);
-	settle(in, 0.2);
-	float *after = play_note(in, 1, 60, 0.5);
-	CHECK(rms(after, 4000, 8000) < 0.0005, "polyphony set just before a reactivation still takes channel 2's voice: rms %.5f", rms(after, 4000, 8000));
+	for (int n = 0; n < 3; n++) {
+		sounding2 += e[n] > top2 * 0.1;
+	}
+	CHECK(sounding2 == 1, "CC84 from a clip changes nothing: %d of 3", sounding2);
 	destroy_instance(in);
 }
 
@@ -891,15 +857,6 @@ static void test_midi_tracking(void)
 	queue_midi(in, 0xC0, 33, 0);
 	settle(in, 0.05);
 	CHECK(get_value(in, P_PRESET) == 33, "program change moves Preset to %d", get_value(in, P_PRESET));
-	queue_midi(in, 0xB0, 84, 127);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_POLY) == 1, "CC84 on channel 1 moves Polyphony to %d", get_value(in, P_POLY));
-	queue_midi(in, 0xB3, 84, 127);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_POLY) == 4, "CC84 on channel 4 moves it to %d", get_value(in, P_POLY));
-	queue_midi(in, 0xB3, 84, 0);
-	settle(in, 0.05);
-	CHECK(get_value(in, P_POLY) == 0, "and off to %d", get_value(in, P_POLY));
 	const int ch1_tl = get_value(in, P_OP), ch1_volume = get_value(in, P_VOLUME);
 	queue_midi(in, 0xB2, 16, 77);
 	queue_midi(in, 0xB2, 7, 90);
@@ -953,7 +910,7 @@ int main(int argc, char **argv)
 	test_preset_table();
 	test_knob_effects();
 	test_channels();
-	test_polyphony();
+	test_voices();
 	test_state();
 	test_midi_tracking();
 	test_same_moment();

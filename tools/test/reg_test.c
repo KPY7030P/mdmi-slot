@@ -49,11 +49,9 @@ static void midi(uint8_t a, uint8_t b, uint8_t c)
 	patch_midi(patch, message, (a & 0xF0) == 0xC0 ? 2 : 3, emit, NULL);
 }
 
-// A chord on the channel Polyphony gives the voices to, or channel 1.
 static void play_chord(int notes, bool on)
 {
-	int owner = patch->model.globals[GLOBAL_POLYPHONY] - 1;
-	uint8_t status = (uint8_t)((on ? 0x90 : 0x80) | (owner < 0 ? 0 : owner));
+	uint8_t status = (uint8_t)(on ? 0x90 : 0x80);
 	for (int i = 0; i < notes; i++) {
 		midi(status, (uint8_t)(60 + i), on ? 127 : 0);
 	}
@@ -209,121 +207,6 @@ static void test_program_from_clip(void)
 	check_voices("reset all controllers and a note leave the voice alone", 2, 2, -1);
 }
 
-// Every register a voice has, to see that nothing touched it.
-#define VOICE_REGS 28
-static void dump_voice(int voice, uint8_t *regs)
-{
-	static const uint8_t BASES[7] = {0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90};
-	int n = 0;
-	for (int b = 0; b < 7; b++) {
-		for (int slot = 0; slot < 4; slot++) {
-			regs[n++] = read_reg(voice, BASES[b], slot);
-		}
-	}
-}
-
-static void dump_voices(uint8_t regs[FM_CHANNELS][VOICE_REGS + 4])
-{
-	for (int voice = 0; voice < FM_CHANNELS; voice++) {
-		dump_voice(voice, regs[voice]);
-		regs[voice][VOICE_REGS] = read_reg(voice, 0xA0, 0);
-		regs[voice][VOICE_REGS + 1] = read_reg(voice, 0xA4, 0);
-		regs[voice][VOICE_REGS + 2] = read_reg(voice, 0xB0, 0);
-		regs[voice][VOICE_REGS + 3] = read_reg(voice, 0xB4, 0);
-	}
-}
-
-static void check_untouched(const char *what, uint8_t before[FM_CHANNELS][VOICE_REGS + 4], int first_voice, int last_voice)
-{
-	static uint8_t after[FM_CHANNELS][VOICE_REGS + 4];
-	dump_voices(after);
-	int changed = 0;
-	for (int voice = first_voice; voice <= last_voice; voice++) {
-		changed += memcmp(before[voice], after[voice], VOICE_REGS + 4) != 0;
-	}
-	printf("  %s: %s, %d voices changed\n", changed ? "FAIL" : "ok  ", what, changed);
-	if (changed) {
-		failures++;
-	}
-}
-
-// Polyphony gives one channel all six voices (D17): its values reach all of them, including sustain
-// rates above what a CC reaches, and a note on another channel finds no voice to take.
-static void test_polyphony_on(int owner)
-{
-	char what[96];
-	set_on(owner, PARAM_PRESET, 61);
-	set_on(owner, PARAM_OP_BASE + F_TL, 70);
-	set_on(owner, PARAM_OP_BASE + F_SR, 27);
-	set_on(owner, PARAM_PAN, 0);
-	for (int channel = 0; channel < FM_CHANNELS; channel++) {
-		if (channel != owner) {
-			set_on(channel, PARAM_PRESET, 10 + channel);
-			set_on(channel, PARAM_OP_BASE + F_AR, 11);
-		}
-	}
-	set_global(GLOBAL_POLYPHONY, owner + 1);
-	sync_and_settle();
-	snprintf(what, sizeof(what), "polyphony on channel %d: all voices take its values", owner + 1);
-	check_voices(what, 0, FM_CHANNELS - 1, owner);
-	const uint8_t on = (uint8_t)(0x90 | owner), off = (uint8_t)(0x80 | owner);
-	for (int i = 0; i < FM_CHANNELS; i++) {
-		midi(on, (uint8_t)(60 + i), 127);
-	}
-	render(SETTLE_BLOCKS);
-	check_voices("and keep them on the first chord", 0, FM_CHANNELS - 1, owner);
-	static uint8_t before[FM_CHANNELS][VOICE_REGS + 4];
-	dump_voices(before);
-	const int other = owner == 1 ? 2 : 1;
-	midi((uint8_t)(0x90 | other), 72, 127);
-	render(SETTLE_BLOCKS);
-	midi((uint8_t)(0x80 | other), 72, 0);
-	render(SETTLE_BLOCKS);
-	snprintf(what, sizeof(what), "a note on channel %d with all voices playing touches no register", other + 1);
-	check_untouched(what, before, 0, FM_CHANNELS - 1);
-	for (int i = 0; i < FM_CHANNELS; i++) {
-		midi(off, (uint8_t)(60 + i), 0);
-	}
-	render(SETTLE_BLOCKS);
-	dump_voices(before);
-	midi((uint8_t)(0x90 | other), 72, 127);
-	render(SETTLE_BLOCKS);
-	midi((uint8_t)(0x80 | other), 72, 0);
-	render(SETTLE_BLOCKS);
-	check_untouched("nor with all voices free", before, 0, FM_CHANNELS - 1);
-	set_on(owner, PARAM_OP_BASE + 1 * PATCH_OP_PARAMS + F_TL, 44);
-	set_on(owner, PARAM_OP_BASE + 2 * PATCH_OP_PARAMS + F_SR, 19);
-	play_chord(FM_CHANNELS, true);
-	play_chord(FM_CHANNELS, false);
-	check_voices("a tweak while on reaches all of them, SR above 15 too", 0, FM_CHANNELS - 1, owner);
-	set_on(owner, PARAM_PRESET, 77);
-	check_voices("a preset while on reaches all of them", 0, FM_CHANNELS - 1, owner);
-	set_global(GLOBAL_POLYPHONY, 0);
-	sync_and_settle();
-	check_voices("polyphony off: every channel has its own voice back", 0, FM_CHANNELS - 1, -1);
-	for (int channel = 0; channel < FM_CHANNELS; channel++) {
-		midi((uint8_t)(0x90 | channel), 60, 127);
-		render(4);
-		midi((uint8_t)(0x80 | channel), 60, 0);
-	}
-	render(SETTLE_BLOCKS);
-	check_voices("and keeps it on the first note", 0, FM_CHANNELS - 1, -1);
-}
-
-static void play_chord_on(int channel, bool on)
-{
-	for (int i = 0; i < FM_CHANNELS; i++) {
-		midi((uint8_t)((on ? 0x90 : 0x80) | channel), (uint8_t)(60 + i), on ? 127 : 0);
-	}
-	render(SETTLE_BLOCKS);
-}
-
-static void test_polyphony(void)
-{
-	test_polyphony_on(0);
-	test_polyphony_on(3);
-}
-
 // The ROM loads another Z80 driver for this, so the voices take a while to reach the chip.
 static void wait_for_voices(int last_voice)
 {
@@ -361,47 +244,19 @@ static void test_dac(void)
 	wait_for_voices(FM_CHANNELS - 2);
 	check_voices("DAC on: the five FM voices come back", 0, FM_CHANNELS - 2, -1);
 	check_globals("and the LFO and Ch3 mode");
-	// With the DAC on, Polyphony leaves voice 6 alone: it plays samples for channel 6.
-	static uint8_t before[FM_CHANNELS][VOICE_REGS + 4];
-	dump_voices(before);
-	set_on(3, PARAM_OP_BASE + F_SR, 26);
-	set_global(GLOBAL_POLYPHONY, 4);
-	sync_and_settle();
-	check_voices("DAC and polyphony on channel 4: five voices take its values", 0, FM_CHANNELS - 2, 3);
-	play_chord_on(3, true);
-	play_chord_on(3, false);
-	set_on(3, PARAM_OP_BASE + F_TL, 20);
-	set_global(GLOBAL_POLYPHONY, 0);
-	sync_and_settle();
-	check_untouched("and voice 6 is never touched", before, FM_CHANNELS - 1, FM_CHANNELS - 1);
-	check_voices("polyphony off with the DAC on: five voices back", 0, FM_CHANNELS - 2, -1);
 	set_global(GLOBAL_DAC, 0);
 	wait_for_voices(FM_CHANNELS - 1);
 	check_voices("DAC off: all six come back", 0, FM_CHANNELS - 1, -1);
 	check_globals("and the LFO and Ch3 mode");
 
-	// The ROM applies these controllers once per voice of the channel they come on, and with
-	// Polyphony on channel 4 the other FM channels have none.
-	set_global(GLOBAL_POLYPHONY, 4);
 	set_global(GLOBAL_LFO_RATE, 3);
 	set_global(GLOBAL_LFO_ON, 0);
 	sync_and_settle();
-	check_globals("polyphony on channel 4: LFO by knob");
-	set_global(GLOBAL_DAC, 1);
-	sync_and_settle();
-	render(DAC_BLOCKS);
-	check_globals("and the DAC turns on");
-	check_voices("and five voices come back with channel 4's values", 0, FM_CHANNELS - 2, 3);
-	set_global(GLOBAL_DAC, 0);
-	sync_and_settle();
-	render(DAC_BLOCKS);
-	check_globals("and off");
-	check_voices("and all six come back with channel 4's values", 0, FM_CHANNELS - 1, 3);
-	set_global(GLOBAL_POLYPHONY, 0);
+	check_globals("LFO off and rate 3 by knob");
 	set_global(GLOBAL_LFO_ON, 1);
 	set_global(GLOBAL_CH3_MODE, 0);
 	sync_and_settle();
-	check_voices("polyphony off: every channel has its own voice back", 0, FM_CHANNELS - 1, -1);
+	check_voices("every channel keeps its own voice", 0, FM_CHANNELS - 1, -1);
 }
 
 static void test_load(void)
@@ -455,7 +310,6 @@ int main(void)
 	test_every_preset();
 	test_values();
 	test_program_from_clip();
-	test_polyphony();
 	test_dac();
 	test_load();
 	test_reset();

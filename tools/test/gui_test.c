@@ -32,8 +32,10 @@
 #define OP1_TL_Y 212
 #define CH3_OP1_TL 1311
 #define CH4_OP1_TL 1411
-#define POLYPHONY_X 40
-#define POLYPHONY_Y 484
+// The LFO Rate cell among the global knobs, and its id.
+#define LFO_RATE_X 160
+#define LFO_RATE_Y 484
+#define LFO_RATE 3
 
 static int failures;
 
@@ -355,17 +357,17 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
 		run_ms(100);
 		CHECK(get_value(CH4_OP1_TL) == ch4_before, "a double click returns it to the preset's value");
-		click(window, POLYPHONY_X, POLYPHONY_Y);
+		click(window, LFO_RATE_X, LFO_RATE_Y);
 		run_ms(100);
-		const int first = get_value(0);
-		for (int i = 0; i < 5; i++) {
-			click(window, POLYPHONY_X, POLYPHONY_Y);
+		const int first = get_value(LFO_RATE);
+		for (int i = 0; i < 6; i++) {
+			click(window, LFO_RATE_X, LFO_RATE_Y);
 			run_ms(50);
 		}
 		// A quick second click reaches the window as a double click.
-		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(POLYPHONY_X, POLYPHONY_Y));
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(LFO_RATE_X, LFO_RATE_Y));
 		run_ms(100);
-		CHECK(first == 1 && get_value(0) == 0, "a click steps Polyphony to Ch 1, seven clicks go round to Off");
+		CHECK(first == 1 && get_value(LFO_RATE) == 0, "a click steps LFO Rate to the next value, eight clicks go round to the first");
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

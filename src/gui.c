@@ -182,8 +182,6 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 {
 	const int y = row_y(channel);
 	const bool dac = is_dac(values, channel);
-	const int voices = patch_voice_count(values->globals, channel);
-	const bool silent = channel_is_fm(channel) && voices == 0;
 	const bool selected = *g->source.channel == channel;
 	const uint32_t kind = dac ? C_DAC : channel_is_fm(channel) ? C_FM : C_PSG;
 	const uint32_t dark = dac ? C_DAC_DARK : channel_is_fm(channel) ? C_FM_DARK : C_PSG_DARK;
@@ -197,23 +195,13 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 
 	char buffer[64];
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
-	text(g, 10, y + 8, buffer, silent ? C_HINT : C_TEXT, 3);
+	text(g, 10, y + 8, buffer, C_TEXT, 3);
 
 	const char *tag = dac ? "DAC" : channel == PATCH_NUM_CHANNELS - 1 ? "NOISE"
 		: !channel_is_fm(channel) ? "PSG"
 		: channel == 2 && values->globals[GLOBAL_CH3_MODE] ? "FM SP" : "FM";
-	int after_tag = text(g, 54, y + 7, tag, silent ? C_HINT : dac ? C_DAC : channel_is_fm(channel) ? C_FM_LIGHT : C_PSG, 1) + 6;
+	text(g, 54, y + 7, tag, dac ? C_DAC : channel_is_fm(channel) ? C_FM_LIGHT : C_PSG, 1);
 
-	if (silent) {
-		snprintf(buffer, sizeof(buffer), "POLY ON CH %d", values->globals[GLOBAL_POLYPHONY]);
-		text(g, after_tag, y + 7, buffer, C_LABEL, 1);
-		text(g, 54, y + 21, "no voice", C_HINT, 2);
-		return;
-	}
-	if (voices > 1) {
-		snprintf(buffer, sizeof(buffer), "POLY %d VOICES", voices);
-		text(g, after_tag, y + 7, buffer, C_TEXT, 1);
-	}
 	if (dac) {
 		text(g, 54, y + 21, "Samples", C_LABEL, 2);
 	} else {
@@ -273,7 +261,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		int global;
 		const char *label;
 	} GLOBAL_CELLS[] = {
-		{GLOBAL_POLYPHONY, "POLYPHONY"}, {GLOBAL_LFO_ON, "LFO"}, {GLOBAL_LFO_RATE, "LFO RATE"},
+		{GLOBAL_LFO_ON, "LFO"}, {GLOBAL_LFO_RATE, "LFO RATE"},
 		{GLOBAL_FILTER, "FILTER"}, {GLOBAL_CH3_MODE, "CH3 SPECIAL"}, {GLOBAL_DAC, "DAC"},
 	};
 	g->cell_count = 0;
@@ -298,12 +286,12 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			}
 		}
 	}
-	for (int i = 0; i < PATCH_NUM_GLOBALS; i++) {
+	for (int i = 0; i < (int)(sizeof(GLOBAL_CELLS) / sizeof(*GLOBAL_CELLS)); i++) {
 		add_cell(g, 8 + i * 118, GLOBALS_Y + 6, 114, 32, (uint32_t)GLOBAL_CELLS[i].global, GLOBAL_CELLS[i].label, CELL_COLUMN);
 	}
 }
 
-static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values, bool silent)
+static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 {
 	const bool held = g->dragging && g->drag_id == c->id;
 	const int value = value_of(g, values, c->id);
@@ -320,7 +308,7 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values, bo
 	uint32_t background = held ? C_LINE : c->kind == CELL_COLUMN ? C_CELL : fm ? C_FM_DARK : C_PSG_DARK;
 	fill(g, c->x, c->y, c->w, c->h, background);
 	const uint32_t label = held ? C_TEXT : C_LABEL;
-	uint32_t shown = held ? C_TEXT : silent ? C_HINT : C_TEXT;
+	uint32_t shown = C_TEXT;
 	if (c->id == GLOBAL_DAC && value) {
 		shown = C_DAC;
 	}
@@ -442,16 +430,6 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		}
 		return;
 	}
-	const int voices = patch_voice_count(values->globals, channel);
-	if (channel_is_fm(channel) && voices == 0) {
-		text(g, 568, 30, "NO VOICE", C_HINT, 2);
-		snprintf(buffer, sizeof(buffer), "POLY ON CH %d", values->globals[GLOBAL_POLYPHONY]);
-		text(g, 568, 47, buffer, C_LABEL, 1);
-	} else if (voices > 1) {
-		snprintf(buffer, sizeof(buffer), "%d VOICES", voices);
-		text(g, 568, 30, buffer, C_TEXT, 2);
-		text(g, 568, 47, "POLYPHONY", C_LABEL, 1);
-	}
 	if (!channel_is_fm(channel)) {
 		text(g, PAGE_X, 62, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
 		text(g, PAGE_X, 74, "ENVELOPE EDITOR: LATER STAGE", C_HINT, 1);
@@ -530,9 +508,8 @@ static void draw_editor(mdmi_gui *g)
 	}
 	fill(g, 0, GLOBALS_Y, GUI_WIDTH, FOOTER_Y - GLOBALS_Y, C_BG);
 	fill(g, 0, GLOBALS_Y, GUI_WIDTH, 1, C_LINE);
-	const bool silent = channel_is_fm(*g->source.channel) && patch_voice_count(values->globals, *g->source.channel) == 0;
 	for (int i = 0; i < g->cell_count; i++) {
-		draw_cell(g, &g->cells[i], values, silent && g->cells[i].id >= PATCH_NUM_GLOBALS);
+		draw_cell(g, &g->cells[i], values);
 	}
 	draw_status_line(g);
 	// Hover last, so nothing covers it.

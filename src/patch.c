@@ -31,10 +31,8 @@
 #define CC_SUSTAIN 64
 #define CC_STEREO 77
 #define CC_RESET_ALL 121
-#define CC_ALL_NOTES_OFF 123
 #define CC_STORE_PROGRAM 87
 #define YM_REG_SUSTAIN_RATE 0x70
-#define SYSEX_REMAP 0x00
 #define SYSEX_DYNAMIC 0x03
 // The ROM applies LFO and DAC controllers once per voice of the channel they come on. Channel 7's
 // PSG voice is never remapped, so there they apply exactly once whatever Polyphony does.
@@ -128,7 +126,7 @@ static int preset_field(int param)
 
 void patch_global_init(void)
 {
-	define(&globals[GLOBAL_POLYPHONY], "Polyphony", PATCH_NUM_FM_CHANNELS, 0, true);
+	define(&globals[GLOBAL_RETIRED], "", 0, 0, true);
 	define(&globals[GLOBAL_FILTER], "Filter", FILTER_MAX, FILTER_DEFAULT, false);
 	define(&globals[GLOBAL_LFO_ON], "LFO On", 1, 1, true);
 	define(&globals[GLOBAL_LFO_RATE], "LFO Rate", 7, 0, true);
@@ -156,7 +154,7 @@ void patch_global_init(void)
 	}
 
 	uint32_t position = 0;
-	for (int g = 0; g < PATCH_NUM_GLOBALS; g++) {
+	for (int g = GLOBAL_RETIRED + 1; g < PATCH_NUM_GLOBALS; g++) {
 		panel_order[position++] = (uint32_t)g;
 	}
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
@@ -179,6 +177,9 @@ bool patch_channel_has(int channel, int param)
 bool patch_id_split(uint32_t id, int *channel, int *param)
 {
 	if (id < PATCH_NUM_GLOBALS) {
+		if (id == GLOBAL_RETIRED) {
+			return false;
+		}
 		*channel = -1;
 		*param = (int)id;
 		return true;
@@ -223,33 +224,6 @@ int patch_preset_value(int channel, int param, int preset)
 		return PRESETS_GM[preset & (PRESETS - 1)][preset_field(param)];
 	}
 	return param == PARAM_PRESET ? preset : channel_params[param].default_value;
-}
-
-int patch_voice_count(const int16_t *values, int channel)
-{
-	if (channel >= PATCH_NUM_FM_CHANNELS) {
-		return 0;
-	}
-	int owner = values[GLOBAL_POLYPHONY] - 1;
-	if (owner < 0) {
-		return 1;
-	}
-	// With the DAC on, the sixth voice plays samples and stays with channel 6.
-	bool dac = values[GLOBAL_DAC] != 0;
-	if (channel == owner) {
-		return dac ? PATCH_NUM_FM_CHANNELS - 1 : PATCH_NUM_FM_CHANNELS;
-	}
-	return dac && channel == PATCH_NUM_FM_CHANNELS - 1 ? 1 : 0;
-}
-
-// The MIDI channel a voice should answer to.
-static int voice_owner(const int16_t *values, int voice)
-{
-	int owner = values[GLOBAL_POLYPHONY] - 1;
-	if (owner < 0 || (voice == PATCH_NUM_FM_CHANNELS - 1 && values[GLOBAL_DAC])) {
-		return voice;
-	}
-	return owner;
 }
 
 static void load_preset(int16_t *channel, int program)
@@ -354,13 +328,6 @@ double patch_filter_hz(int value)
 static void format_global(int global, int value, char *text, size_t size)
 {
 	switch (global) {
-	case GLOBAL_POLYPHONY:
-		if (value) {
-			snprintf(text, size, "Ch %d", value);
-		} else {
-			snprintf(text, size, "Off");
-		}
-		break;
 	case GLOBAL_FILTER:
 		if (value >= FILTER_MAX) {
 			snprintf(text, size, "Off");
@@ -599,42 +566,21 @@ static void sync_channel_params(mdmi_patch *patch, const int16_t *model, int16_t
 	}
 }
 
-// Gives each FM voice to the channel Polyphony names (D17). The ROM's static mapping plays a note
-// only on its own channel's voices, so a channel without one stays silent and steals nothing.
-static void sync_voice_owners(const int16_t *model_globals, patch_receiver *receiver, patch_emit_fn emit, void *context)
+// The ROM's static mapping plays a channel's notes only on its own voice. After a reset or SysEx
+// we can't read, it is set again: a GM reset would otherwise leave the ROM taking any free voice
+// for any channel, past the model. Stage 4 lends voices on top of this (D20).
+static void sync_voice_owners(patch_receiver *receiver, patch_emit_fn emit, void *context)
 {
 	bool unknown = false;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		unknown = unknown || receiver->voice_owner[voice] == PATCH_UNKNOWN;
+		unknown = unknown || receiver->voice_owner[voice] != voice;
 	}
 	if (unknown) {
-		// Static mapping, which also gives every voice back to its own channel. A GM reset would
-		// otherwise leave the ROM taking any free voice for any channel.
 		const uint8_t sysex[7] = {0xF0, 0x00, 0x22, 0x77, SYSEX_DYNAMIC, 0x00, 0xF7};
 		emit(context, sysex, sizeof(sysex));
 		for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 			receiver->voice_owner[voice] = (int8_t)voice;
 		}
-	}
-	bool silenced[PATCH_NUM_FM_CHANNELS] = {false};
-	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		int owner = voice_owner(model_globals, voice), previous = receiver->voice_owner[voice];
-		if (owner == previous) {
-			continue;
-		}
-		// A note left sounding on a voice that changes hands would never get its note off.
-		if (!silenced[previous]) {
-			emit_cc(emit, context, previous, CC_ALL_NOTES_OFF, 0);
-			silenced[previous] = true;
-		}
-		const uint8_t sysex[8] = {0xF0, 0x00, 0x22, 0x77, SYSEX_REMAP, (uint8_t)owner, (uint8_t)voice, 0xF7};
-		emit(context, sysex, sizeof(sysex));
-		receiver->voice_owner[voice] = (int8_t)owner;
-		// The voice arrives with another channel's patch, which the ROM would replace with a
-		// built-in program on its first note. Sending the channel whole puts the same patch on all.
-		forget_voice(receiver, owner);
-		receiver->values.channels[owner][PARAM_VOLUME] = PATCH_UNKNOWN;
-		receiver->values.channels[owner][PARAM_PAN] = PATCH_UNKNOWN;
 	}
 }
 
@@ -652,7 +598,7 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 			forget_voice(receiver, channel);
 		}
 	}
-	sync_voice_owners(model_globals, receiver, emit, context);
+	sync_voice_owners(receiver, emit, context);
 	if (model_globals[GLOBAL_LFO_ON] != rom_globals[GLOBAL_LFO_ON]) {
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_ON, model_globals[GLOBAL_LFO_ON] ? CC_ON : 0);
 		rom_globals[GLOBAL_LFO_ON] = model_globals[GLOBAL_LFO_ON];
@@ -774,8 +720,9 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 			emit_cc(emit, context, channel, CC_SUSTAIN, 0);
 			return false;
 		}
-		if (cc == CC_STORE_PROGRAM) {
-			// Would make a program number mean something other than its preset, for good.
+		if (cc == CC_STORE_PROGRAM || cc == CC_POLYPHONY) {
+			// The first would make a program number mean something other than its preset, for good.
+			// The second puts the ROM in a mode where any note takes any voice, past the model.
 			return false;
 		}
 		if (cc == CC_RPN_MSB || cc == CC_RPN_LSB) {
@@ -790,15 +737,6 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 			// Like the Preset lane, so a clip envelope repeating the preset keeps the tweaks (D17).
 			if (is_channel) {
 				moved = set_preset(patch->model.channels[channel], channel, value * PRESETS / 128);
-				changed = true;
-			}
-		} else if (cc == CC_POLYPHONY) {
-			// All voices to the channel it came on, or none (D17). PSG channels can't have them.
-			if (value < 64) {
-				patch->model.globals[GLOBAL_POLYPHONY] = 0;
-				changed = true;
-			} else if (fm) {
-				patch->model.globals[GLOBAL_POLYPHONY] = (int16_t)(channel + 1);
 				changed = true;
 			}
 		} else if (cc == CC_STEREO) {
