@@ -1110,20 +1110,31 @@ static void test_envelopes(void)
 	midi(0x96, 69, 127);
 	render(SETTLE_BLOCKS);
 	check(mdmi_engine_test_psg_volume(engine, 0) == 0, "and the next note plays the new place");
-	// Two envelopes stored while a note sounds: the second goes where the note's came from.
-	for (int i = 0; i < 2; i++) {
+	// A note on a stored envelope, then two more stored while it sounds: the second goes under the
+	// service number the note's envelope came from (D28, the ROM plays a copy).
+	static const uint8_t STORED[3] = {6, 9, 12};
+	midi(0x86, 69, 0);
+	render(SETTLE_BLOCKS);
+	int note_program = -1;
+	for (int i = 0; i < 3; i++) {
 		patch_envelope envelope;
-		steady(&envelope, (uint8_t)(6 + i * 3), 2);
+		steady(&envelope, STORED[i], 2);
 		patch_load_envelope(patch, 6, &envelope);
 		patch_take_incoming(patch);
 		sync_and_settle();
+		if (i == 0) {
+			note_program = patch->rom.psg_programs[0];
+			midi(0x96, 69, 127);
+			render(SETTLE_BLOCKS);
+		}
 	}
-	check(mdmi_engine_test_psg_volume(engine, 0) == 0, "two envelopes stored under a sounding note leave it as it was");
+	check(mdmi_engine_test_psg_volume(engine, 0) == STORED[0] && patch->rom.psg_programs[0] == note_program,
+		"two envelopes stored under a note on a stored one leave it as it was, the last under its number");
 	midi(0x86, 69, 0);
 	render(SETTLE_BLOCKS);
 	midi(0x96, 69, 127);
 	render(SETTLE_BLOCKS);
-	check(mdmi_engine_test_psg_volume(engine, 0) == 9, "the next note plays the last one");
+	check(mdmi_engine_test_psg_volume(engine, 0) == STORED[2], "the next note plays the last one");
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		midi((uint8_t)(0x80 | (PATCH_NUM_FM_CHANNELS + i)), 69, 0);
 	}
