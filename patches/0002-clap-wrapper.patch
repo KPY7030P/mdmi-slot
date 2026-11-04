@@ -1,0 +1,46 @@
+diff --git a/src/detail/vst3/parameter.cpp b/src/detail/vst3/parameter.cpp
+index 56f0cca..7c1be0f 100644
+--- a/src/detail/vst3/parameter.cpp
++++ b/src/detail/vst3/parameter.cpp
+@@ -169,7 +169,8 @@ Vst3Parameter *Vst3Parameter::create(uint8_t bus, uint8_t channel, uint8_t cc, V
+   v.flags = Vst::ParameterInfo::kNoFlags;
+   if (cc == Vst::ControllerNumbers::kCtrlProgramChange)
+   {
+-    v.flags |= Vst::ParameterInfo::kIsProgramChange | Vst::ParameterInfo::kCanAutomate;
++    // mdmi-plugin: hidden, or hosts list one anonymous "Program" control per MIDI channel.
++    v.flags |= Vst::ParameterInfo::kIsProgramChange | Vst::ParameterInfo::kIsHidden;
+     v.stepCount = 127;
+   }
+ 
+diff --git a/src/detail/vst3/plugview.cpp b/src/detail/vst3/plugview.cpp
+index 7546b90..65100e3 100644
+--- a/src/detail/vst3/plugview.cpp
++++ b/src/detail/vst3/plugview.cpp
+@@ -1,5 +1,6 @@
+ #include "plugview.h"
+ #include <clap/clap.h>
++#include <pluginterfaces/base/keycodes.h>
+ #include <cassert>
+ #include <iostream>
+ 
+@@ -146,9 +147,18 @@ tresult PLUGIN_API WrappedView::onWheel(float /*distance*/)
+   return kResultFalse;
+ }
+ 
+-tresult PLUGIN_API WrappedView::onKeyDown(char16 /*key*/, int16 /*keyCode*/, int16 /*modifiers*/)
++// MDMI: the arrow keys reach the plugin's window through a private extension; every other key
++// stays the host's.
++struct mdmi_gui_key
+ {
+-  return kResultFalse;
++  bool (*key)(const clap_plugin_t *plugin, bool up);
++};
++
++tresult PLUGIN_API WrappedView::onKeyDown(char16 /*key*/, int16 keyCode, int16 /*modifiers*/)
++{
++  if (keyCode != Steinberg::KEY_UP && keyCode != Steinberg::KEY_DOWN) return kResultFalse;
++  auto ext = static_cast<const mdmi_gui_key *>(_plugin->get_extension(_plugin, "mdmi.gui-key"));
++  return ext && ext->key(_plugin, keyCode == Steinberg::KEY_UP) ? kResultTrue : kResultFalse;
+ }
+ 
+ tresult PLUGIN_API WrappedView::onKeyUp(char16 /*key*/, int16 /*keyCode*/, int16 /*modifiers*/)

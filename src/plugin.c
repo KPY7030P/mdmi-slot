@@ -787,9 +787,26 @@ static const clap_plugin_gui_t gui_ext = {
 	.hide = gui_ext_hide,
 };
 
+// The arrow keys, from our patch of clap-wrapper: VST3 hosts give keys to the view, not to the
+// window. True when the window took the key.
+typedef struct {
+	bool (*key)(const clap_plugin_t *plugin, bool up);
+} mdmi_gui_key;
+
+static bool gui_key_ext_key(const clap_plugin_t *plugin, bool up)
+{
+	mdmi_plugin *self = self_of(plugin);
+	return self->gui && gui_key(self->gui, up);
+}
+
+static const mdmi_gui_key gui_key_ext = {gui_key_ext_key};
+
 static const void *plugin_get_extension(const clap_plugin_t *plugin, const char *id)
 {
 	(void)plugin;
+	if (!strcmp(id, "mdmi.gui-key")) {
+		return &gui_key_ext;
+	}
 	if (!strcmp(id, CLAP_EXT_GUI)) {
 		return &gui_ext;
 	}

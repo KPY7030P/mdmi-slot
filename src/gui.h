@@ -47,5 +47,7 @@ bool gui_set_parent(mdmi_gui *gui, void *parent_hwnd);
 bool gui_show(mdmi_gui *gui, bool visible);
 bool gui_set_scale(mdmi_gui *gui, double scale);
 void gui_get_size(const mdmi_gui *gui, uint32_t *width, uint32_t *height);
+// An arrow key from the host; false when the window doesn't want it there.
+bool gui_key(mdmi_gui *gui, bool up);
 
 #endif

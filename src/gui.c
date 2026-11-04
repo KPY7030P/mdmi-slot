@@ -824,16 +824,11 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	const patch_bank *bank = patch_bank_view(g->source.patch);
 	text(g, 250, BANK_HEADER_Y, "PRG", C_HINT, 1);
 	text(g, 298, BANK_HEADER_Y, usable ? "NAME" : "FM SOUNDS. SELECT CH 1-6", usable ? C_HINT : C_LABEL, 1);
-	// While instruments are dragged the column header says what dropping on the column does.
+	// While instruments are dragged the FILE and dots column becomes one ADD field.
 	const bool instruments_over = g->file_over && g->file_instruments > 0;
 	const bool full = files_add_place(g->source.files) >= PATCH_BANK_SIZE;
 	char buffer[64];
-	if (instruments_over) {
-		if (g->drop_add) {
-			fill(g, 580, BANK_ADD_Y, 118, 14, C_TARGET);
-		}
-		text(g, 621, BANK_ADD_Y, "ADD", g->drop_add ? C_BG : full ? C_LINE : C_TARGET, 2);
-	} else {
+	if (!instruments_over) {
 		text(g, 580, BANK_HEADER_Y, "FILE", C_HINT, 1);
 		for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
 			snprintf(buffer, sizeof(buffer), "%d", c + 1);
@@ -896,10 +891,14 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 		fill(g, SCROLL_X, BANK_Y + preset * SCROLL_H / PATCH_BANK_SIZE, 6, 3, C_FM);
 	}
 	if (instruments_over) {
+		// The field covers what the column shows, lit when the files would go there.
+		const uint32_t edge = full ? C_LINE : C_TARGET;
+		fill(g, 580, 72, 118, 380, g->drop_add ? C_TARGET : C_BG);
+		text(g, 621, 255, "ADD", g->drop_add ? C_BG : edge, 2);
 		frame(g, 240, 70, 336, 384, C_TARGET);
 		frame(g, 241, 71, 334, 382, C_TARGET);
-		frame(g, 578, 54, 122, 400, full ? C_LINE : C_TARGET);
-		frame(g, 579, 55, 120, 398, full ? C_LINE : C_TARGET);
+		frame(g, 578, 70, 122, 384, edge);
+		frame(g, 579, 71, 120, 382, edge);
 	}
 }
 
@@ -1573,18 +1572,19 @@ static IDropTargetVtbl drop_vtable = {
 };
 
 // Up and down step the selected FM channel's place on the bank page, as a click on the next row
-// would, and the list moves only as far as it must. False for keys the window leaves to the host.
-static bool on_key(mdmi_gui *g, WPARAM key)
+// would, and the list moves only as far as it must. Keys come from the host through the view (our
+// clap-wrapper patch), not as window messages: the window never has the focus.
+bool gui_key(mdmi_gui *g, bool up)
 {
 	const int channel = *g->source.channel;
 	const patch_values *values = patch_view(g->source.patch);
-	if ((key != VK_UP && key != VK_DOWN) || *g->source.page != PAGE_BANK || !takes_fm(values, channel)) {
+	if (!g->window || *g->source.page != PAGE_BANK || !takes_fm(values, channel)) {
 		return false;
 	}
 	// Until the model takes the last step, the next one goes on from where that one asked to go.
 	const int playing = values->channels[channel][PARAM_PRESET];
 	const bool pending = g->key_channel == channel && playing == g->key_from && g->key_to != g->key_from;
-	int place = (pending ? g->key_to : playing) + (key == VK_UP ? -1 : 1);
+	int place = (pending ? g->key_to : playing) + (up ? -1 : 1);
 	place = place < 0 ? 0 : place >= PATCH_BANK_SIZE ? PATCH_BANK_SIZE - 1 : place;
 	if (!pending) {
 		g->key_channel = channel;
@@ -1653,17 +1653,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		g->window = NULL;
 		InterlockedDecrement(&window_count);
 		return 0;
-	case WM_KEYDOWN:
-		if (on_key(g, wparam)) {
-			return 0;
-		}
-		return DefWindowProcA(window, message, wparam, lparam);
 	case WM_LBUTTONDOWN:
-		// Keys come to the window only while it has the focus: a click on the bank list takes it, for
-		// the arrows. Whether Live's own keys still work after that is the stage's first check.
-		if (*g->source.page == PAGE_BANK && bank_place_at(g, x, y) >= 0) {
-			SetFocus(window);
-		}
 		on_down(g, x, y);
 		return 0;
 	case WM_MOUSEMOVE:

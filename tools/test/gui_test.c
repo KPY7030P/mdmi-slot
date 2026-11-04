@@ -412,18 +412,23 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK) > 1000, "and lights its row");
 		save_bmp(argv[2], "bank");
-		// Arrows step the place, each press one gesture, also when presses come faster than the model
-		// takes them; past the first place nothing moves.
-		SendMessageA(window, WM_KEYDOWN, VK_DOWN, 0);
-		SendMessageA(window, WM_KEYDOWN, VK_DOWN, 0);
+		// Arrows from the host's view (our clap-wrapper patch) step the place, each press one gesture,
+		// also when presses come faster than the model takes them; past the first place nothing moves.
+		typedef struct {
+			bool (*key)(const clap_plugin_t *plugin, bool up);
+		} gui_key_ext;
+		const gui_key_ext *keys = plugin->get_extension(plugin, "mdmi.gui-key");
+		CHECK(keys && keys->key(plugin, false) && keys->key(plugin, false), "the bank page takes arrow keys");
 		run_ms(100);
 		CHECK(get_value(CH4_PRESET) == 4, "two arrows down at once move channel 4 to place 5");
 		for (int i = 0; i < 6; i++) {
-			SendMessageA(window, WM_KEYDOWN, VK_UP, 0);
+			keys->key(plugin, true);
 		}
 		run_ms(100);
 		CHECK(get_value(CH4_PRESET) == 0, "arrows up stop at place 1");
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(100);
+		CHECK(!keys->key(plugin, true), "the editor page leaves arrows to the host");
 		run_ms(100);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
