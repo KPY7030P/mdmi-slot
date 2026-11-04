@@ -56,6 +56,15 @@ run() {
   done
 }
 
+# The ROM's own tests, with patches/0003 (D28). ASan of the image's gcc loops forever on today's
+# kernels unless address randomization is off, and setarch needs --privileged for that.
+echo "=== rom"
+log="$OUT/rom_test.log"
+MSYS_NO_PATHCONV=1 docker run --privileged --rm -v "$WIN_ROOT/third_party/mdmi:/app" -w /app mdmi-rom-build sh -c 'mkdir -p tests/bin && setarch x86_64 -R make test' > "$log" 2>&1
+code=$?
+grep -E "^\[  (PASSED|FAILED)" "$log"
+[ "$code" = 0 ] || fail "rom: make test exit $code"
+
 run offline-48k 48000 128 offline 1
 run offline-44k 44100 512 offline 1
 run offline-96k 96000 256 offline 1

@@ -1,6 +1,6 @@
-"""Generates src/presets_gm.h from the MDMI ROM's FM preset bank.
+"""Generates src/presets_gm.h from the MDMI ROM's FM preset bank and PSG envelopes.
 
-usage: gen_presets.py <third_party/mdmi/src/presets.c> <src/presets_gm.h>
+usage: gen_presets.py <third_party/mdmi/src/presets.c> <third_party/mdmi/src/envelopes.c> <src/presets_gm.h>
 """
 import re
 import sys
@@ -10,7 +10,7 @@ OP_FIELDS = 11
 
 
 def main():
-    source, output = sys.argv[1:3]
+    source, envelopes_source, output = sys.argv[1:4]
     text = open(source).read()
 
     presets = {}
@@ -34,8 +34,41 @@ def main():
     for name in order:
         lines.append("\t{" + ", ".join(str(n) for n in presets[name]) + "},")
     lines.append("};")
+    lines += envelope_lines(open(envelopes_source).read())
     with open(output, "w", newline="\n") as f:
         f.write("\n".join(lines) + "\n")
+
+
+# The ROM's envelopes have no names; these are the ones the window shows.
+ENVELOPE_NAMES = {"ENVELOPE_0": "Plain", "ENV_SQUARE_LEAD": "Square Lead"}
+MARKERS = {"EEF_LOOP_START": 0xFE, "EEF_LOOP_END": 0xFD, "EEF_END": 0xFF}
+
+
+def envelope_lines(text):
+    bodies = {}
+    for name, body in re.findall(r"static const u8 (\w+)\[\]\s*=\s*\{(.*?)\};", text, re.S):
+        steps = [MARKERS[t] if t in MARKERS else int(t, 16) for t in re.findall(r"EEF_\w+|0x[0-9A-Fa-f]+", body)]
+        if steps[-1] != 0xFF or 0xFF in steps[:-1]:
+            raise SystemExit(f"{name}: expected one EEF_END at the end")
+        bodies[name] = steps
+    table = re.search(r"ENVELOPES\[MIDI_PROGRAMS\]\s*=\s*\{(.*?)\};", text, re.S).group(1)
+    table = re.sub(r"/\*.*?\*/", "", table)
+    order = re.findall(r"\w+", table)
+    if len(order) != 128:
+        raise SystemExit(f"expected 128 envelopes in ENVELOPES, found {len(order)}")
+    names = sorted(bodies)
+    lines = [
+        "// From the MDMI ROM's ENVELOPES: EEF bytes up to and with EEF_END, and the name the window shows.",
+        "static const struct { const char *name; uint8_t steps[" + str(max(len(b) for b in bodies.values())) + "]; } ENVELOPES_ROM[] = {",
+    ]
+    for name in names:
+        lines.append(f'	{{"{ENVELOPE_NAMES[name]}", {{' + ", ".join(f"0x{b:02X}" for b in bodies[name]) + "}},")
+    lines.append("};")
+    lines.append("static const uint8_t ENVELOPE_OF_PROGRAM[128] = {")
+    for i in range(0, 128, 32):
+        lines.append("	" + ", ".join(str(names.index(n)) for n in order[i:i + 32]) + ",")
+    lines.append("};")
+    return lines
 
 
 main()

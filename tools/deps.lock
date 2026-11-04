@@ -10,7 +10,8 @@ CLAP_WRAPPER_COMMIT=806bba0a5f792e3966b99c1561ab9952d3316d7c
 # Tag v3.8.0_build_66. 3.8.1 breaks clap-wrapper.
 VST3SDK_URL=https://github.com/steinbergmedia/vst3sdk.git
 VST3SDK_COMMIT=9fad9770f2ae8542ab1a548a68c1ad1ac690abe0
-# Tag v1.34: the source of roms/, not compiled yet.
+# Tag v1.34. The plugin builds its ROM from it with patches/0003; roms/ holds the released v1.34,
+# which the unpatched tag rebuilds byte for byte (E2, D28).
 MDMI_URL=https://github.com/rhargreaves/mega-drive-midi-interface.git
 MDMI_COMMIT=6cfe921bad1e62f78c5083ff8d8532f637b987e4
 ROM_SHA256=cd4dc4f009b5bda80167e92d4def35b5dbae152684e4ec78c71fd644bb97cfce

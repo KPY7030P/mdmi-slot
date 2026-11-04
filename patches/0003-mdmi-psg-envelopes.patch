@@ -1,0 +1,310 @@
+diff --git a/src/midi.c b/src/midi.c
+index 5145b6a..3b14f2c 100644
+--- a/src/midi.c
++++ b/src/midi.c
+@@ -649,13 +649,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+     synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
+ }
+ 
++// MDMI plugin fork, 2026-11-04: the length depends on the type, so it is checked here.
++static void store_psg_program(u8 program, const u8* data, u16 length)
++{
++    if (length % 2 != 0 || length / 2 > MAX_STORED_ENVELOPE_STEPS || program >= MIDI_PROGRAMS) {
++        log_warn("Prg %d: Invalid PSG envelope", program);
++        return;
++    }
++    u8 eef[MAX_STORED_ENVELOPE_STEPS];
++    for (u16 i = 0; i < length; i += 2) {
++        eef[i / 2] = (data[i] << 4) | data[i + 1];
++    }
++    midi_psg_store_envelope(program, eef, length / 2);
++    log_info("Prg %d: PSG envelope stored", program);
++}
++
+ static void store_program(const u8* data, u16 length)
+ {
++    if (length < STORE_PROGRAM_HEADER_LENGTH) {
++        log_warn("Sysex %02X: Invalid length: %d (!= %d)", SYSEX_COMMAND_STORE_PROGRAM, length,
++            STORE_PROGRAM_FM_LENGTH);
++        return;
++    }
+     u8 type = data[0];
+     u8 program = data[1];
+ 
+     switch (type) {
++    case STORE_PROGRAM_TYPE_PSG:
++        store_psg_program(program, data + STORE_PROGRAM_HEADER_LENGTH,
++            length - STORE_PROGRAM_HEADER_LENGTH);
++        break;
+     case STORE_PROGRAM_TYPE_FM: {
++        if (length != STORE_PROGRAM_FM_LENGTH) {
++            log_warn("Sysex %02X: Invalid length: %d (!= %d)", SYSEX_COMMAND_STORE_PROGRAM, length,
++                STORE_PROGRAM_FM_LENGTH);
++            return;
++        }
+         FmPreset fmPreset;
+         fmPreset.algorithm = data[2];
+         fmPreset.feedback = data[3];
+@@ -841,7 +870,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+     { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
+     { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
+     { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
+-    { SYSEX_COMMAND_STORE_PROGRAM, store_program, 6 + (MAX_FM_OPERATORS * 11), true },
++    { SYSEX_COMMAND_STORE_PROGRAM, store_program, 0, false },
+     { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
+     { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
+     { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
+diff --git a/src/midi.h b/src/midi.h
+index 731aa8c..f85f64f 100644
+--- a/src/midi.h
++++ b/src/midi.h
+@@ -135,6 +135,8 @@
+ 
+ #define STORE_PROGRAM_TYPE_FM 0x00
+ #define STORE_PROGRAM_TYPE_PSG 0x01
++#define STORE_PROGRAM_HEADER_LENGTH 2
++#define STORE_PROGRAM_FM_LENGTH (STORE_PROGRAM_HEADER_LENGTH + 4 + (MAX_FM_OPERATORS * 11))
+ 
+ typedef struct VTable {
+     void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
+diff --git a/src/midi_psg.c b/src/midi_psg.c
+index 82a5655..2d33546 100644
+--- a/src/midi_psg.c
++++ b/src/midi_psg.c
+@@ -48,6 +48,9 @@ typedef struct MidiPsgChannel {
+ static u8 userDefinedEnvelope[256];
+ static u8* userDefinedEnvelopePtr;
+ static const u8** envelopes;
++// MDMI plugin fork, 2026-11-04: envelopes stored per program, like FM user presets.
++static u8 storedEnvelopes[MIDI_PROGRAMS][MAX_STORED_ENVELOPE_STEPS + 1];
++static const u8* activeStoredEnvelopes[MIDI_PROGRAMS];
+ static MidiPsgChannel psgChannels[MAX_PSG_CHANS];
+ 
+ static u16 tone_for_midi_key(u8 midiKey);
+@@ -67,6 +70,7 @@ void midi_psg_init(const u8** defaultEnvelopes)
+ void midi_psg_reset(void)
+ {
+     userDefinedEnvelopePtr = NULL;
++    memset(activeStoredEnvelopes, 0, sizeof(activeStoredEnvelopes));
+     for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
+         MidiPsgChannel* psgChan = psg_channel(chan);
+         psgChan->attenuation = PSG_ATTENUATION_SILENCE;
+@@ -85,8 +89,10 @@ void midi_psg_reset(void)
+ 
+ static void init_envelope(MidiPsgChannel* psgChan)
+ {
+-    psgChan->envelopeStep
+-        = userDefinedEnvelopePtr != NULL ? userDefinedEnvelopePtr : envelopes[psgChan->envelope];
++    const u8* stored = activeStoredEnvelopes[psgChan->envelope];
++    psgChan->envelopeStep = userDefinedEnvelopePtr != NULL ? userDefinedEnvelopePtr
++        : stored != NULL                                    ? stored
++                                                            : envelopes[psgChan->envelope];
+     psgChan->envelopeLoopStart = NULL;
+ }
+ 
+@@ -293,6 +299,16 @@ void midi_psg_load_envelope(const u8* eef)
+     userDefinedEnvelopePtr = userDefinedEnvelope;
+ }
+ 
++// The tail is filled with EEF_END, so a note still playing an envelope that is overwritten with a
++// shorter one stops at the new end instead of reading what was left of the old one.
++void midi_psg_store_envelope(u8 program, const u8* eef, u16 length)
++{
++    u8* slot = storedEnvelopes[program];
++    memset(slot, EEF_END, sizeof(storedEnvelopes[program]));
++    memcpy(slot, eef, length);
++    activeStoredEnvelopes[program] = slot;
++}
++
+ static u16 tone_for_midi_key(u8 midiKey)
+ {
+     const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
+diff --git a/src/midi_psg.h b/src/midi_psg.h
+index e5bb02e..67bd007 100644
+--- a/src/midi_psg.h
++++ b/src/midi_psg.h
+@@ -9,6 +9,7 @@
+ #define EEF_LOOP_END 0xFD
+ 
+ #define MAX_PSG_CHANS 4
++#define MAX_STORED_ENVELOPE_STEPS 125
+ 
+ #define PSG_ATTENUATION_SILENCE 0xF
+ #define PSG_ATTENUATION_LOUDEST 0
+@@ -24,4 +25,5 @@ void midi_psg_program(u8 chan, u8 program);
+ void midi_psg_pan(u8 chan, u8 pan);
+ void midi_psg_tick(u16 delta);
+ void midi_psg_load_envelope(const u8* eef);
++void midi_psg_store_envelope(u8 program, const u8* eef, u16 length);
+ void midi_psg_pitch(u8 chan, u8 pitch, s8 cents);
+diff --git a/tests/unit/main.c b/tests/unit/main.c
+index d2449c4..c373850 100644
+--- a/tests/unit/main.c
++++ b/tests/unit/main.c
+@@ -207,6 +207,12 @@ int main(void)
+         midi_test(test_midi_sysex_sets_mapping_mode_to_auto),
+         midi_test(test_midi_sysex_disables_fm_parameter_CCs),
+         midi_test(test_midi_sysex_loads_psg_envelope),
++        midi_test(test_midi_sysex_stores_psg_envelope),
++        midi_test(test_midi_sysex_stored_psg_envelopes_differ_per_channel),
++        midi_test(test_midi_sysex_reset_restores_default_psg_envelopes),
++        midi_test(test_midi_sysex_stores_longest_psg_envelope),
++        midi_test(test_midi_sysex_rejects_too_long_psg_envelope),
++        midi_test(test_midi_sysex_overwritten_psg_envelope_stops_at_its_new_end),
+         midi_test(test_midi_sysex_inverts_total_level_values),
+         midi_test(test_midi_sysex_sets_original_total_level_values),
+         midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
+diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
+index 9ce9691..5d4d32a 100644
+--- a/tests/unit/test_midi_sysex.c
++++ b/tests/unit/test_midi_sysex.c
+@@ -2,6 +2,7 @@
+ #include "test_midi.h"
+ #include "mocks/mock_synth.h"
+ #include "mocks/mock_sram.h"
++#include "mocks/mock_psg.h"
+ 
+ #define SRAM_PRESET_LENGTH 36
+ #define SRAM_PRESET_START 32
+@@ -420,7 +421,7 @@ void test_midi_sysex_logs_warning_if_program_store_type_is_incorrect(UNUSED void
+     mock_log_enable_checks();
+ 
+     const u8 sequence[STORE_PROGRAM_MESSAGE_LENGTH] = { SYSEX_MANU_EXTENDED, SYSEX_MANU_REGION,
+-        SYSEX_MANU_ID, SYSEX_COMMAND_STORE_PROGRAM, 0x01, 0x05 };
++        SYSEX_MANU_ID, SYSEX_COMMAND_STORE_PROGRAM, 0x02, 0x05 };
+ 
+     expect_log_warn("Invalid store program type: %d");
+     __real_midi_sysex(sequence, sizeof(sequence));
+@@ -642,3 +643,118 @@ void test_midi_sysex_validates_dump_channel_bounds(UNUSED void** state)
+     expect_log_warn("Invalid MIDI channel: %d");
+     __real_midi_sysex(unassigned_midi_chan_seq, sizeof(unassigned_midi_chan_seq));
+ }
++
++// MDMI plugin fork, 2026-11-04: PSG envelopes stored per program.
++static void store_psg_envelope(u8 program, const u8* eef, u16 length)
++{
++    u8 msg[6 + (MAX_STORED_ENVELOPE_STEPS + 1) * 2];
++    u16 n = 0;
++    msg[n++] = SYSEX_MANU_EXTENDED;
++    msg[n++] = SYSEX_MANU_REGION;
++    msg[n++] = SYSEX_MANU_ID;
++    msg[n++] = SYSEX_COMMAND_STORE_PROGRAM;
++    msg[n++] = STORE_PROGRAM_TYPE_PSG;
++    msg[n++] = program;
++    for (u16 i = 0; i < length; i++) {
++        msg[n++] = eef[i] >> 4;
++        msg[n++] = eef[i] & 0x0F;
++    }
++    __real_midi_sysex(msg, n);
++}
++
++static void play_first_step(u8 midiChan, u8 psgChan, u8 attenuation)
++{
++    expect_psg_tone(psgChan, TONE_NTSC_C4);
++    expect_psg_attenuation(psgChan, attenuation);
++    __real_midi_note_on(midiChan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++}
++
++void test_midi_sysex_stores_psg_envelope(UNUSED void** state)
++{
++    mock_log_enable_checks();
++    const u8 eef[] = { 0x06, 0x0F };
++    expect_log_info("Prg %d: PSG envelope stored");
++    store_psg_envelope(5, eef, sizeof(eef));
++    mock_log_disable_checks();
++
++    __real_midi_program(MIDI_CHANNEL_7, 5);
++    play_first_step(MIDI_CHANNEL_7, PSG_CH1, 6);
++
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_SILENCE);
++    __real_midi_psg_tick();
++}
++
++void test_midi_sysex_stored_psg_envelopes_differ_per_channel(UNUSED void** state)
++{
++    const u8 eef1[] = { 0x03 };
++    const u8 eef2[] = { 0x09 };
++    store_psg_envelope(1, eef1, sizeof(eef1));
++    store_psg_envelope(2, eef2, sizeof(eef2));
++
++    __real_midi_program(MIDI_CHANNEL_7, 1);
++    __real_midi_program(MIDI_CHANNEL_7 + 1, 2);
++    play_first_step(MIDI_CHANNEL_7, PSG_CH1, 3);
++    play_first_step(MIDI_CHANNEL_7 + 1, PSG_CH1 + 1, 9);
++}
++
++void test_midi_sysex_reset_restores_default_psg_envelopes(UNUSED void** state)
++{
++    const u8 eef[] = { 0x05 };
++    store_psg_envelope(1, eef, sizeof(eef));
++
++    mock_synth_disable_checks();
++    __real_midi_reset();
++    mock_synth_enable_checks();
++
++    __real_midi_program(MIDI_CHANNEL_7, 1);
++    play_first_step(MIDI_CHANNEL_7, PSG_CH1, PSG_ATTENUATION_LOUDEST);
++}
++
++void test_midi_sysex_stores_longest_psg_envelope(UNUSED void** state)
++{
++    u8 eef[MAX_STORED_ENVELOPE_STEPS + 1];
++    memset(eef, 0x02, sizeof(eef));
++
++    mock_log_enable_checks();
++    expect_log_info("Prg %d: PSG envelope stored");
++    store_psg_envelope(4, eef, MAX_STORED_ENVELOPE_STEPS);
++    mock_log_disable_checks();
++
++    __real_midi_program(MIDI_CHANNEL_7, 4);
++    play_first_step(MIDI_CHANNEL_7, PSG_CH1, 2);
++}
++
++void test_midi_sysex_rejects_too_long_psg_envelope(UNUSED void** state)
++{
++    u8 eef[MAX_STORED_ENVELOPE_STEPS + 1];
++    memset(eef, 0x02, sizeof(eef));
++
++    mock_log_enable_checks();
++    expect_log_warn("Prg %d: Invalid PSG envelope");
++    store_psg_envelope(3, eef, sizeof(eef));
++
++    const u8 oddLength[] = { SYSEX_MANU_EXTENDED, SYSEX_MANU_REGION, SYSEX_MANU_ID,
++        SYSEX_COMMAND_STORE_PROGRAM, STORE_PROGRAM_TYPE_PSG, 0x03, 0x00, 0x02, 0x00 };
++    expect_log_warn("Prg %d: Invalid PSG envelope");
++    __real_midi_sysex(oddLength, sizeof(oddLength));
++    mock_log_disable_checks();
++
++    __real_midi_program(MIDI_CHANNEL_7, 3);
++    play_first_step(MIDI_CHANNEL_7, PSG_CH1, PSG_ATTENUATION_LOUDEST);
++}
++
++void test_midi_sysex_overwritten_psg_envelope_stops_at_its_new_end(UNUSED void** state)
++{
++    const u8 longer[] = { 0x01, 0x02, 0x03 };
++    const u8 shorter[] = { 0x04 };
++    store_psg_envelope(2, longer, sizeof(longer));
++
++    __real_midi_program(MIDI_CHANNEL_7, 2);
++    play_first_step(MIDI_CHANNEL_7, PSG_CH1, 1);
++    expect_psg_attenuation(PSG_CH1, 2);
++    __real_midi_psg_tick();
++
++    store_psg_envelope(2, shorter, sizeof(shorter));
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_SILENCE);
++    __real_midi_psg_tick();
++}
+diff --git a/tests/unit/test_midi_sysex.h b/tests/unit/test_midi_sysex.h
+index 10cb29f..f575aa9 100644
+--- a/tests/unit/test_midi_sysex.h
++++ b/tests/unit/test_midi_sysex.h
+@@ -34,3 +34,9 @@ void test_midi_sysex_ping_returns_pong(UNUSED void** state);
+ void test_midi_sysex_ping_with_id_returns_pong_with_id(UNUSED void** state);
+ void test_midi_sysex_ping_with_id_and_data_returns_pong_with_id_and_data(UNUSED void** state);
+ void test_midi_sysex_ping_with_id_and_do_not_echo_data_returns_pong_with_id_only(UNUSED void** state);
++void test_midi_sysex_stores_psg_envelope(UNUSED void** state);
++void test_midi_sysex_stored_psg_envelopes_differ_per_channel(UNUSED void** state);
++void test_midi_sysex_reset_restores_default_psg_envelopes(UNUSED void** state);
++void test_midi_sysex_stores_longest_psg_envelope(UNUSED void** state);
++void test_midi_sysex_rejects_too_long_psg_envelope(UNUSED void** state);
++void test_midi_sysex_overwritten_psg_envelope_stops_at_its_new_end(UNUSED void** state);

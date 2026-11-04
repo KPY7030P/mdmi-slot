@@ -15,7 +15,7 @@ set(MDMI_VERSION "${PROJECT_VERSION}+${MDMI_BUILD_LABEL}")
 file(WRITE "${CMAKE_BINARY_DIR}/label.txt" "${MDMI_VERSION}\n")
 
 set(MDMI_ENGINE "${CMAKE_SOURCE_DIR}/build/engine/libblastem.dll")
-set(MDMI_ROM "${CMAKE_SOURCE_DIR}/roms/mdmi-everdrive-v1.34.bin")
+set(MDMI_ROM "${CMAKE_SOURCE_DIR}/build/rom/mdmi-everdrive.bin")
 set(BLASTEM_DIR "${CMAKE_SOURCE_DIR}/third_party/blastem")
 
 set(CLAP_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/clap")

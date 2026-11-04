@@ -67,7 +67,7 @@ fetch_blastem
 fetch clap "$CLAP_URL" "$CLAP_COMMIT"
 fetch clap-wrapper "$CLAP_WRAPPER_URL" "$CLAP_WRAPPER_COMMIT" patches/0002-clap-wrapper.patch
 fetch vst3sdk "$VST3SDK_URL" "$VST3SDK_COMMIT"
-fetch mdmi "$MDMI_URL" "$MDMI_COMMIT"
+fetch mdmi "$MDMI_URL" "$MDMI_COMMIT" patches/0003-mdmi-psg-envelopes.patch
 
 echo "$ROM_SHA256 *roms/mdmi-everdrive-v1.34.bin" | sha256sum -c --quiet - || die "roms/ does not match deps.lock"
 echo "All dependencies match tools/deps.lock"
