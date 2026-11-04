@@ -333,7 +333,8 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		text(g, left - 4 - (int)strlen(buffer) * 6, y + 7, buffer, C_LABEL, 1);
 	} else if (GUI_NOTE_SEEN(note)) {
 		const int held = (int)GUI_NOTE_HELD(note);
-		note_name(GUI_NOTE_KEY(note), buffer, sizeof(buffer));
+		// In a chord the last note went to a lent voice; the row shows the key its own voice plays.
+		note_name(held && player == channel ? patch_voice_key(g->source.patch, channel) : (int)GUI_NOTE_KEY(note), buffer, sizeof(buffer));
 		int left = RAIL_W - 6 - (int)strlen(buffer) * 12;
 		text(g, left, y + 3, buffer, held ? C_PLAYING : C_HINT, 2);
 		if (held > 1) {
