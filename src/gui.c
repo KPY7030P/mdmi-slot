@@ -132,6 +132,10 @@ struct mdmi_gui {
 	int bank_top;
 	int bank_seen_channel;
 	bool bank_was_open;
+	// The arrows' last step: the channel, the place it played and the place asked for.
+	int key_channel;
+	int key_from;
+	int key_to;
 
 	// Files dragged over the window, and where they would go: a channel, places from a row, places
 	// added after the last file, or nowhere. The first file's kind and names; instruments counts the
@@ -1399,8 +1403,16 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 		GlobalUnlock(medium.hGlobal);
 	}
 	ReleaseStgMedium(&medium);
-	const char *base = g->file_paths[0];
-	for (const char *c = g->file_paths[0]; *c; c++) {
+	// The name shown is the first instrument's, if there is one among the files.
+	const char *named = g->file_paths[0];
+	for (int i = 0; i < g->file_count; i++) {
+		if (files_kind(g->file_paths[i]) == FILES_INSTRUMENT) {
+			named = g->file_paths[i];
+			break;
+		}
+	}
+	const char *base = named;
+	for (const char *c = named; *c; c++) {
 		base = *c == '\\' || *c == '/' ? c + 1 : base;
 	}
 	snprintf(g->file_name, sizeof(g->file_name), "%s", base);
@@ -1435,6 +1447,8 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 	const patch_values *values = patch_view(g->source.patch);
 	const int page = *g->source.page;
 	const bool many = g->file_count > 1;
+	// The words count only the instruments: one TFI with a stray file is still "the file".
+	const bool several = g->file_instruments > 1;
 	if (!many && g->file_kind != FILES_INSTRUMENT) {
 		hint(g, C_LABEL, g->file_kind < 0 ? "%s: not TFI, VGI or TYI" : "%s: use LOAD", g->file_name);
 		return false;
@@ -1479,7 +1493,7 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		g->drop_lit = g->file_instruments < PATCH_BANK_SIZE - first ? g->file_instruments : PATCH_BANK_SIZE - first;
 		const int last = first + g->drop_lit;
 		const char *to = add ? "ADD to " : "";
-		if (!many) {
+		if (!several) {
 			hint(g, C_TARGET, add ? "%s > ADD to slot %d" : "%s > slot %d, replaces %s", g->file_stem, first + 1, patch_bank_view(g->source.patch)->places[first].name);
 		} else if (g->file_instruments > g->drop_lit) {
 			hint(g, C_TARGET, "%d files > %sslots %d-%d, %d won't fit", g->file_instruments, to, first + 1, last, g->file_instruments - g->drop_lit);
@@ -1487,7 +1501,7 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 			hint(g, C_TARGET, "%d files > %sslots %d-%d", g->file_instruments, to, first + 1, last);
 		}
 		return true;
-	} else if (many) {
+	} else if (several) {
 		hint(g, C_TARGET, "%d files: slot replaces, ADD column adds", g->file_instruments);
 	} else {
 		hint(g, C_TARGET, "%s: slot replaces, ADD column adds", g->file_name);
@@ -1567,8 +1581,16 @@ static bool on_key(mdmi_gui *g, WPARAM key)
 	if ((key != VK_UP && key != VK_DOWN) || *g->source.page != PAGE_BANK || !takes_fm(values, channel)) {
 		return false;
 	}
-	int place = values->channels[channel][PARAM_PRESET] + (key == VK_UP ? -1 : 1);
+	// Until the model takes the last step, the next one goes on from where that one asked to go.
+	const int playing = values->channels[channel][PARAM_PRESET];
+	const bool pending = g->key_channel == channel && playing == g->key_from && g->key_to != g->key_from;
+	int place = (pending ? g->key_to : playing) + (key == VK_UP ? -1 : 1);
 	place = place < 0 ? 0 : place >= PATCH_BANK_SIZE ? PATCH_BANK_SIZE - 1 : place;
+	if (!pending) {
+		g->key_channel = channel;
+		g->key_from = playing;
+	}
+	g->key_to = place;
 	edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
 	if (place < g->bank_top) {
 		scroll_bank(g, place);
@@ -1635,16 +1657,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		if (on_key(g, wparam)) {
 			return 0;
 		}
-		// Other keys, such as Live's computer MIDI keyboard, belong to the host's window.
-		return g->parent ? SendMessageA(g->parent, message, wparam, lparam) : 0;
-	case WM_KEYUP:
-		if (wparam == VK_UP || wparam == VK_DOWN) {
-			return 0;
-		}
-		return g->parent ? SendMessageA(g->parent, message, wparam, lparam) : 0;
+		return DefWindowProcA(window, message, wparam, lparam);
 	case WM_LBUTTONDOWN:
-		// Keys come to the window only while it has the focus; the bank page wants the arrows.
-		if (*g->source.page == PAGE_BANK) {
+		// Keys come to the window only while it has the focus: a click on the bank list takes it, for
+		// the arrows. Whether Live's own keys still work after that is the stage's first check.
+		if (*g->source.page == PAGE_BANK && bank_place_at(g, x, y) >= 0) {
 			SetFocus(window);
 		}
 		on_down(g, x, y);
@@ -1695,6 +1712,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->source = *source;
 	g->scale = 1;
 	g->mouse_x = g->mouse_y = -1;
+	g->key_channel = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
