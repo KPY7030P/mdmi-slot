@@ -65,7 +65,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   marks. The ROM picks the envelope at Note On, so a change is heard from the next note. One the ROM
   doesn't hold goes as SysEx `0A 01` under one of the channel's two service numbers 120-127, used in
   turn, so going back to one of the last two is free; the ROM copies the envelope at Note On, so a
-  sounding note keeps its own. The longest delays a note of the same moment by about 16 ms in the
+  sounding note keeps its own. The longest delays a note of the same moment by 16-18 ms in the
   emulator (`reg_test`). EEF files of Echo shift
   pitch by other steps and load as they are. SysEx `06` and `0A 01` from a clip are dropped.
 
