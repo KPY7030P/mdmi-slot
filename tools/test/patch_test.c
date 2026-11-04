@@ -831,6 +831,38 @@ static void test_envelopes(void)
 	CHECK(files_undo(&files, message, sizeof(message)) && patch_envelope_is_rom(&patch->bank, 9), "undo puts the place back");
 	files_undo(&files, message, sizeof(message));
 
+	// Several envelopes into the bank, and added after the last one from a file.
+	static const char *const PLACES[3] = {"PSG Vibrato.eef", "Duck Guitar.tfi", "PSG Pluck.eef"};
+	char place_paths[3][MAX_PATH];
+	const char *place_list[3];
+	for (int i = 0; i < 3; i++) {
+		path_in(place_paths[i], sizeof(place_paths[i]), files_dir, PLACES[i]);
+		place_list[i] = place_paths[i];
+	}
+	CHECK(files_put_places(&files, place_list, 3, true, 40, NULL, message, sizeof(message)) == 2 && !strcmp(patch->bank.envelopes[40].name, "PSG Pluck")
+		&& !strcmp(patch->bank.envelopes[41].name, "PSG Vibrato") && strstr(message, "skipped 1: Duck Guitar.tfi") && !strcmp(patch->bank.places[40].name, patch_gm_name(40)),
+		"envelopes into places 41-42 by name, the TFI skipped: %s", message);
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "envelopes before 2 files"), "undo would put the envelopes back: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	CHECK(files_put_places(&files, place_list, 3, true, -1, NULL, message, sizeof(message)) == 2 && !strcmp(patch->bank.envelopes[42].name, "PSG Pluck"), "added after them: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_envelope_is_rom(&patch->bank, 42) && !strcmp(patch->bank.envelopes[41].name, "PSG Vibrato"), "undo takes the added ones away");
+
+	// A place from 121 on is a place: Plain there is the channel's own service number holding it,
+	// not program 127, which belongs to channel 10.
+	patch_init(patch);
+	set(patch, PATCH_CHANNEL_ID(6, PARAM_PRESET), 80);
+	clear();
+	set(patch, PATCH_CHANNEL_ID(6, PARAM_PRESET), 126);
+	CHECK(last_program(6) == 120, "Preset 127 on channel 7 plays under 120, its own number: %d", last_program(6));
+	// After SysEx we can't read, the service numbers hold what we don't know, until stored again.
+	patch_init(patch);
+	open_file(&files, files_dir, "PSG Organ.eef", 6, -1, message);
+	sync(patch);
+	const uint8_t other[] = {0xF0, 0x00, 0x22, 0x77, 0x03, 0x00, 0xF7};
+	patch_midi(patch, other, sizeof(other), record, NULL);
+	clear();
+	set(patch, PATCH_CHANNEL_ID(6, PARAM_PRESET), 126);
+	CHECK(stored_envelope(&program, &length) != NULL, "after SysEx we can't read, Plain is stored again, not trusted to be under 121");
+
 	// Bad files.
 	static patch_bank kept;
 	kept = patch->bank;

@@ -64,7 +64,9 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   replaces the place; SAVE writes the channel as EEF. An envelope holds at most 124 steps with its loop
   marks. The ROM picks the envelope at Note On, so a change is heard from the next note. One the ROM
   doesn't hold goes as SysEx `0A 01` under one of the channel's two service numbers 120-127, used in
-  turn: the longest delays a note of the same moment by about 16 ms (`reg_test`). EEF files of Echo shift
+  turn, so going back to one of the last two is free; the ROM copies the envelope at Note On, so a
+  sounding note keeps its own. The longest delays a note of the same moment by about 16 ms in the
+  emulator (`reg_test`). EEF files of Echo shift
   pitch by other steps and load as they are. SysEx `06` and `0A 01` from a clip are dropped.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears

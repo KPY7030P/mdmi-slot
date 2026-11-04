@@ -73,8 +73,8 @@ typedef struct {
 
 // A PSG envelope with its name: a place of the bank's second list, or what a PSG channel has (D28).
 // The steps are EEF bytes as the ROM holds them up to the first EEF_END, and EEF_END after it, so
-// two envelopes compare whole. The ROM stores 125 steps, but a SysEx of 125 leaves no room for its
-// F7 in the ROM's receive buffer, so the plugin keeps to 124.
+// two envelopes compare whole. 124 steps at most: a SysEx of 125 would leave no room for its F7 in
+// the ROM's receive buffer.
 #define PATCH_ENVELOPE_STEPS 124
 #define PATCH_EEF_END 0xFF
 #define PATCH_EEF_LOOP_START 0xFE
@@ -122,8 +122,7 @@ typedef struct {
 	// Which of its two service programs each FM channel uses next.
 	bool alternate[PATCH_NUM_FM_CHANNELS];
 	// The program number each PSG channel has, and what the next note of a PSG channel plays under a
-	// service number. The same two numbers per channel, taken in turn, so a sounding note keeps its
-	// envelope while the next one is stored.
+	// service number. Two numbers per channel, taken in turn, keep its last two envelopes.
 	int16_t psg_programs[PATCH_NUM_PSG_CHANNELS];
 	uint8_t psg_stored[PATCH_PSG_SERVICE_PROGRAMS][PATCH_ENVELOPE_STEPS + 1];
 	bool psg_alternate[PATCH_NUM_PSG_CHANNELS];

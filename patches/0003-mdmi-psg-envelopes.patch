@@ -68,20 +68,22 @@ index 731aa8c..f85f64f 100644
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..2d33546 100644
+index 82a5655..0ef6018 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
-@@ -48,6 +48,9 @@ typedef struct MidiPsgChannel {
+@@ -48,6 +48,11 @@ typedef struct MidiPsgChannel {
  static u8 userDefinedEnvelope[256];
  static u8* userDefinedEnvelopePtr;
  static const u8** envelopes;
-+// MDMI plugin fork, 2026-11-04: envelopes stored per program, like FM user presets.
++// MDMI plugin fork, 2026-11-04: envelopes stored per program, like FM user presets. A note plays a
++// copy of its stored envelope, so storing another under the same program can't change it.
 +static u8 storedEnvelopes[MIDI_PROGRAMS][MAX_STORED_ENVELOPE_STEPS + 1];
 +static const u8* activeStoredEnvelopes[MIDI_PROGRAMS];
++static u8 playingEnvelopes[MAX_PSG_CHANS][MAX_STORED_ENVELOPE_STEPS + 1];
  static MidiPsgChannel psgChannels[MAX_PSG_CHANS];
  
  static u16 tone_for_midi_key(u8 midiKey);
-@@ -67,6 +70,7 @@ void midi_psg_init(const u8** defaultEnvelopes)
+@@ -67,6 +72,7 @@ void midi_psg_init(const u8** defaultEnvelopes)
  void midi_psg_reset(void)
  {
      userDefinedEnvelopePtr = NULL;
@@ -89,25 +91,32 @@ index 82a5655..2d33546 100644
      for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
          MidiPsgChannel* psgChan = psg_channel(chan);
          psgChan->attenuation = PSG_ATTENUATION_SILENCE;
-@@ -85,8 +89,10 @@ void midi_psg_reset(void)
+@@ -85,8 +91,18 @@ void midi_psg_reset(void)
  
  static void init_envelope(MidiPsgChannel* psgChan)
  {
 -    psgChan->envelopeStep
 -        = userDefinedEnvelopePtr != NULL ? userDefinedEnvelopePtr : envelopes[psgChan->envelope];
 +    const u8* stored = activeStoredEnvelopes[psgChan->envelope];
-+    psgChan->envelopeStep = userDefinedEnvelopePtr != NULL ? userDefinedEnvelopePtr
-+        : stored != NULL                                    ? stored
-+                                                            : envelopes[psgChan->envelope];
++    if (userDefinedEnvelopePtr == NULL && stored != NULL) {
++        u8* copy = playingEnvelopes[psgChan->chanNum];
++        u16 i = 0;
++        do {
++            copy[i] = stored[i];
++        } while (stored[i++] != EEF_END);
++        psgChan->envelopeStep = copy;
++    } else {
++        psgChan->envelopeStep
++            = userDefinedEnvelopePtr != NULL ? userDefinedEnvelopePtr : envelopes[psgChan->envelope];
++    }
      psgChan->envelopeLoopStart = NULL;
  }
  
-@@ -293,6 +299,16 @@ void midi_psg_load_envelope(const u8* eef)
+@@ -293,6 +309,15 @@ void midi_psg_load_envelope(const u8* eef)
      userDefinedEnvelopePtr = userDefinedEnvelope;
  }
  
-+// The tail is filled with EEF_END, so a note still playing an envelope that is overwritten with a
-+// shorter one stops at the new end instead of reading what was left of the old one.
++// The tail is filled with EEF_END, so a copy ends within the slot whatever was stored before.
 +void midi_psg_store_envelope(u8 program, const u8* eef, u16 length)
 +{
 +    u8* slot = storedEnvelopes[program];
@@ -120,25 +129,26 @@ index 82a5655..2d33546 100644
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
 diff --git a/src/midi_psg.h b/src/midi_psg.h
-index e5bb02e..67bd007 100644
+index e5bb02e..2a91b72 100644
 --- a/src/midi_psg.h
 +++ b/src/midi_psg.h
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,8 @@
  #define EEF_LOOP_END 0xFD
  
  #define MAX_PSG_CHANS 4
-+#define MAX_STORED_ENVELOPE_STEPS 125
++// A SysEx of 125 steps leaves no room for its F7 in the receive buffer.
++#define MAX_STORED_ENVELOPE_STEPS 124
  
  #define PSG_ATTENUATION_SILENCE 0xF
  #define PSG_ATTENUATION_LOUDEST 0
-@@ -24,4 +25,5 @@ void midi_psg_program(u8 chan, u8 program);
+@@ -24,4 +26,5 @@ void midi_psg_program(u8 chan, u8 program);
  void midi_psg_pan(u8 chan, u8 pan);
  void midi_psg_tick(u16 delta);
  void midi_psg_load_envelope(const u8* eef);
 +void midi_psg_store_envelope(u8 program, const u8* eef, u16 length);
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..c373850 100644
+index d2449c4..812efd5 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -150,12 +160,12 @@ index d2449c4..c373850 100644
 +        midi_test(test_midi_sysex_reset_restores_default_psg_envelopes),
 +        midi_test(test_midi_sysex_stores_longest_psg_envelope),
 +        midi_test(test_midi_sysex_rejects_too_long_psg_envelope),
-+        midi_test(test_midi_sysex_overwritten_psg_envelope_stops_at_its_new_end),
++        midi_test(test_midi_sysex_overwritten_psg_envelope_waits_for_next_note),
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
-index 9ce9691..5d4d32a 100644
+index 9ce9691..8a738a6 100644
 --- a/tests/unit/test_midi_sysex.c
 +++ b/tests/unit/test_midi_sysex.c
 @@ -2,6 +2,7 @@
@@ -175,7 +185,7 @@ index 9ce9691..5d4d32a 100644
  
      expect_log_warn("Invalid store program type: %d");
      __real_midi_sysex(sequence, sizeof(sequence));
-@@ -642,3 +643,118 @@ void test_midi_sysex_validates_dump_channel_bounds(UNUSED void** state)
+@@ -642,3 +643,121 @@ void test_midi_sysex_validates_dump_channel_bounds(UNUSED void** state)
      expect_log_warn("Invalid MIDI channel: %d");
      __real_midi_sysex(unassigned_midi_chan_seq, sizeof(unassigned_midi_chan_seq));
  }
@@ -279,7 +289,7 @@ index 9ce9691..5d4d32a 100644
 +    play_first_step(MIDI_CHANNEL_7, PSG_CH1, PSG_ATTENUATION_LOUDEST);
 +}
 +
-+void test_midi_sysex_overwritten_psg_envelope_stops_at_its_new_end(UNUSED void** state)
++void test_midi_sysex_overwritten_psg_envelope_waits_for_next_note(UNUSED void** state)
 +{
 +    const u8 longer[] = { 0x01, 0x02, 0x03 };
 +    const u8 shorter[] = { 0x04 };
@@ -291,11 +301,14 @@ index 9ce9691..5d4d32a 100644
 +    __real_midi_psg_tick();
 +
 +    store_psg_envelope(2, shorter, sizeof(shorter));
-+    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_SILENCE);
++    expect_psg_attenuation(PSG_CH1, 3);
 +    __real_midi_psg_tick();
++
++    expect_psg_attenuation(PSG_CH1, 4);
++    __real_midi_note_on(MIDI_CHANNEL_7, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
 +}
 diff --git a/tests/unit/test_midi_sysex.h b/tests/unit/test_midi_sysex.h
-index 10cb29f..f575aa9 100644
+index 10cb29f..6e5800b 100644
 --- a/tests/unit/test_midi_sysex.h
 +++ b/tests/unit/test_midi_sysex.h
 @@ -34,3 +34,9 @@ void test_midi_sysex_ping_returns_pong(UNUSED void** state);
@@ -307,4 +320,4 @@ index 10cb29f..f575aa9 100644
 +void test_midi_sysex_reset_restores_default_psg_envelopes(UNUSED void** state);
 +void test_midi_sysex_stores_longest_psg_envelope(UNUSED void** state);
 +void test_midi_sysex_rejects_too_long_psg_envelope(UNUSED void** state);
-+void test_midi_sysex_overwritten_psg_envelope_stops_at_its_new_end(UNUSED void** state);
++void test_midi_sysex_overwritten_psg_envelope_waits_for_next_note(UNUSED void** state);
