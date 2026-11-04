@@ -38,9 +38,16 @@ void files_init(mdmi_files *files, const files_host *host);
 void files_free(mdmi_files *files);
 // What a file is by its name, or -1.
 int files_kind(const char *path);
-// An instrument goes to the channel, or to the place of the bank when place >= 0; a bank or a
-// snapshot to everything. The message says what happened, or why nothing did. Paths are UTF-8.
-bool files_open(mdmi_files *files, const char *path, int channel, int place, char *message, size_t size);
+// An instrument goes to the channel, a bank or a snapshot to everything. The message says what
+// happened, or why nothing did. Paths are UTF-8.
+bool files_open(mdmi_files *files, const char *path, int channel, char *message, size_t size);
+// Instruments into the bank one after another in the order of their names, from the place first, or
+// from files_add_place when first < 0 (D26). Files that can't be read, or that come after place 128,
+// are skipped and counted in the message and skipped. One undo step puts the bank back. Returns how
+// many went in.
+int files_put_places(mdmi_files *files, const char *const *paths, int count, int first, int *skipped, char *message, size_t size);
+// The place after the last one that differs from GM; PATCH_BANK_SIZE when that is the last.
+int files_add_place(const mdmi_files *files);
 bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size);
 bool files_undo(mdmi_files *files, char *message, size_t size);
 // What undo would put back, or NULL.

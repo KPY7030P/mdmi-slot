@@ -161,16 +161,12 @@ static bool put_state(mdmi_files *files, int kind, const uint8_t *bytes, size_t 
 	return true;
 }
 
-bool files_open(mdmi_files *files, const char *path, int channel, int place, char *message, size_t size)
+// An instrument file read whole, or why it can't be.
+static bool read_instrument(const char *path, patch_instrument *instrument, char *message, size_t size)
 {
 	const char *name = base_of(path);
-	const int kind = files_kind(path);
-	if (kind < 0) {
+	if (files_kind(path) != FILES_INSTRUMENT) {
 		snprintf(message, size, "%s: not TFI, VGI or TYI", name);
-		return false;
-	}
-	if (kind == FILES_INSTRUMENT && place < 0 && (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS)) {
-		snprintf(message, size, "FM file: select CH1-6");
 		return false;
 	}
 	size_t length = 0;
@@ -179,26 +175,136 @@ bool files_open(mdmi_files *files, const char *path, int channel, int place, cha
 		snprintf(message, size, "%s: can't be read", name);
 		return false;
 	}
-	bool done;
-	if (kind == FILES_INSTRUMENT) {
-		patch_instrument instrument;
-		char error[FILES_MESSAGE];
-		done = instrument_parse(path, bytes, length, &instrument, error, sizeof(error));
-		if (!done) {
-			snprintf(message, size, "%s: %s", name, error);
-		} else if (place >= 0) {
-			put_in_place(files, place & (PATCH_BANK_SIZE - 1), &instrument);
-			snprintf(message, size, "Loaded %s to slot %d", instrument.name, place + 1);
-		} else {
-			put_on_channel(files, channel, &instrument);
-			snprintf(message, size, "Loaded %s to CH%d", instrument.name, channel + 1);
-		}
-	} else {
-		done = put_state(files, kind, bytes, length);
-		snprintf(message, size, done ? "Loaded %s" : "%s: not an MDMI bank or snapshot", name);
+	char error[FILES_MESSAGE];
+	const bool done = instrument_parse(path, bytes, length, instrument, error, sizeof(error));
+	if (!done) {
+		snprintf(message, size, "%s: %s", name, error);
 	}
 	free(bytes);
 	return done;
+}
+
+bool files_open(mdmi_files *files, const char *path, int channel, char *message, size_t size)
+{
+	const char *name = base_of(path);
+	const int kind = files_kind(path);
+	if (kind < 0) {
+		snprintf(message, size, "%s: not TFI, VGI or TYI", name);
+		return false;
+	}
+	if (kind == FILES_INSTRUMENT) {
+		if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
+			snprintf(message, size, "FM file: select CH1-6");
+			return false;
+		}
+		patch_instrument instrument;
+		if (!read_instrument(path, &instrument, message, size)) {
+			return false;
+		}
+		put_on_channel(files, channel, &instrument);
+		snprintf(message, size, "Loaded %s to CH%d", instrument.name, channel + 1);
+		return true;
+	}
+	size_t length = 0;
+	uint8_t *bytes = read_all(path, &length);
+	if (!bytes) {
+		snprintf(message, size, "%s: can't be read", name);
+		return false;
+	}
+	const bool done = put_state(files, kind, bytes, length);
+	snprintf(message, size, done ? "Loaded %s" : "%s: not an MDMI bank or snapshot", name);
+	free(bytes);
+	return done;
+}
+
+int files_add_place(const mdmi_files *files)
+{
+	const patch_bank *bank = patch_bank_view(files->host.patch);
+	int place = PATCH_BANK_SIZE;
+	while (place > 0 && patch_place_is_gm(bank, place - 1)) {
+		place--;
+	}
+	return place;
+}
+
+static int by_name(const void *a, const void *b)
+{
+	return _stricmp(base_of(*(const char *const *)a), base_of(*(const char *const *)b));
+}
+
+int files_put_places(mdmi_files *files, const char *const *paths, int count, int first, int *skipped, char *message, size_t size)
+{
+	if (skipped) {
+		*skipped = count;
+	}
+	if (first < 0) {
+		first = files_add_place(files);
+	}
+	const char **sorted = malloc(sizeof(*sorted) * (size_t)count);
+	patch_bank *bank = malloc(sizeof(*bank));
+	if (!sorted || !bank || count < 1) {
+		free(sorted);
+		free(bank);
+		snprintf(message, size, "Nothing to load");
+		return false;
+	}
+	memcpy(sorted, paths, sizeof(*sorted) * (size_t)count);
+	qsort(sorted, (size_t)count, sizeof(*sorted), by_name);
+	*bank = *patch_bank_view(files->host.patch);
+
+	int place = first, unread = 0, no_room = 0;
+	char why[FILES_MESSAGE] = "";
+	const char *first_unread = "";
+	for (int i = 0; i < count; i++) {
+		char error[FILES_MESSAGE];
+		patch_instrument instrument;
+		if (place >= PATCH_BANK_SIZE) {
+			no_room++;
+		} else if (read_instrument(sorted[i], &instrument, error, sizeof(error))) {
+			bank->places[place++] = instrument;
+		} else if (unread++ == 0) {
+			snprintf(why, sizeof(why), "%s", error);
+			first_unread = base_of(sorted[i]);
+		}
+	}
+	const int loaded = place - first;
+	if (loaded == 0) {
+		if (first >= PATCH_BANK_SIZE) {
+			snprintf(message, size, "Bank is full to 128");
+		} else if (count == 1) {
+			snprintf(message, size, "%s", why);
+		} else {
+			snprintf(message, size, "Nothing loaded: %d files not read", count);
+		}
+	} else if (loaded == 1) {
+		const patch_instrument instrument = bank->places[first];
+		put_in_place(files, first, &instrument);
+		snprintf(message, size, "Loaded %s to slot %d", instrument.name, first + 1);
+	} else {
+		size_t before_size;
+		uint8_t *before = state_build(files->host.patch, NULL, &before_size);
+		patch_load_bank(files->host.patch, bank);
+		if (before) {
+			remember(files, UNDO_STATE, FILES_BANK, NULL, before, before_size);
+			snprintf(files->undo_text, sizeof(files->undo_text), "bank before %d files", loaded);
+		}
+		files->host.handed(files->host.context, false);
+		snprintf(message, size, "Loaded %d to slots %d-%d", loaded, first + 1, place);
+	}
+	if (loaded > 0) {
+		const size_t used = strlen(message);
+		if (unread) {
+			snprintf(message + used, size - used, ", skipped %d: %s", unread + no_room, first_unread);
+		} else if (no_room) {
+			snprintf(message + used, size - used, ", %d didn't fit", no_room);
+		}
+	}
+	if (skipped) {
+		*skipped = unread + no_room;
+	}
+	free(sorted);
+	free(bank);
+	return loaded;
 }
 
 bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size)

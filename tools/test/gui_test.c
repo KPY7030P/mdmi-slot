@@ -412,6 +412,18 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK) > 1000, "and lights its row");
 		save_bmp(argv[2], "bank");
+		// Arrows step the place from what the model plays, each press one gesture, about as fast as a
+		// key repeats; past the first place nothing moves.
+		for (int i = 0; i < 2; i++) {
+			SendMessageA(window, WM_KEYDOWN, VK_DOWN, 0);
+			run_ms(50);
+		}
+		CHECK(get_value(CH4_PRESET) == 4, "two arrows down move channel 4 to place 5");
+		for (int i = 0; i < 6; i++) {
+			SendMessageA(window, WM_KEYDOWN, VK_UP, 0);
+			run_ms(50);
+		}
+		CHECK(get_value(CH4_PRESET) == 0, "arrows up stop at place 1");
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 

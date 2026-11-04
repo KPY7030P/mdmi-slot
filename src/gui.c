@@ -42,6 +42,7 @@
 #define BUTTON_ROM_X (BUTTON_BANK_X + BUTTON_W + 4)
 #define STATUS_X 316
 #define ACTION_W 56
+#define ACTION_ADD_X 476
 #define ACTION_LOAD_X 536
 #define ACTION_SAVE_X 596
 #define ACTION_UNDO_X 656
@@ -74,6 +75,9 @@
 #define BANK_ROWS 19
 #define BANK_RIGHT 698
 #define BANK_DOTS_X 616
+// While files are dragged the rows left of this replace and the FILE and dots column adds (D26).
+#define BANK_ADD_X 576
+#define BANK_ADD_Y 56
 #define SCROLL_X 702
 #define SCROLL_H (BANK_ROWS * BANK_ROW_H)
 #define BANK_TOP_MAX (PATCH_BANK_SIZE - BANK_ROWS)
@@ -84,7 +88,7 @@
 
 // Saved with the project, so the numbers stay.
 enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK };
-enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTIONS };
+enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTIONS };
 
 typedef struct {
 	IDropTarget iface;
@@ -129,27 +133,35 @@ struct mdmi_gui {
 	int bank_seen_channel;
 	bool bank_was_open;
 
-	// A file dragged over the window, and where it would go: a channel, a place, or nowhere.
+	// Files dragged over the window, and where they would go: a channel, places from a row, places
+	// added after the last file, or nowhere. The first file's kind and names; instruments counts the
+	// TFI, VGI and TYI among them.
 	drop_target drop;
 	bool drop_registered;
 	bool ole_ready;
 	bool file_over;
 	int file_kind;
 	int file_count;
-	char file_path[MAX_PATH * 3];
+	int file_instruments;
+	char file_paths[PATCH_BANK_SIZE][MAX_PATH * 3];
 	char file_name[64];
 	char file_stem[64];
 	int drop_channel;
 	int drop_place;
+	bool drop_add;
+	// The places lit for the drop.
+	int drop_first;
+	int drop_lit;
 	char drop_hint[FILES_MESSAGE];
 	uint32_t drop_hint_color;
 
-	// The footer's message, and the row a file just went to.
+	// The footer's message, and the row or places a file just went to.
 	char message[FILES_MESSAGE];
 	uint32_t message_color;
 	int message_ticks;
 	int flash_channel;
 	int flash_place;
+	int flash_count;
 	int flash_ticks;
 	uint32_t flash_color;
 };
@@ -683,10 +695,14 @@ static int rail_channel_at(int x, int y)
 	return -1;
 }
 
-static int action_at(int x, int y)
+// ADD is there only on the bank page.
+static int action_at(const mdmi_gui *g, int x, int y)
 {
-	static const int X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X};
+	static const int X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X};
 	for (int action = 0; action < ACTIONS; action++) {
+		if (action == ACTION_ADD && *g->source.page != PAGE_BANK) {
+			continue;
+		}
 		if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H && x >= X[action] && x < X[action] + ACTION_W) {
 			return action;
 		}
@@ -697,10 +713,24 @@ static int action_at(int x, int y)
 // What a press of the button under the mouse would do, for the footer.
 static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 {
-	const int action = g->file_over ? -1 : action_at(g->mouse_x, g->mouse_y);
+	const int action = g->file_over ? -1 : action_at(g, g->mouse_x, g->mouse_y);
 	const int channel = *g->source.channel;
+	const patch_values *values = patch_view(g->source.patch);
 	const char *undo = files_undo_text(g->source.files);
-	if (action == ACTION_LOAD) {
+	const int add = files_add_place(g->source.files);
+	if (action == ACTION_LOAD && *g->source.page == PAGE_BANK) {
+		if (takes_fm(values, channel)) {
+			snprintf(hint, size, "LOAD: files from slot %d on, bank or snapshot", values->channels[channel][PARAM_PRESET] + 1);
+		} else {
+			snprintf(hint, size, "LOAD: select CH1-6 for slots, bank, snapshot");
+		}
+	} else if (action == ACTION_ADD) {
+		if (add < PATCH_BANK_SIZE) {
+			snprintf(hint, size, "ADD: files to slots from %d", add + 1);
+		} else {
+			snprintf(hint, size, "ADD: bank is full to 128");
+		}
+	} else if (action == ACTION_LOAD) {
 		snprintf(hint, size, "LOAD: file to CH%d, bank or snapshot", channel + 1);
 	} else if (action == ACTION_SAVE) {
 		snprintf(hint, size, channel_is_fm(channel) ? "SAVE: CH%d as VGI, the bank or a snapshot" : "SAVE: the bank or a snapshot", channel + 1);
@@ -790,22 +820,33 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	const patch_bank *bank = patch_bank_view(g->source.patch);
 	text(g, 250, BANK_HEADER_Y, "PRG", C_HINT, 1);
 	text(g, 298, BANK_HEADER_Y, usable ? "NAME" : "FM SOUNDS. SELECT CH 1-6", usable ? C_HINT : C_LABEL, 1);
-	text(g, 580, BANK_HEADER_Y, "FILE", C_HINT, 1);
+	// While instruments are dragged the column header says what dropping on the column does.
+	const bool instruments_over = g->file_over && g->file_instruments > 0;
+	const bool full = files_add_place(g->source.files) >= PATCH_BANK_SIZE;
 	char buffer[64];
-	for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
-		snprintf(buffer, sizeof(buffer), "%d", c + 1);
-		text(g, BANK_DOTS_X + c * 12, BANK_HEADER_Y, buffer, c == channel ? C_TEXT : is_dac(values, c) ? C_LINE : C_HINT, 1);
+	if (instruments_over) {
+		if (g->drop_add) {
+			fill(g, 580, BANK_ADD_Y, 118, 14, C_TARGET);
+		}
+		text(g, 621, BANK_ADD_Y, "ADD", g->drop_add ? C_BG : full ? C_LINE : C_TARGET, 2);
+	} else {
+		text(g, 580, BANK_HEADER_Y, "FILE", C_HINT, 1);
+		for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
+			snprintf(buffer, sizeof(buffer), "%d", c + 1);
+			text(g, BANK_DOTS_X + c * 12, BANK_HEADER_Y, buffer, c == channel ? C_TEXT : is_dac(values, c) ? C_LINE : C_HINT, 1);
+		}
 	}
 	const bool own = usable && plays_own_file(g, values, channel);
 	const int hover = g->file_over ? -1 : bank_place_at(g, g->mouse_x, g->mouse_y);
+	const bool aimed = g->file_over && (g->drop_place >= 0 || g->drop_add);
 	for (int row = 0; row < BANK_ROWS; row++) {
 		const int place = g->bank_top + row, y = BANK_Y + row * BANK_ROW_H;
 		const bool selected = usable && preset == place;
-		const bool target = g->file_over && g->drop_place == place;
-		const bool flash = g->flash_ticks > 0 && g->flash_place == place;
-		const bool from_file = strcmp(bank->places[place].name, patch_gm_name(place)) != 0;
+		const bool target = aimed && place >= g->drop_first && place < g->drop_first + g->drop_lit;
+		const bool flash = g->flash_ticks > 0 && place >= g->flash_place && place < g->flash_place + g->flash_count;
+		const bool from_file = !patch_place_is_gm(bank, place);
 		if (target) {
-			fill(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, C_TARGET);
+			fill(g, BANK_X, y, BANK_ADD_X - BANK_X, BANK_ROW_H - 1, C_TARGET);
 		} else if (flash && g->flash_color == C_LINE) {
 			fill(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, C_LINE);
 		} else if (selected) {
@@ -820,13 +861,13 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 		snprintf(buffer, sizeof(buffer), "%.*s", NAME_CHARS, bank->places[place].name);
 		text(g, 298, y + 3, buffer, target ? C_BG : !usable ? C_HINT : from_file ? C_TEXT : C_LABEL, 2);
 		if (from_file) {
-			text(g, 580, y + 7, "FILE", target ? C_BG : C_FM_LIGHT, 1);
+			text(g, 580, y + 7, "FILE", C_FM_LIGHT, 1);
 		}
 		for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
 			if (!takes_fm(values, c) || values->channels[c][PARAM_PRESET] != place) {
 				continue;
 			}
-			const uint32_t color = target ? C_BG : c == channel ? C_TEXT : C_FM_LIGHT;
+			const uint32_t color = c == channel ? C_TEXT : C_FM_LIGHT;
 			if (plays_own_file(g, values, c)) {
 				frame(g, BANK_DOTS_X + c * 12, y + 7, 6, 6, color);
 			} else {
@@ -842,12 +883,19 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	fill(g, SCROLL_X, BANK_Y, 6, SCROLL_H, C_CELL);
 	const bool over_scroll = g->mouse_x >= SCROLL_X && g->mouse_x < SCROLL_X + 6 && g->mouse_y >= BANK_Y && g->mouse_y < BANK_Y + SCROLL_H;
 	fill(g, SCROLL_X, BANK_Y + g->bank_top * SCROLL_H / PATCH_BANK_SIZE, 6, SCROLL_H * BANK_ROWS / PATCH_BANK_SIZE, over_scroll ? C_LABEL : C_LINE);
+	// The lit places show on the track too, where the list doesn't reach.
+	if (aimed && g->drop_lit > 0) {
+		const int h = g->drop_lit * SCROLL_H / PATCH_BANK_SIZE;
+		fill(g, SCROLL_X, BANK_Y + g->drop_first * SCROLL_H / PATCH_BANK_SIZE, 6, h < 3 ? 3 : h, C_TARGET);
+	}
 	if (usable) {
 		fill(g, SCROLL_X, BANK_Y + preset * SCROLL_H / PATCH_BANK_SIZE, 6, 3, C_FM);
 	}
-	if (g->file_over && g->file_kind == FILES_INSTRUMENT && g->file_count == 1) {
-		frame(g, 240, 70, 460, 384, C_TARGET);
-		frame(g, 241, 71, 458, 382, C_TARGET);
+	if (instruments_over) {
+		frame(g, 240, 70, 336, 384, C_TARGET);
+		frame(g, 241, 71, 334, 382, C_TARGET);
+		frame(g, 578, 54, 122, 400, full ? C_LINE : C_TARGET);
+		frame(g, 579, 55, 120, 398, full ? C_LINE : C_TARGET);
 	}
 }
 
@@ -927,7 +975,7 @@ static void draw_status(mdmi_gui *g)
 // Buttons that do something, drawn unlike the page switches.
 static void action_button(mdmi_gui *g, int action, int x, const char *label, bool enabled)
 {
-	const bool over = enabled && !g->file_over && action_at(g->mouse_x, g->mouse_y) == action;
+	const bool over = enabled && !g->file_over && action_at(g, g->mouse_x, g->mouse_y) == action;
 	fill(g, x, BUTTON_Y, ACTION_W, BUTTON_H, C_BG);
 	frame(g, x, BUTTON_Y, ACTION_W, BUTTON_H, !enabled ? C_CELL : over ? C_TEXT : C_LINE);
 	const int width = (int)strlen(label) * 12;
@@ -948,6 +996,9 @@ static void render(mdmi_gui *g)
 	action_button(g, ACTION_LOAD, ACTION_LOAD_X, "LOAD", true);
 	action_button(g, ACTION_SAVE, ACTION_SAVE_X, "SAVE", true);
 	action_button(g, ACTION_UNDO, ACTION_UNDO_X, "UNDO", files_undo_text(g->source.files) != NULL);
+	if (page == PAGE_BANK) {
+		action_button(g, ACTION_ADD, ACTION_ADD_X, "ADD", files_add_place(g->source.files) < PATCH_BANK_SIZE);
+	}
 	if (rom) {
 		g->cell_count = 0;
 		draw_rom(g);
@@ -1004,30 +1055,45 @@ static int drag_value(int start, int max, int dy)
 	return value < 0 ? 0 : value > max ? max : value;
 }
 
-static void flash(mdmi_gui *g, int channel, int place, bool done)
+static void flash(mdmi_gui *g, int channel, int place, int count, bool done)
 {
 	g->flash_channel = channel;
 	g->flash_place = place;
+	g->flash_count = count;
 	g->flash_color = done ? C_LINE : C_ERROR;
 	g->flash_ticks = FLASH_TICKS;
 }
 
-// Opens a file onto a channel or a place, and says how it went.
-static void open_file(mdmi_gui *g, const char *path, int channel, int place)
+// Opens a file onto a channel, or a bank or a snapshot, and says how it went.
+static void open_file(mdmi_gui *g, const char *path, int channel)
 {
 	char message[FILES_MESSAGE];
 	const patch_values *values = patch_view(g->source.patch);
 	bool done;
-	if (files_kind(path) == FILES_INSTRUMENT && place < 0 && channel_is_fm(channel) && is_dac(values, channel)) {
+	if (files_kind(path) == FILES_INSTRUMENT && channel_is_fm(channel) && is_dac(values, channel)) {
 		snprintf(message, sizeof(message), "CH6 plays samples: DAC is on");
 		done = false;
 	} else {
-		done = files_open(g->source.files, path, channel, place, message, sizeof(message));
+		done = files_open(g->source.files, path, channel, message, sizeof(message));
 	}
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
 	if (files_kind(path) == FILES_INSTRUMENT) {
-		flash(g, place < 0 ? channel : -1, place, done);
+		flash(g, channel, -1, 0, done);
 	}
+}
+
+// Instruments into the bank from a place, or added after the last file when first < 0 (D26).
+static void put_places(mdmi_gui *g, const char *const *paths, int count, int first)
+{
+	char message[FILES_MESSAGE];
+	if (first < 0) {
+		first = files_add_place(g->source.files);
+	}
+	int skipped;
+	const int loaded = files_put_places(g->source.files, paths, count, first, &skipped, message, sizeof(message));
+	say(g, message, !loaded ? C_ERROR : skipped ? C_TARGET : C_TEXT, loaded && !skipped ? MESSAGE_TICKS : ERROR_TICKS);
+	// The places filled, or the one the files were aimed at.
+	flash(g, -1, first, loaded ? loaded : 1, loaded > 0);
 }
 
 static void to_utf8(const wchar_t *wide, char *out, size_t size)
@@ -1037,22 +1103,58 @@ static void to_utf8(const wchar_t *wide, char *out, size_t size)
 	}
 }
 
-static void load_dialog(mdmi_gui *g)
+#define DIALOG_CHARS 32768
+
+// LOAD on the editor takes one file for the channel. On the bank page, and for ADD, several
+// instruments go to places; a bank or a snapshot alone still loads whole.
+static void load_dialog(mdmi_gui *g, bool add)
 {
-	wchar_t path[MAX_PATH] = L"";
+	const bool bank = add || *g->source.page == PAGE_BANK;
+	const patch_values *values = patch_view(g->source.patch);
+	const int channel = *g->source.channel;
+	wchar_t *buffer = calloc(DIALOG_CHARS, sizeof(wchar_t));
+	if (!buffer) {
+		return;
+	}
 	OPENFILENAMEW dialog = {0};
 	dialog.lStructSize = sizeof(dialog);
 	dialog.hwndOwner = g->window;
-	dialog.lpstrFilter = L"MDMI files (*.tfi;*.vgi;*.tyi;*.mdbank;*.mdsnap)\0*.tfi;*.vgi;*.tyi;*.mdbank;*.mdsnap\0All files\0*.*\0";
-	dialog.lpstrFile = path;
-	dialog.nMaxFile = MAX_PATH;
-	dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+	dialog.lpstrFilter = add ? L"Instruments (*.tfi;*.vgi;*.tyi)\0*.tfi;*.vgi;*.tyi\0All files\0*.*\0"
+		: L"MDMI files (*.tfi;*.vgi;*.tyi;*.mdbank;*.mdsnap)\0*.tfi;*.vgi;*.tyi;*.mdbank;*.mdsnap\0All files\0*.*\0";
+	dialog.lpstrFile = buffer;
+	dialog.nMaxFile = DIALOG_CHARS;
+	dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (bank ? OFN_ALLOWMULTISELECT | OFN_EXPLORER : 0);
 	if (!GetOpenFileNameW(&dialog)) {
+		free(buffer);
 		return;
 	}
-	char utf8[MAX_PATH * 3];
-	to_utf8(path, utf8, sizeof(utf8));
-	open_file(g, utf8, *g->source.channel, -1);
+	// Several files come as the folder, then each name; one file as its whole path.
+	const wchar_t *folder = buffer, *name = buffer + wcslen(buffer) + 1;
+	int count = 0;
+	if (!*name) {
+		to_utf8(buffer, g->file_paths[count++], sizeof(g->file_paths[0]));
+	}
+	for (; *name && count < PATCH_BANK_SIZE; name += wcslen(name) + 1) {
+		wchar_t path[MAX_PATH * 2];
+		_snwprintf(path, MAX_PATH * 2, L"%s\\%s", folder, name);
+		path[MAX_PATH * 2 - 1] = 0;
+		to_utf8(path, g->file_paths[count++], sizeof(g->file_paths[0]));
+	}
+	free(buffer);
+
+	const char *paths[PATCH_BANK_SIZE];
+	for (int i = 0; i < count; i++) {
+		paths[i] = g->file_paths[i];
+	}
+	if (!bank || (count == 1 && !add && files_kind(paths[0]) != FILES_INSTRUMENT)) {
+		open_file(g, paths[0], channel);
+	} else if (add) {
+		put_places(g, paths, count, -1);
+	} else if (!takes_fm(values, channel)) {
+		say(g, "Select CH1-6 to choose a slot", C_ERROR, ERROR_TICKS);
+	} else {
+		put_places(g, paths, count, values->channels[channel][PARAM_PRESET]);
+	}
 }
 
 static void save_dialog(mdmi_gui *g)
@@ -1101,7 +1203,11 @@ static void on_action(mdmi_gui *g, int action)
 {
 	char message[FILES_MESSAGE];
 	if (action == ACTION_LOAD) {
-		load_dialog(g);
+		load_dialog(g, false);
+	} else if (action == ACTION_ADD) {
+		if (files_add_place(g->source.files) < PATCH_BANK_SIZE) {
+			load_dialog(g, true);
+		}
 	} else if (action == ACTION_SAVE) {
 		save_dialog(g);
 	} else if (files_undo(g->source.files, message, sizeof(message))) {
@@ -1112,8 +1218,8 @@ static void on_action(mdmi_gui *g, int action)
 
 static void on_down(mdmi_gui *g, int x, int y)
 {
-	if (action_at(x, y) >= 0) {
-		on_action(g, action_at(x, y));
+	if (action_at(g, x, y) >= 0) {
+		on_action(g, action_at(g, x, y));
 		return;
 	}
 	if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H) {
@@ -1269,11 +1375,11 @@ static mdmi_gui *gui_of(IDropTarget *self)
 	return ((drop_target *)self)->gui;
 }
 
-// The first file offered and how many there are.
+// The files offered, up to a bank of them, and how many are instruments.
 static void read_drop(mdmi_gui *g, IDataObject *data)
 {
-	g->file_count = 0;
-	g->file_path[0] = g->file_name[0] = g->file_stem[0] = 0;
+	g->file_count = g->file_instruments = 0;
+	g->file_paths[0][0] = g->file_name[0] = g->file_stem[0] = 0;
 	FORMATETC format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
 	STGMEDIUM medium;
 	if (FAILED(IDataObject_GetData(data, &format, &medium))) {
@@ -1281,16 +1387,20 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 	}
 	HDROP drop = GlobalLock(medium.hGlobal);
 	if (drop) {
-		wchar_t path[MAX_PATH];
-		g->file_count = (int)DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
-		if (g->file_count > 0 && DragQueryFileW(drop, 0, path, MAX_PATH)) {
-			to_utf8(path, g->file_path, sizeof(g->file_path));
+		const int offered = (int)DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+		for (int i = 0; i < offered && g->file_count < PATCH_BANK_SIZE; i++) {
+			wchar_t path[MAX_PATH];
+			if (DragQueryFileW(drop, (UINT)i, path, MAX_PATH)) {
+				char *utf8 = g->file_paths[g->file_count++];
+				to_utf8(path, utf8, sizeof(g->file_paths[0]));
+				g->file_instruments += files_kind(utf8) == FILES_INSTRUMENT;
+			}
 		}
 		GlobalUnlock(medium.hGlobal);
 	}
 	ReleaseStgMedium(&medium);
-	const char *base = g->file_path;
-	for (const char *c = g->file_path; *c; c++) {
+	const char *base = g->file_paths[0];
+	for (const char *c = g->file_paths[0]; *c; c++) {
 		base = *c == '\\' || *c == '/' ? c + 1 : base;
 	}
 	snprintf(g->file_name, sizeof(g->file_name), "%s", base);
@@ -1299,7 +1409,7 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 	if (dot) {
 		*dot = 0;
 	}
-	g->file_kind = files_kind(g->file_path);
+	g->file_kind = files_kind(g->file_paths[0]);
 }
 
 static void hint(mdmi_gui *g, uint32_t color, const char *format, ...)
@@ -1320,14 +1430,17 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 	g->mouse_x = x;
 	g->mouse_y = y;
 	g->drop_channel = g->drop_place = -1;
+	g->drop_add = false;
+	g->drop_lit = 0;
 	const patch_values *values = patch_view(g->source.patch);
 	const int page = *g->source.page;
-	if (g->file_count > 1) {
-		hint(g, C_LABEL, "One file at a time");
+	const bool many = g->file_count > 1;
+	if (!many && g->file_kind != FILES_INSTRUMENT) {
+		hint(g, C_LABEL, g->file_kind < 0 ? "%s: not TFI, VGI or TYI" : "%s: use LOAD", g->file_name);
 		return false;
 	}
-	if (g->file_kind != FILES_INSTRUMENT) {
-		hint(g, C_LABEL, g->file_kind < 0 ? "%s: not TFI, VGI or TYI" : "%s: use LOAD", g->file_name);
+	if (g->file_instruments == 0) {
+		hint(g, C_LABEL, "No TFI, VGI or TYI in these files");
 		return false;
 	}
 	if (page == PAGE_ROM) {
@@ -1335,8 +1448,12 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		return false;
 	}
 	const int channel = rail_channel_at(x, y);
-	const int place = page == PAGE_BANK ? bank_place_at(g, x, y) : -1;
-	if (channel >= 0 && !channel_is_fm(channel)) {
+	const bool in_list = page == PAGE_BANK && y >= BANK_ADD_Y && y < BANK_Y + BANK_ROWS * BANK_ROW_H;
+	const bool add = in_list && x >= BANK_ADD_X && x < BANK_RIGHT + 2;
+	const int place = in_list && !add ? bank_place_at(g, x, y) : -1;
+	if (channel >= 0 && many) {
+		hint(g, C_LABEL, "One file per channel");
+	} else if (channel >= 0 && !channel_is_fm(channel)) {
 		hint(g, C_LABEL, "FM file: drop on CH1-6");
 	} else if (channel >= 0 && is_dac(values, channel)) {
 		hint(g, C_LABEL, "CH6 plays samples: DAC is on");
@@ -1344,12 +1461,36 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		g->drop_channel = channel;
 		hint(g, C_TARGET, "%s > CH%d, replaces %s", g->file_stem, channel + 1, values->names[channel]);
 		return true;
-	} else if (place >= 0) {
+	} else if (page != PAGE_BANK) {
+		hint(g, C_LABEL, many ? "Several files: open BANK to drop" : "%s: drop on CH1-6", g->file_name);
+	} else if (add || place >= 0) {
+		const int first = add ? files_add_place(g->source.files) : place;
+		if (first >= PATCH_BANK_SIZE) {
+			hint(g, C_LABEL, "Bank full to 128: drop on a slot");
+			return false;
+		}
+		// Adding doesn't depend on the row, so the list can move to where the files will go.
+		if (add && (first < g->bank_top || first >= g->bank_top + BANK_ROWS)) {
+			scroll_bank(g, first - 3);
+		}
+		g->drop_add = add;
 		g->drop_place = place;
-		hint(g, C_TARGET, "%s > slot %d, replaces %s", g->file_stem, place + 1, patch_bank_view(g->source.patch)->places[place].name);
+		g->drop_first = first;
+		g->drop_lit = g->file_instruments < PATCH_BANK_SIZE - first ? g->file_instruments : PATCH_BANK_SIZE - first;
+		const int last = first + g->drop_lit;
+		const char *to = add ? "ADD to " : "";
+		if (!many) {
+			hint(g, C_TARGET, add ? "%s > ADD to slot %d" : "%s > slot %d, replaces %s", g->file_stem, first + 1, patch_bank_view(g->source.patch)->places[first].name);
+		} else if (g->file_instruments > g->drop_lit) {
+			hint(g, C_TARGET, "%d files > %sslots %d-%d, %d won't fit", g->file_instruments, to, first + 1, last, g->file_instruments - g->drop_lit);
+		} else {
+			hint(g, C_TARGET, "%d files > %sslots %d-%d", g->file_instruments, to, first + 1, last);
+		}
 		return true;
+	} else if (many) {
+		hint(g, C_TARGET, "%d files: slot replaces, ADD column adds", g->file_instruments);
 	} else {
-		hint(g, C_TARGET, page == PAGE_BANK ? "%s: drop on CH1-6 or a slot" : "%s: drop on CH1-6", g->file_name);
+		hint(g, C_TARGET, "%s: slot replaces, ADD column adds", g->file_name);
 	}
 	return false;
 }
@@ -1397,8 +1538,14 @@ static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data,
 	const bool fits = aim_drop(g, point);
 	*effect = drop_effect(*effect, fits);
 	g->file_over = false;
-	if (fits) {
-		open_file(g, g->file_path, g->drop_channel, g->drop_place);
+	if (fits && g->drop_channel >= 0) {
+		open_file(g, g->file_paths[0], g->drop_channel);
+	} else if (fits) {
+		const char *paths[PATCH_BANK_SIZE];
+		for (int i = 0; i < g->file_count; i++) {
+			paths[i] = g->file_paths[i];
+		}
+		put_places(g, paths, g->file_count, g->drop_add ? -1 : g->drop_place);
 	} else {
 		// What the footer said while the file was over the window stays there after it.
 		say(g, g->drop_hint, C_ERROR, ERROR_TICKS);
@@ -1410,6 +1557,27 @@ static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data,
 static IDropTargetVtbl drop_vtable = {
 	drop_query_interface, drop_add_ref, drop_release, drop_enter, drop_over, drop_leave, drop_drop,
 };
+
+// Up and down step the selected FM channel's place on the bank page, as a click on the next row
+// would, and the list moves only as far as it must. False for keys the window leaves to the host.
+static bool on_key(mdmi_gui *g, WPARAM key)
+{
+	const int channel = *g->source.channel;
+	const patch_values *values = patch_view(g->source.patch);
+	if ((key != VK_UP && key != VK_DOWN) || *g->source.page != PAGE_BANK || !takes_fm(values, channel)) {
+		return false;
+	}
+	int place = values->channels[channel][PARAM_PRESET] + (key == VK_UP ? -1 : 1);
+	place = place < 0 ? 0 : place >= PATCH_BANK_SIZE ? PATCH_BANK_SIZE - 1 : place;
+	edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
+	if (place < g->bank_top) {
+		scroll_bank(g, place);
+	} else if (place >= g->bank_top + BANK_ROWS) {
+		scroll_bank(g, place - BANK_ROWS + 1);
+	}
+	refresh(g);
+	return true;
+}
 
 static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 {
@@ -1463,7 +1631,22 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		g->window = NULL;
 		InterlockedDecrement(&window_count);
 		return 0;
+	case WM_KEYDOWN:
+		if (on_key(g, wparam)) {
+			return 0;
+		}
+		// Other keys, such as Live's computer MIDI keyboard, belong to the host's window.
+		return g->parent ? SendMessageA(g->parent, message, wparam, lparam) : 0;
+	case WM_KEYUP:
+		if (wparam == VK_UP || wparam == VK_DOWN) {
+			return 0;
+		}
+		return g->parent ? SendMessageA(g->parent, message, wparam, lparam) : 0;
 	case WM_LBUTTONDOWN:
+		// Keys come to the window only while it has the focus; the bank page wants the arrows.
+		if (*g->source.page == PAGE_BANK) {
+			SetFocus(window);
+		}
 		on_down(g, x, y);
 		return 0;
 	case WM_MOUSEMOVE:

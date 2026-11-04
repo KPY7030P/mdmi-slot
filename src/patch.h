@@ -177,6 +177,8 @@ void patch_param_name(uint32_t id, char *name, size_t size);
 uint32_t patch_param_id_at(uint32_t panel_index);
 // The name a place of the bank has in the ROM's GM presets.
 const char *patch_gm_name(int place);
+// The place still holds what the ROM has under its number, voice and name (D26).
+bool patch_place_is_gm(const patch_bank *bank, int place);
 // The value a param has in a place of the bank, which a reset returns to.
 int patch_preset_value(const patch_bank *bank, int channel, int param, int preset);
 

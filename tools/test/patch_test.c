@@ -553,7 +553,8 @@ static bool open_file(mdmi_files *files, const char *dir, const char *name, int 
 {
 	char path[MAX_PATH];
 	path_in(path, sizeof(path), dir, name);
-	return files_open(files, path, channel, place, message, FILES_MESSAGE);
+	const char *one = path;
+	return place >= 0 ? files_put_places(files, &one, 1, place, NULL, message, FILES_MESSAGE) : files_open(files, path, channel, message, FILES_MESSAGE);
 }
 
 static bool same_model(const patch_values *a, const patch_values *b)
@@ -617,7 +618,7 @@ static void test_files(void)
 	CHECK(files_save(&files, bank_path, FILES_BANK, 0, message, sizeof(message)), "the bank saved: %s", message);
 	open_file(&files, files_dir, "Duck Guitar.tfi", 0, 9, message);
 	open_file(&files, files_dir, "Duck Guitar.tfi", 0, 20, message);
-	CHECK(files_open(&files, bank_path, 0, -1, message, sizeof(message)) && !memcmp(&patch->bank, &thunder, sizeof(thunder)) && !memcmp(patch_bank_view(patch), &thunder, sizeof(thunder)), "and loaded back: %s", message);
+	CHECK(files_open(&files, bank_path, 0, message, sizeof(message)) && !memcmp(&patch->bank, &thunder, sizeof(thunder)) && !memcmp(patch_bank_view(patch), &thunder, sizeof(thunder)), "and loaded back: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && !strcmp(patch->bank.places[20].name, "Duck Guitar"), "undo of a bank puts the bank before it back");
 	files_undo(&files, message, sizeof(message));
 
@@ -638,16 +639,75 @@ static void test_files(void)
 	patch_publish(patch);
 	files_view = (state_view){1, 5};
 	handed_knobs = 0;
-	CHECK(files_open(&files, snap_path, 0, -1, message, sizeof(message)) && same_model(&patch->model, &snapped) && !memcmp(&patch->bank, &thunder, sizeof(thunder)), "and loaded back: values, names and bank: %s", message);
+	CHECK(files_open(&files, snap_path, 0, message, sizeof(message)) && same_model(&patch->model, &snapped) && !memcmp(&patch->bank, &thunder, sizeof(thunder)), "and loaded back: values, names and bank: %s", message);
 	CHECK(files_view.page == 0 && files_view.channel == 2 && handed_knobs == 1, "with the view, and the host told to re-read the knobs");
 
 	// A channel saved as VGI is the same voice when it comes back.
 	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 9);
 	patch_publish(patch);
 	CHECK(files_save(&files, vgi_path, FILES_INSTRUMENT, 0, message, sizeof(message)), "channel 1 saved as VGI: %s", message);
-	CHECK(files_open(&files, vgi_path, 4, -1, message, sizeof(message)) && !memcmp(patch->model.channels[4] + PARAM_ALGORITHM, patch->model.channels[0] + PARAM_ALGORITHM, PATCH_VOICE_PARAMS * sizeof(int16_t)) && !strcmp(patch->model.names[4], "Thunder again"),
+	CHECK(files_open(&files, vgi_path, 4, message, sizeof(message)) && !memcmp(patch->model.channels[4] + PARAM_ALGORITHM, patch->model.channels[0] + PARAM_ALGORITHM, PATCH_VOICE_PARAMS * sizeof(int16_t)) && !strcmp(patch->model.names[4], "Thunder again"),
 		"and loads on channel 5 as the same voice");
 	CHECK(!files_save(&files, vgi_path, FILES_INSTRUMENT, 7, message, sizeof(message)), "a PSG channel has no instrument to save: %s", message);
+	files_free(&files);
+}
+
+// Several files into the bank at once (D26).
+static void test_places(void)
+{
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	static const char *const NAMES[5] = {"Turtles Guitar.tfi", "Duck Guitar.tfi", "2019 Bass 02.tyi", "BAS_Magical_Bass.vgi", "OTHER_chip2.vgi"};
+	static const char *const SORTED[5] = {"2019 Bass 02", "BAS_Magical_Bass", "Duck Guitar", "OTHER_chip2", "Turtles Guitar"};
+	char paths[5][MAX_PATH];
+	const char *list[6];
+	for (int i = 0; i < 5; i++) {
+		path_in(paths[i], sizeof(paths[i]), files_dir, NAMES[i]);
+		list[i] = paths[i];
+	}
+	CHECK(files_add_place(&files) == 0, "an untouched bank adds from slot 1");
+
+	// Channel 1 plays place 12 as it is, so it follows what lands there.
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 11);
+	patch_publish(patch);
+	static patch_bank gm;
+	gm = patch->bank;
+	CHECK(files_put_places(&files, list, 5, 9, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 10-14"), "five files on slot 10: %s", message);
+	bool in_order = true;
+	for (int i = 0; i < 5; i++) {
+		in_order &= !strcmp(patch->bank.places[9 + i].name, SORTED[i]) && !strcmp(patch_bank_view(patch)->places[9 + i].name, SORTED[i]);
+	}
+	CHECK(in_order && !strcmp(patch->bank.places[14].name, patch_gm_name(14)), "take places 10-14 in the order of their names");
+	CHECK(!strcmp(patch->model.names[0], "Duck Guitar"), "the channel on place 12 plays the file now there");
+	CHECK(files_add_place(&files) == 14, "adding starts after the last file, slot 15");
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "bank before 5 files"), "undo would put the bank back");
+	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->bank, &gm, sizeof(gm)) && !strcmp(patch->model.names[0], patch_gm_name(11)), "one undo puts the whole bank and the channel back");
+	files_undo(&files, message, sizeof(message));
+
+	CHECK(files_put_places(&files, list, 5, -1, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 15-19"), "the same five added: %s", message);
+	CHECK(!strcmp(patch->bank.places[14].name, SORTED[0]) && !strcmp(patch->bank.places[18].name, SORTED[4]), "after the last file");
+
+	CHECK(files_put_places(&files, list, 5, 125, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[127].name, SORTED[2]) && strstr(message, "2 didn't fit"),
+		"what doesn't fit before 128 is skipped and told: %s", message);
+	CHECK(files_add_place(&files) == PATCH_BANK_SIZE && !files_put_places(&files, list, 1, -1, NULL, message, sizeof(message)), "with a file in slot 128 nothing more is added: %s", message);
+
+	uint8_t junk[42];
+	memset(junk, 0x7F, sizeof(junk));
+	write_bytes("junk.tfi", junk, 42);
+	char junk_path[MAX_PATH];
+	path_in(junk_path, sizeof(junk_path), temp_dir, "junk.tfi");
+	const char *mixed[3] = {list[0], junk_path, list[1]};
+	CHECK(files_put_places(&files, mixed, 3, 30, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[30].name, "Duck Guitar") && !strcmp(patch->bank.places[31].name, "Turtles Guitar")
+		&& !strcmp(patch->bank.places[32].name, patch_gm_name(32)) && strstr(message, "skipped 1: junk.tfi"),
+		"a file that can't be read is skipped, the rest close up: %s", message);
+	static patch_bank kept;
+	kept = patch->bank;
+	const char *bad[1] = {junk_path};
+	CHECK(!files_put_places(&files, bad, 1, 40, NULL, message, sizeof(message)) && !memcmp(&patch->bank, &kept, sizeof(kept)), "only bad files: the bank stays: %s", message);
 	files_free(&files);
 }
 
@@ -667,6 +727,7 @@ int main(int argc, char **argv)
 	test_load();
 	test_dealer();
 	test_files();
+	test_places();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

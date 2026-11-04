@@ -257,6 +257,20 @@ static void gm_bank(patch_bank *bank)
 	}
 }
 
+bool patch_place_is_gm(const patch_bank *bank, int place)
+{
+	place &= PATCH_BANK_SIZE - 1;
+	const patch_instrument *instrument = &bank->places[place];
+	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+		if (instrument->voice[param - PARAM_ALGORITHM] != PRESETS_GM[place][preset_field(param)]) {
+			return false;
+		}
+	}
+	char name[PATCH_NAME];
+	snprintf(name, sizeof(name), "%s", GM_NAMES[place]);
+	return strcmp(instrument->name, name) == 0;
+}
+
 static void put_voice(patch_values *values, int channel, const patch_instrument *instrument)
 {
 	memcpy(values->channels[channel] + PARAM_ALGORITHM, instrument->voice, sizeof(instrument->voice));
