@@ -7,6 +7,11 @@
 
 #define INSTRUMENT_MAX 64
 
+static bool is_psg(int channel)
+{
+	return channel >= PATCH_NUM_FM_CHANNELS && channel < PATCH_NUM_CHANNELS;
+}
+
 void files_init(mdmi_files *files, const files_host *host)
 {
 	memset(files, 0, sizeof(*files));
@@ -54,6 +59,9 @@ int files_kind(const char *path)
 	}
 	if (!_stricmp(extension, "mdsnap")) {
 		return FILES_SNAPSHOT;
+	}
+	if (!_stricmp(extension, "eef")) {
+		return FILES_ENVELOPE;
 	}
 	return -1;
 }
@@ -104,7 +112,13 @@ static void channel_instrument(mdmi_patch *patch, int channel, patch_instrument 
 	memcpy(out->voice, values->channels[channel] + PARAM_ALGORITHM, sizeof(out->voice));
 }
 
-static void remember(mdmi_files *files, int undo, int target, const patch_instrument *instrument, uint8_t *state, size_t state_size)
+static void channel_envelope(mdmi_patch *patch, int channel, patch_envelope *out)
+{
+	*out = patch_view(patch)->psg[channel - PATCH_NUM_FM_CHANNELS];
+}
+
+// What undo puts back: an instrument or an envelope, whose name is the text's.
+static void remember(mdmi_files *files, int undo, int target, const patch_instrument *instrument, const patch_envelope *envelope, uint8_t *state, size_t state_size)
 {
 	free(files->undo_state);
 	files->undo = undo;
@@ -114,12 +128,17 @@ static void remember(mdmi_files *files, int undo, int target, const patch_instru
 	if (instrument) {
 		files->undo_instrument = *instrument;
 	}
+	if (envelope) {
+		files->undo_envelope = *envelope;
+	}
+	const char *name = instrument ? instrument->name : envelope ? envelope->name : "";
 	switch (undo) {
 	case UNDO_CHANNEL:
-		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d back to %s", target + 1, instrument->name);
+		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d back to %s", target + 1, name);
 		break;
 	case UNDO_PLACE:
-		snprintf(files->undo_text, sizeof(files->undo_text), "slot %d back to %s", target + 1, instrument->name);
+	case UNDO_ENVELOPE_PLACE:
+		snprintf(files->undo_text, sizeof(files->undo_text), "slot %d back to %s", target + 1, name);
 		break;
 	default:
 		snprintf(files->undo_text, sizeof(files->undo_text), target == FILES_BANK ? "the bank back" : "everything back");
@@ -132,7 +151,16 @@ static void put_on_channel(mdmi_files *files, int channel, const patch_instrumen
 	patch_instrument before;
 	channel_instrument(files->host.patch, channel, &before);
 	patch_load_voice(files->host.patch, channel, instrument);
-	remember(files, UNDO_CHANNEL, channel, &before, NULL, 0);
+	remember(files, UNDO_CHANNEL, channel, &before, NULL, NULL, 0);
+	files->host.handed(files->host.context, false);
+}
+
+static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_envelope *envelope)
+{
+	patch_envelope before;
+	channel_envelope(files->host.patch, channel, &before);
+	patch_load_envelope(files->host.patch, channel, envelope);
+	remember(files, UNDO_CHANNEL, channel, NULL, &before, NULL, 0);
 	files->host.handed(files->host.context, false);
 }
 
@@ -140,7 +168,15 @@ static void put_in_place(mdmi_files *files, int place, const patch_instrument *i
 {
 	patch_instrument before = patch_bank_view(files->host.patch)->places[place];
 	patch_load_place(files->host.patch, place, instrument);
-	remember(files, UNDO_PLACE, place, &before, NULL, 0);
+	remember(files, UNDO_PLACE, place, &before, NULL, NULL, 0);
+	files->host.handed(files->host.context, false);
+}
+
+static void put_envelope_in_place(mdmi_files *files, int place, const patch_envelope *envelope)
+{
+	patch_envelope before = patch_bank_view(files->host.patch)->envelopes[place];
+	patch_load_envelope_place(files->host.patch, place, envelope);
+	remember(files, UNDO_ENVELOPE_PLACE, place, NULL, &before, NULL, 0);
 	files->host.handed(files->host.context, false);
 }
 
@@ -156,7 +192,7 @@ static bool put_state(mdmi_files *files, int kind, const uint8_t *bytes, size_t 
 		return false;
 	}
 	*files->host.view = view;
-	remember(files, UNDO_STATE, kind, NULL, before, before_size);
+	remember(files, UNDO_STATE, kind, NULL, NULL, before, before_size);
 	files->host.handed(files->host.context, knobs);
 	return true;
 }
@@ -184,17 +220,52 @@ static bool read_instrument(const char *path, patch_instrument *instrument, char
 	return done;
 }
 
+static bool read_envelope(const char *path, patch_envelope *envelope, char *message, size_t size)
+{
+	const char *name = base_of(path);
+	if (files_kind(path) != FILES_ENVELOPE) {
+		snprintf(message, size, "%s: not an EEF envelope", name);
+		return false;
+	}
+	size_t length = 0;
+	uint8_t *bytes = read_all(path, &length);
+	if (!bytes) {
+		snprintf(message, size, "%s: can't be read", name);
+		return false;
+	}
+	char error[FILES_MESSAGE];
+	const bool done = instrument_parse_eef(path, bytes, length, envelope, error, sizeof(error));
+	if (!done) {
+		snprintf(message, size, "%s: %s", name, error);
+	}
+	free(bytes);
+	return done;
+}
+
 bool files_open(mdmi_files *files, const char *path, int channel, char *message, size_t size)
 {
 	const char *name = base_of(path);
 	const int kind = files_kind(path);
 	if (kind < 0) {
-		snprintf(message, size, "%s: not TFI, VGI or TYI", name);
+		snprintf(message, size, "%s: not TFI, VGI, TYI or EEF", name);
 		return false;
+	}
+	if (kind == FILES_ENVELOPE) {
+		if (!is_psg(channel)) {
+			snprintf(message, size, "Select CH7-10 for an EEF file");
+			return false;
+		}
+		patch_envelope envelope;
+		if (!read_envelope(path, &envelope, message, size)) {
+			return false;
+		}
+		put_envelope_on_channel(files, channel, &envelope);
+		snprintf(message, size, "Loaded %s to CH%d", envelope.name, channel + 1);
+		return true;
 	}
 	if (kind == FILES_INSTRUMENT) {
 		if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
-			snprintf(message, size, "FM file: select CH1-6");
+			snprintf(message, size, "Select CH1-6 for an FM file");
 			return false;
 		}
 		patch_instrument instrument;
@@ -217,11 +288,11 @@ bool files_open(mdmi_files *files, const char *path, int channel, char *message,
 	return done;
 }
 
-int files_add_place(const mdmi_files *files)
+int files_add_place(const mdmi_files *files, bool envelopes)
 {
 	const patch_bank *bank = patch_bank_view(files->host.patch);
 	int place = PATCH_BANK_SIZE;
-	while (place > 0 && patch_place_is_gm(bank, place - 1)) {
+	while (place > 0 && (envelopes ? patch_envelope_is_rom(bank, place - 1) : patch_place_is_gm(bank, place - 1))) {
 		place--;
 	}
 	return place;
@@ -232,13 +303,13 @@ static int by_name(const void *a, const void *b)
 	return _stricmp(base_of(*(const char *const *)a), base_of(*(const char *const *)b));
 }
 
-int files_put_places(mdmi_files *files, const char *const *paths, int count, int first, int *skipped, char *message, size_t size)
+int files_put_places(mdmi_files *files, const char *const *paths, int count, bool envelopes, int first, int *skipped, char *message, size_t size)
 {
 	if (skipped) {
 		*skipped = count;
 	}
 	if (first < 0) {
-		first = files_add_place(files);
+		first = files_add_place(files, envelopes);
 	}
 	const char **sorted = malloc(sizeof(*sorted) * (size_t)count);
 	patch_bank *bank = malloc(sizeof(*bank));
@@ -258,9 +329,12 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, int
 	for (int i = 0; i < count; i++) {
 		char error[FILES_MESSAGE];
 		patch_instrument instrument;
+		patch_envelope envelope;
 		if (place >= PATCH_BANK_SIZE) {
 			no_room++;
-		} else if (read_instrument(sorted[i], &instrument, error, sizeof(error))) {
+		} else if (envelopes && read_envelope(sorted[i], &envelope, error, sizeof(error))) {
+			bank->envelopes[place++] = envelope;
+		} else if (!envelopes && read_instrument(sorted[i], &instrument, error, sizeof(error))) {
 			bank->places[place++] = instrument;
 		} else if (unread++ == 0) {
 			snprintf(why, sizeof(why), "%s", error);
@@ -270,12 +344,16 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, int
 	const int loaded = place - first;
 	if (loaded == 0) {
 		if (first >= PATCH_BANK_SIZE) {
-			snprintf(message, size, "Bank is full to 128");
+			snprintf(message, size, envelopes ? "Envelopes full to 128" : "Bank is full to 128");
 		} else if (count == 1) {
 			snprintf(message, size, "%s", why);
 		} else {
 			snprintf(message, size, "Nothing loaded: %d files not read", count);
 		}
+	} else if (loaded == 1 && envelopes) {
+		const patch_envelope envelope = bank->envelopes[first];
+		put_envelope_in_place(files, first, &envelope);
+		snprintf(message, size, "Loaded %s to slot %d", envelope.name, first + 1);
 	} else if (loaded == 1) {
 		const patch_instrument instrument = bank->places[first];
 		put_in_place(files, first, &instrument);
@@ -285,8 +363,8 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, int
 		uint8_t *before = state_build(files->host.patch, NULL, &before_size);
 		patch_load_bank(files->host.patch, bank);
 		if (before) {
-			remember(files, UNDO_STATE, FILES_BANK, NULL, before, before_size);
-			snprintf(files->undo_text, sizeof(files->undo_text), "bank before %d files", loaded);
+			remember(files, UNDO_STATE, FILES_BANK, NULL, NULL, before, before_size);
+			snprintf(files->undo_text, sizeof(files->undo_text), envelopes ? "envelopes before %d files" : "bank before %d files", loaded);
 		}
 		files->host.handed(files->host.context, false);
 		snprintf(message, size, "Loaded %d to slots %d-%d", loaded, first + 1, place);
@@ -311,7 +389,16 @@ bool files_save(mdmi_files *files, const char *path, int kind, int channel, char
 {
 	const char *name = base_of(path);
 	bool written;
-	if (kind == FILES_INSTRUMENT) {
+	if (kind == FILES_ENVELOPE) {
+		if (!is_psg(channel)) {
+			snprintf(message, size, "Select CH7-10 to save an envelope");
+			return false;
+		}
+		patch_envelope envelope;
+		channel_envelope(files->host.patch, channel, &envelope);
+		uint8_t eef[PATCH_ENVELOPE_STEPS + 1];
+		written = write_all(path, eef, instrument_write_eef(&envelope, eef));
+	} else if (kind == FILES_INSTRUMENT) {
 		if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
 			snprintf(message, size, "Select CH1-6 to save an instrument");
 			return false;
@@ -338,9 +425,15 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 		return false;
 	}
 	snprintf(message, size, "Undone: %s", files->undo_text);
-	if (undo == UNDO_CHANNEL) {
+	if (undo == UNDO_CHANNEL && is_psg(target)) {
+		patch_envelope back = files->undo_envelope;
+		put_envelope_on_channel(files, target, &back);
+	} else if (undo == UNDO_CHANNEL) {
 		patch_instrument back = files->undo_instrument;
 		put_on_channel(files, target, &back);
+	} else if (undo == UNDO_ENVELOPE_PLACE) {
+		patch_envelope back = files->undo_envelope;
+		put_envelope_in_place(files, target, &back);
 	} else if (undo == UNDO_PLACE) {
 		patch_instrument back = files->undo_instrument;
 		put_in_place(files, target, &back);

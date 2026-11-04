@@ -43,6 +43,11 @@
 // Stored voices shadow the ROM's built-in programs from here on, two numbers per FM channel.
 #define FIRST_SERVICE_PROGRAM 116
 #define VOICE_SYSEX_HEAD 7
+// The same for envelopes (D28): two numbers per PSG channel from here on, under SysEx 0A type 01.
+#define FIRST_PSG_SERVICE_PROGRAM 120
+#define STORE_PSG_PROGRAM 0x01
+#define SYSEX_LOAD_PSG_ENVELOPE 0x06
+#define SYSEX_STORE_PROGRAM 0x0A
 #define VOICE_BYTES 48
 #define PRESETS 128
 #define SNAPSHOT_INDEX 3u
@@ -246,7 +251,19 @@ static void load_rom_preset(int16_t *voice, int program)
 	}
 }
 
-static void gm_bank(patch_bank *bank)
+// What a note plays under a built-in program number, with the name the window gives it.
+static void load_rom_envelope(patch_envelope *envelope, int program)
+{
+	const int rom = ENVELOPE_OF_PROGRAM[program & (PATCH_BANK_SIZE - 1)];
+	memset(envelope->name, 0, sizeof(envelope->name));
+	snprintf(envelope->name, sizeof(envelope->name), "%s", ENVELOPES_ROM[rom].name);
+	memset(envelope->steps, PATCH_EEF_END, sizeof(envelope->steps));
+	for (size_t i = 0; i < sizeof(ENVELOPES_ROM[rom].steps) && ENVELOPES_ROM[rom].steps[i] != PATCH_EEF_END; i++) {
+		envelope->steps[i] = ENVELOPES_ROM[rom].steps[i];
+	}
+}
+
+void patch_bank_rom(patch_bank *bank)
 {
 	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
 		patch_instrument *instrument = &bank->places[place];
@@ -254,6 +271,7 @@ static void gm_bank(patch_bank *bank)
 		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
 			instrument->voice[param - PARAM_ALGORITHM] = PRESETS_GM[place][preset_field(param)];
 		}
+		load_rom_envelope(&bank->envelopes[place], place);
 	}
 }
 
@@ -271,6 +289,45 @@ bool patch_place_is_gm(const patch_bank *bank, int place)
 	return strcmp(instrument->name, name) == 0;
 }
 
+bool patch_envelope_is_rom(const patch_bank *bank, int place)
+{
+	patch_envelope rom;
+	load_rom_envelope(&rom, place);
+	const patch_envelope *envelope = &bank->envelopes[place & (PATCH_BANK_SIZE - 1)];
+	return !memcmp(envelope->steps, rom.steps, sizeof(rom.steps)) && !strcmp(envelope->name, rom.name);
+}
+
+int patch_envelope_length(const patch_envelope *envelope)
+{
+	int length = 0;
+	while (length < PATCH_ENVELOPE_STEPS && envelope->steps[length] != PATCH_EEF_END) {
+		length++;
+	}
+	return length;
+}
+
+// Steps after the first EEF_END are EEF_END, so envelopes compare whole; a name ends inside it.
+static void clean_envelope(patch_envelope *envelope)
+{
+	envelope->name[PATCH_NAME - 1] = 0;
+	const int length = patch_envelope_length(envelope);
+	memset(envelope->steps + length, PATCH_EEF_END, sizeof(envelope->steps) - (size_t)length);
+}
+
+bool patch_envelope_from_eef(patch_envelope *envelope, const uint8_t *eef, size_t size)
+{
+	size_t length = 0;
+	while (length < size && eef[length] != PATCH_EEF_END) {
+		length++;
+	}
+	if (length > PATCH_ENVELOPE_STEPS) {
+		return false;
+	}
+	memset(envelope->steps, PATCH_EEF_END, sizeof(envelope->steps));
+	memcpy(envelope->steps, eef, length);
+	return true;
+}
+
 static void put_voice(patch_values *values, int channel, const patch_instrument *instrument)
 {
 	memcpy(values->channels[channel] + PARAM_ALGORITHM, instrument->voice, sizeof(instrument->voice));
@@ -278,11 +335,34 @@ static void put_voice(patch_values *values, int channel, const patch_instrument 
 	values->names[channel][PATCH_NAME - 1] = 0;
 }
 
-// A place of the bank becomes the channel's sound, tweaks gone.
+static void put_envelope(patch_values *values, int channel, const patch_envelope *envelope)
+{
+	values->psg[channel - PATCH_NUM_FM_CHANNELS] = *envelope;
+	clean_envelope(&values->psg[channel - PATCH_NUM_FM_CHANNELS]);
+}
+
+// A place of the bank becomes the channel's sound, tweaks or its own envelope gone.
 static void load_place(const patch_bank *bank, patch_values *values, int channel, int place)
 {
 	values->channels[channel][PARAM_PRESET] = (int16_t)place;
-	put_voice(values, channel, &bank->places[place]);
+	if (channel < PATCH_NUM_FM_CHANNELS) {
+		put_voice(values, channel, &bank->places[place]);
+	} else {
+		put_envelope(values, channel, &bank->envelopes[place]);
+	}
+}
+
+// A channel playing its place as it is: the place's voice and name, or envelope and name.
+static bool plays_place(const patch_values *values, const patch_bank *bank, int channel)
+{
+	const int place = values->channels[channel][PARAM_PRESET];
+	if (channel < PATCH_NUM_FM_CHANNELS) {
+		const patch_instrument *was = &bank->places[place];
+		return !memcmp(values->channels[channel] + PARAM_ALGORITHM, was->voice, sizeof(was->voice)) && !strcmp(values->names[channel], was->name);
+	}
+	const patch_envelope *was = &bank->envelopes[place];
+	const patch_envelope *has = &values->psg[channel - PATCH_NUM_FM_CHANNELS];
+	return !memcmp(has->steps, was->steps, sizeof(was->steps)) && !strcmp(has->name, was->name);
 }
 
 static void default_values(const patch_bank *bank, patch_values *values)
@@ -295,15 +375,17 @@ static void default_values(const patch_bank *bank, patch_values *values)
 			values->channels[channel][param] = channel_params[param].default_value;
 		}
 	}
-	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		load_place(bank, values, channel, values->channels[channel][PARAM_PRESET]);
 	}
 }
 
+static void forget_envelopes(patch_receiver *receiver);
+
 void patch_init(mdmi_patch *patch)
 {
 	memset(patch, 0, sizeof(*patch));
-	gm_bank(&patch->bank);
+	patch_bank_rom(&patch->bank);
 	patch->shown_bank = patch->bank;
 	default_values(&patch->bank, &patch->model);
 	// A booted ROM holds exactly these values, reg_test checks it.
@@ -319,6 +401,10 @@ void patch_init(mdmi_patch *patch)
 	// Nothing is stored yet, so a service number still loads its built-in preset.
 	for (int i = 0; i < PATCH_SERVICE_PROGRAMS; i++) {
 		load_rom_preset(patch->rom.stored[i], FIRST_SERVICE_PROGRAM + i);
+	}
+	forget_envelopes(&patch->rom);
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		patch->rom.psg_programs[i] = patch->model.channels[PATCH_NUM_FM_CHANNELS + i][PARAM_PRESET];
 	}
 	memset(patch->rpn_msb, RPN_NULL, sizeof(patch->rpn_msb));
 	memset(patch->rpn_lsb, RPN_NULL, sizeof(patch->rpn_lsb));
@@ -378,13 +464,8 @@ double patch_model_filter_hz(const mdmi_patch *patch)
 
 void patch_format_preset(const patch_bank *bank, int channel, int value, char *text, size_t size)
 {
-	if (channel < PATCH_NUM_FM_CHANNELS) {
-		snprintf(text, size, "%d %s", value + 1, bank->places[value & (PATCH_BANK_SIZE - 1)].name);
-	} else {
-		// The ROM's only other envelope sits under the GM numbers of square waves.
-		bool square = value == 80 || value == 89 || value == 99;
-		snprintf(text, size, "%d %s", value + 1, square ? "Square Lead" : "Plain");
-	}
+	const int place = value & (PATCH_BANK_SIZE - 1);
+	snprintf(text, size, "%d %s", value + 1, channel < PATCH_NUM_FM_CHANNELS ? bank->places[place].name : bank->envelopes[place].name);
 }
 
 double patch_filter_hz(int value)
@@ -467,12 +548,9 @@ static bool set_preset(mdmi_patch *patch, int channel, int value)
 	if (values[PARAM_PRESET] == value) {
 		return false;
 	}
-	values[PARAM_PRESET] = (int16_t)value;
-	if (channel < PATCH_NUM_FM_CHANNELS) {
-		load_place(&patch->bank, &patch->model, channel, value);
-		return true;
-	}
-	return false;
+	load_place(&patch->bank, &patch->model, channel, value);
+	// An envelope moves no other knob.
+	return channel < PATCH_NUM_FM_CHANNELS;
 }
 
 bool patch_set(mdmi_patch *patch, uint32_t id, int value)
@@ -511,10 +589,23 @@ static void forget_voices(patch_receiver *receiver)
 	}
 }
 
+// A reset of the ROM puts its own envelopes back. The plugin passes on nothing else that stores
+// envelopes, so after SysEx it can't read, the ROM still holds these.
+static void forget_envelopes(patch_receiver *receiver)
+{
+	for (int i = 0; i < PATCH_PSG_SERVICE_PROGRAMS; i++) {
+		patch_envelope rom;
+		load_rom_envelope(&rom, FIRST_PSG_SERVICE_PROGRAM + i);
+		memcpy(receiver->psg_stored[i], rom.steps, sizeof(rom.steps));
+	}
+	memset(receiver->psg_alternate, 0, sizeof(receiver->psg_alternate));
+}
+
 static void forget_everything(patch_receiver *receiver)
 {
 	memset(receiver, 0xFF, sizeof(*receiver));
 	memset(receiver->alternate, 0, sizeof(receiver->alternate));
+	forget_envelopes(receiver);
 }
 
 // What a program change to a number loads into a voice.
@@ -559,6 +650,62 @@ static void send_whole_voice(const int16_t *model, patch_receiver *receiver, int
 	emit(context, sysex, sizeof(sysex));
 	select_program(receiver, channel, program, emit, context);
 	receiver->values.channels[channel][PARAM_PRESET] = model[PARAM_PRESET];
+}
+
+// What the next note of a PSG channel plays after a program change to the number.
+static const uint8_t *envelope_under(const patch_receiver *receiver, int program, patch_envelope *rom)
+{
+	if (program >= FIRST_PSG_SERVICE_PROGRAM) {
+		return receiver->psg_stored[program - FIRST_PSG_SERVICE_PROGRAM];
+	}
+	load_rom_envelope(rom, program);
+	return rom->steps;
+}
+
+static void select_psg_program(patch_receiver *receiver, int channel, int program, patch_emit_fn emit, void *context)
+{
+	const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)program};
+	emit(context, message, sizeof(message));
+	receiver->psg_programs[channel - PATCH_NUM_FM_CHANNELS] = (int16_t)program;
+}
+
+// The envelope the channel's next note plays (D28). The ROM picks it at Note On, so a sounding
+// note keeps its own: one the ROM holds under the preset's number or one of the channel's service
+// numbers is a program change, any other is stored under the service number it didn't use last.
+static void sync_envelope(const patch_values *model, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
+{
+	const int psg = channel - PATCH_NUM_FM_CHANNELS;
+	const uint8_t *meant = model->psg[psg].steps;
+	const int preset = model->channels[channel][PARAM_PRESET];
+	const int program = receiver->psg_programs[psg];
+	patch_envelope rom;
+	if (program != PATCH_UNKNOWN && !memcmp(envelope_under(receiver, program, &rom), meant, PATCH_ENVELOPE_STEPS + 1)) {
+		return;
+	}
+	if (!memcmp(envelope_under(receiver, preset, &rom), meant, PATCH_ENVELOPE_STEPS + 1)) {
+		select_psg_program(receiver, channel, preset, emit, context);
+		return;
+	}
+	for (int i = 0; i < 2; i++) {
+		const int held = FIRST_PSG_SERVICE_PROGRAM + psg * 2 + i;
+		if (!memcmp(receiver->psg_stored[held - FIRST_PSG_SERVICE_PROGRAM], meant, PATCH_ENVELOPE_STEPS + 1)) {
+			receiver->psg_alternate[psg] = !i;
+			select_psg_program(receiver, channel, held, emit, context);
+			return;
+		}
+	}
+	const int service = FIRST_PSG_SERVICE_PROGRAM + psg * 2 + receiver->psg_alternate[psg];
+	receiver->psg_alternate[psg] = !receiver->psg_alternate[psg];
+	const int length = patch_envelope_length(&model->psg[psg]);
+	uint8_t sysex[8 + 2 * PATCH_ENVELOPE_STEPS] = {0xF0, 0x00, 0x22, 0x77, SYSEX_STORE_PROGRAM, STORE_PSG_PROGRAM, (uint8_t)service};
+	for (int i = 0; i < length; i++) {
+		sysex[7 + i * 2] = meant[i] >> 4;
+		sysex[8 + i * 2] = meant[i] & 15;
+	}
+	sysex[7 + length * 2] = 0xF7;
+	emit(context, sysex, (size_t)(8 + length * 2));
+	memcpy(receiver->psg_stored[service - FIRST_PSG_SERVICE_PROGRAM], meant, PATCH_ENVELOPE_STEPS + 1);
+	select_psg_program(receiver, channel, service, emit, context);
 }
 
 // The ROM's CC only reaches the first 16 sustain rates. Registers hold operators in the order 1, 3, 2, 4.
@@ -1109,11 +1256,8 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		const int16_t *model = patch->model.channels[channel];
 		int16_t *rom = receiver->values.channels[channel];
 		if (channel >= PATCH_NUM_FM_CHANNELS) {
-			if (model[PARAM_PRESET] != rom[PARAM_PRESET]) {
-				const uint8_t message[2] = {(uint8_t)(0xC0 | channel), (uint8_t)model[PARAM_PRESET]};
-				emit(context, message, sizeof(message));
-				rom[PARAM_PRESET] = model[PARAM_PRESET];
-			}
+			sync_envelope(&patch->model, receiver, channel, emit, context);
+			rom[PARAM_PRESET] = model[PARAM_PRESET];
 		} else {
 			sync_voice(patch, model, receiver, channel, emit, context);
 		}
@@ -1197,6 +1341,11 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		note_off(patch, channel, bytes[1] & 0x7F, emit, context);
 		return false;
 	}
+	if (bytes[0] == 0xF0 && length >= 5 && bytes[1] == 0x00 && bytes[2] == 0x22 && bytes[3] == 0x77
+		&& (bytes[4] == SYSEX_LOAD_PSG_ENVELOPE || (bytes[4] == SYSEX_STORE_PROGRAM && length >= 6 && bytes[5] == STORE_PSG_PROGRAM))) {
+		// Envelopes from a clip would play past the model, and 06 shadows every channel's (D28).
+		return false;
+	}
 	if (bytes[0] == 0xF0 || bytes[0] == 0xFF) {
 		stop_playing(patch, emit, context);
 		emit(context, bytes, length);
@@ -1210,11 +1359,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	}
 	if (status == 0xC0 && length >= 2 && is_channel) {
 		// Unlike a lane or a CC repeating the preset, a program from a clip always loads, tweaks gone.
-		int16_t *model = patch->model.channels[channel];
-		model[PARAM_PRESET] = bytes[1];
-		if (fm) {
-			load_place(&patch->bank, &patch->model, channel, bytes[1]);
-		}
+		load_place(&patch->bank, &patch->model, channel, bytes[1]);
 		changed = moved = true;
 	} else if (status == 0xB0 && length >= 3) {
 		int cc = bytes[1], value = bytes[2];
@@ -1321,7 +1466,7 @@ static void end_incoming(mdmi_patch *patch)
 	__atomic_store_n(&patch->incoming_state, INCOMING_READY, __ATOMIC_RELEASE);
 }
 
-bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME])
+bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg)
 {
 	if (size % SAVED_PAIR_BYTES) {
 		return false;
@@ -1348,6 +1493,10 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (
 		} else {
 			memcpy(incoming.names[channel], patch->shown_bank.places[incoming.channels[channel][PARAM_PRESET]].name, PATCH_NAME);
 		}
+	}
+	for (int channel = PATCH_NUM_FM_CHANNELS; channel < PATCH_NUM_CHANNELS; channel++) {
+		const int place = incoming.channels[channel][PARAM_PRESET];
+		put_envelope(&incoming, channel, psg ? &psg[channel - PATCH_NUM_FM_CHANNELS] : &patch->shown_bank.envelopes[place]);
 	}
 	begin_incoming(patch);
 	// A loaded state replaces voices dropped before it.
@@ -1384,6 +1533,7 @@ void patch_load_bank(mdmi_patch *patch, const patch_bank *bank)
 	patch->shown_bank = *bank;
 	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
 		clean_place(&patch->shown_bank.places[place]);
+		clean_envelope(&patch->shown_bank.envelopes[place]);
 	}
 	send_bank(patch);
 }
@@ -1394,6 +1544,25 @@ void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *inst
 	*at = *instrument;
 	clean_place(at);
 	send_bank(patch);
+}
+
+void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelope *envelope)
+{
+	patch_envelope *at = &patch->shown_bank.envelopes[place & (PATCH_BANK_SIZE - 1)];
+	*at = *envelope;
+	clean_envelope(at);
+	send_bank(patch);
+}
+
+void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope)
+{
+	if (channel < PATCH_NUM_FM_CHANNELS || channel >= PATCH_NUM_CHANNELS) {
+		return;
+	}
+	begin_incoming(patch);
+	patch->incoming.parts |= PATCH_INCOMING_VOICE << channel;
+	patch->incoming.envelopes[channel - PATCH_NUM_FM_CHANNELS] = *envelope;
+	end_incoming(patch);
 }
 
 void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument)
@@ -1420,18 +1589,21 @@ bool patch_take_incoming(mdmi_patch *patch)
 	if (incoming->parts & PATCH_INCOMING_BANK) {
 		// A channel that plays its place as it is follows the place; one with tweaks or a file of its
 		// own keeps them. A whole state brings its channels with it.
-		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS && !(incoming->parts & PATCH_INCOMING_VALUES); channel++) {
-			const int place = patch->model.channels[channel][PARAM_PRESET];
-			const patch_instrument *was = &patch->bank.places[place];
-			if (!memcmp(patch->model.channels[channel] + PARAM_ALGORITHM, was->voice, sizeof(was->voice)) && !strcmp(patch->model.names[channel], was->name)) {
-				put_voice(&patch->model, channel, &incoming->bank.places[place]);
+		for (int channel = 0; channel < PATCH_NUM_CHANNELS && !(incoming->parts & PATCH_INCOMING_VALUES); channel++) {
+			if (plays_place(&patch->model, &patch->bank, channel)) {
+				load_place(&incoming->bank, &patch->model, channel, patch->model.channels[channel][PARAM_PRESET]);
 			}
 		}
 		patch->bank = incoming->bank;
 	}
-	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
-		if (incoming->parts & PATCH_INCOMING_VOICE << channel) {
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		if (!(incoming->parts & PATCH_INCOMING_VOICE << channel)) {
+			continue;
+		}
+		if (channel < PATCH_NUM_FM_CHANNELS) {
 			put_voice(&patch->model, channel, &incoming->voices[channel]);
+		} else {
+			put_envelope(&patch->model, channel, &incoming->envelopes[channel - PATCH_NUM_FM_CHANNELS]);
 		}
 	}
 	patch->dirty = true;

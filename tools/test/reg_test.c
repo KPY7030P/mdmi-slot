@@ -269,7 +269,7 @@ static void test_load(void)
 	set_on(0, PARAM_PRESET, 99);
 	set_on(1, PARAM_OP_BASE + F_TL, 12);
 	set_on(5, PARAM_OP_BASE + F_SR, 30);
-	patch_load(patch, state, sizeof(state), NULL);
+	patch_load(patch, state, sizeof(state), NULL, NULL);
 	patch_take_incoming(patch);
 	sync_and_settle();
 	check_voices("a loaded state reaches the chip", 0, FM_CHANNELS - 1, -1);
@@ -1061,6 +1061,81 @@ static void test_bank_place(void)
 	set_on(2, PARAM_PRESET, 0);
 }
 
+// Stage 7 (D28). An envelope that holds one level while the key is down, so the chip's attenuation
+// says which envelope a channel plays: at full volume and velocity it is the envelope's level.
+static void steady(patch_envelope *envelope, uint8_t level, int steps)
+{
+	uint8_t eef[PATCH_ENVELOPE_STEPS + 1];
+	eef[0] = PATCH_EEF_LOOP_START;
+	memset(eef + 1, level, (size_t)steps - 1);
+	eef[steps] = PATCH_EEF_END;
+	patch_envelope_from_eef(envelope, eef, (size_t)steps + 1);
+	snprintf(envelope->name, sizeof(envelope->name), "Steady %d", level);
+}
+
+static double time_to_volume(int psg, uint8_t level)
+{
+	int blocks = 0;
+	for (; blocks < 4000 && mdmi_engine_test_psg_volume(engine, (uint8_t)psg) != level; blocks++) {
+		mdmi_engine_render(engine, left, right, KEY_BLOCK);
+	}
+	return blocks * KEY_BLOCK * 1000.0 / RATE;
+}
+
+static void test_envelopes(void)
+{
+	static const uint8_t LEVELS[PATCH_NUM_PSG_CHANNELS] = {2, 5, 8, 11};
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		patch_envelope envelope;
+		steady(&envelope, LEVELS[i], 2);
+		patch_load_envelope(patch, PATCH_NUM_FM_CHANNELS + i, &envelope);
+	}
+	patch_take_incoming(patch);
+	sync_and_settle();
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		midi((uint8_t)(0x90 | (PATCH_NUM_FM_CHANNELS + i)), 69, 127);
+	}
+	render(SETTLE_BLOCKS);
+	bool own = true;
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		own &= mdmi_engine_test_psg_volume(engine, (uint8_t)i) == LEVELS[i];
+	}
+	check(own, "four envelopes on channels 7-10 sound at once, each its own");
+
+	// Square Lead holds its first level, 0, while the key is down.
+	set_on(6, PARAM_PRESET, 80);
+	check(mdmi_engine_test_psg_volume(engine, 0) == LEVELS[0], "a preset step leaves the sounding note's envelope");
+	midi(0x86, 69, 0);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render(SETTLE_BLOCKS);
+	check(mdmi_engine_test_psg_volume(engine, 0) == 0, "and the next note plays the new place");
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		midi((uint8_t)(0x80 | (PATCH_NUM_FM_CHANNELS + i)), 69, 0);
+	}
+	render(SETTLE_BLOCKS);
+
+	// What storing the longest envelope costs a note of the same moment, against a note whose
+	// envelope is there already: both wait for the engine's own delay.
+	midi(0x98, 69, 127);
+	const double plain = time_to_volume(2, LEVELS[2]);
+	midi(0x88, 69, 0);
+	patch_envelope longest;
+	steady(&longest, 3, PATCH_ENVELOPE_STEPS);
+	patch_load_envelope(patch, 7, &longest);
+	patch_take_incoming(patch);
+	render(SETTLE_BLOCKS);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	midi(0x97, 69, 127);
+	const double stored = time_to_volume(1, 3);
+	printf("  envelope of %d steps stored with the note: %.1f ms after it, a note without %.1f ms, so %.1f ms more\n", PATCH_ENVELOPE_STEPS, stored, plain, stored - plain);
+	check(stored < 1000 && plain < 1000, "the note with the stored envelope sounds");
+	midi(0x87, 69, 0);
+	midi(0xC6, 0, 0);
+	set_on(6, PARAM_PRESET, 0);
+	render(RESET_BLOCKS);
+}
+
 static void test_reset(void)
 {
 	const uint8_t reset = 0xFF;
@@ -1109,6 +1184,8 @@ int main(int argc, char **argv)
 	test_reset();
 	test_files();
 	test_bank_place();
+	test_reset();
+	test_envelopes();
 	test_reset();
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {

@@ -17,4 +17,9 @@ bool instrument_parse(const char *file_name, const uint8_t *bytes, size_t size, 
 // A voice as VGI, which holds every field of it, with detune centred on 3 like VGM Music Maker's.
 void instrument_write_vgi(const patch_instrument *instrument, uint8_t *out);
 
+// EEF is a PSG envelope of bare bytes, one per frame, as the MDMI ROM reads it (D28). Echo's EEF
+// shifts pitch by other steps; such a file loads as it is. The written one ends in EEF_END.
+bool instrument_parse_eef(const char *file_name, const uint8_t *bytes, size_t size, patch_envelope *out, char *error, size_t error_size);
+size_t instrument_write_eef(const patch_envelope *envelope, uint8_t *out);
+
 #endif

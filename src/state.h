@@ -7,7 +7,7 @@
 #include "patch.h"
 
 // A project is a version, then blocks of type, length and data: the knobs, the window's view, the
-// names of the FM channels and the bank. A snapshot file is the same bytes, a bank file has only the
+// names of the FM channels, the PSG channels' envelopes, the bank and its envelopes. A snapshot file is the same bytes, a bank file has only the
 // bank (D25). Main thread only.
 #define STATE_READ_MAX 65536
 

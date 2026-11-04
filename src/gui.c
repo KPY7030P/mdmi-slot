@@ -48,6 +48,7 @@
 #define ACTION_UNDO_X 656
 #define NAME_X 288
 #define NAME_CHARS 23
+#define ENVELOPE_NAME_CHARS 20
 #define FILE_TAG_X 568
 #define RAIL_W 232
 #define RAIL_FM_Y 44
@@ -139,7 +140,7 @@ struct mdmi_gui {
 
 	// Files dragged over the window, and where they would go: a channel, places from a row, places
 	// added after the last file, or nowhere. The first file's kind and names; instruments counts the
-	// TFI, VGI and TYI among them.
+	// TFI, VGI and TYI among them, envelopes the EEF. drop_envelopes says which of the two go.
 	drop_target drop;
 	bool drop_registered;
 	bool ole_ready;
@@ -147,6 +148,8 @@ struct mdmi_gui {
 	int file_kind;
 	int file_count;
 	int file_instruments;
+	int file_envelopes;
+	bool drop_envelopes;
 	char file_paths[PATCH_BANK_SIZE][MAX_PATH * 3];
 	char file_name[64];
 	char file_stem[64];
@@ -254,11 +257,35 @@ static bool takes_fm(const patch_values *values, int channel)
 	return channel_is_fm(channel) && !is_dac(values, channel);
 }
 
+// A channel a file of its kind can go to: an FM file, or an EEF on PSG (D28).
+static bool takes_files(const patch_values *values, int channel)
+{
+	return takes_fm(values, channel) || !channel_is_fm(channel);
+}
+
+static bool takes_kind(const patch_values *values, int channel, int kind)
+{
+	return kind == FILES_INSTRUMENT ? takes_fm(values, channel) : kind == FILES_ENVELOPE && !channel_is_fm(channel);
+}
+
+// The name of what the channel plays: its voice's or its envelope's.
+static const char *sound_name(const patch_values *values, int channel)
+{
+	return channel_is_fm(channel) ? values->names[channel] : values->psg[channel - PATCH_NUM_FM_CHANNELS].name;
+}
+
+// The name of a place in the list a channel chooses from.
+static const char *place_name(const patch_bank *bank, bool envelopes, int place)
+{
+	place &= PATCH_BANK_SIZE - 1;
+	return envelopes ? bank->envelopes[place].name : bank->places[place].name;
+}
+
 // The channel plays a file dropped on it rather than its bank place.
 static bool plays_own_file(mdmi_gui *g, const patch_values *values, int channel)
 {
 	const patch_bank *bank = patch_bank_view(g->source.patch);
-	return strcmp(values->names[channel], bank->places[values->channels[channel][PARAM_PRESET] & (PATCH_BANK_SIZE - 1)].name) != 0;
+	return strcmp(sound_name(values, channel), place_name(bank, !channel_is_fm(channel), values->channels[channel][PARAM_PRESET])) != 0;
 }
 
 static void say(mdmi_gui *g, const char *message, uint32_t color, int ticks)
@@ -287,7 +314,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	const uint32_t dark = dac ? C_DAC_DARK : channel_is_fm(channel) ? C_FM_DARK : C_PSG_DARK;
 	// While a file is over the window: the row it would go to is lit, rows it can't go to are dim.
 	const bool target = g->file_over && g->drop_channel == channel;
-	const bool dim = g->file_over && !target && (g->file_kind != FILES_INSTRUMENT || g->file_count != 1 || !takes_fm(values, channel));
+	const bool dim = g->file_over && !target && (g->file_count != 1 || !takes_kind(values, channel, g->file_kind));
 	const bool flash = g->flash_ticks > 0 && g->flash_channel == channel;
 #define INK(color) (target ? C_BG : dim ? C_LINE : (color))
 
@@ -306,22 +333,15 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		: !channel_is_fm(channel) ? "PSG"
 		: channel == 2 && values->globals[GLOBAL_CH3_MODE] ? "FM SP" : "FM";
 	text(g, 54, y + 7, tag, INK(dac ? C_DAC : channel_is_fm(channel) ? C_FM_LIGHT : C_PSG), 1);
-	if (takes_fm(values, channel) && plays_own_file(g, values, channel)) {
+	if (takes_files(values, channel) && plays_own_file(g, values, channel)) {
 		text(g, 90, y + 7, "FILE", INK(C_LABEL), 1);
 	}
 
 	if (dac) {
 		text(g, 54, y + 21, "Samples", INK(C_LABEL), 2);
 	} else {
-		const char *name = buffer;
-		if (channel_is_fm(channel)) {
-			name = values->names[channel];
-		} else {
-			patch_format_preset(patch_bank_view(g->source.patch), channel, values->channels[channel][PARAM_PRESET], buffer, sizeof(buffer));
-			name = strchr(buffer, ' ') ? strchr(buffer, ' ') + 1 : buffer;
-		}
 		char cut[16];
-		snprintf(cut, sizeof(cut), "%.14s", name);
+		snprintf(cut, sizeof(cut), "%.14s", sound_name(values, channel));
 		text(g, 54, y + 21, cut, INK(C_LABEL), 2);
 	}
 #undef INK
@@ -616,7 +636,7 @@ static void draw_diagram(mdmi_gui *g, int algorithm, int feedback)
 	}
 }
 
-// The channel's number and, for FM, the name of what it plays: one line for the editor and the bank.
+// The channel's number and the name of what it plays: one line for the editor and the bank.
 static void draw_page_top(mdmi_gui *g, const patch_values *values)
 {
 	const int channel = *g->source.channel;
@@ -624,8 +644,8 @@ static void draw_page_top(mdmi_gui *g, const patch_values *values)
 	fill(g, RAIL_W + 1, HEADER_H, GUI_WIDTH - RAIL_W - 1, GLOBALS_Y - HEADER_H, C_BG);
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
 	text(g, PAGE_X, 30, buffer, C_TEXT, 3);
-	if (takes_fm(values, channel)) {
-		snprintf(buffer, sizeof(buffer), "%.*s", NAME_CHARS, values->names[channel]);
+	if (takes_files(values, channel)) {
+		snprintf(buffer, sizeof(buffer), "%.*s", NAME_CHARS, sound_name(values, channel));
 		text(g, NAME_X, 34, buffer, C_TEXT, 2);
 		if (plays_own_file(g, values, channel)) {
 			text(g, FILE_TAG_X, 38, "FILE", C_LABEL, 1);
@@ -653,8 +673,11 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		return;
 	}
 	if (!channel_is_fm(channel)) {
+		const patch_envelope *envelope = &values->psg[channel - PATCH_NUM_FM_CHANNELS];
 		text(g, PAGE_X, 62, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
-		text(g, PAGE_X, 74, "ENVELOPE EDITOR: LATER STAGE", C_HINT, 1);
+		snprintf(buffer, sizeof(buffer), "%d STEPS, %s", patch_envelope_length(envelope), memchr(envelope->steps, PATCH_EEF_LOOP_START, (size_t)patch_envelope_length(envelope)) ? "LOOPS" : "NO LOOP");
+		text(g, PAGE_X, 74, buffer, C_LABEL, 1);
+		text(g, PAGE_X, 86, "ENVELOPE EDITOR: LATER STAGE", C_HINT, 1);
 		return;
 	}
 	const int algorithm = value_of(g, values, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM));
@@ -721,23 +744,24 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 	const int channel = *g->source.channel;
 	const patch_values *values = patch_view(g->source.patch);
 	const char *undo = files_undo_text(g->source.files);
-	const int add = files_add_place(g->source.files);
+	const bool envelopes = !channel_is_fm(channel);
+	const int add = files_add_place(g->source.files, envelopes);
 	if (action == ACTION_LOAD && *g->source.page == PAGE_BANK) {
-		if (takes_fm(values, channel)) {
+		if (takes_files(values, channel)) {
 			snprintf(hint, size, "LOAD: files from slot %d on, bank or snapshot", values->channels[channel][PARAM_PRESET] + 1);
 		} else {
-			snprintf(hint, size, "LOAD: select CH1-6 for slots, bank, snapshot");
+			snprintf(hint, size, "LOAD: select another CH for slots");
 		}
 	} else if (action == ACTION_ADD) {
 		if (add < PATCH_BANK_SIZE) {
 			snprintf(hint, size, "ADD: files to slots from %d", add + 1);
 		} else {
-			snprintf(hint, size, "ADD: bank is full to 128");
+			snprintf(hint, size, envelopes ? "ADD: envelopes full to 128" : "ADD: bank is full to 128");
 		}
 	} else if (action == ACTION_LOAD) {
 		snprintf(hint, size, "LOAD: file to CH%d, bank or snapshot", channel + 1);
 	} else if (action == ACTION_SAVE) {
-		snprintf(hint, size, channel_is_fm(channel) ? "SAVE: CH%d as VGI, the bank or a snapshot" : "SAVE: the bank or a snapshot", channel + 1);
+		snprintf(hint, size, envelopes ? "SAVE: CH%d as EEF, the bank or a snapshot" : takes_fm(values, channel) ? "SAVE: CH%d as VGI, the bank or a snapshot" : "SAVE: the bank or a snapshot", channel + 1);
 	} else if (action == ACTION_UNDO && undo) {
 		snprintf(hint, size, "UNDO: %s", undo);
 	} else {
@@ -807,11 +831,15 @@ static void scroll_bank(mdmi_gui *g, int top)
 	g->bank_top = top < 0 ? 0 : top > BANK_TOP_MAX ? BANK_TOP_MAX : top;
 }
 
-// The places of the bank, with the selected channel's place lit and a dot for every FM channel on it.
+// The places of the list the selected channel chooses from, FM voices or envelopes (D28), with its
+// place lit and a dot for every channel of the list on it.
 static void draw_bank(mdmi_gui *g, const patch_values *values)
 {
 	const int channel = *g->source.channel;
-	const bool usable = takes_fm(values, channel);
+	const bool usable = takes_files(values, channel);
+	const bool envelopes = !channel_is_fm(channel);
+	const uint32_t kind = envelopes ? C_PSG : C_FM, dark = envelopes ? C_PSG_DARK : C_FM_DARK, light = envelopes ? C_PSG : C_FM_LIGHT;
+	const int first_channel = envelopes ? PATCH_NUM_FM_CHANNELS : 0, last_channel = envelopes ? PATCH_NUM_CHANNELS : PATCH_NUM_FM_CHANNELS;
 	const int preset = values->channels[channel][PARAM_PRESET];
 	// Opening the page or choosing another channel brings its place into view; a program change doesn't.
 	if (usable && (!g->bank_was_open || g->bank_seen_channel != channel) && (preset < g->bank_top || preset >= g->bank_top + BANK_ROWS)) {
@@ -823,16 +851,23 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	draw_page_top(g, values);
 	const patch_bank *bank = patch_bank_view(g->source.patch);
 	text(g, 250, BANK_HEADER_Y, "PRG", C_HINT, 1);
-	text(g, 298, BANK_HEADER_Y, usable ? "NAME" : "FM SOUNDS. SELECT CH 1-6", usable ? C_HINT : C_LABEL, 1);
-	// While instruments are dragged the FILE and dots column becomes one ADD field.
-	const bool instruments_over = g->file_over && g->file_instruments > 0;
-	const bool full = files_add_place(g->source.files) >= PATCH_BANK_SIZE;
+	if (usable) {
+		text(g, 298, BANK_HEADER_Y, envelopes ? "PSG ENVELOPE" : "FM VOICE", light, 1);
+	} else {
+		text(g, 298, BANK_HEADER_Y, "CH6 PLAYS SAMPLES. SELECT ANOTHER CH", C_LABEL, 1);
+	}
+	if (envelopes) {
+		text(g, 544, BANK_HEADER_Y, "STEP", C_HINT, 1);
+	}
+	// While files of the list's kind are dragged the FILE and dots column becomes one ADD field.
+	const bool sounds_over = g->file_over && (envelopes ? g->file_envelopes : g->file_instruments) > 0;
+	const bool full = files_add_place(g->source.files, envelopes) >= PATCH_BANK_SIZE;
 	char buffer[64];
-	if (!instruments_over) {
+	if (!sounds_over) {
 		text(g, 580, BANK_HEADER_Y, "FILE", C_HINT, 1);
-		for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
+		for (int c = first_channel; c < last_channel; c++) {
 			snprintf(buffer, sizeof(buffer), "%d", c + 1);
-			text(g, BANK_DOTS_X + c * 12, BANK_HEADER_Y, buffer, c == channel ? C_TEXT : is_dac(values, c) ? C_LINE : C_HINT, 1);
+			text(g, BANK_DOTS_X + (c - first_channel) * 12, BANK_HEADER_Y, buffer, c == channel ? C_TEXT : is_dac(values, c) ? C_LINE : C_HINT, 1);
 		}
 	}
 	const bool own = usable && plays_own_file(g, values, channel);
@@ -843,34 +878,45 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 		const bool selected = usable && preset == place;
 		const bool target = aimed && place >= g->drop_first && place < g->drop_first + g->drop_lit;
 		const bool flash = g->flash_ticks > 0 && place >= g->flash_place && place < g->flash_place + g->flash_count;
-		const bool from_file = !patch_place_is_gm(bank, place);
+		const bool from_file = envelopes ? !patch_envelope_is_rom(bank, place) : !patch_place_is_gm(bank, place);
 		if (target) {
 			fill(g, BANK_X, y, BANK_ADD_X - BANK_X, BANK_ROW_H - 1, C_TARGET);
 		} else if (flash && g->flash_color == C_LINE) {
 			fill(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, C_LINE);
 		} else if (selected) {
 			if (!own) {
-				fill(g, BANK_X + 4, y, BANK_RIGHT - BANK_X - 4, BANK_ROW_H - 1, C_FM_DARK);
+				fill(g, BANK_X + 4, y, BANK_RIGHT - BANK_X - 4, BANK_ROW_H - 1, dark);
 			}
-			fill(g, BANK_X, y, 4, BANK_ROW_H - 1, C_FM);
+			fill(g, BANK_X, y, 4, BANK_ROW_H - 1, kind);
 		}
 		fill(g, BANK_X, y + BANK_ROW_H - 1, BANK_RIGHT - BANK_X, 1, place % 8 == 7 ? C_LINE : C_CELL);
 		snprintf(buffer, sizeof(buffer), "%d", place + 1);
 		text_right(g, 286, y + 3, buffer, target ? C_BG : !usable ? C_LINE : selected ? C_TEXT : C_LABEL, 2, 40);
-		snprintf(buffer, sizeof(buffer), "%.*s", NAME_CHARS, bank->places[place].name);
+		snprintf(buffer, sizeof(buffer), "%.*s", envelopes ? ENVELOPE_NAME_CHARS : NAME_CHARS, place_name(bank, envelopes, place));
 		text(g, 298, y + 3, buffer, target ? C_BG : !usable ? C_HINT : from_file ? C_TEXT : C_LABEL, 2);
-		if (from_file) {
-			text(g, 580, y + 7, "FILE", C_FM_LIGHT, 1);
+		if (envelopes && !target) {
+			// The steps the limit counts, and whether a held note keeps it going.
+			const patch_envelope *envelope = &bank->envelopes[place];
+			const int length = patch_envelope_length(envelope);
+			snprintf(buffer, sizeof(buffer), "%d", length);
+			text_right(g, 564, y + 7, buffer, selected ? C_TEXT : C_LABEL, 1, 24);
+			if (memchr(envelope->steps, PATCH_EEF_LOOP_START, (size_t)length)) {
+				text(g, 568, y + 7, "L", C_PSG, 1);
+			}
 		}
-		for (int c = 0; c < PATCH_NUM_FM_CHANNELS; c++) {
-			if (!takes_fm(values, c) || values->channels[c][PARAM_PRESET] != place) {
+		if (from_file) {
+			text(g, 580, y + 7, "FILE", light, 1);
+		}
+		for (int c = first_channel; c < last_channel; c++) {
+			if (!takes_files(values, c) || values->channels[c][PARAM_PRESET] != place) {
 				continue;
 			}
-			const uint32_t color = c == channel ? C_TEXT : C_FM_LIGHT;
+			const uint32_t color = c == channel ? C_TEXT : light;
+			const int x = BANK_DOTS_X + (c - first_channel) * 12;
 			if (plays_own_file(g, values, c)) {
-				frame(g, BANK_DOTS_X + c * 12, y + 7, 6, 6, color);
+				frame(g, x, y + 7, 6, 6, color);
 			} else {
-				fill(g, BANK_DOTS_X + c * 12, y + 7, 6, 6, color);
+				fill(g, x, y + 7, 6, 6, color);
 			}
 		}
 		if (flash && g->flash_color == C_ERROR) {
@@ -888,9 +934,9 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 		fill(g, SCROLL_X, BANK_Y + g->drop_first * SCROLL_H / PATCH_BANK_SIZE, 6, h < 3 ? 3 : h, C_TARGET);
 	}
 	if (usable) {
-		fill(g, SCROLL_X, BANK_Y + preset * SCROLL_H / PATCH_BANK_SIZE, 6, 3, C_FM);
+		fill(g, SCROLL_X, BANK_Y + preset * SCROLL_H / PATCH_BANK_SIZE, 6, 3, kind);
 	}
-	if (instruments_over) {
+	if (sounds_over) {
 		// The field covers what the column shows, lit when the files would go there.
 		const uint32_t edge = full ? C_LINE : C_TARGET;
 		fill(g, 580, 72, 118, 380, g->drop_add ? C_TARGET : C_BG);
@@ -1000,7 +1046,7 @@ static void render(mdmi_gui *g)
 	action_button(g, ACTION_SAVE, ACTION_SAVE_X, "SAVE", true);
 	action_button(g, ACTION_UNDO, ACTION_UNDO_X, "UNDO", files_undo_text(g->source.files) != NULL);
 	if (page == PAGE_BANK) {
-		action_button(g, ACTION_ADD, ACTION_ADD_X, "ADD", files_add_place(g->source.files) < PATCH_BANK_SIZE);
+		action_button(g, ACTION_ADD, ACTION_ADD_X, "ADD", files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE);
 	}
 	if (rom) {
 		g->cell_count = 0;
@@ -1080,20 +1126,20 @@ static void open_file(mdmi_gui *g, const char *path, int channel)
 		done = files_open(g->source.files, path, channel, message, sizeof(message));
 	}
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
-	if (files_kind(path) == FILES_INSTRUMENT) {
+	if (files_kind(path) == FILES_INSTRUMENT || files_kind(path) == FILES_ENVELOPE) {
 		flash(g, channel, -1, 0, done);
 	}
 }
 
-// Instruments into the bank from a place, or added after the last file when first < 0 (D26).
-static void put_places(mdmi_gui *g, const char *const *paths, int count, int first)
+// Instruments or envelopes into the bank from a place, or added after the last file when first < 0 (D26).
+static void put_places(mdmi_gui *g, const char *const *paths, int count, bool envelopes, int first)
 {
 	char message[FILES_MESSAGE];
 	if (first < 0) {
-		first = files_add_place(g->source.files);
+		first = files_add_place(g->source.files, envelopes);
 	}
 	int skipped;
-	const int loaded = files_put_places(g->source.files, paths, count, first, &skipped, message, sizeof(message));
+	const int loaded = files_put_places(g->source.files, paths, count, envelopes, first, &skipped, message, sizeof(message));
 	say(g, message, !loaded ? C_ERROR : skipped ? C_TARGET : C_TEXT, loaded && !skipped ? MESSAGE_TICKS : ERROR_TICKS);
 	// The places filled, or the one the files were aimed at.
 	flash(g, -1, first, loaded ? loaded : 1, loaded > 0);
@@ -1115,6 +1161,7 @@ static void load_dialog(mdmi_gui *g, bool add)
 	const bool bank = add || *g->source.page == PAGE_BANK;
 	const patch_values *values = patch_view(g->source.patch);
 	const int channel = *g->source.channel;
+	const bool envelopes = !channel_is_fm(channel);
 	wchar_t *buffer = calloc(DIALOG_CHARS, sizeof(wchar_t));
 	if (!buffer) {
 		return;
@@ -1122,8 +1169,9 @@ static void load_dialog(mdmi_gui *g, bool add)
 	OPENFILENAMEW dialog = {0};
 	dialog.lStructSize = sizeof(dialog);
 	dialog.hwndOwner = g->window;
-	dialog.lpstrFilter = add ? L"Instruments (*.tfi;*.vgi;*.tyi)\0*.tfi;*.vgi;*.tyi\0All files\0*.*\0"
-		: L"MDMI files (*.tfi;*.vgi;*.tyi;*.mdbank;*.mdsnap)\0*.tfi;*.vgi;*.tyi;*.mdbank;*.mdsnap\0All files\0*.*\0";
+	dialog.lpstrFilter = add && envelopes ? L"Envelopes (*.eef)\0*.eef\0All files\0*.*\0"
+		: add ? L"Instruments (*.tfi;*.vgi;*.tyi)\0*.tfi;*.vgi;*.tyi\0All files\0*.*\0"
+		: L"MDMI files (*.tfi;*.vgi;*.tyi;*.eef;*.mdbank;*.mdsnap)\0*.tfi;*.vgi;*.tyi;*.eef;*.mdbank;*.mdsnap\0All files\0*.*\0";
 	dialog.lpstrFile = buffer;
 	dialog.nMaxFile = DIALOG_CHARS;
 	dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (bank ? OFN_ALLOWMULTISELECT | OFN_EXPLORER : 0);
@@ -1149,25 +1197,26 @@ static void load_dialog(mdmi_gui *g, bool add)
 	for (int i = 0; i < count; i++) {
 		paths[i] = g->file_paths[i];
 	}
-	if (!bank || (count == 1 && !add && files_kind(paths[0]) != FILES_INSTRUMENT)) {
+	if (!bank || (count == 1 && !add && files_kind(paths[0]) != (envelopes ? FILES_ENVELOPE : FILES_INSTRUMENT))) {
 		open_file(g, paths[0], channel);
 	} else if (add) {
-		put_places(g, paths, count, -1);
-	} else if (!takes_fm(values, channel)) {
-		say(g, "Select CH1-6 to choose a slot", C_ERROR, ERROR_TICKS);
+		put_places(g, paths, count, envelopes, -1);
+	} else if (!takes_files(values, channel)) {
+		say(g, "Select another CH to choose a slot", C_ERROR, ERROR_TICKS);
 	} else {
-		put_places(g, paths, count, values->channels[channel][PARAM_PRESET]);
+		put_places(g, paths, count, envelopes, values->channels[channel][PARAM_PRESET]);
 	}
 }
 
 static void save_dialog(mdmi_gui *g)
 {
 	const int channel = *g->source.channel;
-	const bool fm = takes_fm(patch_view(g->source.patch), channel);
+	const bool sound = takes_files(patch_view(g->source.patch), channel);
+	const bool envelope = !channel_is_fm(channel);
 	wchar_t path[MAX_PATH] = L"";
-	if (fm) {
-		// The instrument's name, without what a file name can't hold.
-		MultiByteToWideChar(CP_UTF8, 0, patch_view(g->source.patch)->names[channel], -1, path, MAX_PATH);
+	if (sound) {
+		// The instrument's or envelope's name, without what a file name can't hold.
+		MultiByteToWideChar(CP_UTF8, 0, sound_name(patch_view(g->source.patch), channel), -1, path, MAX_PATH);
 		for (wchar_t *c = path; *c; c++) {
 			if (wcschr(L"\\/:*?\"<>|", *c)) {
 				*c = L'_';
@@ -1177,8 +1226,9 @@ static void save_dialog(mdmi_gui *g)
 	OPENFILENAMEW dialog = {0};
 	dialog.lStructSize = sizeof(dialog);
 	dialog.hwndOwner = g->window;
-	dialog.lpstrFilter = L"Instrument VGI (*.vgi)\0*.vgi\0Bank (*.mdbank)\0*.mdbank\0Snapshot (*.mdsnap)\0*.mdsnap\0";
-	dialog.nFilterIndex = fm ? 1 : 2;
+	dialog.lpstrFilter = envelope ? L"Envelope EEF (*.eef)\0*.eef\0Bank (*.mdbank)\0*.mdbank\0Snapshot (*.mdsnap)\0*.mdsnap\0"
+		: L"Instrument VGI (*.vgi)\0*.vgi\0Bank (*.mdbank)\0*.mdbank\0Snapshot (*.mdsnap)\0*.mdsnap\0";
+	dialog.nFilterIndex = sound ? 1 : 2;
 	dialog.lpstrFile = path;
 	dialog.nMaxFile = MAX_PATH;
 	dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
@@ -1187,18 +1237,18 @@ static void save_dialog(mdmi_gui *g)
 	}
 	// The name's extension says what the file is when it is ours, since loading goes by it; without
 	// one, the chosen type's extension is added.
-	static const int KINDS[3] = {FILES_INSTRUMENT, FILES_BANK, FILES_SNAPSHOT};
-	static const char *const EXTENSIONS[3] = {".vgi", ".mdbank", ".mdsnap"};
+	const int KINDS[3] = {envelope ? FILES_ENVELOPE : FILES_INSTRUMENT, FILES_BANK, FILES_SNAPSHOT};
+	const char *const EXTENSIONS[3] = {envelope ? ".eef" : ".vgi", ".mdbank", ".mdsnap"};
 	const int chosen = dialog.nFilterIndex >= 1 && dialog.nFilterIndex <= 3 ? (int)dialog.nFilterIndex - 1 : 1;
 	char utf8[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
 	to_utf8(path, utf8, MAX_PATH * 3);
 	const char *dot = strrchr(utf8, '.');
-	const bool ours = dot && (!_stricmp(dot, ".vgi") || files_kind(utf8) == FILES_BANK || files_kind(utf8) == FILES_SNAPSHOT);
+	const bool ours = dot && (!_stricmp(dot, EXTENSIONS[0]) || files_kind(utf8) == FILES_BANK || files_kind(utf8) == FILES_SNAPSHOT);
 	if (!ours) {
 		strcat(utf8, EXTENSIONS[chosen]);
 	}
 	const int kind = ours ? files_kind(utf8) : KINDS[chosen];
-	bool done = files_save(g->source.files, utf8, kind, fm ? channel : -1, message, sizeof(message));
+	bool done = files_save(g->source.files, utf8, kind, sound ? channel : -1, message, sizeof(message));
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
 }
 
@@ -1208,7 +1258,7 @@ static void on_action(mdmi_gui *g, int action)
 	if (action == ACTION_LOAD) {
 		load_dialog(g, false);
 	} else if (action == ACTION_ADD) {
-		if (files_add_place(g->source.files) < PATCH_BANK_SIZE) {
+		if (files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE) {
 			load_dialog(g, true);
 		}
 	} else if (action == ACTION_SAVE) {
@@ -1248,7 +1298,7 @@ static void on_down(mdmi_gui *g, int x, int y)
 	if (*g->source.page == PAGE_BANK) {
 		const int place = bank_place_at(g, x, y);
 		const int selected = *g->source.channel;
-		if (place >= 0 && takes_fm(patch_view(g->source.patch), selected)) {
+		if (place >= 0 && takes_files(patch_view(g->source.patch), selected)) {
 			edit_once(g, PATCH_CHANNEL_ID(selected, PARAM_PRESET), place);
 		} else if (x >= SCROLL_X && x < SCROLL_X + 6 && y >= BANK_Y && y < BANK_Y + SCROLL_H) {
 			const int thumb = BANK_Y + g->bank_top * SCROLL_H / PATCH_BANK_SIZE;
@@ -1378,10 +1428,10 @@ static mdmi_gui *gui_of(IDropTarget *self)
 	return ((drop_target *)self)->gui;
 }
 
-// The files offered, up to a bank of them, and how many are instruments.
+// The files offered, up to a bank of them, and how many are instruments and envelopes.
 static void read_drop(mdmi_gui *g, IDataObject *data)
 {
-	g->file_count = g->file_instruments = 0;
+	g->file_count = g->file_instruments = g->file_envelopes = 0;
 	g->file_paths[0][0] = g->file_name[0] = g->file_stem[0] = 0;
 	FORMATETC format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
 	STGMEDIUM medium;
@@ -1397,15 +1447,16 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 				char *utf8 = g->file_paths[g->file_count++];
 				to_utf8(path, utf8, sizeof(g->file_paths[0]));
 				g->file_instruments += files_kind(utf8) == FILES_INSTRUMENT;
+				g->file_envelopes += files_kind(utf8) == FILES_ENVELOPE;
 			}
 		}
 		GlobalUnlock(medium.hGlobal);
 	}
 	ReleaseStgMedium(&medium);
-	// The name shown is the first instrument's, if there is one among the files.
+	// The name shown is the first instrument's or envelope's, if there is one among the files.
 	const char *named = g->file_paths[0];
 	for (int i = 0; i < g->file_count; i++) {
-		if (files_kind(g->file_paths[i]) == FILES_INSTRUMENT) {
+		if (files_kind(g->file_paths[i]) == FILES_INSTRUMENT || files_kind(g->file_paths[i]) == FILES_ENVELOPE) {
 			named = g->file_paths[i];
 			break;
 		}
@@ -1446,14 +1497,20 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 	const patch_values *values = patch_view(g->source.patch);
 	const int page = *g->source.page;
 	const bool many = g->file_count > 1;
-	// The words count only the instruments: one TFI with a stray file is still "the file".
-	const bool several = g->file_instruments > 1;
-	if (!many && g->file_kind != FILES_INSTRUMENT) {
-		hint(g, C_LABEL, g->file_kind < 0 ? "%s: not TFI, VGI or TYI" : "%s: use LOAD", g->file_name);
+	// The files go as envelopes when only those are there, or with both kinds when the bank shows
+	// envelopes; the others are skipped (D28).
+	const bool envelopes_open = !channel_is_fm(*g->source.channel);
+	const bool envelopes = g->file_envelopes > 0 && (g->file_instruments == 0 || envelopes_open);
+	g->drop_envelopes = envelopes;
+	const int sounds = envelopes ? g->file_envelopes : g->file_instruments;
+	// The words count only those: one TFI with a stray file is still "the file".
+	const bool several = sounds > 1;
+	if (!many && g->file_kind != FILES_INSTRUMENT && g->file_kind != FILES_ENVELOPE) {
+		hint(g, C_LABEL, g->file_kind < 0 ? "%s: not TFI, VGI, TYI or EEF" : "%s: use LOAD", g->file_name);
 		return false;
 	}
-	if (g->file_instruments == 0) {
-		hint(g, C_LABEL, "No TFI, VGI or TYI in these files");
+	if (sounds == 0) {
+		hint(g, C_LABEL, "No TFI, VGI, TYI or EEF in these files");
 		return false;
 	}
 	if (page == PAGE_ROM) {
@@ -1466,20 +1523,24 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 	const int place = in_list && !add ? bank_place_at(g, x, y) : -1;
 	if (channel >= 0 && many) {
 		hint(g, C_LABEL, "One file per channel");
-	} else if (channel >= 0 && !channel_is_fm(channel)) {
+	} else if (channel >= 0 && envelopes && channel_is_fm(channel)) {
+		hint(g, C_LABEL, "EEF envelope: drop on CH7-10");
+	} else if (channel >= 0 && !envelopes && !channel_is_fm(channel)) {
 		hint(g, C_LABEL, "FM file: drop on CH1-6");
 	} else if (channel >= 0 && is_dac(values, channel)) {
 		hint(g, C_LABEL, "CH6 plays samples: DAC is on");
 	} else if (channel >= 0) {
 		g->drop_channel = channel;
-		hint(g, C_TARGET, "%s > CH%d, replaces %s", g->file_stem, channel + 1, values->names[channel]);
+		hint(g, C_TARGET, "%s > CH%d, replaces %s", g->file_stem, channel + 1, sound_name(values, channel));
 		return true;
 	} else if (page != PAGE_BANK) {
-		hint(g, C_LABEL, many ? "Several files: open BANK to drop" : "%s: drop on CH1-6", g->file_name);
+		hint(g, C_LABEL, many ? "Several files: open BANK to drop" : envelopes ? "%s: drop on CH7-10" : "%s: drop on CH1-6", g->file_name);
+	} else if (envelopes != envelopes_open && (add || place >= 0)) {
+		hint(g, C_LABEL, envelopes ? "EEF: select CH7-10 for envelopes" : "FM file: select CH1-6 for voices");
 	} else if (add || place >= 0) {
-		const int first = add ? files_add_place(g->source.files) : place;
+		const int first = add ? files_add_place(g->source.files, envelopes) : place;
 		if (first >= PATCH_BANK_SIZE) {
-			hint(g, C_LABEL, "Bank full to 128: drop on a slot");
+			hint(g, C_LABEL, envelopes ? "Envelopes full to 128: drop on a slot" : "Bank full to 128: drop on a slot");
 			return false;
 		}
 		// Adding doesn't depend on the row, so the list can move to where the files will go.
@@ -1489,19 +1550,19 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		g->drop_add = add;
 		g->drop_place = place;
 		g->drop_first = first;
-		g->drop_lit = g->file_instruments < PATCH_BANK_SIZE - first ? g->file_instruments : PATCH_BANK_SIZE - first;
+		g->drop_lit = sounds < PATCH_BANK_SIZE - first ? sounds : PATCH_BANK_SIZE - first;
 		const int last = first + g->drop_lit;
 		const char *to = add ? "ADD to " : "";
 		if (!several) {
-			hint(g, C_TARGET, add ? "%s > ADD to slot %d" : "%s > slot %d, replaces %s", g->file_stem, first + 1, patch_bank_view(g->source.patch)->places[first].name);
-		} else if (g->file_instruments > g->drop_lit) {
-			hint(g, C_TARGET, "%d files > %sslots %d-%d, %d won't fit", g->file_instruments, to, first + 1, last, g->file_instruments - g->drop_lit);
+			hint(g, C_TARGET, add ? "%s > ADD to slot %d" : "%s > slot %d, replaces %s", g->file_stem, first + 1, place_name(patch_bank_view(g->source.patch), envelopes, first));
+		} else if (sounds > g->drop_lit) {
+			hint(g, C_TARGET, "%d files > %sslots %d-%d, %d won't fit", sounds, to, first + 1, last, sounds - g->drop_lit);
 		} else {
-			hint(g, C_TARGET, "%d files > %sslots %d-%d", g->file_instruments, to, first + 1, last);
+			hint(g, C_TARGET, "%d files > %sslots %d-%d", sounds, to, first + 1, last);
 		}
 		return true;
 	} else if (several) {
-		hint(g, C_TARGET, "%d files: slot replaces, ADD column adds", g->file_instruments);
+		hint(g, C_TARGET, "%d files: slot replaces, ADD column adds", sounds);
 	} else {
 		hint(g, C_TARGET, "%s: slot replaces, ADD column adds", g->file_name);
 	}
@@ -1558,7 +1619,7 @@ static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data,
 		for (int i = 0; i < g->file_count; i++) {
 			paths[i] = g->file_paths[i];
 		}
-		put_places(g, paths, g->file_count, g->drop_add ? -1 : g->drop_place);
+		put_places(g, paths, g->file_count, g->drop_envelopes, g->drop_add ? -1 : g->drop_place);
 	} else {
 		// What the footer said while the file was over the window stays there after it.
 		say(g, g->drop_hint, C_ERROR, ERROR_TICKS);
@@ -1571,14 +1632,14 @@ static IDropTargetVtbl drop_vtable = {
 	drop_query_interface, drop_add_ref, drop_release, drop_enter, drop_over, drop_leave, drop_drop,
 };
 
-// Up and down step the selected FM channel's place on the bank page, as a click on the next row
+// Up and down step the selected channel's place on the bank page, as a click on the next row
 // would, and the list moves only as far as it must. Keys come from the host through the view (our
 // clap-wrapper patch), not as window messages: the window never has the focus.
 bool gui_key(mdmi_gui *g, bool up)
 {
 	const int channel = *g->source.channel;
 	const patch_values *values = patch_view(g->source.patch);
-	if (!g->window || *g->source.page != PAGE_BANK || !takes_fm(values, channel)) {
+	if (!g->window || *g->source.page != PAGE_BANK || !takes_files(values, channel)) {
 		return false;
 	}
 	// Until the model takes the last step, the next one goes on from where that one asked to go.

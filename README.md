@@ -7,6 +7,10 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 ## How it works
 
 - `third_party/blastem` is built as `libblastem.dll` with `patches/0001-mdmi-everdrive-bridge.patch`.
+- The ROM is MDMI v1.34 built from `third_party/mdmi` with `patches/0003-mdmi-psg-envelopes.patch` (D28), in
+  the ROM author's SGDK image, into `build/rom/mdmi-everdrive.bin`. The same file is meant for the console.
+  Its one addition: SysEx `0A 01 <program> <nibbles>` stores a PSG envelope under a program number.
+  Unchanged, the tag builds the released `roms/mdmi-everdrive-v1.34.bin` byte for byte.
 - `src/embed.c` bundles that DLL and the ROM into the plugin. Each instance unpacks its own copy to
   `%TEMP%\MDMI-Plugin`, because BlastEm keeps its state in globals.
 - `src/engine.c` runs the emulator on its own MMCSS thread and feeds a ring buffer. MIDI is applied at
@@ -53,7 +57,15 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   takes as long as 12 controllers (D24).
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays the ROM's drum samples, chosen by note, with no FM voice of its own.
-- PSG presets: the ROM has one envelope under every number except 81, 90 and 100, a square lead.
+- PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square
+  Lead on 81, 90 and 100, Plain elsewhere). On a PSG channel Preset, CC 3 and a clip's Pgm choose from
+  it, and the BANK page lists it while a channel 7-10 is selected. An EEF works there as a TFI does on
+  FM: on a channel's row it becomes that channel's envelope until the next preset step, on a place it
+  replaces the place; SAVE writes the channel as EEF. An envelope holds at most 124 steps with its loop
+  marks. The ROM picks the envelope at Note On, so a change is heard from the next note. One the ROM
+  doesn't hold goes as SysEx `0A 01` under one of the channel's two service numbers 120-127, used in
+  turn: the longest delays a note of the same moment by about 16 ms (`reg_test`). EEF files of Echo shift
+  pitch by other steps and load as they are. SysEx `06` and `0A 01` from a clip are dropped.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
 the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.
@@ -102,7 +114,8 @@ sh tools/test/run_tests.sh
 sh tools/install.sh
 ```
 
-`fetch_deps.sh` clones `third_party/` and applies `patches/`. The build runs it too and refuses to start if
+`run_tests.sh` also runs the ROM's own tests in Docker with `--privileged`: the image's address
+sanitizer needs address randomization off. `fetch_deps.sh` clones `third_party/` and applies `patches/`. The build runs it too and refuses to start if
 `third_party/` differs from `patches/`, so after changing code there, run `tools/save_patches.sh`. `run_tests.sh` exits with the number of failed checks. Plugins land in `build/cmake/out`.
 
 `install.sh` copies them to `D:\ALL\VST\CHIPTUNE\MDMI` or the folder you name, checks the hashes, and writes

@@ -16,6 +16,7 @@
 // MIDI channels 1-6 are FM, 7-9 PSG tone, 10 PSG noise.
 #define PATCH_NUM_CHANNELS 10
 #define PATCH_NUM_FM_CHANNELS 6
+#define PATCH_NUM_PSG_CHANNELS (PATCH_NUM_CHANNELS - PATCH_NUM_FM_CHANNELS)
 
 // Settings of the whole console. Slot 0 held Polyphony until D20 replaced it: its id stays unused,
 // so a value saved under it means nothing.
@@ -70,11 +71,26 @@ typedef struct {
 	int16_t voice[PATCH_VOICE_PARAMS];
 } patch_instrument;
 
+// A PSG envelope with its name: a place of the bank's second list, or what a PSG channel has (D28).
+// The steps are EEF bytes as the ROM holds them up to the first EEF_END, and EEF_END after it, so
+// two envelopes compare whole. The ROM stores 125 steps, but a SysEx of 125 leaves no room for its
+// F7 in the ROM's receive buffer, so the plugin keeps to 124.
+#define PATCH_ENVELOPE_STEPS 124
+#define PATCH_EEF_END 0xFF
+#define PATCH_EEF_LOOP_START 0xFE
+#define PATCH_EEF_LOOP_END 0xFD
+typedef struct {
+	char name[PATCH_NAME];
+	uint8_t steps[PATCH_ENVELOPE_STEPS + 1];
+} patch_envelope;
+
 // One bank for the plugin. Place N is program number N, so a program change, the Preset lane and
-// CC 3 choose from it on any FM channel. It starts as the ROM's GM presets.
+// CC 3 choose from it: an FM sound on an FM channel, an envelope on a PSG channel. It starts as the
+// ROM's GM presets and envelopes.
 #define PATCH_BANK_SIZE 128
 typedef struct {
 	patch_instrument places[PATCH_BANK_SIZE];
+	patch_envelope envelopes[PATCH_BANK_SIZE];
 } patch_bank;
 
 typedef struct {
@@ -82,11 +98,14 @@ typedef struct {
 	int16_t channels[PATCH_NUM_CHANNELS][PATCH_NUM_CHANNEL_PARAMS];
 	// The name of what each FM channel has: its bank place, or the file dropped on it.
 	char names[PATCH_NUM_FM_CHANNELS][PATCH_NAME];
+	// The envelope each PSG channel plays, the same way.
+	patch_envelope psg[PATCH_NUM_PSG_CHANNELS];
 } patch_values;
 
 // What a receiver holds. A value we can't know is PATCH_UNKNOWN, and always differs from the model.
 #define PATCH_UNKNOWN (-1)
 #define PATCH_SERVICE_PROGRAMS 12
+#define PATCH_PSG_SERVICE_PROGRAMS 8
 typedef struct {
 	// Globals and what each MIDI channel has. For an FM channel the Preset is the preset its program
 	// gives; the FM voice itself is in voices.
@@ -102,6 +121,12 @@ typedef struct {
 	int8_t voice_owner[PATCH_NUM_FM_CHANNELS];
 	// Which of its two service programs each FM channel uses next.
 	bool alternate[PATCH_NUM_FM_CHANNELS];
+	// The program number each PSG channel has, and what the next note of a PSG channel plays under a
+	// service number. The same two numbers per channel, taken in turn, so a sounding note keeps its
+	// envelope while the next one is stored.
+	int16_t psg_programs[PATCH_NUM_PSG_CHANNELS];
+	uint8_t psg_stored[PATCH_PSG_SERVICE_PROGRAMS][PATCH_ENVELOPE_STEPS + 1];
+	bool psg_alternate[PATCH_NUM_PSG_CHANNELS];
 } patch_receiver;
 
 // Who plays on an FM voice (D20). A voice is free when channel is -1, and then answers to its own
@@ -115,8 +140,8 @@ typedef struct {
 	uint8_t velocity;
 } patch_voice;
 
-// What the main thread hands the writer in one piece: a loaded state, a bank, or the voices of
-// files dropped on channels.
+// What the main thread hands the writer in one piece: a loaded state, a bank, or the voices and
+// envelopes of files dropped on channels.
 enum { PATCH_INCOMING_VALUES = 1, PATCH_INCOMING_BANK = 2, PATCH_INCOMING_VOICE = 4 };
 typedef struct {
 	uint32_t parts;
@@ -124,6 +149,7 @@ typedef struct {
 	patch_bank bank;
 	// PATCH_INCOMING_VOICE << channel says which of these came.
 	patch_instrument voices[PATCH_NUM_FM_CHANNELS];
+	patch_envelope envelopes[PATCH_NUM_PSG_CHANNELS];
 } patch_incoming;
 
 #define PATCH_PENDING_NOTES 32
@@ -179,6 +205,14 @@ uint32_t patch_param_id_at(uint32_t panel_index);
 const char *patch_gm_name(int place);
 // The place still holds what the ROM has under its number, voice and name (D26).
 bool patch_place_is_gm(const patch_bank *bank, int place);
+// The same for the place's envelope.
+bool patch_envelope_is_rom(const patch_bank *bank, int place);
+// The bank a fresh plugin has: the ROM's GM presets and envelopes.
+void patch_bank_rom(patch_bank *bank);
+// Makes an envelope from EEF bytes: false if they don't fit. A missing EEF_END is added.
+bool patch_envelope_from_eef(patch_envelope *envelope, const uint8_t *eef, size_t size);
+// The steps before EEF_END.
+int patch_envelope_length(const patch_envelope *envelope);
 // The value a param has in a place of the bank, which a reset returns to.
 int patch_preset_value(const patch_bank *bank, int channel, int param, int preset);
 
@@ -198,14 +232,18 @@ size_t patch_save_size(void);
 void patch_save(const patch_values *values, void *buffer);
 // Takes what it knows from a saved state and leaves it for the writer to take. Without names, a
 // channel is named after its bank place.
-bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME]);
+// Without envelopes, a PSG channel plays its bank place.
+bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg);
 // Main thread: the names of the FM channels, PATCH_NUM_FM_CHANNELS * PATCH_NAME bytes.
 void patch_save_names(const patch_values *values, void *buffer);
 // Main thread: a new bank, or one place of it, for the writer to take.
 void patch_load_bank(mdmi_patch *patch, const patch_bank *bank);
 void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *instrument);
+void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelope *envelope);
 // Main thread: a file's voice for an FM channel, as if its knobs moved; the Preset stays (D23).
 void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument);
+// The same for a PSG channel's envelope (D28).
+void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope);
 
 // The writer's. Sets a knob; true if other knobs now show different values.
 bool patch_set(mdmi_patch *patch, uint32_t id, int value);

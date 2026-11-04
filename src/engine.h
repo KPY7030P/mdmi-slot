@@ -54,6 +54,8 @@ void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz);
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e);
 // Tests only: what the running YM2612 holds in a register.
 uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg);
+// The attenuation of a PSG channel, 0-15, for tests.
+uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel);
 // Main thread. Frames are only copied while someone is watching.
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);

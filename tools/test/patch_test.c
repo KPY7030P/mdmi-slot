@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include "files.h"
@@ -154,9 +155,11 @@ static void test_preset_and_tweaks(void)
 
 	clear();
 	midi(&patch, 0xC6, 62, 0);
-	CHECK(sent_bytes == 2 && sent[0] == 0xC6 && sent[1] == 62, "a PSG channel gets its program");
+	CHECK(sent_bytes == 0, "a PSG program with the envelope the channel plays sends nothing (D28)");
+	midi(&patch, 0xC6, 80, 0);
+	CHECK(sent_bytes == 2 && sent[0] == 0xC6 && sent[1] == 80, "one with another envelope is a program change");
 	clear();
-	midi(&patch, 0xC6, 62, 0);
+	midi(&patch, 0xC6, 80, 0);
 	CHECK(sent_bytes == 0, "and only once");
 
 	set(&patch, op_id(0, 0, OP_TL), tweaked);
@@ -280,7 +283,7 @@ static void test_load(void)
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
 	patch_save(patch_view(&patch), state);
-	CHECK(patch_load(&other, state, sizeof(state), NULL), "a saved state loads");
+	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL), "a saved state loads");
 	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
 	CHECK(patch_take_incoming(&other) && !patch_take_incoming(&other), "it is taken once");
@@ -294,10 +297,10 @@ static void test_load(void)
 	memcpy(odd + 4, &any, 2);
 	memcpy(odd + 6, &rate, 4);
 	memcpy(odd + 10, &big, 2);
-	CHECK(patch_load(&other, odd, sizeof(odd), NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
+	CHECK(patch_load(&other, odd, sizeof(odd), NULL, NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
 		&& other.model.globals[GLOBAL_RETIRED] == 0, "the old Polyphony id is skipped, a value out of range clamped");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
-	CHECK(!patch_load(&other, odd, 7, NULL), "a cut state is refused");
+	CHECK(!patch_load(&other, odd, 7, NULL, NULL), "a cut state is refused");
 }
 
 static void discard(void *context, const uint8_t *bytes, size_t length)
@@ -365,7 +368,7 @@ static void test_threads(void)
 		reads++;
 		if (reads % 64 == 0) {
 			memcpy(loaded, state, sizeof(loaded));
-			patch_load(&stress, loaded, sizeof(loaded), NULL);
+			patch_load(&stress, loaded, sizeof(loaded), NULL, NULL);
 		}
 	}
 	stop_writer = 1;
@@ -554,7 +557,15 @@ static bool open_file(mdmi_files *files, const char *dir, const char *name, int 
 	char path[MAX_PATH];
 	path_in(path, sizeof(path), dir, name);
 	const char *one = path;
-	return place >= 0 ? files_put_places(files, &one, 1, place, NULL, message, FILES_MESSAGE) : files_open(files, path, channel, message, FILES_MESSAGE);
+	return place >= 0 ? files_put_places(files, &one, 1, false, place, NULL, message, FILES_MESSAGE) : files_open(files, path, channel, message, FILES_MESSAGE);
+}
+
+static bool files_put_places_one(mdmi_files *files, const char *name, int place, char *message)
+{
+	char path[MAX_PATH];
+	path_in(path, sizeof(path), files_dir, name);
+	const char *one = path;
+	return files_put_places(files, &one, 1, true, place, NULL, message, FILES_MESSAGE) == 1;
 }
 
 static bool same_model(const patch_values *a, const patch_values *b)
@@ -669,31 +680,31 @@ static void test_places(void)
 		path_in(paths[i], sizeof(paths[i]), files_dir, NAMES[i]);
 		list[i] = paths[i];
 	}
-	CHECK(files_add_place(&files) == 0, "an untouched bank adds from slot 1");
+	CHECK(files_add_place(&files, false) == 0, "an untouched bank adds from slot 1");
 
 	// Channel 1 plays place 12 as it is, so it follows what lands there.
 	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 11);
 	patch_publish(patch);
 	static patch_bank gm;
 	gm = patch->bank;
-	CHECK(files_put_places(&files, list, 5, 9, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 10-14"), "five files on slot 10: %s", message);
+	CHECK(files_put_places(&files, list, 5, false, 9, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 10-14"), "five files on slot 10: %s", message);
 	bool in_order = true;
 	for (int i = 0; i < 5; i++) {
 		in_order &= !strcmp(patch->bank.places[9 + i].name, SORTED[i]) && !strcmp(patch_bank_view(patch)->places[9 + i].name, SORTED[i]);
 	}
 	CHECK(in_order && !strcmp(patch->bank.places[14].name, patch_gm_name(14)), "take places 10-14 in the order of their names");
 	CHECK(!strcmp(patch->model.names[0], "Duck Guitar"), "the channel on place 12 plays the file now there");
-	CHECK(files_add_place(&files) == 14, "adding starts after the last file, slot 15");
+	CHECK(files_add_place(&files, false) == 14, "adding starts after the last file, slot 15");
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "bank before 5 files"), "undo would put the bank back");
 	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->bank, &gm, sizeof(gm)) && !strcmp(patch->model.names[0], patch_gm_name(11)), "one undo puts the whole bank and the channel back");
 	files_undo(&files, message, sizeof(message));
 
-	CHECK(files_put_places(&files, list, 5, -1, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 15-19"), "the same five added: %s", message);
+	CHECK(files_put_places(&files, list, 5, false, -1, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 15-19"), "the same five added: %s", message);
 	CHECK(!strcmp(patch->bank.places[14].name, SORTED[0]) && !strcmp(patch->bank.places[18].name, SORTED[4]), "after the last file");
 
-	CHECK(files_put_places(&files, list, 5, 125, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[127].name, SORTED[2]) && strstr(message, "2 didn't fit"),
+	CHECK(files_put_places(&files, list, 5, false, 125, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[127].name, SORTED[2]) && strstr(message, "2 didn't fit"),
 		"what doesn't fit before 128 is skipped and told: %s", message);
-	CHECK(files_add_place(&files) == PATCH_BANK_SIZE && !files_put_places(&files, list, 1, -1, NULL, message, sizeof(message)), "with a file in slot 128 nothing more is added: %s", message);
+	CHECK(files_add_place(&files, false) == PATCH_BANK_SIZE && !files_put_places(&files, list, 1, false, -1, NULL, message, sizeof(message)), "with a file in slot 128 nothing more is added: %s", message);
 
 	uint8_t junk[42];
 	memset(junk, 0x7F, sizeof(junk));
@@ -701,13 +712,192 @@ static void test_places(void)
 	char junk_path[MAX_PATH];
 	path_in(junk_path, sizeof(junk_path), temp_dir, "junk.tfi");
 	const char *mixed[3] = {list[0], junk_path, list[1]};
-	CHECK(files_put_places(&files, mixed, 3, 30, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[30].name, "Duck Guitar") && !strcmp(patch->bank.places[31].name, "Turtles Guitar")
+	CHECK(files_put_places(&files, mixed, 3, false, 30, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[30].name, "Duck Guitar") && !strcmp(patch->bank.places[31].name, "Turtles Guitar")
 		&& !strcmp(patch->bank.places[32].name, patch_gm_name(32)) && strstr(message, "skipped 1: junk.tfi"),
 		"a file that can't be read is skipped, the rest close up: %s", message);
 	static patch_bank kept;
 	kept = patch->bank;
 	const char *bad[1] = {junk_path};
-	CHECK(!files_put_places(&files, bad, 1, 40, NULL, message, sizeof(message)) && !memcmp(&patch->bank, &kept, sizeof(kept)), "only bad files: the bank stays: %s", message);
+	CHECK(!files_put_places(&files, bad, 1, false, 40, NULL, message, sizeof(message)) && !memcmp(&patch->bank, &kept, sizeof(kept)), "only bad files: the bank stays: %s", message);
+	files_free(&files);
+}
+
+// Stage 7: PSG envelopes (D28). The first stored envelope of a PSG channel, the SysEx 0A 01 it
+// went as, or NULL.
+static const uint8_t *stored_envelope(int *program, size_t *length)
+{
+	for (size_t i = 0; i < sent_bytes; i++) {
+		if (sent[i] == 0xF0 && i + 6 < sent_bytes && sent[i + 4] == 0x0A && sent[i + 5] == 0x01) {
+			const uint8_t *end = memchr(sent + i, 0xF7, sent_bytes - i);
+			*program = sent[i + 6];
+			*length = (size_t)(end - (sent + i)) + 1;
+			return sent + i;
+		}
+	}
+	return NULL;
+}
+
+// The program change a channel got last, or -1.
+static int last_program(int channel)
+{
+	int program = -1;
+	for (size_t i = 0; i < sent_bytes;) {
+		if (sent[i] == 0xF0) {
+			i += (size_t)((const uint8_t *)memchr(sent + i, 0xF7, sent_bytes - i) - (sent + i)) + 1;
+			continue;
+		}
+		if (sent[i] == (0xC0 | channel)) {
+			program = sent[i + 1];
+		}
+		i += (sent[i] & 0xF0) == 0xC0 ? 2 : 3;
+	}
+	return program;
+}
+
+static void test_envelopes(void)
+{
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	int program;
+	size_t length;
+
+	clear();
+	sync(patch);
+	CHECK(sent_bytes == 0 && !strcmp(patch->model.psg[0].name, "Plain") && !strcmp(patch_bank_view(patch)->envelopes[80].name, "Square Lead"),
+		"a booted ROM already plays the bank's envelopes: Plain, Square Lead on 81");
+	char text[64];
+	patch_format_preset(patch_bank_view(patch), 7, 80, text, sizeof(text));
+	CHECK(!strcmp(text, "81 Square Lead"), "the Preset of a PSG channel is named after its place: %s", text);
+
+	// An envelope dropped on channel 7: stored under the channel's service number, which it selects.
+	clear();
+	CHECK(open_file(&files, files_dir, "PSG Organ.eef", 6, -1, message) && !strcmp(patch->model.psg[0].name, "PSG Organ") && patch->model.channels[6][PARAM_PRESET] == 0,
+		"an EEF on channel 7 is its envelope, the Preset stays: %s", message);
+	sync(patch);
+	const uint8_t organ[] = {0x04, 0x02, 0x00, 0xFE, 0x00, 0xFD, 0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C, 0x0E};
+	const uint8_t *sysex = stored_envelope(&program, &length);
+	bool nibbles = sysex && length == 8 + 2 * sizeof(organ);
+	for (size_t i = 0; nibbles && i < sizeof(organ); i++) {
+		nibbles = sysex[7 + 2 * i] == organ[i] >> 4 && sysex[8 + 2 * i] == (organ[i] & 15);
+	}
+	CHECK(nibbles && program == 120 && last_program(6) == 120, "it goes as SysEx 0A 01 to program 120, then a program change to 120");
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH7 back to Plain"), "undo would put Plain back: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+
+	// Another for the same channel takes the other number, so a sounding note keeps its envelope.
+	clear();
+	open_file(&files, files_dir, "PSG Pluck.eef", 6, -1, message);
+	sync(patch);
+	CHECK(stored_envelope(&program, &length) && program == 121 && last_program(6) == 121, "the next one goes to 121");
+	clear();
+	files_undo(&files, message, sizeof(message));
+	sync(patch);
+	CHECK(!stored_envelope(&program, &length) && last_program(6) == 120 && !strcmp(patch->model.psg[0].name, "PSG Organ"), "undo brings the organ back, still held under 120: %s", message);
+
+	// A preset step wipes it, and an envelope the ROM has is only a program change.
+	clear();
+	set(patch, PATCH_CHANNEL_ID(6, PARAM_PRESET), 80);
+	CHECK(!stored_envelope(&program, &length) && last_program(6) == 80 && !strcmp(patch->model.psg[0].name, "Square Lead"), "a preset step plays the place: Square Lead by program change 81");
+	clear();
+	set(patch, PATCH_CHANNEL_ID(6, PARAM_PRESET), 3);
+	CHECK(sent_bytes == 2 && last_program(6) == 3, "and Plain on place 4 by a program change too");
+
+	// Different envelopes on all four channels at once.
+	static const char *const FOUR[4] = {"PSG Pluck.eef", "PSG Organ.eef", "PSG Vibrato.eef", "Noise Hit.eef"};
+	clear();
+	for (int i = 0; i < 4; i++) {
+		open_file(&files, files_dir, FOUR[i], 6 + i, -1, message);
+	}
+	sync(patch);
+	bool four = true;
+	for (int i = 0; i < 4; i++) {
+		four &= last_program(6 + i) >= 120 + 2 * i && last_program(6 + i) <= 121 + 2 * i;
+	}
+	CHECK(four, "four channels, four envelopes, each under its own channel's numbers");
+
+	// A place of the bank: a channel playing it as it is follows, one with its own envelope doesn't.
+	set(patch, PATCH_CHANNEL_ID(7, PARAM_PRESET), 9);
+	set(patch, PATCH_CHANNEL_ID(8, PARAM_PRESET), 9);
+	open_file(&files, files_dir, "PSG Vibrato.eef", 8, -1, message);
+	clear();
+	CHECK(files_put_places_one(&files, "PSG Trill.eef", 9, message) && !strcmp(patch->bank.envelopes[9].name, "PSG Trill"), "an EEF in place 10 of the envelopes: %s", message);
+	sync(patch);
+	CHECK(!strcmp(patch->model.psg[1].name, "PSG Trill") && !strcmp(patch->model.psg[2].name, "PSG Vibrato"), "channel 8 on it follows, channel 9 with its own file keeps it");
+	CHECK(!strcmp(patch->bank.places[9].name, patch_gm_name(9)), "the FM voices of the bank stay");
+	CHECK(files_add_place(&files, true) == 10 && files_add_place(&files, false) == 0, "adding envelopes starts after the last one from a file, voices stay at slot 1");
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_envelope_is_rom(&patch->bank, 9), "undo puts the place back");
+	files_undo(&files, message, sizeof(message));
+
+	// Bad files.
+	static patch_bank kept;
+	kept = patch->bank;
+	patch_values was = patch->model;
+	CHECK(!open_file(&files, files_dir, "Too Long.eef", 6, -1, message) && !strcmp(message, "Too Long.eef: 125 steps, max 124"), "a longer envelope is refused: %s", message);
+	CHECK(!open_file(&files, files_dir, "PSG Pluck.eef", 0, -1, message) && !strcmp(message, "Select CH7-10 for an EEF file"), "an EEF on FM is refused: %s", message);
+	CHECK(!open_file(&files, files_dir, "Duck Guitar.tfi", 6, -1, message) && !strcmp(message, "Select CH1-6 for an FM file"), "an FM file on PSG is refused: %s", message);
+	write_bytes("empty.eef", (const uint8_t *)"", 0);
+	CHECK(!open_file(&files, temp_dir, "empty.eef", 6, -1, message), "an empty file is refused: %s", message);
+	CHECK(!memcmp(&patch->bank, &kept, sizeof(kept)) && !memcmp(&patch->model.psg, &was.psg, sizeof(was.psg)), "and nothing changed");
+
+	// Saved, and loaded back: the envelope of a channel as EEF, a snapshot with everything.
+	char eef_path[MAX_PATH], snap_path[MAX_PATH];
+	path_in(eef_path, sizeof(eef_path), temp_dir, "Organ again.eef");
+	path_in(snap_path, sizeof(snap_path), temp_dir, "envelopes.mdsnap");
+	patch_publish(patch);
+	CHECK(files_save(&files, eef_path, FILES_ENVELOPE, 7, message, sizeof(message)) && files_open(&files, eef_path, 9, message, sizeof(message))
+		&& !memcmp(patch->model.psg[3].steps, patch->model.psg[1].steps, sizeof(patch->model.psg[1].steps)) && !strcmp(patch->model.psg[3].name, "Organ again"),
+		"channel 8 saved as EEF loads on channel 10 as the same envelope");
+	CHECK(!files_save(&files, eef_path, FILES_ENVELOPE, 2, message, sizeof(message)), "an FM channel has no envelope to save: %s", message);
+	files_put_places_one(&files, "PSG Pluck.eef", 30, message);
+	patch_publish(patch);
+	static patch_bank snapped_bank;
+	snapped_bank = patch->bank;
+	patch_values snapped = patch->model;
+	CHECK(files_save(&files, snap_path, FILES_SNAPSHOT, 0, message, sizeof(message)), "a snapshot saved: %s", message);
+	open_file(&files, files_dir, "Noise Hit.eef", 7, -1, message);
+	files_put_places_one(&files, "PSG Organ.eef", 30, message);
+	CHECK(files_open(&files, snap_path, 0, message, sizeof(message)) && !memcmp(&patch->model.psg, &snapped.psg, sizeof(snapped.psg)) && !memcmp(&patch->bank, &snapped_bank, sizeof(snapped_bank)),
+		"and loaded back: the channels' envelopes and the bank's");
+
+	// A state of v0.6.0 has neither: the ROM's envelopes, each PSG channel on its place.
+	patch_init(patch);
+	size_t size;
+	uint8_t *state = state_build(patch, &files_view, &size);
+	uint8_t *old = malloc(size);
+	size_t old_size = 0;
+	memcpy(old, state, sizeof(uint32_t));
+	old_size = sizeof(uint32_t);
+	for (size_t at = sizeof(uint32_t); at + 8 <= size;) {
+		uint32_t type, block;
+		memcpy(&type, state + at, 4);
+		memcpy(&block, state + at + 4, 4);
+		if (type != 5 && type != 6) {
+			memcpy(old + old_size, state + at, 8 + block);
+			old_size += 8 + block;
+		}
+		at += 8 + block;
+	}
+	open_file(&files, files_dir, "PSG Organ.eef", 6, -1, message);
+	files_put_places_one(&files, "PSG Organ.eef", 2, message);
+	patch_set(patch, PATCH_CHANNEL_ID(9, PARAM_PRESET), 80);
+	bool knobs;
+	state_view view = files_view;
+	CHECK(state_read(patch, old, old_size, &view, &knobs) && patch_take_incoming(patch) && patch_envelope_is_rom(&patch->bank, 2) && !strcmp(patch->model.psg[0].name, "Plain")
+		&& !strcmp(patch->model.psg[3].name, "Plain"), "a state without envelopes: the ROM's, PSG channels on their places");
+	free(state);
+	free(old);
+
+	// Envelopes from a clip would play past the model.
+	patch_init(patch);
+	clear();
+	const uint8_t load[] = {0xF0, 0x00, 0x22, 0x77, 0x06, 0x00, 0x01, 0xF7};
+	const uint8_t store[] = {0xF0, 0x00, 0x22, 0x77, 0x0A, 0x01, 0x05, 0x00, 0x01, 0xF7};
+	patch_midi(patch, load, sizeof(load), record, NULL);
+	patch_midi(patch, store, sizeof(store), record, NULL);
+	CHECK(sent_bytes == 0 && patch->rom.psg_programs[0] == 0, "SysEx 06 and 0A 01 from a clip are dropped");
 	files_free(&files);
 }
 
@@ -728,6 +918,7 @@ int main(int argc, char **argv)
 	test_dealer();
 	test_files();
 	test_places();
+	test_envelopes();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

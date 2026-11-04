@@ -78,10 +78,10 @@ index 3472c7f..ababb61 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..b4edd05
+index 0000000..1e86c38
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,125 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
@@ -179,6 +179,13 @@ index 0000000..b4edd05
 +	extern system_header *current_system;
 +	ym2612_context *ym = ((genesis_context *)current_system)->ym;
 +	return part ? ym->part2_regs[reg - YM_PART2_START] : ym->part1_regs[reg - YM_PART1_START];
++}
++
++//Host API: a PSG channel's attenuation, 0 loudest and 15 silent, for tests
++RETRO_API uint8_t mdmi_test_psg_volume(uint8_t channel)
++{
++	extern system_header *current_system;
++	return ((genesis_context *)current_system)->psg->volume[channel & 3];
 +}
 +
 +//Host API: returns the number of bytes accepted

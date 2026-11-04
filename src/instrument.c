@@ -163,6 +163,33 @@ bool instrument_parse(const char *file_name, const uint8_t *bytes, size_t size, 
 	return true;
 }
 
+bool instrument_parse_eef(const char *file_name, const uint8_t *bytes, size_t size, patch_envelope *out, char *error, size_t error_size)
+{
+	const char *extension;
+	name_of(file_name, out->name, sizeof(out->name), &extension);
+	if (size == 0) {
+		snprintf(error, error_size, "not an EEF envelope");
+		return false;
+	}
+	if (!patch_envelope_from_eef(out, bytes, size)) {
+		size_t steps = 0;
+		while (steps < size && bytes[steps] != PATCH_EEF_END) {
+			steps++;
+		}
+		snprintf(error, error_size, "%u steps, max %d", (unsigned)steps, PATCH_ENVELOPE_STEPS);
+		return false;
+	}
+	return true;
+}
+
+size_t instrument_write_eef(const patch_envelope *envelope, uint8_t *out)
+{
+	const int length = patch_envelope_length(envelope);
+	memcpy(out, envelope->steps, (size_t)length);
+	out[length] = PATCH_EEF_END;
+	return (size_t)length + 1;
+}
+
 void instrument_write_vgi(const patch_instrument *instrument, uint8_t *out)
 {
 	const int16_t *voice = instrument->voice;
