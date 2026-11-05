@@ -51,6 +51,8 @@
 #define ENV_LEVEL_BOTTOM 258
 #define ENV_LOUD_Y 100
 #define ACTION_UNDO_X 684
+#define ENV_LENGTH_X 650
+#define ENV_LENGTH_Y 66
 #define COLOR_PSG 0x22CCEE
 
 static int failures;
@@ -445,9 +447,12 @@ int main(int argc, char **argv)
 		// column it passed, tells the host nothing (D19), and UNDO puts the envelope back.
 		click(window, RAIL_X, RAIL_CH8_Y);
 		run_ms(100);
+		// The length cell dragged far up: the longest envelope, 3 px a column (0.8.1).
+		memset(pushed, 0, sizeof(pushed));
+		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y - 300);
+		run_ms(200);
 		capture(window);
 		const int bars_before = count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
-		memset(pushed, 0, sizeof(pushed));
 		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(ENV_X + 1, ENV_LOUD_Y));
 		for (int x = ENV_X + 60; x <= 705; x += 60) {
 			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, ENV_LOUD_Y));
@@ -468,6 +473,14 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == bars_before, "UNDO puts back the envelope before the gesture");
+		// Dragged far down: one frame, one column across the whole lane, drawn loud.
+		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);
+		click(window, ENV_X + 100, ENV_LOUD_Y);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "envelope-short");
+		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
+		CHECK(wide >= 370 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

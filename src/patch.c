@@ -528,6 +528,16 @@ const patch_values *patch_view(mdmi_patch *patch)
 	return &patch->snapshots[patch->snapshot_front];
 }
 
+const patch_envelope *patch_envelope_view(mdmi_patch *patch, int channel)
+{
+	const int psg = channel - PATCH_NUM_FM_CHANNELS;
+	uint32_t incoming = __atomic_load_n(&patch->incoming_state, __ATOMIC_ACQUIRE);
+	if ((incoming == INCOMING_READY || incoming == INCOMING_TAKING) && patch->incoming.parts & (PATCH_INCOMING_VOICE << channel)) {
+		return &patch->incoming.envelopes[psg];
+	}
+	return &patch_view(patch)->psg[psg];
+}
+
 static int16_t *value_of(patch_values *values, uint32_t id)
 {
 	int channel, param;

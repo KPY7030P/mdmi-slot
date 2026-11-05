@@ -236,6 +236,9 @@ void patch_init(mdmi_patch *patch);
 
 // The main thread's view: the snapshot, or a loaded state not taken yet.
 const patch_values *patch_view(mdmi_patch *patch);
+// The main thread's view of a PSG channel's envelope: one handed over and not taken yet, so the
+// window and undo build on what was drawn last.
+const patch_envelope *patch_envelope_view(mdmi_patch *patch, int channel);
 // The main thread's bank.
 const patch_bank *patch_bank_view(const mdmi_patch *patch);
 int patch_get(mdmi_patch *patch, uint32_t id);

@@ -91,7 +91,7 @@
 // The envelope editor (stage 8, art-director's note): one column of 3 px per frame, a level lane, a
 // pitch lane of 15 rows by value, the loop's tabs above and the length's tab below.
 #define ENV_X 296
-#define ENV_STEP_W 3
+#define ENV_LANE_W 372
 #define ENV_LOOP_Y 82
 #define ENV_LEVEL_Y 98
 #define ENV_BASE_Y 248
@@ -100,11 +100,14 @@
 #define ENV_PITCH_ROW 6
 #define ENV_PITCH_BOTTOM 356
 #define ENV_CENTRE_Y 311
-#define ENV_END_Y 360
 #define ENV_AXIS_Y 373
 #define ENV_TOGGLE_X 242
 #define ENV_TOGGLE_Y 56
 #define ENV_TOGGLE_W 116
+#define ENV_LENGTH_X 588
+#define ENV_LENGTH_W 120
+// Frames per pixel of a vertical drag on the length.
+#define ENV_LENGTH_PIXELS 2
 enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LENGTH };
 
 enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK };
@@ -192,6 +195,9 @@ struct mdmi_gui {
 	bool env_told;
 	int env_last_step;
 	int env_last_value;
+	// A drag on the length starts from these, so shortening and lengthening back keeps the frames.
+	patch_shape env_start;
+	int env_start_y;
 
 	// The footer's message, and the row or places a file just went to.
 	char message[FILES_MESSAGE];
@@ -725,15 +731,37 @@ static int loop_end_of(const patch_shape *shape)
 	return shape->loop_end < 0 ? shape->count : shape->loop_end;
 }
 
-// The gap pixel before a frame, where the loop and length lines stand.
-static int boundary_x(int boundary)
+// Columns share the lane by the length (0.8.1): 3 px at 124 frames, wider when it is shorter.
+static int column_w(const patch_shape *shape)
 {
-	return ENV_X + ENV_STEP_W * boundary - 1;
+	return ENV_LANE_W / shape->count;
+}
+
+// The gap pixel before a frame, where the loop lines stand.
+static int boundary_x(int w, int boundary)
+{
+	return ENV_X + w * boundary - 1;
+}
+
+// The boundary nearest to x, and the column under it.
+static int boundary_at(int w, int x)
+{
+	return (x - ENV_X + 1 + w / 2 + w) / w - 1;
+}
+
+static int column_at(int w, int x)
+{
+	return (x - ENV_X + w) / w - 1;
 }
 
 static int clamp(int value, int low, int high)
 {
 	return value < low ? low : value > high ? high : value;
+}
+
+static bool over_length(int x, int y)
+{
+	return x >= ENV_LENGTH_X && x < ENV_LENGTH_X + ENV_LENGTH_W && y >= ENV_TOGGLE_Y && y < ENV_TOGGLE_Y + CELL_H;
 }
 
 static bool is_envelope_page(const mdmi_gui *g)
@@ -748,7 +776,7 @@ static const patch_shape *shown_shape(mdmi_gui *g, patch_shape *scratch)
 	if (g->env_drag != ENV_NONE && g->env_channel == channel) {
 		return &g->env_shape;
 	}
-	patch_shape_of(&patch_view(g->source.patch)->psg[channel - PATCH_NUM_FM_CHANNELS], scratch);
+	patch_shape_of(patch_envelope_view(g->source.patch, channel), scratch);
 	return scratch;
 }
 
@@ -757,18 +785,18 @@ static bool over_loop_toggle(int x, int y)
 	return x >= ENV_TOGGLE_X && x < ENV_TOGGLE_X + ENV_TOGGLE_W && y >= ENV_TOGGLE_Y && y < ENV_TOGGLE_Y + CELL_H;
 }
 
-// The tab or lane under the mouse. The lanes end at the limit, past it nothing is drawn.
+// The tab, lane or length cell under the mouse. The lanes hold the envelope's frames only.
 static int envelope_part_at(const patch_shape *shape, int x, int y)
 {
+	const int w = column_w(shape);
+	if (over_length(x, y)) {
+		return ENV_LENGTH;
+	}
 	if (y >= ENV_LOOP_Y && y < ENV_LEVEL_Y) {
-		const int start = boundary_x(shape->loop_start), end = boundary_x(loop_end_of(shape));
+		const int start = boundary_x(w, shape->loop_start), end = boundary_x(w, loop_end_of(shape));
 		return shape->loop_start < 0 ? ENV_NONE : x >= start - 9 && x <= start + 1 ? ENV_LOOP_START : x >= end - 1 && x <= end + 9 ? ENV_LOOP_END : ENV_NONE;
 	}
-	if (y >= ENV_END_Y && y < ENV_AXIS_Y) {
-		const int end = boundary_x(shape->count);
-		return x >= end - 2 && x <= end + 9 ? ENV_LENGTH : ENV_NONE;
-	}
-	if (x < ENV_X || x >= ENV_X + ENV_STEP_W * patch_shape_room(shape)) {
+	if (x < ENV_X || x >= ENV_X + w * shape->count) {
 		return ENV_NONE;
 	}
 	return y >= ENV_LEVEL_Y && y < ENV_LEVEL_BOTTOM ? ENV_LEVEL : y >= ENV_PITCH_Y && y < ENV_PITCH_BOTTOM ? ENV_PITCH : ENV_NONE;
@@ -779,20 +807,11 @@ static uint8_t with_value(uint8_t frame, int lane, int value)
 	return lane == ENV_LEVEL ? (uint8_t)((frame & 0xF0) | value) : (uint8_t)(PITCH_CODES[value] << 4 | (frame & 15));
 }
 
-// Drawing past the end lengthens the envelope: the new frames copy the last one with the drawn value.
-static void set_frame(patch_shape *shape, int lane, int step, int value)
-{
-	for (; shape->count <= step; shape->count++) {
-		shape->frames[shape->count] = with_value(shape->frames[shape->count - 1], lane, value);
-	}
-	shape->frames[step] = with_value(shape->frames[step], lane, value);
-}
-
 // The channel's envelope becomes the window's copy, and what undo puts back.
 static void envelope_take(mdmi_gui *g)
 {
 	g->env_channel = *g->source.channel;
-	g->env_before = patch_view(g->source.patch)->psg[g->env_channel - PATCH_NUM_FM_CHANNELS];
+	g->env_before = *patch_envelope_view(g->source.patch, g->env_channel);
 	patch_shape_of(&g->env_before, &g->env_shape);
 	g->env_changed = g->env_handed = false;
 	g->env_last_step = -1;
@@ -820,16 +839,16 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 {
 	patch_shape *shape = &g->env_shape;
 	const patch_shape was = *shape;
-	const int boundary = (x - ENV_X + 2 + ENV_STEP_W) / ENV_STEP_W - 1;
+	const int w = column_w(shape), boundary = boundary_at(w, x);
 	if (g->env_drag == ENV_LEVEL || g->env_drag == ENV_PITCH) {
-		const int step = clamp((x - ENV_X + ENV_STEP_W) / ENV_STEP_W - 1, 0, patch_shape_room(shape) - 1);
+		const int step = clamp(column_at(w, x), 0, shape->count - 1);
 		const int value = g->env_drag == ENV_LEVEL ? clamp((y - ENV_LEVEL_Y) / 10, 0, 15) : clamp((y - ENV_PITCH_Y) / ENV_PITCH_ROW, 0, 14);
 		// Columns the mouse jumped over get values on the line between.
 		const int from = g->env_last_step < 0 ? step : g->env_last_step;
 		const int last = g->env_last_step < 0 ? value : g->env_last_value;
 		const int direction = step >= from ? 1 : -1;
 		for (int i = from;; i += direction) {
-			set_frame(shape, g->env_drag, i, step == from ? value : last + (value - last) * (i - from) / (step - from));
+			shape->frames[i] = with_value(shape->frames[i], g->env_drag, step == from ? value : last + (value - last) * (i - from) / (step - from));
 			if (i == step) {
 				break;
 			}
@@ -842,7 +861,10 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 		const int end = clamp(boundary, shape->loop_start + 1, shape->count);
 		shape->loop_end = end >= shape->count ? -1 : end;
 	} else if (g->env_drag == ENV_LENGTH) {
-		const int length = clamp(boundary, 1, patch_shape_room(shape));
+		// Up is longer, as on the other cells; from the gesture's start, so frames cut on the way come back.
+		const int dy = g->env_start_y - y;
+		*shape = g->env_start;
+		const int length = clamp(shape->count + (abs(dy) < DRAG_SLOP ? 0 : dy / ENV_LENGTH_PIXELS), 1, patch_shape_room(shape));
 		for (; shape->count < length; shape->count++) {
 			shape->frames[shape->count] = shape->frames[shape->count - 1];
 		}
@@ -875,6 +897,8 @@ static bool envelope_down(mdmi_gui *g, int x, int y)
 	}
 	envelope_take(g);
 	g->env_drag = part;
+	g->env_start = g->env_shape;
+	g->env_start_y = y;
 	if (g->window) {
 		SetCapture(g->window);
 	}
@@ -901,8 +925,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	const patch_shape *shape = shown_shape(g, &scratch);
 	const int x = g->mouse_x, y = g->mouse_y, room = patch_shape_room(shape);
 	const int part = g->env_drag != ENV_NONE ? g->env_drag : envelope_part_at(shape, x, y);
-	const int step = g->env_drag != ENV_NONE ? g->env_last_step : (x - ENV_X) / ENV_STEP_W;
-	const bool lanes = y >= ENV_LEVEL_Y && y < ENV_PITCH_BOTTOM && x >= ENV_X && x < ENV_X + ENV_STEP_W * PATCH_ENVELOPE_STEPS;
+	const int step = g->env_drag != ENV_NONE ? g->env_last_step : column_at(column_w(shape), x);
 	char pitch[16];
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && *g->source.channel == PATCH_NUM_CHANNELS - 1) {
@@ -914,8 +937,6 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 		char db[12];
 		snprintf(db, sizeof(db), level == 15 ? "OFF" : "%d DB", -2 * level);
 		snprintf(hint, size, "STEP %d/%d  %d MS  LEVEL %s  PITCH %s", step + 1, shape->count, frame_ms(step), db, pitch);
-	} else if (part == ENV_LEVEL || part == ENV_PITCH) {
-		snprintf(hint, size, "STEP %d: DRAG HERE TO EXTEND", step + 1);
 	} else if (part == ENV_LOOP_START || part == ENV_LOOP_END) {
 		const int end = loop_end_of(shape);
 		if (g->env_drag != ENV_NONE) {
@@ -923,10 +944,10 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 		} else {
 			snprintf(hint, size, part == ENV_LOOP_START ? "LOOP START: DRAG BETWEEN STEPS" : "LOOP END: AFTER IT PLAYS ON NOTE OFF");
 		}
-	} else if (part == ENV_LENGTH) {
-		snprintf(hint, size, "LENGTH %d STEPS, %d MS", shape->count, frame_ms(shape->count));
-	} else if (lanes && step >= room) {
+	} else if (part == ENV_LENGTH && shape->count >= room) {
 		snprintf(hint, size, "MAX %d BYTES, LOOP MARKS TAKE %d", PATCH_ENVELOPE_STEPS, PATCH_ENVELOPE_STEPS - room);
+	} else if (part == ENV_LENGTH) {
+		snprintf(hint, size, g->env_drag != ENV_NONE ? "LENGTH %d STEPS, %d MS" : "LENGTH %d STEPS, %d MS: DRAG UP OR DOWN", shape->count, frame_ms(shape->count));
 	} else if (over_loop_toggle(x, y)) {
 		snprintf(hint, size, shape->loop_start < 0 && shape->count >= room ? "LOOP: LAST STEP CUT, MAX %d BYTES" : "LOOP: ON OR OFF", PATCH_ENVELOPE_STEPS);
 	} else {
@@ -957,9 +978,16 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	}
 	text(g, ENV_TOGGLE_X + 34, ENV_TOGGLE_Y + 3, "LOOP", loop ? C_TEXT : C_LABEL, 2);
 	text(g, 364, 63, !loop ? "NO LOOP: NOTE OFF CUTS" : shape->loop_end < 0 ? "LOOPS, NOTE OFF ENDS THE PASS" : "LOOPS, NOTE OFF ENDS PASS, PLAYS TAIL", C_LABEL, 1);
+	// The length cell: bytes with the loop marks against the limit, dragged like a value cell.
 	const int bytes = count + loop + (shape->loop_end >= 0);
+	const bool held = g->env_drag == ENV_LENGTH, full = count >= room;
+	fill(g, ENV_LENGTH_X, ENV_TOGGLE_Y, ENV_LENGTH_W, CELL_H, held ? C_LINE : C_PSG_DARK);
+	if (held || over == ENV_LENGTH) {
+		frame(g, ENV_LENGTH_X, ENV_TOGGLE_Y, ENV_LENGTH_W, CELL_H, held ? C_TEXT : C_LINE);
+	}
+	text(g, ENV_LENGTH_X + 4, ENV_TOGGLE_Y + 6, full ? "MAX" : "LEN", full ? C_PSG : held ? C_TEXT : C_LABEL, 1);
 	snprintf(buffer, sizeof(buffer), "%d/%d", bytes, PATCH_ENVELOPE_STEPS);
-	text_right(g, PAGE_RIGHT, 59, buffer, bytes >= PATCH_ENVELOPE_STEPS ? C_PSG : C_LABEL, 2, 120);
+	text_right(g, ENV_LENGTH_X + ENV_LENGTH_W - 4, ENV_TOGGLE_Y + 2, buffer, C_TEXT, 2, 96);
 
 	text(g, PAGE_X, ENV_LEVEL_Y, "LEVEL", C_LABEL, 1);
 	text_right(g, 292, ENV_LEVEL_Y, "0DB", C_HINT, 1, 20);
@@ -977,38 +1005,31 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		}
 	}
 
-	// One column per frame up to the limit; the frames past the length are room to draw into.
-	const int hover = over == ENV_LEVEL || over == ENV_PITCH ? (g->mouse_x - ENV_X) / ENV_STEP_W : -1;
-	for (int i = 0; i < room; i++) {
-		const int x = ENV_X + i * ENV_STEP_W;
-		const uint32_t back = i == hover ? C_LINE : i >= count ? C_BG : loop && i >= shape->loop_start && i < end ? C_PSG_DARK : C_CELL;
-		fill(g, x, ENV_LEVEL_Y, 2, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
-		fill(g, x, ENV_PITCH_Y, 2, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
-		if (i >= count) {
-			continue;
-		}
+	// One column per frame, all of the same width, filling the lane by the length.
+	const int w = column_w(shape);
+	const int hover = over == ENV_LEVEL || over == ENV_PITCH ? column_at(w, g->mouse_x) : -1;
+	for (int i = 0; i < count; i++) {
+		const int x = ENV_X + i * w;
+		const uint32_t back = i == hover ? C_LINE : loop && i >= shape->loop_start && i < end ? C_PSG_DARK : C_CELL;
+		fill(g, x, ENV_LEVEL_Y, w - 1, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
+		fill(g, x, ENV_PITCH_Y, w - 1, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
 		const int level = shape->frames[i] & 15;
 		if (level < 15) {
-			fill(g, x, ENV_LEVEL_Y + 10 * level, 2, ENV_BASE_Y - ENV_LEVEL_Y - 10 * level, C_PSG);
+			fill(g, x, ENV_LEVEL_Y + 10 * level, w - 1, ENV_BASE_Y - ENV_LEVEL_Y - 10 * level, C_PSG);
 		}
 		const int row = pitch_row(shape->frames[i]), top = ENV_PITCH_Y + row * ENV_PITCH_ROW;
 		if (row < 7) {
-			fill(g, x, top, 2, ENV_CENTRE_Y - top, C_PSG);
+			fill(g, x, top, w - 1, ENV_CENTRE_Y - top, C_PSG);
 		} else if (row > 7) {
-			fill(g, x, ENV_CENTRE_Y + 1, 2, top + ENV_PITCH_ROW - ENV_CENTRE_Y - 1, C_PSG);
+			fill(g, x, ENV_CENTRE_Y + 1, w - 1, top + ENV_PITCH_ROW - ENV_CENTRE_Y - 1, C_PSG);
 		}
 	}
-	fill(g, ENV_X, ENV_BASE_Y, ENV_STEP_W * count - 1, 1, C_LINE);
-	fill(g, ENV_X, ENV_CENTRE_Y, ENV_STEP_W * count - 1, 1, C_LINE);
-	if (count < room) {
-		const int x = boundary_x(count), w = ENV_STEP_W * (room - count) + 1;
-		frame(g, x, ENV_LEVEL_Y - 1, w, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y + 2, C_LINE);
-		frame(g, x, ENV_PITCH_Y - 1, w, ENV_PITCH_BOTTOM - ENV_PITCH_Y + 2, C_LINE);
-	}
+	fill(g, ENV_X, ENV_BASE_Y, w * count - 1, 1, C_LINE);
+	fill(g, ENV_X, ENV_CENTRE_Y, w * count - 1, 1, C_LINE);
 
 	// The loop's lines and tabs, pointing outward so a loop of one step keeps them apart.
 	if (loop) {
-		const int start_x = boundary_x(shape->loop_start), end_x = boundary_x(end);
+		const int start_x = boundary_x(w, shape->loop_start), end_x = boundary_x(w, end);
 		fill(g, start_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
 		fill(g, end_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
 		fill(g, start_x - 8, ENV_LOOP_Y, 8, 14, g->env_drag == ENV_LOOP_START ? C_TARGET : over == ENV_LOOP_START ? C_TEXT : C_PSG);
@@ -1017,25 +1038,36 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		text(g, ENV_X + 4, 86, "LOOP OFF", C_HINT, 1);
 	}
 
-	// The length's line and tab, and how long the envelope plays.
-	const int length_x = boundary_x(count);
-	fill(g, length_x, ENV_LEVEL_Y, 1, ENV_AXIS_Y - ENV_LEVEL_Y, C_LABEL);
-	fill(g, length_x + 1, ENV_END_Y, 8, 12, g->env_drag == ENV_LENGTH ? C_TARGET : over == ENV_LENGTH ? C_TEXT : C_LABEL);
-	snprintf(buffer, sizeof(buffer), "%d MS", frame_ms(count));
-	const int width = (int)strlen(buffer) * 6;
-	text(g, length_x + 12 + width > PAGE_RIGHT ? length_x - 4 - width : length_x + 12, ENV_END_Y + 2, buffer, C_LABEL, 1);
-
-	// The time axis: frames and ms at 60 Hz, a label every 30 frames.
-	for (int f = 0; f <= PATCH_ENVELOPE_STEPS; f += 10) {
-		const int x = ENV_X + ENV_STEP_W * f;
-		fill(g, x, ENV_AXIS_Y, 1, 3, f % 30 ? C_LINE : C_HINT);
-		if (f % 30 == 0) {
+	// The time axis under the lane: frames and ms at 60 Hz, labelled every L frames, the first of
+	// 1, 3, 6, 15, 30 that leaves 32 px between labels, and the length at the end.
+	static const int STEPS[] = {1, 3, 6, 15, 30};
+	int every = 30;
+	for (size_t i = 0; i < sizeof(STEPS) / sizeof(*STEPS); i++) {
+		if (STEPS[i] * w >= 32) {
+			every = STEPS[i];
+			break;
+		}
+	}
+	const int lane_end = ENV_X + w * count - 1;
+	for (int f = 0; f < count; f++) {
+		const int x = ENV_X + w * f;
+		const bool labelled = f % every == 0;
+		if (labelled || w >= 6) {
+			fill(g, x, ENV_AXIS_Y, 1, 3, labelled ? C_HINT : C_LINE);
+		}
+		// Not where the length's own label at the end would cover it ("2067 MS" is 42 px).
+		if (labelled && x + 56 <= lane_end) {
 			snprintf(buffer, sizeof(buffer), "%d", f);
 			text(g, x - (int)strlen(buffer) * 3, 377, buffer, C_HINT, 1);
 			snprintf(buffer, sizeof(buffer), "%d", frame_ms(f));
 			text(g, x - (int)strlen(buffer) * 3, 387, buffer, C_HINT, 1);
 		}
 	}
+	fill(g, lane_end, ENV_AXIS_Y, 1, 3, C_LABEL);
+	snprintf(buffer, sizeof(buffer), "%d", count);
+	text_right(g, lane_end + 1, 377, buffer, C_LABEL, 1, 40);
+	snprintf(buffer, sizeof(buffer), "%d MS", frame_ms(count));
+	text_right(g, lane_end + 1, 387, buffer, C_LABEL, 1, 60);
 	text_right(g, 286, 377, "FRAME", C_HINT, 1, 40);
 	text_right(g, 286, 387, "MS", C_HINT, 1, 40);
 }

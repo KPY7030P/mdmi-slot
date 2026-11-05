@@ -114,7 +114,7 @@ static void channel_instrument(mdmi_patch *patch, int channel, patch_instrument 
 
 static void channel_envelope(mdmi_patch *patch, int channel, patch_envelope *out)
 {
-	*out = patch_view(patch)->psg[channel - PATCH_NUM_FM_CHANNELS];
+	*out = *patch_envelope_view(patch, channel);
 }
 
 // What undo puts back: an instrument or an envelope, whose name is the text's.
