@@ -368,8 +368,9 @@ static void fix_loop(patch_shape *shape)
 
 void patch_shape_to_envelope(patch_shape *shape, patch_envelope *envelope)
 {
+	// An empty envelope is silent in the ROM, so its one frame is too.
 	if (shape->count < 1) {
-		shape->frames[0] = 0;
+		shape->frames[0] = 0x0F;
 		shape->count = 1;
 	}
 	if (shape->count > PATCH_ENVELOPE_STEPS) {

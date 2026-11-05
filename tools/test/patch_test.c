@@ -999,6 +999,11 @@ static void test_drawing(void)
 	patch_envelope envelope = organ;
 	patch_shape_to_envelope(&shape, &envelope);
 	CHECK(shape.loop_end == -1 && patch_envelope_length(&envelope) == 6, "a loop to the last frame keeps only its start");
+	// An empty envelope, silent in the ROM, stays silent in the editor.
+	const uint8_t end = PATCH_EEF_END;
+	patch_envelope_from_eef(&envelope, &end, 1);
+	patch_shape_of(&envelope, &shape);
+	CHECK(shape.count == 1 && (shape.frames[0] & 15) == 15, "an empty envelope shows as one silent frame");
 
 	// A gesture of two steps: the channel's own envelope, the Preset and the bank stay, undo puts back
 	// what was before the gesture, a second undo the drawing.
