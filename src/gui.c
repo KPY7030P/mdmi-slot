@@ -88,8 +88,8 @@
 #define FLASH_TICKS 9
 
 // Saved with the project, so the numbers stay.
-// The envelope editor (stage 8, art-director's note): one column of 3 px per frame, a level lane, a
-// pitch lane of 15 rows by value, the loop's tabs above and the length's tab below.
+// The envelope editor (stage 8, art-director's note): one column per frame sharing the lane by the
+// length (0.8.1), a level lane, a pitch lane of 15 rows by value, the loop's tabs above, the LEN cell.
 #define ENV_X 296
 #define ENV_LANE_W 372
 #define ENV_LOOP_Y 82
@@ -106,7 +106,7 @@
 #define ENV_TOGGLE_W 116
 #define ENV_LENGTH_X 588
 #define ENV_LENGTH_W 120
-// Frames per pixel of a vertical drag on the length.
+// Pixels of a vertical drag on the length per frame.
 #define ENV_LENGTH_PIXELS 2
 enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LENGTH };
 
@@ -977,7 +977,7 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		frame(g, ENV_TOGGLE_X, ENV_TOGGLE_Y, ENV_TOGGLE_W, CELL_H, C_TEXT);
 	}
 	text(g, ENV_TOGGLE_X + 34, ENV_TOGGLE_Y + 3, "LOOP", loop ? C_TEXT : C_LABEL, 2);
-	text(g, 364, 63, !loop ? "NO LOOP: NOTE OFF CUTS" : shape->loop_end < 0 ? "LOOPS, NOTE OFF ENDS THE PASS" : "LOOPS, NOTE OFF ENDS PASS, PLAYS TAIL", C_LABEL, 1);
+	text(g, 362, 63, !loop ? "NO LOOP: NOTE OFF CUTS" : shape->loop_end < 0 ? "LOOPS, NOTE OFF ENDS THE PASS" : "LOOPS, NOTE OFF ENDS PASS, PLAYS TAIL", C_LABEL, 1);
 	// The length cell: bytes with the loop marks against the limit, dragged like a value cell.
 	const int bytes = count + loop + (shape->loop_end >= 0);
 	const bool held = g->env_drag == ENV_LENGTH, full = count >= room;

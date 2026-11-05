@@ -467,20 +467,29 @@ int main(int argc, char **argv)
 			loud += (pixels[ENV_LOUD_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG;
 		}
 		past = count_color_in(ENV_RIGHT, 708, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
-		CHECK(loud >= 122 && past == 0, "a fast drag to the right edge draws every column up to the limit (%d of 124), nothing past it", loud);
+		// Columns of 3 px: a bar, then a gap, up to the last frame.
+		const uint32_t gap = pixels[ENV_LOUD_Y * WIDTH + ENV_X + 2] & 0xFFFFFF;
+		CHECK(loud >= 122 && past == 0 && gap != COLOR_PSG, "a fast drag to the right edge draws every column of 3 px up to the limit (%d of 124), nothing past it", loud);
 		CHECK(pushed[0] + pushed[1] + pushed[2] == 0, "drawing tells the host nothing");
 		click(window, ACTION_UNDO_X, BUTTON_Y);
 		run_ms(200);
 		capture(window);
 		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == bars_before, "UNDO puts back the envelope before the gesture");
-		// Dragged far down: one frame, one column across the whole lane, drawn loud.
+		// A length gesture undoes as one.
+		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 100);
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == bars_before, "UNDO puts back the length before the gesture");
+		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
+		// would draw 370 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);
 		click(window, ENV_X + 100, ENV_LOUD_Y);
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "envelope-short");
 		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
-		CHECK(wide >= 370 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
+		CHECK(wide >= 371 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);
