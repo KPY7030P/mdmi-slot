@@ -91,7 +91,7 @@
 // The envelope editor (stage 8, art-director's note): one column per frame sharing the lane by the
 // length (0.8.1), a level lane, a pitch lane of 15 rows by value, the loop's tabs above, the LEN cell.
 #define ENV_X 296
-#define ENV_LANE_W 372
+#define ENV_LANE_W 404
 #define ENV_LOOP_Y 82
 #define ENV_LEVEL_Y 98
 #define ENV_BASE_Y 248
@@ -731,27 +731,38 @@ static int loop_end_of(const patch_shape *shape)
 	return shape->loop_end < 0 ? shape->count : shape->loop_end;
 }
 
-// Columns share the lane by the length (0.8.1): 3 px at 124 frames, wider when it is shorter.
-static int column_w(const patch_shape *shape)
+// Columns share the whole lane by the length (0.8.1), their edges rounded down, so the lane ends at
+// the page's right edge at every length and widths differ by a pixel at most.
+static int column_x(int count, int column)
 {
-	return ENV_LANE_W / shape->count;
+	return ENV_X + column * ENV_LANE_W / count;
 }
 
 // The gap pixel before a frame, where the loop lines stand.
-static int boundary_x(int w, int boundary)
+static int boundary_x(int count, int boundary)
 {
-	return ENV_X + w * boundary - 1;
+	return column_x(count, boundary) - 1;
 }
 
-// The boundary nearest to x, and the column under it.
-static int boundary_at(int w, int x)
+// The boundary nearest to x, and the column under it (count past the lane's end, -1 before it).
+static int boundary_at(int count, int x)
 {
-	return (x - ENV_X + 1 + w / 2 + w) / w - 1;
+	int best = 0;
+	for (int b = 1; b <= count; b++) {
+		if (abs(column_x(count, b) - 1 - x) < abs(column_x(count, best) - 1 - x)) {
+			best = b;
+		}
+	}
+	return best;
 }
 
-static int column_at(int w, int x)
+static int column_at(int count, int x)
 {
-	return (x - ENV_X + w) / w - 1;
+	int column = -1;
+	while (column < count && column_x(count, column + 1) <= x) {
+		column++;
+	}
+	return column;
 }
 
 static int clamp(int value, int low, int high)
@@ -788,15 +799,15 @@ static bool over_loop_toggle(int x, int y)
 // The tab, lane or length cell under the mouse. The lanes hold the envelope's frames only.
 static int envelope_part_at(const patch_shape *shape, int x, int y)
 {
-	const int w = column_w(shape);
+	const int count = shape->count;
 	if (over_length(x, y)) {
 		return ENV_LENGTH;
 	}
 	if (y >= ENV_LOOP_Y && y < ENV_LEVEL_Y) {
-		const int start = boundary_x(w, shape->loop_start), end = boundary_x(w, loop_end_of(shape));
+		const int start = boundary_x(count, shape->loop_start), end = boundary_x(count, loop_end_of(shape));
 		return shape->loop_start < 0 ? ENV_NONE : x >= start - 9 && x <= start + 1 ? ENV_LOOP_START : x >= end - 1 && x <= end + 9 ? ENV_LOOP_END : ENV_NONE;
 	}
-	if (x < ENV_X || x >= ENV_X + w * shape->count) {
+	if (x < ENV_X || x >= ENV_X + ENV_LANE_W) {
 		return ENV_NONE;
 	}
 	return y >= ENV_LEVEL_Y && y < ENV_LEVEL_BOTTOM ? ENV_LEVEL : y >= ENV_PITCH_Y && y < ENV_PITCH_BOTTOM ? ENV_PITCH : ENV_NONE;
@@ -839,9 +850,9 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 {
 	patch_shape *shape = &g->env_shape;
 	const patch_shape was = *shape;
-	const int w = column_w(shape), boundary = boundary_at(w, x);
+	const int boundary = boundary_at(shape->count, x);
 	if (g->env_drag == ENV_LEVEL || g->env_drag == ENV_PITCH) {
-		const int step = clamp(column_at(w, x), 0, shape->count - 1);
+		const int step = clamp(column_at(shape->count, x), 0, shape->count - 1);
 		const int value = g->env_drag == ENV_LEVEL ? clamp((y - ENV_LEVEL_Y) / 10, 0, 15) : clamp((y - ENV_PITCH_Y) / ENV_PITCH_ROW, 0, 14);
 		// Columns the mouse jumped over get values on the line between.
 		const int from = g->env_last_step < 0 ? step : g->env_last_step;
@@ -925,7 +936,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	const patch_shape *shape = shown_shape(g, &scratch);
 	const int x = g->mouse_x, y = g->mouse_y, room = patch_shape_room(shape);
 	const int part = g->env_drag != ENV_NONE ? g->env_drag : envelope_part_at(shape, x, y);
-	const int step = g->env_drag != ENV_NONE ? g->env_last_step : column_at(column_w(shape), x);
+	const int step = g->env_drag != ENV_NONE ? g->env_last_step : column_at(shape->count, x);
 	char pitch[16];
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && *g->source.channel == PATCH_NUM_CHANNELS - 1) {
@@ -1005,11 +1016,10 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		}
 	}
 
-	// One column per frame, all of the same width, filling the lane by the length.
-	const int w = column_w(shape);
-	const int hover = over == ENV_LEVEL || over == ENV_PITCH ? column_at(w, g->mouse_x) : -1;
+	// One column per frame, filling the whole lane at every length.
+	const int hover = over == ENV_LEVEL || over == ENV_PITCH ? column_at(count, g->mouse_x) : -1;
 	for (int i = 0; i < count; i++) {
-		const int x = ENV_X + i * w;
+		const int x = column_x(count, i), w = column_x(count, i + 1) - x;
 		const uint32_t back = i == hover ? C_LINE : loop && i >= shape->loop_start && i < end ? C_PSG_DARK : C_CELL;
 		fill(g, x, ENV_LEVEL_Y, w - 1, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
 		fill(g, x, ENV_PITCH_Y, w - 1, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
@@ -1024,12 +1034,12 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 			fill(g, x, ENV_CENTRE_Y + 1, w - 1, top + ENV_PITCH_ROW - ENV_CENTRE_Y - 1, C_PSG);
 		}
 	}
-	fill(g, ENV_X, ENV_BASE_Y, w * count - 1, 1, C_LINE);
-	fill(g, ENV_X, ENV_CENTRE_Y, w * count - 1, 1, C_LINE);
+	fill(g, ENV_X, ENV_BASE_Y, ENV_LANE_W - 1, 1, C_LINE);
+	fill(g, ENV_X, ENV_CENTRE_Y, ENV_LANE_W - 1, 1, C_LINE);
 
 	// The loop's lines and tabs, pointing outward so a loop of one step keeps them apart.
 	if (loop) {
-		const int start_x = boundary_x(w, shape->loop_start), end_x = boundary_x(w, end);
+		const int start_x = boundary_x(count, shape->loop_start), end_x = boundary_x(count, end);
 		fill(g, start_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
 		fill(g, end_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
 		fill(g, start_x - 8, ENV_LOOP_Y, 8, 14, g->env_drag == ENV_LOOP_START ? C_TARGET : over == ENV_LOOP_START ? C_TEXT : C_PSG);
@@ -1043,16 +1053,16 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	static const int STEPS[] = {1, 3, 6, 15, 30};
 	int every = 30;
 	for (size_t i = 0; i < sizeof(STEPS) / sizeof(*STEPS); i++) {
-		if (STEPS[i] * w >= 32) {
+		if (STEPS[i] * ENV_LANE_W >= 32 * count) {
 			every = STEPS[i];
 			break;
 		}
 	}
-	const int lane_end = ENV_X + w * count - 1;
+	const int lane_end = ENV_X + ENV_LANE_W - 1;
 	for (int f = 0; f < count; f++) {
-		const int x = ENV_X + w * f;
+		const int x = column_x(count, f);
 		const bool labelled = f % every == 0;
-		if (labelled || w >= 6) {
+		if (labelled || ENV_LANE_W >= 6 * count) {
 			fill(g, x, ENV_AXIS_Y, 1, 3, labelled ? C_HINT : C_LINE);
 		}
 		// Not where the length's own label at the end would cover it ("2067 MS" is 42 px).

@@ -46,7 +46,7 @@
 // (level 0), and UNDO.
 #define RAIL_CH8_Y 350
 #define ENV_X 296
-#define ENV_RIGHT 668
+#define ENV_RIGHT 700
 #define ENV_LEVEL_Y 98
 #define ENV_LEVEL_BOTTOM 258
 #define ENV_LOUD_Y 100
@@ -447,7 +447,7 @@ int main(int argc, char **argv)
 		// column it passed, tells the host nothing (D19), and UNDO puts the envelope back.
 		click(window, RAIL_X, RAIL_CH8_Y);
 		run_ms(100);
-		// The length cell dragged far up: the longest envelope, 3 px a column (0.8.1).
+		// The length cell dragged far up: the longest envelope, 3 or 4 px a column (0.8.1).
 		memset(pushed, 0, sizeof(pushed));
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y - 300);
 		run_ms(200);
@@ -463,13 +463,16 @@ int main(int argc, char **argv)
 		capture(window);
 		save_bmp(argv[2], "envelope");
 		int loud = 0, past = 0;
-		for (int x = ENV_X; x < ENV_RIGHT; x += 3) {
-			loud += (pixels[ENV_LOUD_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG;
+		// Loud columns counted as runs of the colour: 122 frames with the loop's marks, and each of the
+		// loop's two lines joins a pair.
+		for (int x = ENV_X; x < ENV_RIGHT; x++) {
+			loud += (pixels[ENV_LOUD_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG && (pixels[ENV_LOUD_Y * WIDTH + x - 1] & 0xFFFFFF) != COLOR_PSG;
 		}
 		past = count_color_in(ENV_RIGHT, 708, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
-		// Columns of 3 px: a bar, then a gap, up to the last frame.
+		// A bar, then a gap, and the last frame at the lane's end, the same at every length.
 		const uint32_t gap = pixels[ENV_LOUD_Y * WIDTH + ENV_X + 2] & 0xFFFFFF;
-		CHECK(loud >= 122 && past == 0 && gap != COLOR_PSG, "a fast drag to the right edge draws every column of 3 px up to the limit (%d of 124), nothing past it", loud);
+		const uint32_t last = pixels[ENV_LOUD_Y * WIDTH + ENV_RIGHT - 2] & 0xFFFFFF;
+		CHECK(loud >= 120 && past == 0 && gap != COLOR_PSG && last == COLOR_PSG, "a fast drag to the right edge draws every column up to the limit (%d runs of 120) and the lane's end, nothing past it", loud);
 		CHECK(pushed[0] + pushed[1] + pushed[2] == 0, "drawing tells the host nothing");
 		click(window, ACTION_UNDO_X, BUTTON_Y);
 		run_ms(200);
@@ -482,14 +485,14 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == bars_before, "UNDO puts back the length before the gesture");
 		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
-		// would draw 370 px.
+		// would draw 402 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);
 		click(window, ENV_X + 100, ENV_LOUD_Y);
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "envelope-short");
 		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
-		CHECK(wide >= 371 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
+		CHECK(wide >= 403 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

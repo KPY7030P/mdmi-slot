@@ -71,7 +71,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Envelope editor (stage 8): the EDITOR page of a channel 7-10 draws its envelope, one column per
   frame (60 Hz): level bars on top, pitch below ordered from -5 to +5 semitones, the loop's two tabs
   above. The LEN cell sets the length by a vertical drag, 124 bytes at most with the loop marks,
-  and the columns share the lane by it: 3 px at 124 frames, wider when shorter (0.8.1). A drawing is the channel's
+  and the columns share the lane, which reaches the page's right edge at every length: 3 or 4 px at 124 frames, wider when shorter (0.8.1). A drawing is the channel's
   own envelope, as a dropped EEF: the Preset and the bank stay, the next preset step wipes it, SAVE
   writes it as EEF, UNDO puts back the envelope before the last gesture. The window never makes a
   loop the ROM would misread (`patch_shape_to_envelope`). It hands the drawing over at most once per
