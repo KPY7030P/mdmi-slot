@@ -164,6 +164,16 @@ static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_
 	files->host.handed(files->host.context, false);
 }
 
+void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope)
+{
+	patch_load_envelope(files->host.patch, channel, envelope);
+	if (before) {
+		remember(files, UNDO_CHANNEL, channel, NULL, before, NULL, 0);
+		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d envelope before drawing", channel + 1);
+	}
+	files->host.handed(files->host.context, false);
+}
+
 static void put_in_place(mdmi_files *files, int place, const patch_instrument *instrument)
 {
 	patch_instrument before = patch_bank_view(files->host.patch)->places[place];

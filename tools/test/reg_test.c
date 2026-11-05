@@ -1082,6 +1082,9 @@ static double time_to_volume(int psg, uint8_t level)
 	return blocks * KEY_BLOCK * 1000.0 / RATE;
 }
 
+// What storing the longest envelope added to a note, for stage 8 to compare drawing with.
+static double stage7_extra_ms;
+
 static void test_envelopes(void)
 {
 	static const uint8_t LEVELS[PATCH_NUM_PSG_CHANNELS] = {2, 5, 8, 11};
@@ -1154,10 +1157,144 @@ static void test_envelopes(void)
 	midi(0x97, 69, 127);
 	const double stored = time_to_volume(1, 3);
 	printf("  envelope of %d steps stored with the note: %.1f ms after it, a note without %.1f ms, so %.1f ms more\n", PATCH_ENVELOPE_STEPS, stored, plain, stored - plain);
+	stage7_extra_ms = stored - plain;
 	check(stored < 1000 && plain < 1000, "the note with the stored envelope sounds");
 	midi(0x87, 69, 0);
 	midi(0xC6, 0, 0);
 	set_on(6, PARAM_PRESET, 0);
+	render(RESET_BLOCKS);
+}
+
+// Stage 8. An envelope drawn in the editor's shape: count frames of level, then tail frames of
+// tail_level, with the loop over frames loop_start..loop_end-1 (-1 for none).
+static void drawn(patch_envelope *envelope, int count, uint8_t level, int loop_start, int loop_end, uint8_t tail_level)
+{
+	patch_shape shape = {.count = count, .loop_start = loop_start, .loop_end = loop_end};
+	for (int i = 0; i < count; i++) {
+		shape.frames[i] = loop_end >= 0 && i >= loop_end ? tail_level : level;
+	}
+	snprintf(envelope->name, sizeof(envelope->name), "Drawn");
+	patch_shape_to_envelope(&shape, envelope);
+}
+
+static void draw_on(int channel, const patch_envelope *envelope)
+{
+	patch_load_envelope(patch, channel, envelope);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit, NULL);
+}
+
+static void render_ms(int ms)
+{
+	for (int i = 0; i < ms * RATE / 1000 / KEY_BLOCK; i++) {
+		mdmi_engine_render(engine, left, right, KEY_BLOCK);
+	}
+}
+
+static void test_drawing(void)
+{
+	// Drawn while a note sounds: the note keeps its envelope, the next note plays the drawing.
+	patch_envelope envelope;
+	drawn(&envelope, 4, 5, 0, -1, 0);
+	draw_on(6, &envelope);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render(SETTLE_BLOCKS);
+	drawn(&envelope, 4, 9, 0, -1, 0);
+	draw_on(6, &envelope);
+	render(SETTLE_BLOCKS);
+	const bool kept = mdmi_engine_test_psg_volume(engine, 0) == 5;
+	midi(0x86, 69, 0);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render(SETTLE_BLOCKS);
+	check(kept && mdmi_engine_test_psg_volume(engine, 0) == 9, "a drawing under a held note: that note keeps its envelope, the next plays the drawing");
+	midi(0x86, 69, 0);
+	render(SETTLE_BLOCKS);
+
+	// Release as drawn. Without a loop, Note Off cuts at once.
+	drawn(&envelope, 60, 3, -1, -1, 0);
+	draw_on(6, &envelope);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render_ms(100);
+	const bool held = mdmi_engine_test_psg_volume(engine, 0) == 3;
+	midi(0x86, 69, 0);
+	render_ms(40);
+	check(held && mdmi_engine_test_psg_volume(engine, 0) == 15, "no loop: Note Off cuts the note");
+	// A loop start alone: the pass of 30 frames plays out, then the note ends.
+	drawn(&envelope, 30, 3, 0, -1, 0);
+	draw_on(6, &envelope);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render_ms(100);
+	midi(0x86, 69, 0);
+	render_ms(100);
+	const bool pass = mdmi_engine_test_psg_volume(engine, 0) == 3;
+	render_ms(500);
+	check(pass && mdmi_engine_test_psg_volume(engine, 0) == 15, "a loop start alone: after Note Off the pass plays to the end, then silence");
+	// Start and end: after Note Off the tail after the loop plays, then the note ends.
+	drawn(&envelope, 26, 3, 2, 6, 9);
+	draw_on(6, &envelope);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render_ms(200);
+	const bool looping = mdmi_engine_test_psg_volume(engine, 0) == 3;
+	midi(0x86, 69, 0);
+	render_ms(150);
+	const bool tail = mdmi_engine_test_psg_volume(engine, 0) == 9;
+	render_ms(400);
+	check(looping && tail && mdmi_engine_test_psg_volume(engine, 0) == 15, "a loop with an end: held it loops, after Note Off the tail plays, then silence");
+
+	// Drawing: the window hands the longest envelope over every 33 ms. Notes on channel 9 meet the
+	// stores at every phase; none may wait longer than a note stored with its envelope (stage 7).
+	patch_envelope steady_note;
+	steady(&steady_note, 8, 2);
+	draw_on(8, &steady_note);
+	render(SETTLE_BLOCKS);
+	double worst[2] = {0, 0};
+	int notes[2] = {0, 0};
+	for (int drawing = 0; drawing < 2; drawing++) {
+		const int blocks = 3 * RATE / KEY_BLOCK;
+		double next_store = 0, next_note = 50, note_at = 0;
+		bool waiting = false;
+		for (int b = 0; b < blocks; b++) {
+			const double t = b * KEY_BLOCK * 1000.0 / RATE;
+			if (drawing && t >= next_store) {
+				drawn(&envelope, PATCH_ENVELOPE_STEPS - 1, (uint8_t)(1 + b % 13), 0, -1, 0);
+				draw_on(6, &envelope);
+				next_store += 1000.0 / 30;
+			}
+			if (!waiting && t >= next_note) {
+				midi(0x98, 69, 127);
+				note_at = t;
+				waiting = true;
+			}
+			mdmi_engine_render(engine, left, right, KEY_BLOCK);
+			if (waiting && mdmi_engine_test_psg_volume(engine, 2) == 8) {
+				const double delay = t + KEY_BLOCK * 1000.0 / RATE - note_at;
+				worst[drawing] = delay > worst[drawing] ? delay : worst[drawing];
+				notes[drawing]++;
+				midi(0x88, 69, 0);
+				waiting = false;
+				// Coprime with the stores' 33 ms, so notes come at every phase of them.
+				next_note = t + 47;
+			}
+		}
+		// The run's end cuts the last note short; it is not counted.
+		if (waiting) {
+			midi(0x88, 69, 0);
+		}
+		render(SETTLE_BLOCKS);
+	}
+	printf("  %d notes while drawing: worst %.1f ms after the note, %d without drawing %.1f ms, so %.1f ms more; stage 7 measured %.1f ms\n",
+		notes[1], worst[1], notes[0], worst[0], worst[1] - worst[0], stage7_extra_ms);
+	check(notes[0] >= 40 && notes[1] >= 40 && worst[1] - worst[0] <= stage7_extra_ms + 1, "drawing delays notes no more than a stored envelope did in stage 7");
+	render(SETTLE_BLOCKS);
+	midi(0xC6, 0, 0);
+	midi(0xC8, 0, 0);
+	set_on(6, PARAM_PRESET, 0);
+	set_on(8, PARAM_PRESET, 0);
 	render(RESET_BLOCKS);
 }
 
@@ -1211,6 +1348,8 @@ int main(int argc, char **argv)
 	test_bank_place();
 	test_reset();
 	test_envelopes();
+	test_reset();
+	test_drawing();
 	test_reset();
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {

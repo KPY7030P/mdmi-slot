@@ -933,6 +933,115 @@ static void test_envelopes(void)
 	files_free(&files);
 }
 
+// What the ROM reads as drawn (midi_psg.c apply_envelope_step): at most one loop start, an end
+// only after it, a frame between them and after the start, nothing past the limit.
+static bool rom_reads_as_drawn(const patch_envelope *envelope)
+{
+	const int length = patch_envelope_length(envelope);
+	int start = -1, end = -1;
+	for (int i = 0; i < length; i++) {
+		const uint8_t step = envelope->steps[i];
+		if (step == PATCH_EEF_LOOP_START) {
+			if (start >= 0) {
+				return false;
+			}
+			start = i;
+		} else if (step == PATCH_EEF_LOOP_END) {
+			if (start < 0 || end >= 0 || i == start + 1) {
+				return false;
+			}
+			end = i;
+		}
+	}
+	return length >= 1 && length <= PATCH_ENVELOPE_STEPS && (start < 0 || start + 1 < length) && envelope->steps[length] == PATCH_EEF_END;
+}
+
+// Stage 8: the editor's shape of an envelope, and drawing on a channel the way a file goes.
+static void test_drawing(void)
+{
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+
+	// An envelope keeps its bytes through the editor's shape.
+	CHECK(open_file(&files, files_dir, "PSG Organ.eef", 7, -1, message), "PSG Organ on channel 8: %s", message);
+	patch_envelope organ = patch->model.psg[1], back = organ;
+	patch_shape shape;
+	patch_shape_of(&organ, &shape);
+	patch_shape_to_envelope(&shape, &back);
+	CHECK(shape.count == 11 && shape.loop_start == 3 && shape.loop_end == 4 && !memcmp(&back, &organ, sizeof(organ)),
+		"PSG Organ: 11 frames, loop over frame 4, the same bytes back");
+
+	// Whatever the shape, the envelope is one the ROM reads as drawn.
+	srand(8);
+	bool valid = true;
+	int worst = 0;
+	for (int i = 0; i < 20000 && valid; i++) {
+		shape.count = rand() % 132 - 2;
+		shape.loop_start = rand() % 132 - 2;
+		shape.loop_end = rand() % 132 - 2;
+		for (int f = 0; f < PATCH_ENVELOPE_STEPS; f++) {
+			shape.frames[f] = (uint8_t)rand();
+		}
+		patch_envelope envelope = organ;
+		patch_shape_to_envelope(&shape, &envelope);
+		valid = rom_reads_as_drawn(&envelope) && shape.count + (shape.loop_start >= 0) + (shape.loop_end >= 0) == patch_envelope_length(&envelope);
+		worst = patch_envelope_length(&envelope) > worst ? patch_envelope_length(&envelope) : worst;
+	}
+	CHECK(valid && worst == PATCH_ENVELOPE_STEPS, "20000 random shapes: no empty loop, no stray mark, %d bytes at most", worst);
+	// A loop end at the last frame is no end: it plays the same, one byte less.
+	shape.count = 5;
+	shape.loop_start = 1;
+	shape.loop_end = 5;
+	patch_envelope envelope = organ;
+	patch_shape_to_envelope(&shape, &envelope);
+	CHECK(shape.loop_end == -1 && patch_envelope_length(&envelope) == 6, "a loop to the last frame keeps only its start");
+
+	// A gesture of two steps: the channel's own envelope, the Preset and the bank stay, undo puts back
+	// what was before the gesture, a second undo the drawing.
+	const int preset = patch->model.channels[7][PARAM_PRESET];
+	static patch_bank bank_before;
+	bank_before = *patch_bank_view(patch);
+	patch_shape_of(&organ, &shape);
+	shape.frames[0] = 0x0F;
+	patch_envelope first = organ, drawn = organ;
+	patch_shape_to_envelope(&shape, &first);
+	files_draw_envelope(&files, 7, &organ, &first);
+	shape.frames[1] = 0x50;
+	patch_shape_to_envelope(&shape, &drawn);
+	files_draw_envelope(&files, 7, NULL, &drawn);
+	CHECK(!memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)) && patch->model.channels[7][PARAM_PRESET] == preset && !memcmp(patch_bank_view(patch), &bank_before, sizeof(bank_before)),
+		"drawing changes the channel's envelope, not its Preset or the bank");
+	clear();
+	sync(patch);
+	int program;
+	size_t length;
+	CHECK(stored_envelope(&program, &length) && length == 8 + 2 * (size_t)patch_envelope_length(&drawn), "and goes to the ROM as a stored envelope");
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH8 envelope before drawing"), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &organ, sizeof(organ)), "undo puts back the envelope before the gesture: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)), "and again the drawing");
+
+	// SAVE writes the drawing, and the file sounds the same on another channel.
+	char eef_path[MAX_PATH];
+	path_in(eef_path, sizeof(eef_path), temp_dir, "drawn.eef");
+	CHECK(files_save(&files, eef_path, FILES_ENVELOPE, 7, message, sizeof(message)) && files_open(&files, eef_path, 9, message, sizeof(message))
+		&& !memcmp(patch->model.psg[3].steps, drawn.steps, sizeof(drawn.steps)), "SAVE writes the drawing as EEF, dropped back it is the same: %s", message);
+
+	// A project keeps it.
+	size_t size;
+	uint8_t *state = state_build(patch, &files_view, &size);
+	patch_init(patch);
+	state_view view;
+	bool knobs;
+	CHECK(state && state_read(patch, state, size, &view, &knobs) && patch_take_incoming(patch) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)),
+		"after a project is opened the drawing is there");
+	free(state);
+	files_free(&files);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -951,6 +1060,7 @@ int main(int argc, char **argv)
 	test_files();
 	test_places();
 	test_envelopes();
+	test_drawing();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

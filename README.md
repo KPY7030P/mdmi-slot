@@ -68,6 +68,15 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   sounding note keeps its own. The longest delays a note of the same moment by 16-18 ms in the
   emulator (`reg_test`). EEF files of Echo shift
   pitch by other steps and load as they are. SysEx `06` and `0A 01` from a clip are dropped.
+- Envelope editor (stage 8): the EDITOR page of a channel 7-10 draws its envelope, one column per
+  frame (60 Hz): level bars on top, pitch below ordered from -5 to +5 semitones, the loop's two tabs
+  above and the length's tab below, 124 bytes at most with the loop marks. A drawing is the channel's
+  own envelope, as a dropped EEF: the Preset and the bank stay, the next preset step wipes it, SAVE
+  writes it as EEF, UNDO puts back the envelope before the last gesture. The window never makes a
+  loop the ROM would misread (`patch_shape_to_envelope`). It hands the drawing over at most once per
+  window frame and at mouse up, and tells the host nothing (D19). While the longest envelope is
+  re-stored every 33 ms, a note on another PSG channel sounds at worst 9.7 ms later than without
+  drawing, against 18.3 ms for a note stored with its envelope (`reg_test`, one run).
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
 the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.

@@ -52,6 +52,9 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, boo
 // when that is the last.
 int files_add_place(const mdmi_files *files, bool envelopes);
 bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size);
+// A drawn envelope for a PSG channel, the way a dropped EEF goes (stage 8). The first of a gesture
+// gives what the channel had before it, which undo puts back.
+void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope);
 bool files_undo(mdmi_files *files, char *message, size_t size);
 // What undo would put back, or NULL.
 const char *files_undo_text(const mdmi_files *files);

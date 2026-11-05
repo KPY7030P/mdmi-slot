@@ -84,6 +84,16 @@ typedef struct {
 	uint8_t steps[PATCH_ENVELOPE_STEPS + 1];
 } patch_envelope;
 
+// An envelope as the editor draws it (stage 8): its frames without the loop marks, and the frame
+// the loop starts at and the frame after its end, -1 when there is none. Frames are EEF bytes: pitch
+// code in the high nibble, attenuation in the low one.
+typedef struct {
+	uint8_t frames[PATCH_ENVELOPE_STEPS];
+	int count;
+	int loop_start;
+	int loop_end;
+} patch_shape;
+
 // One bank for the plugin. Place N is program number N, so a program change, the Preset lane and
 // CC 3 choose from it: an FM sound on an FM channel, an envelope on a PSG channel. It starts as the
 // ROM's GM presets and envelopes.
@@ -212,6 +222,13 @@ void patch_bank_rom(patch_bank *bank);
 bool patch_envelope_from_eef(patch_envelope *envelope, const uint8_t *eef, size_t size);
 // The steps before EEF_END.
 int patch_envelope_length(const patch_envelope *envelope);
+// The first loop start and the first end after it are the loop; other marks are left out.
+void patch_shape_of(const patch_envelope *envelope, patch_shape *shape);
+// How many frames fit with the shape's loop marks.
+int patch_shape_room(const patch_shape *shape);
+// Only what the ROM reads as drawn (D28, stage 8): at least one frame, a frame inside the loop, an
+// end at the last frame is no end, frames cut to the room. Keeps the envelope's name.
+void patch_shape_to_envelope(patch_shape *shape, patch_envelope *envelope);
 // The value a param has in a place of the bank, which a reset returns to.
 int patch_preset_value(const patch_bank *bank, int channel, int param, int preset);
 

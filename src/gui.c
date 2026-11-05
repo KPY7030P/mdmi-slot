@@ -88,6 +88,25 @@
 #define FLASH_TICKS 9
 
 // Saved with the project, so the numbers stay.
+// The envelope editor (stage 8, art-director's note): one column of 3 px per frame, a level lane, a
+// pitch lane of 15 rows by value, the loop's tabs above and the length's tab below.
+#define ENV_X 296
+#define ENV_STEP_W 3
+#define ENV_LOOP_Y 82
+#define ENV_LEVEL_Y 98
+#define ENV_BASE_Y 248
+#define ENV_LEVEL_BOTTOM 258
+#define ENV_PITCH_Y 266
+#define ENV_PITCH_ROW 6
+#define ENV_PITCH_BOTTOM 356
+#define ENV_CENTRE_Y 311
+#define ENV_END_Y 360
+#define ENV_AXIS_Y 373
+#define ENV_TOGGLE_X 242
+#define ENV_TOGGLE_Y 56
+#define ENV_TOGGLE_W 116
+enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LENGTH };
+
 enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK };
 enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTIONS };
 
@@ -161,6 +180,18 @@ struct mdmi_gui {
 	int drop_lit;
 	char drop_hint[FILES_MESSAGE];
 	uint32_t drop_hint_color;
+
+	// The envelope being drawn (stage 8): what is dragged, the window's copy while the gesture lasts,
+	// what the channel had before it, and the last column drawn, so a fast drag leaves no gaps.
+	int env_drag;
+	int env_channel;
+	patch_shape env_shape;
+	patch_envelope env_before;
+	bool env_changed;
+	bool env_handed;
+	bool env_told;
+	int env_last_step;
+	int env_last_value;
 
 	// The footer's message, and the row or places a file just went to.
 	char message[FILES_MESSAGE];
@@ -471,6 +502,10 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		{PARAM_PORTA_ON, "PORTA", 472, 102}, {PARAM_PORTA_TIME, "P.TIME", 592, 102},
 		{PARAM_FEEDBACK, "FB", 472, 128}, {PARAM_AMS, "AMS", 592, 128},
 		{PARAM_FMS, "FMS", 472, 150},
+	}, PSG_CELLS[] = {
+		// Under the envelope editor.
+		{PARAM_VOLUME, "VOL", 242, 414}, {PARAM_FINE_TUNE, "TUNE", 472, 414}, {PARAM_BEND_RANGE, "BEND", 592, 414},
+		{PARAM_PORTA_ON, "PORTA", 472, 436}, {PARAM_PORTA_TIME, "P.TIME", 592, 436},
 	};
 	static const struct {
 		int global;
@@ -491,9 +526,12 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		}
 	}
 	if (!is_dac(values, channel) && !bank) {
-		for (size_t i = 0; i < sizeof(CHANNEL_CELLS) / sizeof(*CHANNEL_CELLS); i++) {
-			if (patch_channel_has(channel, CHANNEL_CELLS[i].param)) {
-				add_cell(g, CHANNEL_CELLS[i].x, CHANNEL_CELLS[i].y, 116, CELL_H, PATCH_CHANNEL_ID(channel, CHANNEL_CELLS[i].param), CHANNEL_CELLS[i].label, CELL_ROW);
+		const bool fm = channel_is_fm(channel);
+		const size_t count = fm ? sizeof(CHANNEL_CELLS) / sizeof(*CHANNEL_CELLS) : sizeof(PSG_CELLS) / sizeof(*PSG_CELLS);
+		for (size_t i = 0; i < count; i++) {
+			const int param = fm ? CHANNEL_CELLS[i].param : PSG_CELLS[i].param;
+			if (patch_channel_has(channel, param)) {
+				add_cell(g, fm ? CHANNEL_CELLS[i].x : PSG_CELLS[i].x, fm ? CHANNEL_CELLS[i].y : PSG_CELLS[i].y, 116, CELL_H, PATCH_CHANNEL_ID(channel, param), fm ? CHANNEL_CELLS[i].label : PSG_CELLS[i].label, CELL_ROW);
 			}
 		}
 		if (channel_is_fm(channel)) {
@@ -653,6 +691,355 @@ static void draw_page_top(mdmi_gui *g, const patch_values *values)
 	}
 }
 
+// The pitch lane's rows by value, +5 semitones at the top: the code each row draws.
+static const uint8_t PITCH_CODES[15] = {7, 6, 5, 4, 3, 2, 1, 0, 8, 9, 10, 11, 12, 13, 14};
+
+static int pitch_row(uint8_t frame)
+{
+	for (int row = 0; row < 15; row++) {
+		if (PITCH_CODES[row] == frame >> 4) {
+			return row;
+		}
+	}
+	// Code F shifts nothing, as 0 does.
+	return 7;
+}
+
+static void pitch_text(uint8_t frame, char *out, size_t size)
+{
+	static const char *const UP[8] = {"0", "+5C", "+10C", "+20C", "+50C", "+1 ST", "+2 ST", "+5 ST"};
+	const int code = frame >> 4;
+	snprintf(out, size, "%s", code >= 8 && code <= 14 ? UP[code - 7] : UP[code < 8 ? code : 0]);
+	if (code >= 8 && code <= 14) {
+		out[0] = '-';
+	}
+}
+
+static int frame_ms(int frame)
+{
+	return (frame * 1000 + 30) / 60;
+}
+
+static int loop_end_of(const patch_shape *shape)
+{
+	return shape->loop_end < 0 ? shape->count : shape->loop_end;
+}
+
+// The gap pixel before a frame, where the loop and length lines stand.
+static int boundary_x(int boundary)
+{
+	return ENV_X + ENV_STEP_W * boundary - 1;
+}
+
+static int clamp(int value, int low, int high)
+{
+	return value < low ? low : value > high ? high : value;
+}
+
+static bool is_envelope_page(const mdmi_gui *g)
+{
+	return *g->source.page == PAGE_EDITOR && !channel_is_fm(*g->source.channel);
+}
+
+// What the editor shows: the window's copy while a gesture lasts, the channel's envelope otherwise.
+static const patch_shape *shown_shape(mdmi_gui *g, patch_shape *scratch)
+{
+	const int channel = *g->source.channel;
+	if (g->env_drag != ENV_NONE && g->env_channel == channel) {
+		return &g->env_shape;
+	}
+	patch_shape_of(&patch_view(g->source.patch)->psg[channel - PATCH_NUM_FM_CHANNELS], scratch);
+	return scratch;
+}
+
+static bool over_loop_toggle(int x, int y)
+{
+	return x >= ENV_TOGGLE_X && x < ENV_TOGGLE_X + ENV_TOGGLE_W && y >= ENV_TOGGLE_Y && y < ENV_TOGGLE_Y + CELL_H;
+}
+
+// The tab or lane under the mouse. The lanes end at the limit, past it nothing is drawn.
+static int envelope_part_at(const patch_shape *shape, int x, int y)
+{
+	if (y >= ENV_LOOP_Y && y < ENV_LEVEL_Y) {
+		const int start = boundary_x(shape->loop_start), end = boundary_x(loop_end_of(shape));
+		return shape->loop_start < 0 ? ENV_NONE : x >= start - 9 && x <= start + 1 ? ENV_LOOP_START : x >= end - 1 && x <= end + 9 ? ENV_LOOP_END : ENV_NONE;
+	}
+	if (y >= ENV_END_Y && y < ENV_AXIS_Y) {
+		const int end = boundary_x(shape->count);
+		return x >= end - 2 && x <= end + 9 ? ENV_LENGTH : ENV_NONE;
+	}
+	if (x < ENV_X || x >= ENV_X + ENV_STEP_W * patch_shape_room(shape)) {
+		return ENV_NONE;
+	}
+	return y >= ENV_LEVEL_Y && y < ENV_LEVEL_BOTTOM ? ENV_LEVEL : y >= ENV_PITCH_Y && y < ENV_PITCH_BOTTOM ? ENV_PITCH : ENV_NONE;
+}
+
+static uint8_t with_value(uint8_t frame, int lane, int value)
+{
+	return lane == ENV_LEVEL ? (uint8_t)((frame & 0xF0) | value) : (uint8_t)(PITCH_CODES[value] << 4 | (frame & 15));
+}
+
+// Drawing past the end lengthens the envelope: the new frames copy the last one with the drawn value.
+static void set_frame(patch_shape *shape, int lane, int step, int value)
+{
+	for (; shape->count <= step; shape->count++) {
+		shape->frames[shape->count] = with_value(shape->frames[shape->count - 1], lane, value);
+	}
+	shape->frames[step] = with_value(shape->frames[step], lane, value);
+}
+
+// The channel's envelope becomes the window's copy, and what undo puts back.
+static void envelope_take(mdmi_gui *g)
+{
+	g->env_channel = *g->source.channel;
+	g->env_before = patch_view(g->source.patch)->psg[g->env_channel - PATCH_NUM_FM_CHANNELS];
+	patch_shape_of(&g->env_before, &g->env_shape);
+	g->env_changed = g->env_handed = false;
+	g->env_last_step = -1;
+}
+
+// The copy goes to the model the way a dropped EEF does (D19, D28): at most once per window frame
+// and at the end of the gesture, so stores don't pile up in the ROM.
+static void envelope_hand(mdmi_gui *g)
+{
+	if (!g->env_changed) {
+		return;
+	}
+	patch_envelope envelope = g->env_before;
+	patch_shape_to_envelope(&g->env_shape, &envelope);
+	files_draw_envelope(g->source.files, g->env_channel, g->env_handed ? NULL : &g->env_before, &envelope);
+	g->env_handed = true;
+	g->env_changed = false;
+	if (!g->env_told) {
+		say(g, "Drawn envelope plays from the next note", C_TEXT, MESSAGE_TICKS);
+		g->env_told = true;
+	}
+}
+
+static void envelope_move(mdmi_gui *g, int x, int y)
+{
+	patch_shape *shape = &g->env_shape;
+	const patch_shape was = *shape;
+	const int boundary = (x - ENV_X + 2 + ENV_STEP_W) / ENV_STEP_W - 1;
+	if (g->env_drag == ENV_LEVEL || g->env_drag == ENV_PITCH) {
+		const int step = clamp((x - ENV_X + ENV_STEP_W) / ENV_STEP_W - 1, 0, patch_shape_room(shape) - 1);
+		const int value = g->env_drag == ENV_LEVEL ? clamp((y - ENV_LEVEL_Y) / 10, 0, 15) : clamp((y - ENV_PITCH_Y) / ENV_PITCH_ROW, 0, 14);
+		// Columns the mouse jumped over get values on the line between.
+		const int from = g->env_last_step < 0 ? step : g->env_last_step;
+		const int last = g->env_last_step < 0 ? value : g->env_last_value;
+		const int direction = step >= from ? 1 : -1;
+		for (int i = from;; i += direction) {
+			set_frame(shape, g->env_drag, i, step == from ? value : last + (value - last) * (i - from) / (step - from));
+			if (i == step) {
+				break;
+			}
+		}
+		g->env_last_step = step;
+		g->env_last_value = value;
+	} else if (g->env_drag == ENV_LOOP_START) {
+		shape->loop_start = clamp(boundary, 0, loop_end_of(shape) - 1);
+	} else if (g->env_drag == ENV_LOOP_END) {
+		const int end = clamp(boundary, shape->loop_start + 1, shape->count);
+		shape->loop_end = end >= shape->count ? -1 : end;
+	} else if (g->env_drag == ENV_LENGTH) {
+		const int length = clamp(boundary, 1, patch_shape_room(shape));
+		for (; shape->count < length; shape->count++) {
+			shape->frames[shape->count] = shape->frames[shape->count - 1];
+		}
+		shape->count = length;
+	}
+	patch_envelope scratch;
+	patch_shape_to_envelope(shape, &scratch);
+	g->env_changed |= memcmp(&was, shape, sizeof(was)) != 0;
+}
+
+// A press on the editor: the LOOP switch, or the start of a gesture on a lane or a tab.
+static bool envelope_down(mdmi_gui *g, int x, int y)
+{
+	if (over_loop_toggle(x, y)) {
+		envelope_take(g);
+		patch_shape *shape = &g->env_shape;
+		// On, the loop holds the whole envelope; off, both marks go.
+		shape->loop_start = shape->loop_start < 0 ? 0 : -1;
+		shape->loop_end = -1;
+		patch_envelope scratch;
+		patch_shape_to_envelope(shape, &scratch);
+		g->env_changed = true;
+		envelope_hand(g);
+		return true;
+	}
+	patch_shape scratch;
+	const int part = envelope_part_at(shown_shape(g, &scratch), x, y);
+	if (part == ENV_NONE) {
+		return false;
+	}
+	envelope_take(g);
+	g->env_drag = part;
+	if (g->window) {
+		SetCapture(g->window);
+	}
+	envelope_move(g, x, y);
+	return true;
+}
+
+static void envelope_up(mdmi_gui *g)
+{
+	envelope_hand(g);
+	g->env_drag = ENV_NONE;
+	if (GetCapture() == g->window) {
+		ReleaseCapture();
+	}
+}
+
+// What the footer says about the editor: the gesture under way, or what is under the mouse.
+static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (!is_envelope_page(g)) {
+		return false;
+	}
+	patch_shape scratch;
+	const patch_shape *shape = shown_shape(g, &scratch);
+	const int x = g->mouse_x, y = g->mouse_y, room = patch_shape_room(shape);
+	const int part = g->env_drag != ENV_NONE ? g->env_drag : envelope_part_at(shape, x, y);
+	const int step = g->env_drag != ENV_NONE ? g->env_last_step : (x - ENV_X) / ENV_STEP_W;
+	const bool lanes = y >= ENV_LEVEL_Y && y < ENV_PITCH_BOTTOM && x >= ENV_X && x < ENV_X + ENV_STEP_W * PATCH_ENVELOPE_STEPS;
+	char pitch[16];
+	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
+		if (part == ENV_PITCH && *g->source.channel == PATCH_NUM_CHANNELS - 1) {
+			snprintf(hint, size, "CH10: SHIFT CHANGES NOISE, NOT PITCH");
+			return true;
+		}
+		const int level = shape->frames[step] & 15;
+		pitch_text(shape->frames[step], pitch, sizeof(pitch));
+		char db[12];
+		snprintf(db, sizeof(db), level == 15 ? "OFF" : "%d DB", -2 * level);
+		snprintf(hint, size, "STEP %d/%d  %d MS  LEVEL %s  PITCH %s", step + 1, shape->count, frame_ms(step), db, pitch);
+	} else if (part == ENV_LEVEL || part == ENV_PITCH) {
+		snprintf(hint, size, "STEP %d: DRAG HERE TO EXTEND", step + 1);
+	} else if (part == ENV_LOOP_START || part == ENV_LOOP_END) {
+		const int end = loop_end_of(shape);
+		if (g->env_drag != ENV_NONE) {
+			snprintf(hint, size, "LOOP %d-%d: %d STEPS, %d MS", shape->loop_start + 1, end, end - shape->loop_start, frame_ms(end - shape->loop_start));
+		} else {
+			snprintf(hint, size, part == ENV_LOOP_START ? "LOOP START: DRAG BETWEEN STEPS" : "LOOP END: AFTER IT PLAYS ON NOTE OFF");
+		}
+	} else if (part == ENV_LENGTH) {
+		snprintf(hint, size, "LENGTH %d STEPS, %d MS", shape->count, frame_ms(shape->count));
+	} else if (lanes && step >= room) {
+		snprintf(hint, size, "MAX %d BYTES, LOOP MARKS TAKE %d", PATCH_ENVELOPE_STEPS, PATCH_ENVELOPE_STEPS - room);
+	} else if (over_loop_toggle(x, y)) {
+		snprintf(hint, size, shape->loop_start < 0 && shape->count >= room ? "LOOP: LAST STEP CUT, MAX %d BYTES" : "LOOP: ON OR OFF", PATCH_ENVELOPE_STEPS);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+static void draw_envelope(mdmi_gui *g, const patch_values *values)
+{
+	(void)values;
+	const bool noise = *g->source.channel == PATCH_NUM_CHANNELS - 1;
+	patch_shape scratch;
+	const patch_shape *shape = shown_shape(g, &scratch);
+	const int room = patch_shape_room(shape), end = loop_end_of(shape), count = shape->count;
+	const bool loop = shape->loop_start >= 0, idle = g->env_drag == ENV_NONE;
+	const int over = idle ? envelope_part_at(shape, g->mouse_x, g->mouse_y) : ENV_NONE;
+	char buffer[64];
+
+	// The LOOP switch, what Note Off does, and the bytes against the limit.
+	if (loop) {
+		fill(g, ENV_TOGGLE_X, ENV_TOGGLE_Y, ENV_TOGGLE_W, CELL_H, C_PSG_DARK);
+	} else {
+		frame(g, ENV_TOGGLE_X, ENV_TOGGLE_Y, ENV_TOGGLE_W, CELL_H, C_LINE);
+	}
+	if (idle && over_loop_toggle(g->mouse_x, g->mouse_y)) {
+		frame(g, ENV_TOGGLE_X, ENV_TOGGLE_Y, ENV_TOGGLE_W, CELL_H, C_TEXT);
+	}
+	text(g, ENV_TOGGLE_X + 34, ENV_TOGGLE_Y + 3, "LOOP", loop ? C_TEXT : C_LABEL, 2);
+	text(g, 364, 63, !loop ? "NO LOOP: NOTE OFF CUTS" : shape->loop_end < 0 ? "LOOPS, NOTE OFF ENDS THE PASS" : "LOOPS, NOTE OFF ENDS PASS, PLAYS TAIL", C_LABEL, 1);
+	const int bytes = count + loop + (shape->loop_end >= 0);
+	snprintf(buffer, sizeof(buffer), "%d/%d", bytes, PATCH_ENVELOPE_STEPS);
+	text_right(g, PAGE_RIGHT, 59, buffer, bytes >= PATCH_ENVELOPE_STEPS ? C_PSG : C_LABEL, 2, 120);
+
+	text(g, PAGE_X, ENV_LEVEL_Y, "LEVEL", C_LABEL, 1);
+	text_right(g, 292, ENV_LEVEL_Y, "0DB", C_HINT, 1, 20);
+	text_right(g, 292, 168, "-14", C_HINT, 1, 20);
+	text_right(g, 292, 238, "-28", C_HINT, 1, 20);
+	text_right(g, 292, 250, "OFF", C_HINT, 1, 20);
+	text(g, PAGE_X, ENV_PITCH_Y, noise ? "NOISE" : "PITCH", C_LABEL, 1);
+	if (!noise) {
+		static const struct {
+			const char *label;
+			int y;
+		} PITCH_LABELS[] = {{"+5", 266}, {"+1", 290}, {"0", 308}, {"-1", 326}, {"-5", 350}};
+		for (size_t i = 0; i < sizeof(PITCH_LABELS) / sizeof(*PITCH_LABELS); i++) {
+			text_right(g, 292, PITCH_LABELS[i].y, PITCH_LABELS[i].label, C_HINT, 1, 20);
+		}
+	}
+
+	// One column per frame up to the limit; the frames past the length are room to draw into.
+	const int hover = over == ENV_LEVEL || over == ENV_PITCH ? (g->mouse_x - ENV_X) / ENV_STEP_W : -1;
+	for (int i = 0; i < room; i++) {
+		const int x = ENV_X + i * ENV_STEP_W;
+		const uint32_t back = i == hover ? C_LINE : i >= count ? C_BG : loop && i >= shape->loop_start && i < end ? C_PSG_DARK : C_CELL;
+		fill(g, x, ENV_LEVEL_Y, 2, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
+		fill(g, x, ENV_PITCH_Y, 2, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
+		if (i >= count) {
+			continue;
+		}
+		const int level = shape->frames[i] & 15;
+		if (level < 15) {
+			fill(g, x, ENV_LEVEL_Y + 10 * level, 2, ENV_BASE_Y - ENV_LEVEL_Y - 10 * level, C_PSG);
+		}
+		const int row = pitch_row(shape->frames[i]), top = ENV_PITCH_Y + row * ENV_PITCH_ROW;
+		if (row < 7) {
+			fill(g, x, top, 2, ENV_CENTRE_Y - top, C_PSG);
+		} else if (row > 7) {
+			fill(g, x, ENV_CENTRE_Y + 1, 2, top + ENV_PITCH_ROW - ENV_CENTRE_Y - 1, C_PSG);
+		}
+	}
+	fill(g, ENV_X, ENV_BASE_Y, ENV_STEP_W * count - 1, 1, C_LINE);
+	fill(g, ENV_X, ENV_CENTRE_Y, ENV_STEP_W * count - 1, 1, C_LINE);
+	if (count < room) {
+		const int x = boundary_x(count), w = ENV_STEP_W * (room - count) + 1;
+		frame(g, x, ENV_LEVEL_Y - 1, w, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y + 2, C_LINE);
+		frame(g, x, ENV_PITCH_Y - 1, w, ENV_PITCH_BOTTOM - ENV_PITCH_Y + 2, C_LINE);
+	}
+
+	// The loop's lines and tabs, pointing outward so a loop of one step keeps them apart.
+	if (loop) {
+		const int start_x = boundary_x(shape->loop_start), end_x = boundary_x(end);
+		fill(g, start_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
+		fill(g, end_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
+		fill(g, start_x - 8, ENV_LOOP_Y, 8, 14, g->env_drag == ENV_LOOP_START ? C_TARGET : over == ENV_LOOP_START ? C_TEXT : C_PSG);
+		fill(g, end_x + 1, ENV_LOOP_Y, 8, 14, g->env_drag == ENV_LOOP_END ? C_TARGET : over == ENV_LOOP_END ? C_TEXT : C_PSG);
+	} else {
+		text(g, ENV_X + 4, 86, "LOOP OFF", C_HINT, 1);
+	}
+
+	// The length's line and tab, and how long the envelope plays.
+	const int length_x = boundary_x(count);
+	fill(g, length_x, ENV_LEVEL_Y, 1, ENV_AXIS_Y - ENV_LEVEL_Y, C_LABEL);
+	fill(g, length_x + 1, ENV_END_Y, 8, 12, g->env_drag == ENV_LENGTH ? C_TARGET : over == ENV_LENGTH ? C_TEXT : C_LABEL);
+	snprintf(buffer, sizeof(buffer), "%d MS", frame_ms(count));
+	const int width = (int)strlen(buffer) * 6;
+	text(g, length_x + 12 + width > PAGE_RIGHT ? length_x - 4 - width : length_x + 12, ENV_END_Y + 2, buffer, C_LABEL, 1);
+
+	// The time axis: frames and ms at 60 Hz, a label every 30 frames.
+	for (int f = 0; f <= PATCH_ENVELOPE_STEPS; f += 10) {
+		const int x = ENV_X + ENV_STEP_W * f;
+		fill(g, x, ENV_AXIS_Y, 1, 3, f % 30 ? C_LINE : C_HINT);
+		if (f % 30 == 0) {
+			snprintf(buffer, sizeof(buffer), "%d", f);
+			text(g, x - (int)strlen(buffer) * 3, 377, buffer, C_HINT, 1);
+			snprintf(buffer, sizeof(buffer), "%d", frame_ms(f));
+			text(g, x - (int)strlen(buffer) * 3, 387, buffer, C_HINT, 1);
+		}
+	}
+	text_right(g, 286, 377, "FRAME", C_HINT, 1, 40);
+	text_right(g, 286, 387, "MS", C_HINT, 1, 40);
+}
+
 static void draw_page(mdmi_gui *g, const patch_values *values)
 {
 	const int channel = *g->source.channel;
@@ -673,11 +1060,8 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		return;
 	}
 	if (!channel_is_fm(channel)) {
-		const patch_envelope *envelope = &values->psg[channel - PATCH_NUM_FM_CHANNELS];
-		text(g, PAGE_X, 62, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
-		snprintf(buffer, sizeof(buffer), "%d STEPS, %s", patch_envelope_length(envelope), memchr(envelope->steps, PATCH_EEF_LOOP_START, (size_t)patch_envelope_length(envelope)) ? "LOOPS" : "NO LOOP");
-		text(g, PAGE_X, 74, buffer, C_LABEL, 1);
-		text(g, PAGE_X, 86, "ENVELOPE EDITOR: LATER STAGE", C_HINT, 1);
+		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
+		draw_envelope(g, values);
 		return;
 	}
 	const int algorithm = value_of(g, values, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM));
@@ -806,8 +1190,12 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, g->drop_hint, g->drop_hint_color);
 	} else if (action_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
+	} else if (g->env_drag != ENV_NONE && envelope_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
+	} else if (envelope_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else {
 		snprintf(buffer, sizeof(buffer), "UNDERRUNS %u +%u/S MIDI LOST %u BLOCK %u @ %u RUN %.1f WAIT %.1f MS RING %u SHORT %u BURST %u",
 			stats.underruns, g->underruns_per_second, stats.dropped_midi, stats.last_block, stats.sample_rate, stats.worst_run_ms, stats.worst_wait_ms,
@@ -1311,6 +1699,10 @@ static void on_down(mdmi_gui *g, int x, int y)
 	}
 	g->mouse_x = x;
 	g->mouse_y = y;
+	if (is_envelope_page(g) && envelope_down(g, x, y)) {
+		refresh(g);
+		return;
+	}
 	int index = hovered(g);
 	if (index < 0) {
 		return;
@@ -1338,6 +1730,10 @@ static void on_move(mdmi_gui *g, int x, int y)
 {
 	g->mouse_x = x;
 	g->mouse_y = y;
+	if (g->env_drag != ENV_NONE) {
+		envelope_move(g, x, y);
+		return;
+	}
 	if (!g->dragging) {
 		return;
 	}
@@ -1357,6 +1753,10 @@ static void on_move(mdmi_gui *g, int x, int y)
 
 static void on_up(mdmi_gui *g)
 {
+	if (g->env_drag != ENV_NONE) {
+		envelope_up(g);
+		return;
+	}
 	if (!g->dragging) {
 		return;
 	}
@@ -1378,6 +1778,12 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 {
 	g->mouse_x = x;
 	g->mouse_y = y;
+	// A quick second press on the envelope draws as the first did.
+	patch_shape scratch;
+	if (is_envelope_page(g) && (over_loop_toggle(x, y) || envelope_part_at(shown_shape(g, &scratch), x, y) != ENV_NONE)) {
+		on_down(g, x, y);
+		return;
+	}
 	int index = *g->source.page == PAGE_EDITOR ? hovered(g) : -1;
 	if (index < 0 || g->cells[index].kind == CELL_ALGORITHM) {
 		return;
@@ -1683,6 +2089,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_TIMER:
 		g->message_ticks -= g->message_ticks > 0;
 		g->flash_ticks -= g->flash_ticks > 0;
+		if (g->env_drag != ENV_NONE) {
+			envelope_hand(g);
+		}
 		refresh(g);
 		return 0;
 	case WM_MOUSEWHEEL:

@@ -42,6 +42,16 @@
 #define BANK_ROW3_Y 122
 #define CH4_PRESET 1400
 #define COLOR_FM_DARK 0x222266
+// The envelope editor of a PSG channel: channel 8 in the rail, the level lane, a row near its top
+// (level 0), and UNDO.
+#define RAIL_CH8_Y 350
+#define ENV_X 296
+#define ENV_RIGHT 668
+#define ENV_LEVEL_Y 98
+#define ENV_LEVEL_BOTTOM 258
+#define ENV_LOUD_Y 100
+#define ACTION_UNDO_X 684
+#define COLOR_PSG 0x22CCEE
 
 static int failures;
 
@@ -430,6 +440,34 @@ int main(int argc, char **argv)
 		run_ms(100);
 		CHECK(!keys->key(plugin, true), "the editor page leaves arrows to the host");
 		run_ms(100);
+
+		// Stage 8: drawing channel 8's envelope. A fast drag across the level lane fills every
+		// column it passed, tells the host nothing (D19), and UNDO puts the envelope back.
+		click(window, RAIL_X, RAIL_CH8_Y);
+		run_ms(100);
+		capture(window);
+		const int bars_before = count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+		memset(pushed, 0, sizeof(pushed));
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(ENV_X + 1, ENV_LOUD_Y));
+		for (int x = ENV_X + 60; x <= 705; x += 60) {
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, ENV_LOUD_Y));
+		}
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(705, ENV_LOUD_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(705, ENV_LOUD_Y));
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "envelope");
+		int loud = 0, past = 0;
+		for (int x = ENV_X; x < ENV_RIGHT; x += 3) {
+			loud += (pixels[ENV_LOUD_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG;
+		}
+		past = count_color_in(ENV_RIGHT, 708, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+		CHECK(loud >= 122 && past == 0, "a fast drag to the right edge draws every column up to the limit (%d of 124), nothing past it", loud);
+		CHECK(pushed[0] + pushed[1] + pushed[2] == 0, "drawing tells the host nothing");
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == bars_before, "UNDO puts back the envelope before the gesture");
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

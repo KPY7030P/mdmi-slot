@@ -318,6 +318,84 @@ int patch_envelope_length(const patch_envelope *envelope)
 	return length;
 }
 
+void patch_shape_of(const patch_envelope *envelope, patch_shape *shape)
+{
+	const int length = patch_envelope_length(envelope);
+	shape->count = 0;
+	shape->loop_start = shape->loop_end = -1;
+	for (int i = 0; i < length; i++) {
+		const uint8_t step = envelope->steps[i];
+		if (step == PATCH_EEF_LOOP_START) {
+			if (shape->loop_start < 0) {
+				shape->loop_start = shape->count;
+			}
+		} else if (step == PATCH_EEF_LOOP_END) {
+			if (shape->loop_start >= 0 && shape->loop_end < 0) {
+				shape->loop_end = shape->count;
+			}
+		} else {
+			shape->frames[shape->count++] = step;
+		}
+	}
+	// A mark with no frame after it, or around none, is fixed the way the editor keeps it.
+	patch_envelope ignored;
+	patch_shape_to_envelope(shape, &ignored);
+}
+
+int patch_shape_room(const patch_shape *shape)
+{
+	return PATCH_ENVELOPE_STEPS - (shape->loop_start >= 0) - (shape->loop_end >= 0);
+}
+
+// A start before a frame and an end after one, inside the frames.
+static void fix_loop(patch_shape *shape)
+{
+	if (shape->loop_start < -1) {
+		shape->loop_start = -1;
+	}
+	if (shape->loop_end < -1) {
+		shape->loop_end = -1;
+	}
+	if (shape->loop_start >= shape->count) {
+		shape->loop_start = shape->count - 1;
+	}
+	if (shape->loop_start < 0 || shape->loop_end >= shape->count) {
+		shape->loop_end = -1;
+	} else if (shape->loop_end >= 0 && shape->loop_end <= shape->loop_start) {
+		shape->loop_end = shape->loop_start + 1 < shape->count ? shape->loop_start + 1 : -1;
+	}
+}
+
+void patch_shape_to_envelope(patch_shape *shape, patch_envelope *envelope)
+{
+	if (shape->count < 1) {
+		shape->frames[0] = 0;
+		shape->count = 1;
+	}
+	if (shape->count > PATCH_ENVELOPE_STEPS) {
+		shape->count = PATCH_ENVELOPE_STEPS;
+	}
+	fix_loop(shape);
+	// The marks take room from the frames; the loop is fixed again for the frames left.
+	if (shape->count > patch_shape_room(shape)) {
+		shape->count = patch_shape_room(shape);
+		fix_loop(shape);
+	}
+	int at = 0;
+	for (int i = 0; i < shape->count; i++) {
+		if (i == shape->loop_start) {
+			envelope->steps[at++] = PATCH_EEF_LOOP_START;
+		}
+		if (i == shape->loop_end) {
+			envelope->steps[at++] = PATCH_EEF_LOOP_END;
+		}
+		// Pitch code F with attenuation D-F would read as a mark; F means no shift, as 0 does.
+		const uint8_t frame = shape->frames[i];
+		envelope->steps[at++] = frame >> 4 == 15 && (frame & 15) >= 13 ? frame & 15 : frame;
+	}
+	memset(envelope->steps + at, PATCH_EEF_END, sizeof(envelope->steps) - (size_t)at);
+}
+
 // Steps after the first EEF_END are EEF_END, so envelopes compare whole; a name ends inside it.
 static void clean_envelope(patch_envelope *envelope)
 {
