@@ -376,6 +376,12 @@ static bool is_special(const patch_values *values, int channel)
 // what the plugin sent: the ROM has no velocity curve of its own (D29).
 #define BAR_X 54
 #define BAR_SEGMENTS 16
+// FM SP's four notes in a column at the rail's right, one note's width: the bar ends where a
+// one-note row's does. The name gives up two letters to keep clear of the column.
+#define SPECIAL_NOTE_Y 2
+#define SPECIAL_NOTE_PITCH 9
+#define SPECIAL_NOTES_W 18
+#define SPECIAL_NAME_CHARS 11
 static void level_bar(mdmi_gui *g, int y, int right, int volume, int velocity, bool seen, bool held, uint32_t dark)
 {
 	int pitch = (right - BAR_X) / BAR_SEGMENTS;
@@ -419,7 +425,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	if (dac) {
 		text(g, BAR_X, y + 5, "Samples", INK(C_TEXT), 2);
 	} else {
-		snprintf(buffer, sizeof(buffer), "%.13s%s", sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
+		snprintf(buffer, sizeof(buffer), "%.*s%s", special ? SPECIAL_NAME_CHARS : 13, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
 		text(g, BAR_X, y + 5, buffer, INK(C_TEXT), 2);
 	}
 #undef INK
@@ -444,10 +450,11 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	const bool seen = GUI_NOTE_SEEN(note);
 	const int held = seen ? (int)GUI_NOTE_HELD(note) : 0;
 	if (special) {
-		// The lead (operator 4, channel 3 itself) first and green, operators 1-3 (MIDI 11-13) dimmer,
-		// each in a place of its own so the order shows.
+		// A column at the right where other rows have their note: the lead (operator 4, channel 3
+		// itself) on top and green, operators 1-3 (MIDI 11-13) below it, dimmer. The bar stays as
+		// long as on a row with one note (owner's note on 0.9.0).
 		static const int SOURCES[4] = {2, 10, 11, 12};
-		for (int k = 3; k >= 0; k--) {
+		for (int k = 0; k < 4; k++) {
 			const uint32_t op = __atomic_load_n(&g->source.notes[SOURCES[k]], __ATOMIC_ACQUIRE);
 			const bool op_held = GUI_NOTE_SEEN(op) && GUI_NOTE_HELD(op);
 			if (GUI_NOTE_SEEN(op)) {
@@ -455,10 +462,9 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 			} else {
 				snprintf(buffer, sizeof(buffer), "---");
 			}
-			left -= 26;
-			text(g, left, line, buffer, !GUI_NOTE_SEEN(op) ? C_LINE : !op_held ? C_HINT : k == 0 ? C_PLAYING : C_LABEL, 1);
+			text_right(g, left, y + SPECIAL_NOTE_Y + k * SPECIAL_NOTE_PITCH, buffer, !GUI_NOTE_SEEN(op) ? C_LINE : !op_held ? C_HINT : k == 0 ? C_PLAYING : C_LABEL, 1, SPECIAL_NOTES_W);
 		}
-		level_bar(g, bar_y, left - 6, values->channels[channel][PARAM_VOLUME], (int)GUI_NOTE_VELOCITY(note), seen, held > 0, volume_ink);
+		level_bar(g, bar_y, left - SPECIAL_NOTES_W - 6, values->channels[channel][PARAM_VOLUME], (int)GUI_NOTE_VELOCITY(note), seen, held > 0, volume_ink);
 		return;
 	}
 	if (dac) {

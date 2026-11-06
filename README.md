@@ -71,8 +71,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Envelope editor (stage 8): the EDITOR page of a channel 7-10 draws its envelope, one column per
   frame (60 Hz): level bars on top, pitch below ordered from -5 to +5 semitones, the loop's strip
   above with its two tabs. A click on the loop's body turns it off; the window keeps a shadow of it
-  where it was, and a click on the shadow turns it on there again. The plugin instance holds the
-  shadow (`gui_loop_shadow`), so it outlives the window but is not saved with the project; it goes
+  where it was, and a click on the shadow turns it on there again. An EEF has no switched-off
+  loop, so the shadow (`state_loop`) is part of the view and the project's block 7 (D30); it goes
   when the editor sees the channel's envelope under another name. Without a shadow the switch at the strip's start
   loops the whole envelope. LOOP and RELEASE name the loop and the tail after it. The number at the axis' end is the length,
   set by a vertical drag, 124 bytes at most with the loop marks (amber MAX at the limit),
@@ -90,7 +90,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   place empty. A rail row shows the name, a `*` when the bank place's sound was tweaked, and a bar of
   16 segments: the channel's volume (CC7), and green while a note is held, CC7 x velocity / 127,
   grey after. The ROM itself has no velocity curve; the bar shows what the plugin sent. In Ch3
-  Special Mode channel 3 shows four notes, its own first. The bank page's scroll track marks every
+  Special Mode channel 3's row is light FM and shows four notes in a column at the right, its own
+  on top; the bar keeps its length. The bank page's scroll track marks every
   channel's place.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears

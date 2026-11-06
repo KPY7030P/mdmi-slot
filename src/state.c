@@ -11,7 +11,11 @@
 #define PSG_BYTES (PATCH_NUM_PSG_CHANNELS * sizeof(patch_envelope))
 // The bank's envelopes and the PSG channels' came with D28 as blocks of their own, so the bank
 // block keeps its length and older builds skip the new ones.
-enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4, BLOCK_ENVELOPES = 5, BLOCK_PSG = 6 };
+// The loops switched off in the editor came with D30, also as a block of their own: per PSG
+// channel kept, start, end (255 for the envelope's end) and the envelope's name.
+enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4, BLOCK_ENVELOPES = 5, BLOCK_PSG = 6, BLOCK_LOOPS = 7 };
+#define LOOP_BYTES (3 + PATCH_NAME)
+#define LOOPS_BYTES (PATCH_NUM_PSG_CHANNELS * LOOP_BYTES)
 static_assert(sizeof(patch_instrument) == PATCH_NAME + PATCH_VOICE_PARAMS * 2, "a bank place has no padding");
 static_assert(sizeof(patch_envelope) == PATCH_NAME + PATCH_ENVELOPE_STEPS + 1, "an envelope has no padding");
 
@@ -24,7 +28,7 @@ static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
 
 uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 {
-	const size_t most = sizeof(uint32_t) + 6 * BLOCK_HEAD + patch_save_size() + 2 + NAMES_BYTES + PSG_BYTES + PLACES_BYTES + ENVELOPES_BYTES;
+	const size_t most = sizeof(uint32_t) + 7 * BLOCK_HEAD + patch_save_size() + 2 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + PLACES_BYTES + ENVELOPES_BYTES;
 	uint8_t *buffer = malloc(most);
 	if (!buffer) {
 		return NULL;
@@ -43,7 +47,16 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 		patch_save_names(values, out);
 		out = put_block_head(out + NAMES_BYTES, BLOCK_PSG, PSG_BYTES);
 		memcpy(out, values->psg, PSG_BYTES);
-		out += PSG_BYTES;
+		out = put_block_head(out + PSG_BYTES, BLOCK_LOOPS, LOOPS_BYTES);
+		for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+			const state_loop *loop = &view->loops[i];
+			uint8_t *at = out + i * LOOP_BYTES;
+			at[0] = loop->kept;
+			at[1] = (uint8_t)loop->start;
+			at[2] = loop->end < 0 ? 255 : (uint8_t)loop->end;
+			memcpy(at + 3, loop->name, PATCH_NAME);
+		}
+		out += LOOPS_BYTES;
 	}
 	const patch_bank *bank = patch_bank_view(patch);
 	out = put_block_head(out, BLOCK_BANK, PLACES_BYTES);
@@ -67,7 +80,7 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 	if (version != STATE_VERSION) {
 		return false;
 	}
-	const uint8_t *values = NULL, *seen_view = NULL, *names = NULL, *bank = NULL, *envelopes = NULL, *psg = NULL;
+	const uint8_t *values = NULL, *seen_view = NULL, *names = NULL, *bank = NULL, *envelopes = NULL, *psg = NULL, *loops = NULL;
 	uint32_t values_length = 0;
 	for (size_t at = sizeof(version); at + BLOCK_HEAD <= size;) {
 		uint32_t type, length;
@@ -90,6 +103,8 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 			envelopes = bytes + at;
 		} else if (type == BLOCK_PSG && length == PSG_BYTES) {
 			psg = bytes + at;
+		} else if (type == BLOCK_LOOPS && length == LOOPS_BYTES) {
+			loops = bytes + at;
 		}
 		// A block of a newer build is skipped.
 		at += length;
@@ -128,6 +143,17 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 	if (seen_view) {
 		view->page = seen_view[0];
 		view->channel = seen_view[1] < PATCH_NUM_CHANNELS ? seen_view[1] : 0;
+		// A state of an older build has no loops switched off.
+		memset(view->loops, 0, sizeof(view->loops));
+		for (int i = 0; loops && i < PATCH_NUM_PSG_CHANNELS; i++) {
+			const uint8_t *at = loops + i * LOOP_BYTES;
+			state_loop *loop = &view->loops[i];
+			loop->kept = at[0] != 0 && at[1] < PATCH_ENVELOPE_STEPS;
+			loop->start = at[1];
+			loop->end = at[2] == 255 ? -1 : at[2];
+			memcpy(loop->name, at + 3, PATCH_NAME);
+			loop->name[PATCH_NAME - 1] = '\0';
+		}
 	}
 	return true;
 }

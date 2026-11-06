@@ -429,13 +429,17 @@ int main(int argc, char **argv)
 		send_midi(0x92, 60, 100);
 		run_ms(200);
 		capture(window);
-		const int line = RAIL_CH3_TOP + 22;
-		const int lead = count_color_in(122, 148, line, line + 8, COLOR_PLAYING), rest = count_color_in(148, 226, line, line + 8, COLOR_PLAYING);
+		// A column at the right, where a one-note row has its note: the lead on top.
+		const int column = 204, top = RAIL_CH3_TOP + 2;
+		const int lead = count_color_in(column, 226, top, top + 8, COLOR_PLAYING), rest = count_color_in(column, 226, top + 9, top + 37, COLOR_PLAYING);
 		send_midi(0x9A, 64, 100);
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "special");
-		const int op1 = count_color_in(148, 174, line, line + 8, COLOR_LABEL);
+		const int op1 = count_color_in(column, 226, top + 9, top + 17, COLOR_LABEL);
+		// The bar is as long as on a row with one note: its last segment ends short of the column.
+		const int bar_past = count_color_in(column, 226, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_FM_LIGHT);
+		const int bar_light = count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_FM_LIGHT) + count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_PLAYING);
 		// The row is light FM: the number in it, and 3 px between the name and the notes below.
 		const int light_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
 		const int name_low = count_color_in(BAR_LEFT, 226, RAIL_CH3_TOP + 19, RAIL_CH3_TOP + 22, COLOR_TEXT);
@@ -445,7 +449,8 @@ int main(int argc, char **argv)
 		run_ms(300);
 		capture(window);
 		const int plain_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
-		CHECK(lead > 0 && rest == 0 && op1 > 0, "FM SP: the lead's note is first (%d px, %d elsewhere), operator 1's next (%d px)", lead, rest, op1);
+		CHECK(lead > 0 && rest == 0 && op1 > 0, "FM SP: the lead's note is on top of the column (%d px, %d below), operator 1's next (%d px)", lead, rest, op1);
+		CHECK(bar_past == 0 && bar_light > 4 * 100, "FM SP: the bar runs as on other rows (%d px lit, %d in the note column)", bar_light, bar_past);
 		CHECK(light_number > 20 && plain_number == 0 && name_low == 0, "FM SP: channel 3's number is light FM (%d px, %d after), the name clear of the notes (%d px)", light_number, plain_number, name_low);
 		// The mouse leaves the global cell, so its hover frame isn't part of what is compared.
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));

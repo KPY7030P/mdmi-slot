@@ -24,17 +24,6 @@
 // What edit() asks for: a gesture around one or more values, as a host records a knob.
 enum { GUI_EDIT_BEGIN, GUI_EDIT_SET, GUI_EDIT_END };
 
-// A PSG loop switched off in the envelope editor: where it was, so switching it on puts it back
-// there. The sound has no loop, so only the plugin instance holds this: it outlives the window, not
-// the project. It goes when the channel's envelope gets another name.
-typedef struct {
-	bool kept;
-	int start;
-	// -1: to the envelope's end.
-	int end;
-	char name[PATCH_NAME];
-} gui_loop_shadow;
-
 typedef struct {
 	mdmi_engine *engine;
 	mdmi_patch *patch;
@@ -44,8 +33,8 @@ typedef struct {
 	// window and are saved with the project. Only a view: no knob depends on them.
 	int *page;
 	int *channel;
-	// PATCH_NUM_PSG_CHANNELS of them, the plugin's like page and channel, but not saved.
-	gui_loop_shadow *loop_shadows;
+	// The PSG loops switched off, PATCH_NUM_PSG_CHANNELS of them, the view's like page and channel.
+	state_loop *loop_shadows;
 	// What the window does with dropped and opened files.
 	mdmi_files *files;
 	void (*edit)(void *context, int kind, uint32_t id, int value);

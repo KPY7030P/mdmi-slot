@@ -53,10 +53,8 @@ typedef struct {
 	bool knobs_moved;
 	bool active;
 	mdmi_gui *gui;
-	// The window's page and channel, saved with the project.
+	// The window's page and channel and the loops switched off, saved with the project.
 	state_view view;
-	// Loops switched off in the envelope editor, kept while the window closes and opens.
-	gui_loop_shadow loop_shadows[PATCH_NUM_PSG_CHANNELS];
 	mdmi_files files;
 	// Single producer, the main thread; single consumer, the writer.
 	edit_command edits[EDIT_QUEUE];
@@ -690,7 +688,7 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.version = plugin_descriptor.version,
 		.page = &self->view.page,
 		.channel = &self->view.channel,
-		.loop_shadows = self->loop_shadows,
+		.loop_shadows = self->view.loops,
 		.files = &self->files,
 		.edit = gui_edit,
 		.context = self,

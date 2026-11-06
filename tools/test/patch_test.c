@@ -639,7 +639,7 @@ static void test_files(void)
 	patch_set(patch, PATCH_CHANNEL_ID(7, PARAM_VOLUME), 50);
 	patch_set(patch, GLOBAL_LFO_RATE, 6);
 	patch_publish(patch);
-	files_view = (state_view){0, 2};
+	files_view = (state_view){.page = 0, .channel = 2};
 	patch_values snapped = patch->model;
 	CHECK(files_save(&files, snap_path, FILES_SNAPSHOT, 0, message, sizeof(message)), "a snapshot saved: %s", message);
 	open_file(&files, files_dir, "BAS_PSG2.vgi", 2, -1, message);
@@ -648,7 +648,7 @@ static void test_files(void)
 	patch_set(patch, GLOBAL_LFO_RATE, 1);
 	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 9);
 	patch_publish(patch);
-	files_view = (state_view){1, 5};
+	files_view = (state_view){.page = 1, .channel = 5};
 	handed_knobs = 0;
 	CHECK(files_open(&files, snap_path, 0, message, sizeof(message)) && same_model(&patch->model, &snapped) && !memcmp(&patch->bank, &thunder, sizeof(thunder)), "and loaded back: values, names and bank: %s", message);
 	CHECK(files_view.page == 0 && files_view.channel == 2 && handed_knobs == 1, "with the view, and the host told to re-read the knobs");
@@ -1043,6 +1043,18 @@ static void test_drawing(void)
 	bool knobs;
 	CHECK(state && state_read(patch, state, size, &view, &knobs) && patch_take_incoming(patch) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)),
 		"after a project is opened the drawing is there");
+	free(state);
+	// The loops switched off in the editor go with it (D30); a state without them has none.
+	state_view kept = files_view;
+	kept.loops[2] = (state_loop){true, 5, -1, "Plain"};
+	kept.loops[3] = (state_loop){true, 0, 7, "Drawn"};
+	state = state_build(patch, &kept, &size);
+	state_view opened = {0};
+	opened.loops[0].kept = true;
+	CHECK(state && state_read(patch, state, size, &opened, &knobs) && !opened.loops[0].kept && !opened.loops[1].kept
+		&& opened.loops[2].kept && opened.loops[2].start == 5 && opened.loops[2].end == -1 && !strcmp(opened.loops[2].name, "Plain")
+		&& opened.loops[3].kept && opened.loops[3].start == 0 && opened.loops[3].end == 7 && !strcmp(opened.loops[3].name, "Drawn"),
+		"a project keeps the loops switched off, where they were");
 	free(state);
 	files_free(&files);
 }

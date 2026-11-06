@@ -11,10 +11,22 @@
 // bank (D25). Main thread only.
 #define STATE_READ_MAX 65536
 
-// The window's page and channel, saved with the state.
+// A PSG loop switched off in the envelope editor: where it was, so switching it on puts it back
+// there. An EEF has no switched-off loop, so the project keeps it with the view (D30). It goes when
+// the channel's envelope gets another name.
+typedef struct {
+	bool kept;
+	int start;
+	// -1: to the envelope's end.
+	int end;
+	char name[PATCH_NAME];
+} state_loop;
+
+// The window's page and channel and the loops switched off, saved with the state.
 typedef struct {
 	int page;
 	int channel;
+	state_loop loops[PATCH_NUM_PSG_CHANNELS];
 } state_view;
 
 // Without a view, only the bank. Freed by the caller.
