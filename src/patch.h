@@ -183,6 +183,7 @@ typedef struct {
 	// The channel playing on each voice, or -1, and its key, for the window.
 	int8_t playing[PATCH_NUM_FM_CHANNELS];
 	uint8_t playing_key[PATCH_NUM_FM_CHANNELS];
+	uint8_t playing_velocity[PATCH_NUM_FM_CHANNELS];
 	patch_note pending[PATCH_PENDING_NOTES];
 	uint32_t pending_count;
 	// The RPN each MIDI channel last selected, to recognize a pitch bend range coming from a clip.
@@ -231,6 +232,9 @@ int patch_shape_room(const patch_shape *shape);
 void patch_shape_to_envelope(patch_shape *shape, patch_envelope *envelope);
 // The value a param has in a place of the bank, which a reset returns to.
 int patch_preset_value(const patch_bank *bank, int channel, int param, int preset);
+// The channel's sound differs from its bank place (stage 9, the rail's *): an FM channel's voice
+// values, a PSG channel's envelope as drawn. Volume, pan and the rest of the channel don't count.
+bool patch_sound_changed(const patch_bank *bank, const patch_values *values, const patch_envelope *envelope, int channel);
 
 void patch_init(mdmi_patch *patch);
 
@@ -280,6 +284,7 @@ int patch_muted_notes(const mdmi_patch *patch, int channel);
 // Any thread: the channel playing on an FM voice, or -1, and the key it plays there.
 int patch_voice_player(const mdmi_patch *patch, int voice);
 int patch_voice_key(const mdmi_patch *patch, int voice);
+int patch_voice_velocity(const mdmi_patch *patch, int voice);
 // True if what the main thread handed over became the model. Sync afterwards.
 bool patch_take_incoming(mdmi_patch *patch);
 double patch_model_filter_hz(const mdmi_patch *patch);

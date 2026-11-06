@@ -29,7 +29,7 @@
 #define RAIL_CH2_Y 104
 #define RAIL_CH4_Y 184
 #define OP1_TL_X 300
-#define OP1_TL_Y 212
+#define OP1_TL_Y 230
 #define CH3_OP1_TL 1311
 #define CH4_OP1_TL 1411
 // The LFO Rate cell among the global knobs, and its id.
@@ -47,13 +47,29 @@
 #define RAIL_CH8_Y 350
 #define ENV_X 296
 #define ENV_RIGHT 700
-#define ENV_LEVEL_Y 98
-#define ENV_LEVEL_BOTTOM 258
-#define ENV_LOUD_Y 100
+#define ENV_LEVEL_Y 122
+#define ENV_LEVEL_BOTTOM 282
+// In the bright top of a bar at level 0: below it the body is dark (4A).
+#define ENV_LOUD_Y 123
 #define ACTION_UNDO_X 684
-#define ENV_LENGTH_X 650
-#define ENV_LENGTH_Y 66
+#define ENV_LENGTH_X 670
+#define ENV_LENGTH_Y 397
+#define ENV_LOOP_STRIP_Y 112
 #define COLOR_PSG 0x22CCEE
+// Stage 9: the rail's bars and the bank's scroll track.
+#define RAIL_CH1_TOP 44
+#define RAIL_CH3_TOP 124
+#define RAIL_CH4_TOP 164
+#define ROW_H 40
+#define BAR_LEFT 54
+#define BAR_RIGHT 226
+#define CH3_SPECIAL_X 400
+#define CH3_SPECIAL_Y 480
+#define COLOR_LABEL 0xAAAAAA
+#define COLOR_FM_LIGHT 0x8888EE
+#define SCROLL_X 702
+#define SCROLL_TOP 72
+#define SCROLL_BOTTOM 452
 
 static int failures;
 
@@ -360,6 +376,74 @@ int main(int argc, char **argv)
 		run_ms(300);
 		capture(window);
 		CHECK(count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING) == 0, "and the bracket goes with the chord");
+
+		// Stage 9: the rail's bar shows how hard a held note was played, CC7 x velocity / 127.
+		send_midi(0x90, 60, 127);
+		run_ms(200);
+		capture(window);
+		const int hard = count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH1_TOP + 25, RAIL_CH1_TOP + 29, COLOR_PLAYING);
+		send_midi(0x80, 60, 0);
+		send_midi(0x90, 60, 32);
+		run_ms(200);
+		capture(window);
+		const int soft = count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH1_TOP + 25, RAIL_CH1_TOP + 29, COLOR_PLAYING);
+		send_midi(0x80, 60, 0);
+		run_ms(200);
+		capture(window);
+		CHECK(hard > 2 * soft && soft > 0 && count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH1_TOP + 25, RAIL_CH1_TOP + 29, COLOR_PLAYING) == 0,
+			"velocity 127 lights %d px of channel 1's bar, 32 lights %d, none after note off", hard, soft);
+
+		// A chord of seven on channel 4 has six voices: the brackets stay, its row says CUT in red.
+		for (int key = 60; key < 67; key++) {
+			send_midi(0x93, (uint8_t)key, (uint8_t)(20 + (key - 60) * 17));
+		}
+		run_ms(300);
+		capture(window);
+		save_bmp(argv[2], "cut");
+		CHECK(count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING) > 40, "seven notes keep the bracket");
+		CHECK(count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH4_TOP + 20, RAIL_CH4_TOP + 30, COLOR_ERROR) > 0, "and channel 4's row says CUT");
+		// Each borrowed row's bar shows the velocity of the note on its voice, 20 to 122: counted in
+		// segments, whose width depends on the text right of the bar, left of any text.
+		int lit_rows = 0, fewest = 1000, most = 0;
+		for (int row = 0; row < 6; row++) {
+			const uint32_t *line = pixels + (RAIL_CH1_TOP + row * ROW_H + 26) * WIDTH;
+			int segments = 0;
+			for (int x = BAR_LEFT; x < 170; x++) {
+				segments += (line[x] & 0xFFFFFF) == COLOR_PLAYING && (line[x - 1] & 0xFFFFFF) != COLOR_PLAYING;
+			}
+			lit_rows += segments > 0;
+			fewest = segments > 0 && segments < fewest ? segments : fewest;
+			most = segments > most ? segments : most;
+		}
+		CHECK(lit_rows == 6 && most - fewest >= 4, "all six rows light their bars, from %d to %d segments", fewest, most);
+		for (int key = 60; key < 67; key++) {
+			send_midi(0x83, (uint8_t)key, 0);
+		}
+		run_ms(300);
+
+		// FM SP: channel 3's notes in four places, the lead (channel 3 itself) first and green,
+		// operator 1 (MIDI 11) in the next place.
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(300);
+		send_midi(0x92, 60, 100);
+		run_ms(200);
+		capture(window);
+		const int line = RAIL_CH3_TOP + 22;
+		const int lead = count_color_in(122, 148, line, line + 8, COLOR_PLAYING), rest = count_color_in(148, 226, line, line + 8, COLOR_PLAYING);
+		send_midi(0x9A, 64, 100);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "special");
+		const int op1 = count_color_in(148, 174, line, line + 8, COLOR_LABEL);
+		send_midi(0x82, 60, 0);
+		send_midi(0x8A, 64, 0);
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(300);
+		CHECK(lead > 0 && rest == 0 && op1 > 0, "FM SP: the lead's note is first (%d px, %d elsewhere), operator 1's next (%d px)", lead, rest, op1);
+		// The mouse leaves the global cell, so its hover frame isn't part of what is compared.
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
 		memcpy(before, pixels, sizeof(pixels));
 
 		// Closing and opening the window again, as a host does, with the sound running.
@@ -423,6 +507,7 @@ int main(int argc, char **argv)
 		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_PRESET && get_value(CH4_PRESET) == 2, "a click on place 3 of the bank sets channel 4's Preset to it");
 		capture(window);
 		CHECK(count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK) > 1000, "and lights its row");
+		CHECK(count_color_in(SCROLL_X, SCROLL_X + 6, SCROLL_TOP, SCROLL_BOTTOM, COLOR_FM_LIGHT) > 0, "the other channels' places are marked on the scroll track");
 		save_bmp(argv[2], "bank");
 		// Arrows from the host's view (our clap-wrapper patch) step the place, each press one gesture,
 		// also when presses come faster than the model takes them; past the first place nothing moves.
@@ -484,6 +569,41 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == bars_before, "UNDO puts back the length before the gesture");
+		// The loop's strip is its switch (4A): a click at its start turns the loop on or off, UNDO
+		// puts it back, the host is told nothing.
+		const int strip_before = count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG);
+		// With a loop, its body starts after the start tab and its line; without one, the switch is
+		// at the strip's start.
+		int body_x = ENV_X + 10;
+		for (int x = ENV_X - 10; x < ENV_RIGHT; x++) {
+			if ((pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG) {
+				while ((pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG) {
+					x++;
+				}
+				body_x = x + 1;
+				break;
+			}
+		}
+		memset(pushed, 0, sizeof(pushed));
+		click(window, body_x, ENV_LOOP_STRIP_Y);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "envelope-loop");
+		const int strip_after = count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG);
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		CHECK(strip_after != strip_before && pushed[0] + pushed[1] + pushed[2] == 0
+			&& count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG) == strip_before,
+			"a click on the loop's strip switches the loop (%d px of tabs, then %d), UNDO puts it back", strip_before, strip_after);
+		// Off again, then the switch at the strip's start loops the whole envelope: the start tab
+		// stands before the first frame.
+		click(window, body_x, ENV_LOOP_STRIP_Y);
+		click(window, ENV_X + 10, ENV_LOOP_STRIP_Y);
+		run_ms(200);
+		capture(window);
+		CHECK(count_color_in(ENV_X - 9, ENV_X - 1, ENV_LOOP_STRIP_Y, ENV_LOOP_STRIP_Y + 1, COLOR_PSG) == 8 && pushed[0] + pushed[1] + pushed[2] == 0,
+			"the switch at the strip's start loops the whole envelope");
 		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
 		// would draw 402 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);

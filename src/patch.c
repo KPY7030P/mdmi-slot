@@ -247,6 +247,25 @@ int patch_preset_value(const patch_bank *bank, int channel, int param, int prese
 	return param == PARAM_PRESET ? preset : channel_params[param].default_value;
 }
 
+bool patch_sound_changed(const patch_bank *bank, const patch_values *values, const patch_envelope *envelope, int channel)
+{
+	const int preset = values->channels[channel][PARAM_PRESET];
+	if (channel < PATCH_NUM_FM_CHANNELS) {
+		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+			if (values->channels[channel][param] != patch_preset_value(bank, channel, param, preset)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	// Shapes, not bytes: marks the editor drops would differ and sound the same.
+	patch_shape mine, place;
+	patch_shape_of(envelope, &mine);
+	patch_shape_of(&bank->envelopes[preset & (PATCH_BANK_SIZE - 1)], &place);
+	return mine.count != place.count || mine.loop_start != place.loop_start || mine.loop_end != place.loop_end
+		|| memcmp(mine.frames, place.frames, (size_t)mine.count) != 0;
+}
+
 const char *patch_gm_name(int place)
 {
 	return GM_NAMES[place & (PATCH_BANK_SIZE - 1)];
@@ -1032,12 +1051,21 @@ int patch_voice_key(const mdmi_patch *patch, int voice)
 	return __atomic_load_n(&patch->playing_key[voice], __ATOMIC_RELAXED);
 }
 
+int patch_voice_velocity(const mdmi_patch *patch, int voice)
+{
+	if (voice < 0 || voice >= PATCH_NUM_FM_CHANNELS) {
+		return 0;
+	}
+	return __atomic_load_n(&patch->playing_velocity[voice], __ATOMIC_RELAXED);
+}
+
 // Shows the window who plays where, once the notes are out.
 static void publish_voices(mdmi_patch *patch)
 {
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		const patch_voice *v = &patch->voices[voice];
 		__atomic_store_n(&patch->playing_key[voice], v->key, __ATOMIC_RELAXED);
+		__atomic_store_n(&patch->playing_velocity[voice], v->velocity, __ATOMIC_RELAXED);
 		__atomic_store_n(&patch->playing[voice], (int8_t)(v->pending ? -1 : v->channel), __ATOMIC_RELAXED);
 	}
 }

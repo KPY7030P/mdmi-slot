@@ -69,8 +69,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   emulator (`reg_test`). EEF files of Echo shift
   pitch by other steps and load as they are. SysEx `06` and `0A 01` from a clip are dropped.
 - Envelope editor (stage 8): the EDITOR page of a channel 7-10 draws its envelope, one column per
-  frame (60 Hz): level bars on top, pitch below ordered from -5 to +5 semitones, the loop's two tabs
-  above. The LEN cell sets the length by a vertical drag, 124 bytes at most with the loop marks,
+  frame (60 Hz): level bars on top, pitch below ordered from -5 to +5 semitones, the loop's strip
+  above with its two tabs. A click on the strip turns the loop on (over the whole envelope) or off;
+  LOOP and RELEASE name the loop and the tail after it. The number at the axis' end is the length,
+  set by a vertical drag, 124 bytes at most with the loop marks (amber MAX at the limit),
   and the columns share the lane, which reaches the page's right edge at every length: 3 or 4 px at 124 frames, wider when shorter (0.8.1). A drawing is the channel's
   own envelope, as a dropped EEF: the Preset and the bank stay, the next preset step wipes it, SAVE
   writes it as EEF, UNDO puts back the envelope before the last gesture. The window never makes a
@@ -78,6 +80,15 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   window frame and at mouse up, and tells the host nothing (D19). While the longest envelope is
   re-stored every 33 ms, a note on another PSG channel sounds at worst 9.7 ms later than without
   drawing, against 18.3 ms for a note stored with its envelope (`reg_test`, one run).
+
+- Window (stage 9, D29): every page puts the same things in the same places: number, name, source
+  (GM, ROM or BANK and the place; FILE over it for a dropped file; drag it to change the Preset), and
+  the channel's cells VOL, PAN (L C R), TUNE, BEND, PORTA, P.TIME in one grid, PSG keeping PAN's
+  place empty. A rail row shows the name, a `*` when the bank place's sound was tweaked, and a bar of
+  16 segments: the channel's volume (CC7), and green while a note is held, CC7 x velocity / 127,
+  grey after. The ROM itself has no velocity curve; the bar shows what the plugin sent. In Ch3
+  Special Mode channel 3 shows four notes, its own first. The bank page's scroll track marks every
+  channel's place.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
 the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.

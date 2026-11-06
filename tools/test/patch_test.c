@@ -1047,6 +1047,45 @@ static void test_drawing(void)
 	files_free(&files);
 }
 
+// The rail's * (stage 9): a channel's sound against its bank place, the voice or the drawn shape.
+static void test_sound_changed(void)
+{
+	printf("Sound changed against its bank place\n");
+	static mdmi_patch patch;
+	patch_init(&patch);
+	int fm_changed = 0, psg_changed = 0;
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		set(&patch, PRESET_ID(0), place);
+		set(&patch, PRESET_ID(7), place);
+		fm_changed += patch_sound_changed(&patch.bank, &patch.model, NULL, 0);
+		psg_changed += patch_sound_changed(&patch.bank, &patch.model, &patch.model.psg[1], 7);
+	}
+	CHECK(fm_changed == 0 && psg_changed == 0, "no place of 128 is changed when chosen: FM %d, PSG %d", fm_changed, psg_changed);
+	set(&patch, PRESET_ID(0), 5);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_VOLUME), 40);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PAN), 0);
+	CHECK(!patch_sound_changed(&patch.bank, &patch.model, NULL, 0), "volume and pan don't count");
+	set(&patch, op_id(0, 0, OP_TL), patch.model.channels[0][op_param(0, OP_TL)] + 1);
+	CHECK(patch_sound_changed(&patch.bank, &patch.model, NULL, 0), "TL one up does");
+	midi(&patch, 0xC0, 5, 0);
+	sync(&patch);
+	CHECK(!patch_sound_changed(&patch.bank, &patch.model, NULL, 0), "a program from a clip wipes it");
+	patch_envelope drawn = patch.model.psg[1];
+	patch_shape shape;
+	patch_shape_of(&drawn, &shape);
+	shape.frames[0] ^= 1;
+	patch_shape_to_envelope(&shape, &drawn);
+	CHECK(patch_sound_changed(&patch.bank, &patch.model, &drawn, 7), "a drawn frame does");
+	patch_envelope marked = patch.model.psg[1];
+	const int length = patch_envelope_length(&marked);
+	if (length + 1 < PATCH_ENVELOPE_STEPS) {
+		// A loop end with no loop start: the ROM reads nothing of it, nor does the editor.
+		memmove(marked.steps + 1, marked.steps, (size_t)length + 1);
+		marked.steps[0] = PATCH_EEF_LOOP_END;
+	}
+	CHECK(!patch_sound_changed(&patch.bank, &patch.model, &marked, 7), "a mark the editor drops doesn't");
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -1066,6 +1105,7 @@ int main(int argc, char **argv)
 	test_places();
 	test_envelopes();
 	test_drawing();
+	test_sound_changed();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;
