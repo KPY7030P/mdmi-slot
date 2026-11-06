@@ -67,6 +67,7 @@
 #define CH3_SPECIAL_Y 480
 #define COLOR_LABEL 0xAAAAAA
 #define COLOR_FM_LIGHT 0x8888EE
+#define COLOR_TEXT 0xEEEEEE
 #define SCROLL_X 702
 #define SCROLL_TOP 72
 #define SCROLL_BOTTOM 452
@@ -435,11 +436,17 @@ int main(int argc, char **argv)
 		capture(window);
 		save_bmp(argv[2], "special");
 		const int op1 = count_color_in(148, 174, line, line + 8, COLOR_LABEL);
+		// The row is light FM: the number in it, and 3 px between the name and the notes below.
+		const int light_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
+		const int name_low = count_color_in(BAR_LEFT, 226, RAIL_CH3_TOP + 19, RAIL_CH3_TOP + 22, COLOR_TEXT);
 		send_midi(0x82, 60, 0);
 		send_midi(0x8A, 64, 0);
 		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
 		run_ms(300);
+		capture(window);
+		const int plain_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
 		CHECK(lead > 0 && rest == 0 && op1 > 0, "FM SP: the lead's note is first (%d px, %d elsewhere), operator 1's next (%d px)", lead, rest, op1);
+		CHECK(light_number > 20 && plain_number == 0 && name_low == 0, "FM SP: channel 3's number is light FM (%d px, %d after), the name clear of the notes (%d px)", light_number, plain_number, name_low);
 		// The mouse leaves the global cell, so its hover frame isn't part of what is compared.
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 		run_ms(100);
@@ -596,14 +603,20 @@ int main(int argc, char **argv)
 		CHECK(strip_after != strip_before && pushed[0] + pushed[1] + pushed[2] == 0
 			&& count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG) == strip_before,
 			"a click on the loop's strip switches the loop (%d px of tabs, then %d), UNDO puts it back", strip_before, strip_after);
-		// Off again, then the switch at the strip's start loops the whole envelope: the start tab
-		// stands before the first frame.
+		// Off again: the loop's shadow stays where it was, and a click on it puts the loop back there,
+		// not over the whole envelope (owner's note on 0.9.0).
 		click(window, body_x, ENV_LOOP_STRIP_Y);
-		click(window, ENV_X + 10, ENV_LOOP_STRIP_Y);
 		run_ms(200);
 		capture(window);
-		CHECK(count_color_in(ENV_X - 9, ENV_X - 1, ENV_LOOP_STRIP_Y, ENV_LOOP_STRIP_Y + 1, COLOR_PSG) == 8 && pushed[0] + pushed[1] + pushed[2] == 0,
-			"the switch at the strip's start loops the whole envelope");
+		const int shadow = count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG);
+		click(window, body_x, ENV_LOOP_STRIP_Y);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "envelope-loop-back");
+		CHECK(shadow == strip_after && pushed[0] + pushed[1] + pushed[2] == 0
+			&& count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG) == strip_before,
+			"a loop switched off and on comes back where it was (%d px of tabs, %d off, %d back)", strip_before, shadow,
+			count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG));
 		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
 		// would draw 402 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);

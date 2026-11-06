@@ -390,8 +390,8 @@ static void level_bar(mdmi_gui *g, int y, int right, int volume, int velocity, b
 	}
 }
 
-// One rail row (0A): the number x3 from the name's top to the bar's bottom, the name x2 above, the
-// bar and the note x1 on one line below it. Heights and row_y stay: drops, hover and brackets use them.
+// One rail row (0A): the number x3 beside the name and the bar, the name x2 above with 3 px to the
+// line below it, the bar and the note x1 on that line. Heights and row_y stay: drops, hover and brackets use them.
 static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 {
 	const int y = row_y(channel);
@@ -415,12 +415,12 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 
 	char buffer[64];
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
-	text(g, 10, y + 8, buffer, INK(C_TEXT), 3);
+	text(g, 10, y + 7, buffer, INK(special ? C_FM_LIGHT : C_TEXT), 3);
 	if (dac) {
-		text(g, BAR_X, y + 8, "Samples", INK(C_TEXT), 2);
+		text(g, BAR_X, y + 5, "Samples", INK(C_TEXT), 2);
 	} else {
 		snprintf(buffer, sizeof(buffer), "%.13s%s", sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
-		text(g, BAR_X, y + 8, buffer, INK(C_TEXT), 2);
+		text(g, BAR_X, y + 5, buffer, INK(C_TEXT), 2);
 	}
 #undef INK
 	if (g->file_over && !target && !dim) {
@@ -434,8 +434,9 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		return;
 	}
 
-	// The selected row's ground is the dark colour: its volume is drawn in the channel's own.
-	const uint32_t volume_ink = selected ? kind : dark;
+	// The selected row's ground is the dark colour: its volume is drawn in the channel's own. Channel
+	// 3 in Ch3 Special Mode is light FM all over: its stripe, number and volume.
+	const uint32_t volume_ink = selected || special ? kind : dark;
 	// The bottom line, right to left: the note at 226, then how many are held, then how many are cut.
 	const int line = y + 22, bar_y = y + 25;
 	int left = RAIL_W - 6;
@@ -895,16 +896,35 @@ static const patch_shape *shown_shape(mdmi_gui *g, patch_shape *scratch)
 	return scratch;
 }
 
+// The loop switched off on this channel, fitted to the envelope's length now: false when the
+// envelope has a loop or none was switched off.
+static bool parked_loop(mdmi_gui *g, const patch_shape *shape, int *start, int *end)
+{
+	const int psg = *g->source.channel - PATCH_NUM_FM_CHANNELS;
+	if (psg < 0 || shape->loop_start >= 0 || !g->source.loop_shadows[psg].kept) {
+		return false;
+	}
+	*start = clamp(g->source.loop_shadows[psg].start, 0, shape->count - 1);
+	*end = g->source.loop_shadows[psg].end < 0 ? shape->count : clamp(g->source.loop_shadows[psg].end, *start + 1, shape->count);
+	return true;
+}
+
 // The tab, loop strip, lane or length cell under the mouse. The lanes hold the envelope's frames
-// only. The strip is the loop's switch (4A): without a loop the switch at its start turns one on, and
-// the loop's body between the tabs turns it off.
-static int envelope_part_at(const patch_shape *shape, int x, int y)
+// only. The strip is the loop's switch (4A): the loop's body between the tabs turns it off, its
+// shadow turns it on again where it was, and with neither the switch at the strip's start loops the
+// whole envelope.
+static int envelope_part_at(mdmi_gui *g, const patch_shape *shape, int x, int y)
 {
 	const int count = shape->count;
 	if (over_length(x, y)) {
 		return ENV_LENGTH;
 	}
 	if (y >= ENV_LOOP_Y && y < ENV_LOOP_Y + ENV_LOOP_H) {
+		int kept_start, kept_end;
+		if (parked_loop(g, shape, &kept_start, &kept_end)) {
+			// A shadow of one step is a few pixels: the tabs' room on both sides counts.
+			return x >= boundary_x(count, kept_start) - 9 && x <= boundary_x(count, kept_end) + 9 ? ENV_LOOP : ENV_NONE;
+		}
 		if (shape->loop_start < 0) {
 			return x >= ENV_X && x < ENV_X + ENV_LOOP_OFF_W ? ENV_LOOP : ENV_NONE;
 		}
@@ -994,13 +1014,32 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 static bool envelope_down(mdmi_gui *g, int x, int y)
 {
 	patch_shape scratch;
-	const int part = envelope_part_at(shown_shape(g, &scratch), x, y);
+	const int part = envelope_part_at(g, shown_shape(g, &scratch), x, y);
 	if (part == ENV_LOOP) {
 		envelope_take(g);
 		patch_shape *shape = &g->env_shape;
-		// On, the loop holds the whole envelope; off, both marks go.
-		shape->loop_start = shape->loop_start < 0 ? 0 : -1;
-		shape->loop_end = -1;
+		const int psg = g->env_channel - PATCH_NUM_FM_CHANNELS;
+		// The shadow belongs to the envelope it was switched off on.
+		if (strcmp(g->source.loop_shadows[psg].name, g->env_before.name) != 0) {
+			g->source.loop_shadows[psg].kept = false;
+		}
+		int start, end;
+		if (shape->loop_start >= 0) {
+			// Off: both marks go, the window keeps where they were.
+			g->source.loop_shadows[psg].kept = true;
+			g->source.loop_shadows[psg].start = shape->loop_start;
+			g->source.loop_shadows[psg].end = shape->loop_end;
+			snprintf(g->source.loop_shadows[psg].name, sizeof(g->source.loop_shadows[psg].name), "%s", g->env_before.name);
+			shape->loop_start = shape->loop_end = -1;
+		} else if (parked_loop(g, shape, &start, &end)) {
+			// On again where it was.
+			shape->loop_start = start;
+			shape->loop_end = end >= shape->count ? -1 : end;
+		} else {
+			// On for the first time: the whole envelope.
+			shape->loop_start = 0;
+			shape->loop_end = -1;
+		}
 		patch_envelope scratch;
 		patch_shape_to_envelope(shape, &scratch);
 		g->env_changed = true;
@@ -1039,8 +1078,9 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	patch_shape scratch;
 	const patch_shape *shape = shown_shape(g, &scratch);
 	const int x = g->mouse_x, y = g->mouse_y, room = patch_shape_room(shape);
-	const int part = g->env_drag != ENV_NONE ? g->env_drag : envelope_part_at(shape, x, y);
+	const int part = g->env_drag != ENV_NONE ? g->env_drag : envelope_part_at(g, shape, x, y);
 	const int step = g->env_drag != ENV_NONE ? g->env_last_step : column_at(shape->count, x);
+	int kept_start, kept_end;
 	char pitch[16];
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && *g->source.channel == PATCH_NUM_CHANNELS - 1) {
@@ -1065,6 +1105,10 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 		snprintf(hint, size, g->env_drag != ENV_NONE ? "LENGTH %d STEPS, %d MS" : "LENGTH %d STEPS, %d MS: DRAG UP OR DOWN", shape->count, frame_ms(shape->count));
 	} else if (part == ENV_LOOP && shape->loop_start >= 0) {
 		snprintf(hint, size, "LOOP %d-%d: CLICK TO TURN OFF", shape->loop_start + 1, loop_end_of(shape));
+	} else if (part == ENV_LOOP && shape->count >= room && parked_loop(g, shape, &kept_start, &kept_end)) {
+		snprintf(hint, size, "LOOP %d-%d: LAST STEPS CUT, MAX %d BYTES", kept_start + 1, kept_end, PATCH_ENVELOPE_STEPS);
+	} else if (part == ENV_LOOP && parked_loop(g, shape, &kept_start, &kept_end)) {
+		snprintf(hint, size, "LOOP %d-%d IS OFF: CLICK TO TURN IT ON", kept_start + 1, kept_end);
 	} else if (part == ENV_LOOP) {
 		snprintf(hint, size, shape->count >= room ? "LOOP: LAST STEP CUT, MAX %d BYTES" : "LOOP: CLICK TO LOOP ALL %d STEPS", shape->count >= room ? PATCH_ENVELOPE_STEPS : shape->count);
 	} else {
@@ -1123,13 +1167,19 @@ static void value_tag(mdmi_gui *g, int centre, int y, const char *value)
 
 static void draw_envelope(mdmi_gui *g, const patch_values *values)
 {
-	(void)values;
 	const bool noise = *g->source.channel == PATCH_NUM_CHANNELS - 1;
+	// Another envelope came (a program change, a file): the shadow of the old one's loop goes.
+	const int psg = *g->source.channel - PATCH_NUM_FM_CHANNELS;
+	if (g->source.loop_shadows[psg].kept && g->env_drag == ENV_NONE && strcmp(g->source.loop_shadows[psg].name, values->psg[psg].name) != 0) {
+		g->source.loop_shadows[psg].kept = false;
+	}
 	patch_shape scratch;
 	const patch_shape *shape = shown_shape(g, &scratch);
 	const int room = patch_shape_room(shape), end = loop_end_of(shape), count = shape->count;
 	const bool loop = shape->loop_start >= 0, idle = g->env_drag == ENV_NONE;
-	const int over = idle ? envelope_part_at(shape, g->mouse_x, g->mouse_y) : ENV_NONE;
+	const int over = idle ? envelope_part_at(g, shape, g->mouse_x, g->mouse_y) : ENV_NONE;
+	int kept_start, kept_end;
+	const bool kept = parked_loop(g, shape, &kept_start, &kept_end);
 	char buffer[64];
 
 	text_right(g, 292, ENV_LEVEL_Y, "0DB", C_HINT, 1, 20);
@@ -1189,6 +1239,17 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		fill(g, end_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
 		fill(g, start_x - 8, ENV_LOOP_Y, 8, ENV_LOOP_H, g->env_drag == ENV_LOOP_START ? C_AMBER : over == ENV_LOOP_START ? C_TEXT : C_PSG);
 		fill(g, end_x + 1, ENV_LOOP_Y, 8, ENV_LOOP_H, g->env_drag == ENV_LOOP_END ? C_AMBER : over == ENV_LOOP_END ? C_TEXT : C_PSG);
+	} else if (kept) {
+		// The shadow of the loop switched off: an outline where it was, no tabs and no lines down the
+		// lanes, the columns on the plain ground. A click puts it back.
+		const int start_x = boundary_x(count, kept_start), end_x = boundary_x(count, kept_end);
+		const uint32_t ink = over == ENV_LOOP ? C_TEXT : C_LINE;
+		frame(g, start_x, ENV_LOOP_Y, end_x - start_x + 1, ENV_LOOP_H, ink);
+		fit_word(g, start_x + 1, end_x - start_x - 1, ENV_LOOP_Y + 3, "LOOP", NULL, true, over == ENV_LOOP ? C_TEXT : C_LABEL, true);
+		const int tail_x = end_x + 8;
+		if (tail_x + 13 * 6 <= ENV_X + ENV_LANE_W) {
+			text(g, tail_x, ENV_LOOP_Y + 3, "NOTE OFF CUTS", C_HINT, 1);
+		}
 	} else {
 		frame(g, ENV_X, ENV_LOOP_Y, ENV_LOOP_OFF_W, ENV_LOOP_H, over == ENV_LOOP ? C_TEXT : C_LINE);
 		text(g, ENV_X + 3, ENV_LOOP_Y + 3, "LOOP", over == ENV_LOOP ? C_TEXT : C_LABEL, 1);
@@ -2005,7 +2066,7 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	g->mouse_y = y;
 	// A quick second press on the envelope draws as the first did.
 	patch_shape scratch;
-	if (is_envelope_page(g) && envelope_part_at(shown_shape(g, &scratch), x, y) != ENV_NONE) {
+	if (is_envelope_page(g) && envelope_part_at(g, shown_shape(g, &scratch), x, y) != ENV_NONE) {
 		on_down(g, x, y);
 		return;
 	}

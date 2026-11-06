@@ -70,8 +70,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   pitch by other steps and load as they are. SysEx `06` and `0A 01` from a clip are dropped.
 - Envelope editor (stage 8): the EDITOR page of a channel 7-10 draws its envelope, one column per
   frame (60 Hz): level bars on top, pitch below ordered from -5 to +5 semitones, the loop's strip
-  above with its two tabs. A click on the strip turns the loop on (over the whole envelope) or off;
-  LOOP and RELEASE name the loop and the tail after it. The number at the axis' end is the length,
+  above with its two tabs. A click on the loop's body turns it off; the window keeps a shadow of it
+  where it was, and a click on the shadow turns it on there again. The plugin instance holds the
+  shadow (`gui_loop_shadow`), so it outlives the window but is not saved with the project; it goes
+  when the editor sees the channel's envelope under another name. Without a shadow the switch at the strip's start
+  loops the whole envelope. LOOP and RELEASE name the loop and the tail after it. The number at the axis' end is the length,
   set by a vertical drag, 124 bytes at most with the loop marks (amber MAX at the limit),
   and the columns share the lane, which reaches the page's right edge at every length: 3 or 4 px at 124 frames, wider when shorter (0.8.1). A drawing is the channel's
   own envelope, as a dropped EEF: the Preset and the bank stay, the next preset step wipes it, SAVE
