@@ -283,7 +283,7 @@ static void test_load(void)
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
 	patch_save(patch_view(&patch), state);
-	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL), "a saved state loads");
+	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL), "a saved state loads");
 	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
 	CHECK(patch_take_incoming(&other) && !patch_take_incoming(&other), "it is taken once");
@@ -297,10 +297,10 @@ static void test_load(void)
 	memcpy(odd + 4, &any, 2);
 	memcpy(odd + 6, &rate, 4);
 	memcpy(odd + 10, &big, 2);
-	CHECK(patch_load(&other, odd, sizeof(odd), NULL, NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
+	CHECK(patch_load(&other, odd, sizeof(odd), NULL, NULL, NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
 		&& other.model.globals[GLOBAL_RETIRED] == 0, "the old Polyphony id is skipped, a value out of range clamped");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
-	CHECK(!patch_load(&other, odd, 7, NULL, NULL), "a cut state is refused");
+	CHECK(!patch_load(&other, odd, 7, NULL, NULL, NULL), "a cut state is refused");
 }
 
 static void discard(void *context, const uint8_t *bytes, size_t length)
@@ -368,7 +368,7 @@ static void test_threads(void)
 		reads++;
 		if (reads % 64 == 0) {
 			memcpy(loaded, state, sizeof(loaded));
-			patch_load(&stress, loaded, sizeof(loaded), NULL, NULL);
+			patch_load(&stress, loaded, sizeof(loaded), NULL, NULL, NULL);
 		}
 	}
 	stop_writer = 1;
@@ -1069,25 +1069,25 @@ static void test_sound_changed(void)
 	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
 		set(&patch, PRESET_ID(0), place);
 		set(&patch, PRESET_ID(7), place);
-		fm_changed += patch_sound_changed(&patch.bank, &patch.model, NULL, 0);
-		psg_changed += patch_sound_changed(&patch.bank, &patch.model, &patch.model.psg[1], 7);
+		fm_changed += patch_sound_changed(&patch.model, NULL, 0);
+		psg_changed += patch_sound_changed(&patch.model, &patch.model.psg[1], 7);
 	}
 	CHECK(fm_changed == 0 && psg_changed == 0, "no place of 128 is changed when chosen: FM %d, PSG %d", fm_changed, psg_changed);
 	set(&patch, PRESET_ID(0), 5);
 	set(&patch, PATCH_CHANNEL_ID(0, PARAM_VOLUME), 40);
 	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PAN), 0);
-	CHECK(!patch_sound_changed(&patch.bank, &patch.model, NULL, 0), "volume and pan don't count");
+	CHECK(!patch_sound_changed(&patch.model, NULL, 0), "volume and pan don't count");
 	set(&patch, op_id(0, 0, OP_TL), patch.model.channels[0][op_param(0, OP_TL)] + 1);
-	CHECK(patch_sound_changed(&patch.bank, &patch.model, NULL, 0), "TL one up does");
+	CHECK(patch_sound_changed(&patch.model, NULL, 0), "TL one up does");
 	midi(&patch, 0xC0, 5, 0);
 	sync(&patch);
-	CHECK(!patch_sound_changed(&patch.bank, &patch.model, NULL, 0), "a program from a clip wipes it");
+	CHECK(!patch_sound_changed(&patch.model, NULL, 0), "a program from a clip wipes it");
 	patch_envelope drawn = patch.model.psg[1];
 	patch_shape shape;
 	patch_shape_of(&drawn, &shape);
 	shape.frames[0] ^= 1;
 	patch_shape_to_envelope(&shape, &drawn);
-	CHECK(patch_sound_changed(&patch.bank, &patch.model, &drawn, 7), "a drawn frame does");
+	CHECK(patch_sound_changed(&patch.model, &drawn, 7), "a drawn frame does");
 	patch_envelope marked = patch.model.psg[1];
 	const int length = patch_envelope_length(&marked);
 	if (length + 1 < PATCH_ENVELOPE_STEPS) {
@@ -1095,7 +1095,219 @@ static void test_sound_changed(void)
 		memmove(marked.steps + 1, marked.steps, (size_t)length + 1);
 		marked.steps[0] = PATCH_EEF_LOOP_END;
 	}
-	CHECK(!patch_sound_changed(&patch.bank, &patch.model, &marked, 7), "a mark the editor drops doesn't");
+	CHECK(!patch_sound_changed(&patch.model, &marked, 7), "a mark the editor drops doesn't");
+}
+
+// A state without one block type, as an older build wrote it.
+static uint8_t *without_block(const uint8_t *state, size_t size, uint32_t type, size_t *out_size)
+{
+	uint8_t *out = malloc(size);
+	memcpy(out, state, sizeof(uint32_t));
+	size_t to = sizeof(uint32_t);
+	for (size_t at = sizeof(uint32_t); at + 8 <= size;) {
+		uint32_t kind, length;
+		memcpy(&kind, state + at, sizeof(kind));
+		memcpy(&length, state + at + 4, sizeof(length));
+		if (kind != type) {
+			memcpy(out + to, state + at, 8 + length);
+			to += 8 + length;
+		}
+		at += 8 + length;
+	}
+	*out_size = to;
+	return out;
+}
+
+// D31: a channel's base is what it got whole, its bank place or a dropped file. The rail's * and
+// the window's labels compare with it, undo puts it back, and a project keeps it.
+static void test_bases(void)
+{
+	printf("Bases\n");
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	files_view = (state_view){0};
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	const int tl = op_param(0, OP_TL);
+	CHECK(open_file(&files, files_dir, "Duck Guitar.tfi", 3, -1, message) && !patch_sound_changed(&patch->model, NULL, 3), "a dropped file is its own base: %s", message);
+	const int file_tl = patch->model.channels[3][tl];
+	CHECK(patch_base_value(&patch->model, 3, tl) == file_tl, "the base holds the file's TL");
+	patch_set(patch, op_id(3, 0, OP_TL), file_tl + 5);
+	patch_publish(patch);
+	CHECK(patch_sound_changed(&patch->model, NULL, 3) && patch_base_value(&patch->model, 3, tl) == file_tl, "a tweak changes the sound, not the base");
+	CHECK(patch_base_value(&patch->model, 3, PARAM_VOLUME) == -1 && patch_base_value(&patch->model, 7, PARAM_ALGORITHM) == -1, "volume and PSG channels have no base value");
+
+	size_t size;
+	uint8_t *state = state_build(patch, &files_view, &size);
+	static mdmi_patch other;
+	patch_init(&other);
+	state_view view;
+	bool knobs;
+	CHECK(state && state_read(&other, state, size, &view, &knobs) && patch_take_incoming(&other) && !memcmp(other.model.base, patch->model.base, sizeof(patch->model.base))
+		&& !memcmp(other.model.psg_base, patch->model.psg_base, sizeof(patch->model.psg_base)), "a project keeps the bases");
+	free(state);
+
+	CHECK(files_undo(&files, message, sizeof(message)) && !patch_sound_changed(&patch->model, NULL, 3) && !memcmp(patch->model.base[3], patch->bank.places[0].voice, sizeof(patch->model.base[3])),
+		"undo puts the place back as base");
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_sound_changed(&patch->model, NULL, 3) && patch_base_value(&patch->model, 3, tl) == file_tl, "a second undo brings the file back as base, tweak and all");
+
+	patch_set(patch, PATCH_CHANNEL_ID(3, PARAM_PRESET), 9);
+	patch_publish(patch);
+	CHECK(!patch_sound_changed(&patch->model, NULL, 3) && !memcmp(patch->model.base[3], patch->bank.places[9].voice, sizeof(patch->model.base[3])), "a preset step makes the place the base");
+
+	const int place = patch->model.channels[7][PARAM_PRESET];
+	patch_envelope drawn = patch->model.psg[1];
+	patch_shape shape;
+	patch_shape_of(&drawn, &shape);
+	shape.frames[0] ^= 1;
+	patch_shape_to_envelope(&shape, &drawn);
+	const patch_envelope before = patch->model.psg[1];
+	files_draw_envelope(&files, 7, &before, &drawn);
+	CHECK(patch_sound_changed(&patch->model, &patch->model.psg[1], 7) && !patch_sound_changed(&patch->model, &patch->bank.envelopes[place], 7), "a drawing keeps the place as base");
+	CHECK(files_undo(&files, message, sizeof(message)) && !patch_sound_changed(&patch->model, &patch->model.psg[1], 7), "undo of a drawing is the place again");
+
+	// A project of an older build: a channel named as its place has the place as base, a file is its own.
+	open_file(&files, files_dir, "Duck Guitar.tfi", 3, -1, message);
+	patch_set(patch, op_id(0, 0, OP_TL), patch->model.channels[0][tl] + 3);
+	patch_publish(patch);
+	state = state_build(patch, &files_view, &size);
+	size_t old_size;
+	uint8_t *old = without_block(state, size, 8, &old_size);
+	patch_init(&other);
+	CHECK(old_size < size && state_read(&other, old, old_size, &view, &knobs) && patch_take_incoming(&other) && patch_sound_changed(&other.model, NULL, 0) && !patch_sound_changed(&other.model, NULL, 3)
+		&& !patch_sound_changed(&other.model, &other.model.psg[1], 7), "an older project: the tweak shows, the file doesn't");
+	free(old);
+	free(state);
+	files_free(&files);
+}
+
+// The ROM's own walk of an envelope, byte by byte, as midi_psg.c does it: apply_envelope_step,
+// increment_envelope_step once a frame, midi_psg_note_off.
+typedef struct {
+	const uint8_t *steps;
+	int at;
+	int loop;
+	bool released;
+	bool on;
+} rom_walk;
+
+static void walk_apply(rom_walk *w)
+{
+	if (w->steps[w->at] == PATCH_EEF_LOOP_START) {
+		w->at++;
+		w->loop = w->at;
+	}
+	if (w->steps[w->at] == PATCH_EEF_LOOP_END && w->loop >= 0) {
+		w->at++;
+		if (!w->released) {
+			w->at = w->loop;
+		}
+	}
+	if (w->steps[w->at] == PATCH_EEF_END) {
+		if (w->loop >= 0 && !w->released) {
+			w->at = w->loop;
+		} else {
+			w->on = false;
+		}
+	}
+}
+
+static void walk_note_on(rom_walk *w, const uint8_t *steps)
+{
+	*w = (rom_walk){steps, 0, -1, false, true};
+	walk_apply(w);
+}
+
+static void walk_tick(rom_walk *w)
+{
+	if (!w->on) {
+		return;
+	}
+	if (w->steps[w->at] != PATCH_EEF_END) {
+		w->at++;
+	}
+	walk_apply(w);
+}
+
+static void walk_note_off(rom_walk *w)
+{
+	if (w->loop >= 0) {
+		w->released = true;
+	} else {
+		w->on = false;
+	}
+}
+
+// The frame the walk is on, counting frames, not marks.
+static int walk_frame(const rom_walk *w)
+{
+	if (!w->on) {
+		return -1;
+	}
+	int frame = 0;
+	for (int i = 0; i < w->at; i++) {
+		frame += w->steps[i] != PATCH_EEF_LOOP_START && w->steps[i] != PATCH_EEF_LOOP_END;
+	}
+	return frame;
+}
+
+// Stage 10: the cursor on ALL is the plugin's own reckoning (D29). It must be where the ROM's walk is.
+static void test_cursor(void)
+{
+	printf("Envelope cursor against the ROM's walk\n");
+	srand(10);
+	patch_envelope base;
+	patch_envelope_from_eef(&base, (const uint8_t[]){0x00, 0xFF}, 2);
+	int checked = 0, wrong = 0;
+	char first[160] = "";
+	for (int n = 0; n < 3000; n++) {
+		patch_shape shape;
+		shape.count = 1 + rand() % 40;
+		shape.loop_start = rand() % 3 == 0 ? -1 : rand() % shape.count;
+		shape.loop_end = rand() % 3 == 0 ? -1 : rand() % (shape.count + 1);
+		for (int f = 0; f < PATCH_ENVELOPE_STEPS; f++) {
+			shape.frames[f] = (uint8_t)(rand() % 0xF0);
+		}
+		patch_envelope envelope = base;
+		patch_shape_to_envelope(&shape, &envelope);
+		patch_shape drawn;
+		patch_shape_of(&envelope, &drawn);
+		const int length = drawn.count;
+		for (int off = 0; off < 3 * length + 3; off++) {
+			rom_walk w;
+			walk_note_on(&w, envelope.steps);
+			for (int t = 0; t < off; t++) {
+				walk_tick(&w);
+			}
+			for (int k = 0; k < length + 4; k++) {
+				const bool held = k == 0;
+				const int expected = held ? walk_frame(&w) : 0;
+				if (held) {
+					const int got = patch_shape_position(&drawn, off, -1);
+					checked++;
+					if (got != expected && !wrong++) {
+						snprintf(first, sizeof(first), "held %d frames of %d, loop %d-%d: %d, ROM %d", off, length, drawn.loop_start, drawn.loop_end, got, expected);
+					}
+					walk_note_off(&w);
+				} else {
+					walk_tick(&w);
+				}
+				const int rom = walk_frame(&w);
+				const int got = patch_shape_position(&drawn, off, held ? 0 : k);
+				checked++;
+				if (got != rom && !wrong++) {
+					snprintf(first, sizeof(first), "off after %d frames of %d, loop %d-%d, %d later: %d, ROM %d", off, length, drawn.loop_start, drawn.loop_end, held ? 0 : k, got, rom);
+				}
+			}
+		}
+	}
+	CHECK(wrong == 0, "%d positions on 3000 random envelopes, %d wrong%s%s", checked, wrong, wrong ? ", first: " : "", first);
+	patch_shape organ = {{0}, 11, 3, 4};
+	CHECK(patch_shape_position(&organ, 2, -1) == 2 && patch_shape_position(&organ, 7, -1) == 3 && patch_shape_position(&organ, 7, 2) == 5 && patch_shape_position(&organ, 7, 8) == -1,
+		"PSG Organ: frame 3, round frame 4 while held, on after Note Off, silent past the end");
+	CHECK(patch_shape_position(&organ, 2, 0) == -1, "Note Off before the loop began is silent at once, as the ROM does");
 }
 
 int main(int argc, char **argv)
@@ -1118,6 +1330,8 @@ int main(int argc, char **argv)
 	test_envelopes();
 	test_drawing();
 	test_sound_changed();
+	test_bases();
+	test_cursor();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

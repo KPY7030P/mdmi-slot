@@ -31,6 +31,9 @@ typedef struct {
 	int undo_target;
 	patch_instrument undo_instrument;
 	patch_envelope undo_envelope;
+	// The channel's base with it (D31).
+	patch_instrument undo_base_instrument;
+	patch_envelope undo_base_envelope;
 	uint8_t *undo_state;
 	size_t undo_state_size;
 	char undo_text[FILES_MESSAGE];

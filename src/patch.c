@@ -247,23 +247,25 @@ int patch_preset_value(const patch_bank *bank, int channel, int param, int prese
 	return param == PARAM_PRESET ? preset : channel_params[param].default_value;
 }
 
-bool patch_sound_changed(const patch_bank *bank, const patch_values *values, const patch_envelope *envelope, int channel)
+bool patch_sound_changed(const patch_values *values, const patch_envelope *envelope, int channel)
 {
-	const int preset = values->channels[channel][PARAM_PRESET];
 	if (channel < PATCH_NUM_FM_CHANNELS) {
-		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
-			if (values->channels[channel][param] != patch_preset_value(bank, channel, param, preset)) {
-				return true;
-			}
-		}
-		return false;
+		return memcmp(values->channels[channel] + PARAM_ALGORITHM, values->base[channel], sizeof(values->base[channel])) != 0;
 	}
 	// Shapes, not bytes: marks the editor drops would differ and sound the same.
-	patch_shape mine, place;
+	patch_shape mine, base;
 	patch_shape_of(envelope, &mine);
-	patch_shape_of(&bank->envelopes[preset & (PATCH_BANK_SIZE - 1)], &place);
-	return mine.count != place.count || mine.loop_start != place.loop_start || mine.loop_end != place.loop_end
-		|| memcmp(mine.frames, place.frames, (size_t)mine.count) != 0;
+	patch_shape_of(&values->psg_base[channel - PATCH_NUM_FM_CHANNELS], &base);
+	return mine.count != base.count || mine.loop_start != base.loop_start || mine.loop_end != base.loop_end
+		|| memcmp(mine.frames, base.frames, (size_t)mine.count) != 0;
+}
+
+int patch_base_value(const patch_values *values, int channel, int param)
+{
+	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS || param < PARAM_ALGORITHM || param >= PATCH_NUM_CHANNEL_PARAMS) {
+		return -1;
+	}
+	return values->base[channel][param - PARAM_ALGORITHM];
 }
 
 const char *patch_gm_name(int place)
@@ -361,6 +363,31 @@ void patch_shape_of(const patch_envelope *envelope, patch_shape *shape)
 	patch_shape_to_envelope(shape, &ignored);
 }
 
+int patch_shape_position(const patch_shape *shape, long held, long released)
+{
+	if (shape->count <= 0 || held < 0) {
+		return -1;
+	}
+	const int start = shape->loop_start;
+	const int end = shape->loop_end < 0 ? shape->count : shape->loop_end;
+	const bool loops = start >= 0 && end > start;
+	long at;
+	if (!loops) {
+		at = held < shape->count ? held : -1;
+	} else {
+		at = held < end ? held : start + (held - start) % (end - start);
+	}
+	if (released < 0 || at < 0) {
+		return (int)at;
+	}
+	// The ROM releases only a note whose walk has reached the loop start.
+	if (!loops || held < start) {
+		return -1;
+	}
+	at += released;
+	return at < shape->count ? (int)at : -1;
+}
+
 int patch_shape_room(const patch_shape *shape)
 {
 	return PATCH_ENVELOPE_STEPS - (shape->loop_start >= 0) - (shape->loop_end >= 0);
@@ -451,7 +478,17 @@ static void put_envelope(patch_values *values, int channel, const patch_envelope
 	clean_envelope(&values->psg[channel - PATCH_NUM_FM_CHANNELS]);
 }
 
-// A place of the bank becomes the channel's sound, tweaks or its own envelope gone.
+static void put_base(patch_values *values, int channel, const int16_t *voice, const patch_envelope *envelope)
+{
+	if (channel < PATCH_NUM_FM_CHANNELS) {
+		memcpy(values->base[channel], voice, sizeof(values->base[channel]));
+	} else {
+		values->psg_base[channel - PATCH_NUM_FM_CHANNELS] = *envelope;
+		clean_envelope(&values->psg_base[channel - PATCH_NUM_FM_CHANNELS]);
+	}
+}
+
+// A place of the bank becomes the channel's sound and base, tweaks or its own envelope gone.
 static void load_place(const patch_bank *bank, patch_values *values, int channel, int place)
 {
 	values->channels[channel][PARAM_PRESET] = (int16_t)place;
@@ -460,6 +497,7 @@ static void load_place(const patch_bank *bank, patch_values *values, int channel
 	} else {
 		put_envelope(values, channel, &bank->envelopes[place]);
 	}
+	put_base(values, channel, bank->places[place].voice, &bank->envelopes[place]);
 }
 
 // A channel playing its place as it is: the place's voice and name, or envelope and name.
@@ -1598,7 +1636,7 @@ static void end_incoming(mdmi_patch *patch)
 	__atomic_store_n(&patch->incoming_state, INCOMING_READY, __ATOMIC_RELEASE);
 }
 
-bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg)
+bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg, const void *bases)
 {
 	if (size % SAVED_PAIR_BYTES) {
 		return false;
@@ -1630,6 +1668,35 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (
 		const int place = incoming.channels[channel][PARAM_PRESET];
 		put_envelope(&incoming, channel, psg ? &psg[channel - PATCH_NUM_FM_CHANNELS] : &patch->shown_bank.envelopes[place]);
 	}
+	if (bases) {
+		const uint8_t *at = bases;
+		memcpy(incoming.base, at, sizeof(incoming.base));
+		for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+			patch_envelope envelope;
+			memcpy(&envelope, at + sizeof(incoming.base) + i * sizeof(patch_envelope), sizeof(envelope));
+			put_base(&incoming, PATCH_NUM_FM_CHANNELS + i, NULL, &envelope);
+		}
+		for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+			for (int i = 0; i < PATCH_VOICE_PARAMS; i++) {
+				incoming.base[channel][i] = (int16_t)clamp(&channel_params[PARAM_ALGORITHM + i], incoming.base[channel][i]);
+			}
+		}
+	} else {
+		// A state from before D31: a channel named as its place has the place as base, so its tweaks
+		// show; a file of its own is its own base.
+		for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+			const int place = incoming.channels[channel][PARAM_PRESET];
+			const patch_instrument *voice = &patch->shown_bank.places[place];
+			const patch_envelope *envelope = &patch->shown_bank.envelopes[place];
+			const bool fm = channel < PATCH_NUM_FM_CHANNELS;
+			const bool named = fm ? !strcmp(incoming.names[channel], voice->name) : !strcmp(incoming.psg[channel - PATCH_NUM_FM_CHANNELS].name, envelope->name);
+			if (named) {
+				put_base(&incoming, channel, voice->voice, envelope);
+			} else {
+				put_base(&incoming, channel, fm ? incoming.channels[channel] + PARAM_ALGORITHM : NULL, fm ? NULL : &incoming.psg[channel - PATCH_NUM_FM_CHANNELS]);
+			}
+		}
+	}
 	begin_incoming(patch);
 	// A loaded state replaces voices dropped before it.
 	patch->incoming.parts = (patch->incoming.parts & PATCH_INCOMING_BANK) | PATCH_INCOMING_VALUES;
@@ -1641,6 +1708,13 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (
 void patch_save_names(const patch_values *values, void *buffer)
 {
 	memcpy(buffer, values->names, sizeof(values->names));
+}
+
+void patch_save_bases(const patch_values *values, void *buffer)
+{
+	uint8_t *out = buffer;
+	memcpy(out, values->base, sizeof(values->base));
+	memcpy(out + sizeof(values->base), values->psg_base, sizeof(values->psg_base));
 }
 
 // A bank place from a file holds only what the knobs can.
@@ -1686,7 +1760,20 @@ void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelop
 	send_bank(patch);
 }
 
-void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope)
+void patch_base_view(mdmi_patch *patch, int channel, patch_instrument *voice, patch_envelope *envelope)
+{
+	uint32_t incoming = __atomic_load_n(&patch->incoming_state, __ATOMIC_ACQUIRE);
+	const bool handed = (incoming == INCOMING_READY || incoming == INCOMING_TAKING) && patch->incoming.parts & (PATCH_INCOMING_BASE << channel);
+	const patch_values *values = patch_view(patch);
+	if (channel < PATCH_NUM_FM_CHANNELS) {
+		memcpy(voice->name, values->names[channel], PATCH_NAME);
+		memcpy(voice->voice, handed ? patch->incoming.bases[channel] : values->base[channel], sizeof(voice->voice));
+	} else {
+		*envelope = handed ? patch->incoming.psg_bases[channel - PATCH_NUM_FM_CHANNELS] : values->psg_base[channel - PATCH_NUM_FM_CHANNELS];
+	}
+}
+
+void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope, const patch_envelope *base)
 {
 	if (channel < PATCH_NUM_FM_CHANNELS || channel >= PATCH_NUM_CHANNELS) {
 		return;
@@ -1694,10 +1781,14 @@ void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *e
 	begin_incoming(patch);
 	patch->incoming.parts |= PATCH_INCOMING_VOICE << channel;
 	patch->incoming.envelopes[channel - PATCH_NUM_FM_CHANNELS] = *envelope;
+	if (base) {
+		patch->incoming.parts |= PATCH_INCOMING_BASE << channel;
+		patch->incoming.psg_bases[channel - PATCH_NUM_FM_CHANNELS] = *base;
+	}
 	end_incoming(patch);
 }
 
-void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument)
+void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument, const patch_instrument *base)
 {
 	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
 		return;
@@ -1705,6 +1796,10 @@ void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *in
 	begin_incoming(patch);
 	patch->incoming.parts |= PATCH_INCOMING_VOICE << channel;
 	patch->incoming.voices[channel] = *instrument;
+	if (base) {
+		patch->incoming.parts |= PATCH_INCOMING_BASE << channel;
+		memcpy(patch->incoming.bases[channel], base->voice, sizeof(base->voice));
+	}
 	end_incoming(patch);
 }
 
@@ -1736,6 +1831,10 @@ bool patch_take_incoming(mdmi_patch *patch)
 			put_voice(&patch->model, channel, &incoming->voices[channel]);
 		} else {
 			put_envelope(&patch->model, channel, &incoming->envelopes[channel - PATCH_NUM_FM_CHANNELS]);
+		}
+		if (incoming->parts & PATCH_INCOMING_BASE << channel) {
+			const int psg = channel - PATCH_NUM_FM_CHANNELS;
+			put_base(&patch->model, channel, channel < PATCH_NUM_FM_CHANNELS ? incoming->bases[channel] : NULL, psg >= 0 ? &incoming->psg_bases[psg] : NULL);
 		}
 	}
 	patch->dirty = true;

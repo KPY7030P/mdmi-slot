@@ -110,6 +110,10 @@ typedef struct {
 	char names[PATCH_NUM_FM_CHANNELS][PATCH_NAME];
 	// The envelope each PSG channel plays, the same way.
 	patch_envelope psg[PATCH_NUM_PSG_CHANNELS];
+	// What each channel last got whole, which the window compares its sound with (D31): its bank
+	// place, or the file dropped on it. The FM voice from Algorithm on; the name stays in names.
+	int16_t base[PATCH_NUM_FM_CHANNELS][PATCH_VOICE_PARAMS];
+	patch_envelope psg_base[PATCH_NUM_PSG_CHANNELS];
 } patch_values;
 
 // What a receiver holds. A value we can't know is PATCH_UNKNOWN, and always differs from the model.
@@ -151,14 +155,17 @@ typedef struct {
 
 // What the main thread hands the writer in one piece: a loaded state, a bank, or the voices and
 // envelopes of files dropped on channels.
-enum { PATCH_INCOMING_VALUES = 1, PATCH_INCOMING_BANK = 2, PATCH_INCOMING_VOICE = 4 };
+enum { PATCH_INCOMING_VALUES = 1, PATCH_INCOMING_BANK = 2, PATCH_INCOMING_VOICE = 4, PATCH_INCOMING_BASE = 4 << PATCH_NUM_CHANNELS };
 typedef struct {
 	uint32_t parts;
 	patch_values values;
 	patch_bank bank;
-	// PATCH_INCOMING_VOICE << channel says which of these came.
+	// PATCH_INCOMING_VOICE << channel says which of these came, PATCH_INCOMING_BASE << channel
+	// whether the channel's base came with it.
 	patch_instrument voices[PATCH_NUM_FM_CHANNELS];
 	patch_envelope envelopes[PATCH_NUM_PSG_CHANNELS];
+	int16_t bases[PATCH_NUM_FM_CHANNELS][PATCH_VOICE_PARAMS];
+	patch_envelope psg_bases[PATCH_NUM_PSG_CHANNELS];
 } patch_incoming;
 
 #define PATCH_PENDING_NOTES 32
@@ -227,14 +234,22 @@ int patch_envelope_length(const patch_envelope *envelope);
 void patch_shape_of(const patch_envelope *envelope, patch_shape *shape);
 // How many frames fit with the shape's loop marks.
 int patch_shape_room(const patch_shape *shape);
+// The frame the ROM plays, for the window only (D29): held is the frames from Note On to Note Off,
+// or to now while the note is held, released the frames since Note Off or -1 while held. One step
+// per frame from frame 0, round the loop while held; after Note Off on from where it was, through
+// the loop's end. -1 when silent: past the end, or Note Off without a loop or before the loop began.
+int patch_shape_position(const patch_shape *shape, long held, long released);
 // Only what the ROM reads as drawn (D28, stage 8): at least one frame, a frame inside the loop, an
 // end at the last frame is no end, frames cut to the room. Keeps the envelope's name.
 void patch_shape_to_envelope(patch_shape *shape, patch_envelope *envelope);
 // The value a param has in a place of the bank, which a reset returns to.
 int patch_preset_value(const patch_bank *bank, int channel, int param, int preset);
-// The channel's sound differs from its bank place (stage 9, the rail's *): an FM channel's voice
-// values, a PSG channel's envelope as drawn. Volume, pan and the rest of the channel don't count.
-bool patch_sound_changed(const patch_bank *bank, const patch_values *values, const patch_envelope *envelope, int channel);
+// The channel's sound differs from its base (the rail's *, D31): an FM channel's voice values, a
+// PSG channel's envelope as drawn. Volume, pan and the rest of the channel don't count.
+bool patch_sound_changed(const patch_values *values, const patch_envelope *envelope, int channel);
+// The value a param has in the channel's base, or -1 when the base doesn't hold it: only an FM
+// channel's voice, from Algorithm on (D31).
+int patch_base_value(const patch_values *values, int channel, int param);
 
 void patch_init(mdmi_patch *patch);
 
@@ -255,8 +270,12 @@ size_t patch_save_size(void);
 void patch_save(const patch_values *values, void *buffer);
 // Takes what it knows from a saved state and leaves it for the writer to take. Without names, a
 // channel is named after its bank place.
-// Without envelopes, a PSG channel plays its bank place.
-bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg);
+// Without envelopes, a PSG channel plays its bank place. Without bases (PATCH_BASES_BYTES, D31), a
+// channel named as its place has the place as base, any other its own sound.
+#define PATCH_BASES_BYTES (PATCH_NUM_FM_CHANNELS * PATCH_VOICE_PARAMS * 2 + PATCH_NUM_PSG_CHANNELS * sizeof(patch_envelope))
+bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg, const void *bases);
+// Main thread: the bases of all channels, PATCH_BASES_BYTES.
+void patch_save_bases(const patch_values *values, void *buffer);
 // Main thread: the names of the FM channels, PATCH_NUM_FM_CHANNELS * PATCH_NAME bytes.
 void patch_save_names(const patch_values *values, void *buffer);
 // Main thread: a new bank, or one place of it, for the writer to take.
@@ -264,9 +283,12 @@ void patch_load_bank(mdmi_patch *patch, const patch_bank *bank);
 void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *instrument);
 void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelope *envelope);
 // Main thread: a file's voice for an FM channel, as if its knobs moved; the Preset stays (D23).
-void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument);
+// The base becomes base's voice, or stays when it is NULL (D31): a drawing keeps it.
+void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument, const patch_instrument *base);
 // The same for a PSG channel's envelope (D28).
-void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope);
+void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope, const patch_envelope *base);
+// Main thread: what the channel's base is now, a handed one not taken yet included.
+void patch_base_view(mdmi_patch *patch, int channel, patch_instrument *voice, patch_envelope *envelope);
 
 // The writer's. Sets a knob; true if other knobs now show different values.
 bool patch_set(mdmi_patch *patch, uint32_t id, int value);

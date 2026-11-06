@@ -269,7 +269,7 @@ static void test_load(void)
 	set_on(0, PARAM_PRESET, 99);
 	set_on(1, PARAM_OP_BASE + F_TL, 12);
 	set_on(5, PARAM_OP_BASE + F_SR, 30);
-	patch_load(patch, state, sizeof(state), NULL, NULL);
+	patch_load(patch, state, sizeof(state), NULL, NULL, NULL);
 	patch_take_incoming(patch);
 	sync_and_settle();
 	check_voices("a loaded state reaches the chip", 0, FM_CHANNELS - 1, -1);
@@ -902,7 +902,7 @@ static bool load_file(const char *name, patch_instrument *instrument)
 static double drop_and_play(int channel, const patch_instrument *instrument)
 {
 	moment(FM_CHANNELS - 1, 96, 1, true);
-	patch_load_voice(patch, channel, instrument);
+	patch_load_voice(patch, channel, instrument, NULL);
 	patch_take_incoming(patch);
 	patch_sync(patch, &patch->rom, emit, NULL);
 	moment(channel, 60, 1, true);
@@ -1091,7 +1091,7 @@ static void test_envelopes(void)
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		patch_envelope envelope;
 		steady(&envelope, LEVELS[i], 2);
-		patch_load_envelope(patch, PATCH_NUM_FM_CHANNELS + i, &envelope);
+		patch_load_envelope(patch, PATCH_NUM_FM_CHANNELS + i, &envelope, NULL);
 	}
 	patch_take_incoming(patch);
 	sync_and_settle();
@@ -1122,7 +1122,7 @@ static void test_envelopes(void)
 	for (int i = 0; i < 3; i++) {
 		patch_envelope envelope;
 		steady(&envelope, STORED[i], 2);
-		patch_load_envelope(patch, 6, &envelope);
+		patch_load_envelope(patch, 6, &envelope, NULL);
 		patch_take_incoming(patch);
 		sync_and_settle();
 		if (i == 0) {
@@ -1150,7 +1150,7 @@ static void test_envelopes(void)
 	midi(0x88, 69, 0);
 	patch_envelope longest;
 	steady(&longest, 3, PATCH_ENVELOPE_STEPS);
-	patch_load_envelope(patch, 7, &longest);
+	patch_load_envelope(patch, 7, &longest, NULL);
 	patch_take_incoming(patch);
 	render(SETTLE_BLOCKS);
 	patch_sync(patch, &patch->rom, emit, NULL);
@@ -1179,7 +1179,7 @@ static void drawn(patch_envelope *envelope, int count, uint8_t level, int loop_s
 
 static void draw_on(int channel, const patch_envelope *envelope)
 {
-	patch_load_envelope(patch, channel, envelope);
+	patch_load_envelope(patch, channel, envelope, NULL);
 	patch_take_incoming(patch);
 	patch_sync(patch, &patch->rom, emit, NULL);
 }

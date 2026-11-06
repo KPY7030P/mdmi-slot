@@ -93,6 +93,18 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   Special Mode channel 3's row is light FM and shows four notes in a column at the right, its own
   on top; the bar keeps its length. The bank page's scroll track marks every
   channel's place.
+- A `*` means the sound is tweaked against its base (D31): what the channel last got whole, its
+  bank place or a file dropped on it. The base goes with the model and the project (block 8), undo
+  gives it back, a drawing keeps it. An FM cell whose value differs from the base has an amber
+  label and a mark where the base's value is; held, the footer says `TL 49, GM 39`.
+- A red dot at a cell's top right: the host sent that knob a value in the last 2 seconds (D32).
+  Live sends values only while a lane plays and never echoes the window's own edits; a touch with
+  the mouse takes the dot away.
+- ALL (stage 10): every channel on the rail's rows, so drops and clicks work as on EDITOR. A row
+  has its algorithm or envelope in small (a click opens the channel's page), VOL, PAN, the source,
+  and TUNE, BEND, PORTA only when not at their default. On a PSG row a green line shows where the
+  ROM is in the envelope, reckoned by the plugin from the Note On and Note Off it sent and the
+  shape (`patch_shape_position`, tested against a byte walk of the ROM's code), for show only.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
 the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.

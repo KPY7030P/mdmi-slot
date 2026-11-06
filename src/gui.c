@@ -36,11 +36,13 @@
 #define HEADER_H 28
 #define BUTTON_Y 2
 #define BUTTON_W 80
+#define BUTTON_SMALL_W 56
 #define BUTTON_H 24
-#define BUTTON_EDITOR_X 60
+#define BUTTON_ALL_X 60
+#define BUTTON_EDITOR_X (BUTTON_ALL_X + BUTTON_SMALL_W + 4)
 #define BUTTON_BANK_X (BUTTON_EDITOR_X + BUTTON_W + 4)
 #define BUTTON_ROM_X (BUTTON_BANK_X + BUTTON_W + 4)
-#define STATUS_X 316
+#define STATUS_X (BUTTON_ROM_X + BUTTON_SMALL_W + 8)
 #define ACTION_W 56
 #define ACTION_ADD_X 476
 #define ACTION_LOAD_X 536
@@ -123,7 +125,16 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define ENV_LENGTH_PIXELS 2
 enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, ENV_LENGTH };
 
-enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK };
+// The page is saved with the project: a new one goes last.
+enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK, PAGE_ALL };
+
+// The overview (stage 10, D29): its rows continue the rail's, its columns as in ui-variants-v2.
+#define ALL_SOUND_X 242
+#define ALL_SOUND_W 104
+#define ALL_VOL_X 354
+#define ALL_PAN_X 474
+#define ALL_PAN_W 17
+#define ALL_SOURCE_X 536
 enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTIONS };
 
 typedef struct {
@@ -223,6 +234,11 @@ struct mdmi_gui {
 	int flash_count;
 	int flash_ticks;
 	uint32_t flash_color;
+
+	// The host's values seen so far per knob, and until when, in GetTickCount64 ms, each knob stays
+	// marked (D32).
+	uint32_t host_seen[GUI_HOST_SLOTS];
+	ULONGLONG host_until[GUI_HOST_SLOTS];
 };
 
 static LONG window_count;
@@ -275,11 +291,11 @@ static void text_right(mdmi_gui *g, int right, int y, const char *string, uint32
 	text(g, right - (int)strlen(cut) * 6 * scale, y, cut, color, scale);
 }
 
-static void button(mdmi_gui *g, int x, const char *label, bool on)
+static void button(mdmi_gui *g, int x, int w, const char *label, bool on)
 {
-	fill(g, x, BUTTON_Y, BUTTON_W, BUTTON_H, on ? C_TEXT : C_CELL);
+	fill(g, x, BUTTON_Y, w, BUTTON_H, on ? C_TEXT : C_CELL);
 	int width = (int)strlen(label) * 12;
-	text(g, x + (BUTTON_W - width) / 2, BUTTON_Y + 5, label, on ? C_BG : C_LABEL, 2);
+	text(g, x + (w - width) / 2, BUTTON_Y + 5, label, on ? C_BG : C_LABEL, 2);
 }
 
 static bool channel_is_fm(int channel)
@@ -357,12 +373,13 @@ static int value_of(mdmi_gui *g, const patch_values *values, uint32_t id)
 	return channel < 0 ? values->globals[param] : values->channels[channel][param];
 }
 
-// The channel plays its bank place tweaked: a * after the name. A dropped file is told by the source.
-// From the frame's own snapshot: a second patch_view in a frame could hand its buffer to the writer.
+// The channel's sound is tweaked against what it got, its bank place or a dropped file: a * after
+// the name (D31). From the frame's own snapshot: a second patch_view in a frame could hand its
+// buffer to the writer.
 static bool sound_changed(mdmi_gui *g, const patch_values *values, int channel)
 {
-	return takes_files(values, channel) && !plays_own_file(g, values, channel)
-		&& patch_sound_changed(patch_bank_view(g->source.patch), values, channel_is_fm(channel) ? NULL : &values->psg[channel - PATCH_NUM_FM_CHANNELS], channel);
+	(void)g;
+	return takes_files(values, channel) && patch_sound_changed(values, channel_is_fm(channel) ? NULL : &values->psg[channel - PATCH_NUM_FM_CHANNELS], channel);
 }
 
 // Channel 3 in Ch3 Special Mode: its operators take notes of their own.
@@ -620,11 +637,27 @@ static void layout(mdmi_gui *g, const patch_values *values)
 	g->cell_count = 0;
 	const int channel = *g->source.channel;
 	const bool bank = *g->source.page == PAGE_BANK;
-	if (!is_dac(values, channel)) {
+	if (*g->source.page == PAGE_ALL) {
+		// Per row: VOL, PAN L C R on FM, the source dragged like the page's.
+		for (int c = 0; c < PATCH_NUM_CHANNELS; c++) {
+			const int y = row_y(c);
+			if (is_dac(values, c)) {
+				continue;
+			}
+			add_cell(g, ALL_VOL_X, y + 4, GRID_W, CELL_H, PATCH_CHANNEL_ID(c, PARAM_VOLUME), "", CELL_ROW);
+			if (patch_channel_has(c, PARAM_PAN)) {
+				for (int pan = 0; pan < 3; pan++) {
+					add_cell(g, ALL_PAN_X + pan * (ALL_PAN_W + 1), y + 4, ALL_PAN_W, CELL_H, PATCH_CHANNEL_ID(c, PARAM_PAN), PANS[pan], CELL_CHOICE);
+					g->cells[g->cell_count - 1].choice = pan;
+				}
+			}
+			add_cell(g, ALL_SOURCE_X, y + 4, PAGE_RIGHT - ALL_SOURCE_X, 22, PATCH_CHANNEL_ID(c, PARAM_PRESET), "PRESET", CELL_SOURCE);
+		}
+	} else if (!is_dac(values, channel)) {
 		// The Preset is the source at the name line's right end, dragged like any cell.
 		add_cell(g, SOURCE_X, 30, SOURCE_W, 22, PATCH_CHANNEL_ID(channel, PARAM_PRESET), "PRESET", CELL_SOURCE);
 	}
-	if (!is_dac(values, channel) && !bank) {
+	if (!is_dac(values, channel) && !bank && *g->source.page != PAGE_ALL) {
 		for (size_t i = 0; i < sizeof(CHANNEL_CELLS) / sizeof(*CHANNEL_CELLS); i++) {
 			add_cell(g, GRID_X[CHANNEL_CELLS[i].column], CHANNEL_CELLS[i].y, GRID_W, CELL_H, PATCH_CHANNEL_ID(channel, CHANNEL_CELLS[i].param), CHANNEL_CELLS[i].label, CELL_ROW);
 		}
@@ -655,18 +688,24 @@ static void layout(mdmi_gui *g, const patch_values *values)
 	}
 }
 
-static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
+static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *values)
 {
 	const bool held = g->dragging && g->drag_id == c->id;
 	const int value = value_of(g, values, c->id);
 	char buffer[64];
 	int channel, param;
 	patch_id_split(c->id, &channel, &param);
+	// What the channel got has another value here (D31): amber, and a mark where the base's value is.
+	const int base = channel >= 0 ? patch_base_value(values, channel, param) : -1;
+	const bool changed = base >= 0 && value != base;
 	if (c->kind == CELL_CHOICE) {
 		// The algorithm lit in FM's colour, the pan in white as a switch.
 		const bool on = value == c->choice, pan = param == PARAM_PAN;
 		fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : C_FM) : C_CELL);
 		text(g, c->x + (c->w - 11) / 2, c->y + 2, c->label, on ? (pan ? C_BG : C_TEXT) : C_LABEL, 2);
+		if (changed && c->choice == base) {
+			fill(g, c->x, c->y + c->h - 2, c->w, 2, C_AMBER);
+		}
 		return;
 	}
 	if (c->kind == CELL_SOURCE) {
@@ -687,11 +726,12 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 		}
 		return;
 	}
-	const bool fm = c->id >= PATCH_NUM_GLOBALS && channel_is_fm(*g->source.channel);
+	// The cell's own channel: ALL shows them all.
+	const bool fm = channel >= 0 && channel_is_fm(channel);
 	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
 	uint32_t background = held ? C_LINE : c->kind == CELL_COLUMN ? C_CELL : fm ? C_FM_DARK : C_PSG_DARK;
 	fill(g, c->x, c->y, c->w, c->h, background);
-	const uint32_t label = held ? C_TEXT : C_LABEL;
+	const uint32_t label = held ? C_TEXT : changed ? C_AMBER : C_LABEL;
 	uint32_t shown = C_TEXT;
 	if (c->id == GLOBAL_DAC && value) {
 		shown = C_DAC;
@@ -703,10 +743,29 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 	} else {
 		int label_end = text(g, c->x + 4, c->y + 6, c->label, label, 1);
 		text_right(g, c->x + c->w - 4, c->y + 2, buffer, shown, 2, c->x + c->w - 4 - label_end - 6);
+		if (changed) {
+			const int max = patch_param(c->id)->max;
+			fill(g, c->x + (c->w - 2) * base / (max > 0 ? max : 1), c->y + c->h - 4, 2, 4, C_AMBER);
+		}
 	}
 	if (held) {
 		frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 	}
+}
+
+// A value from the host lately (D32): a red dot 3x3 at the cell's top right, on the last button
+// of a row of choices.
+static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
+{
+	draw_cell_body(g, c, values);
+	int channel, param;
+	if (!patch_id_split(c->id, &channel, &param) || g->host_until[GUI_HOST_SLOT(channel, param)] <= GetTickCount64()) {
+		return;
+	}
+	if (c->kind == CELL_CHOICE && c->choice != patch_param(c->id)->max) {
+		return;
+	}
+	fill(g, c->x + c->w - 4, c->y + 1, 3, 3, C_ERROR);
 }
 
 // Operator positions in the diagram (column, row), what modulates what, and which are carriers.
@@ -1391,6 +1450,16 @@ static int rail_channel_at(int x, int y)
 	return -1;
 }
 
+// On ALL a row reaches the page's right edge; elsewhere only the rail's. One geometry for drops,
+// hover and clicks (D29).
+static int row_at(const mdmi_gui *g, int x, int y)
+{
+	if (*g->source.page == PAGE_ALL && x >= RAIL_W && x < PAGE_RIGHT) {
+		return rail_channel_at(0, y);
+	}
+	return rail_channel_at(x, y);
+}
+
 // ADD is there only on the bank page.
 static int action_at(const mdmi_gui *g, int x, int y)
 {
@@ -1439,6 +1508,32 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 	return true;
 }
 
+// The cell under the mouse against what the channel got: TL 57, FILE 34 (D31).
+static bool base_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	const int over = g->file_over ? -1 : hovered(g);
+	if (over < 0) {
+		return false;
+	}
+	const cell *c = &g->cells[over];
+	int channel, param;
+	if (!patch_id_split(c->id, &channel, &param) || channel < 0) {
+		return false;
+	}
+	const patch_values *values = patch_view(g->source.patch);
+	const int base = patch_base_value(values, channel, param), value = value_of(g, values, c->id);
+	if (base < 0 || base == value) {
+		return false;
+	}
+	const patch_bank *bank = patch_bank_view(g->source.patch);
+	const char *from = plays_own_file(g, values, channel) ? "FILE" : patch_place_is_gm(bank, values->channels[channel][PARAM_PRESET]) ? "GM" : "BANK";
+	char now[24], was[24];
+	patch_format(bank, c->id, value, now, sizeof(now));
+	patch_format(bank, c->id, base, was, sizeof(was));
+	snprintf(hint, size, "%s %s, %s %s", c->kind == CELL_CHOICE ? "ALG" : c->label, now, from, was);
+	return true;
+}
+
 // Where the build's version starts at the footer's right end; the rest of the line ends before it.
 static int version_x(const mdmi_gui *g)
 {
@@ -1479,6 +1574,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
+	} else if (base_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_AMBER);
 	} else if (envelope_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else {
@@ -1628,6 +1725,186 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	}
 }
 
+// The algorithm in small for a row of ALL: operators 10 px with their number, carriers filled, the
+// output bus below, the feedback loop over operator 1. Its own drawing: the FM page gets its own in
+// stage 11.
+#define MINI_OP 10
+#define MINI_HALF (MINI_OP / 2)
+#define MINI_BUS 37
+#define MINI_RIGHT 64
+static void mini_op_xy(int x0, int y0, int algorithm, int op, int *x, int *y)
+{
+	*x = x0 + 5 + ALGORITHM_POS[algorithm][op][0] * 15;
+	*y = y0 + 3 + ALGORITHM_POS[algorithm][op][1] * 11;
+}
+
+static void draw_mini_diagram(mdmi_gui *g, int x0, int y0, int algorithm, int feedback, uint32_t carrier)
+{
+	const int bus = y0 + MINI_BUS;
+	int left = x0 + MINI_RIGHT;
+	for (int link = 0; link < 3; link++) {
+		const int from = ALGORITHM_LINKS[algorithm][link][0], to = ALGORITHM_LINKS[algorithm][link][1];
+		if (from < 0) {
+			continue;
+		}
+		int fx, fy, tx, ty;
+		mini_op_xy(x0, y0, algorithm, from, &fx, &fy);
+		mini_op_xy(x0, y0, algorithm, to, &tx, &ty);
+		if (fy == ty) {
+			fill(g, fx + MINI_OP, fy + MINI_HALF, tx - fx - MINI_OP, 1, C_LABEL);
+		} else {
+			fill(g, fx + MINI_OP, fy + MINI_HALF, tx + MINI_HALF - fx - MINI_OP + 1, 1, C_LABEL);
+			if (ty > fy) {
+				fill(g, tx + MINI_HALF, fy + MINI_HALF, 1, ty - fy - MINI_HALF, C_LABEL);
+			} else {
+				fill(g, tx + MINI_HALF, ty + MINI_OP, 1, fy + MINI_HALF - ty - MINI_OP + 1, C_LABEL);
+			}
+		}
+	}
+	for (int op = 0; op < PATCH_OPS; op++) {
+		int x, y;
+		mini_op_xy(x0, y0, algorithm, op, &x, &y);
+		if (CARRIERS[algorithm] >> op & 1) {
+			fill(g, x + MINI_HALF, y + MINI_OP, 1, bus - y - MINI_OP, C_LABEL);
+			left = x + MINI_HALF < left ? x + MINI_HALF : left;
+		}
+	}
+	fill(g, left, bus, x0 + MINI_RIGHT - left, 1, C_LABEL);
+	int x, y;
+	mini_op_xy(x0, y0, algorithm, 0, &x, &y);
+	const uint32_t loop = feedback ? C_LABEL : C_LINE;
+	fill(g, x - 3, y - 3, 1, 8, loop);
+	fill(g, x - 3, y - 3, MINI_OP + 6, 1, loop);
+	fill(g, x + MINI_OP + 2, y - 3, 1, 8, loop);
+	fill(g, x - 3, y + MINI_HALF, 3, 1, loop);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		mini_op_xy(x0, y0, algorithm, op, &x, &y);
+		const char digit[2] = {(char)('1' + op), 0};
+		if (CARRIERS[algorithm] >> op & 1) {
+			fill(g, x, y, MINI_OP, MINI_OP, carrier);
+			text(g, x + 3, y + 2, digit, C_TEXT, 1);
+		} else {
+			fill(g, x, y, MINI_OP, MINI_OP, C_BG);
+			frame(g, x, y, MINI_OP, MINI_OP, C_FM_LIGHT);
+			text(g, x + 3, y + 2, digit, C_FM_LIGHT, 1);
+		}
+	}
+	char buffer[16];
+	snprintf(buffer, sizeof(buffer), "ALG %d", algorithm);
+	text(g, x0 + 72, y0 + 8, buffer, C_LABEL, 1);
+	snprintf(buffer, sizeof(buffer), "FB %d", feedback);
+	text(g, x0 + 72, y0 + 22, buffer, C_LABEL, 1);
+}
+
+// Where frame i of n starts in a lane w px wide.
+static int mini_edge(int x, int w, int n, int i)
+{
+	return x + i * w / n;
+}
+
+// The envelope in small, frame by frame: dark body, bright top, the loop on a grey ground.
+static void draw_mini_envelope(mdmi_gui *g, int x, int y, int w, int h, const patch_shape *shape)
+{
+	const int n = shape->count > 0 ? shape->count : 1;
+	if (shape->loop_start >= 0) {
+		const int from = mini_edge(x, w, n, shape->loop_start);
+		fill(g, from, y, mini_edge(x, w, n, loop_end_of(shape)) - from, h, C_CELL);
+	}
+	for (int i = 0; i < shape->count; i++) {
+		const int level = shape->frames[i] & 15;
+		if (level >= 15) {
+			continue;
+		}
+		const int top = y + ((h - 3) * level + 7) / 15;
+		int width = mini_edge(x, w, n, i + 1) - mini_edge(x, w, n, i) - (w / n >= 3 ? 1 : 0);
+		width = width < 1 ? 1 : width;
+		fill(g, mini_edge(x, w, n, i), top, width, y + h - top, C_PSG_DARK);
+		fill(g, mini_edge(x, w, n, i), top, width, 2, C_PSG);
+	}
+	fill(g, x, y + h, w, 1, C_LINE);
+}
+
+// The frame a PSG channel's envelope plays now, reckoned from when its note started and stopped
+// (D29), or -1. The ROM steps once a frame at 59.92 Hz.
+#define PSG_FRAME_HZ 59.92
+static int envelope_frame(mdmi_gui *g, const patch_shape *shape, int psg, unsigned rate)
+{
+	const gui_psg_times *times = g->source.psg_times;
+	if (!times || rate == 0) {
+		return -1;
+	}
+	const uint64_t on = __atomic_load_n(&times->on[psg], __ATOMIC_ACQUIRE);
+	const uint64_t off = __atomic_load_n(&times->off[psg], __ATOMIC_ACQUIRE);
+	const uint64_t now = __atomic_load_n(&times->clock, __ATOMIC_ACQUIRE);
+	if (on == GUI_NEVER || on > now) {
+		return -1;
+	}
+	const long total = (long)((double)(now - on) * PSG_FRAME_HZ / rate);
+	if (off == GUI_NEVER || off < on) {
+		return patch_shape_position(shape, total, -1);
+	}
+	const long held = (long)((double)((off < now ? off : now) - on) * PSG_FRAME_HZ / rate);
+	return patch_shape_position(shape, held, total - held);
+}
+
+// TUNE, BEND and PORTA of a row, only those not at their default (1B).
+static void draw_all_more(mdmi_gui *g, const patch_values *values, int channel, int y)
+{
+	const int16_t *v = values->channels[channel];
+	char buffer[64];
+	int x = ALL_VOL_X;
+	if (v[PARAM_FINE_TUNE] != patch_param(PATCH_CHANNEL_ID(channel, PARAM_FINE_TUNE))->default_value) {
+		snprintf(buffer, sizeof(buffer), "TUNE %+d", v[PARAM_FINE_TUNE] - 64);
+		x = text(g, x, y, buffer, C_LABEL, 1) + 12;
+	}
+	if (v[PARAM_BEND_RANGE] != patch_param(PATCH_CHANNEL_ID(channel, PARAM_BEND_RANGE))->default_value) {
+		snprintf(buffer, sizeof(buffer), "BEND %d", v[PARAM_BEND_RANGE]);
+		x = text(g, x, y, buffer, C_LABEL, 1) + 12;
+	}
+	if (v[PARAM_PORTA_ON]) {
+		snprintf(buffer, sizeof(buffer), "PORTA %d", v[PARAM_PORTA_TIME]);
+		text(g, x, y, buffer, C_LABEL, 1);
+	}
+}
+
+// The overview (stage 10): every channel's sound in small, VOL, PAN and source, on the rail's rows.
+static void draw_all(mdmi_gui *g, const patch_values *values)
+{
+	const unsigned rate = mdmi_engine_get_stats(g->source.engine).sample_rate;
+	fill(g, RAIL_W + 1, HEADER_H, GUI_WIDTH - RAIL_W - 1, GLOBALS_Y - HEADER_H, C_BG);
+	fill(g, RAIL_W + 1, HEADER_H, GUI_WIDTH - RAIL_W - 1, GROUP_H, C_CELL);
+	fill(g, RAIL_W + 1, RAIL_PSG_Y - GROUP_H, GUI_WIDTH - RAIL_W - 1, GROUP_H, C_CELL);
+	text(g, ALL_VOL_X, HEADER_H + 4, "VOL", C_HINT, 1);
+	text(g, ALL_PAN_X, HEADER_H + 4, "PAN", C_HINT, 1);
+	text_right(g, PAGE_RIGHT - 2, HEADER_H + 4, "SOURCE", C_HINT, 1, 60);
+	text(g, ALL_VOL_X, RAIL_PSG_Y - GROUP_H + 4, "VOL", C_HINT, 1);
+	text_right(g, PAGE_RIGHT - 2, RAIL_PSG_Y - GROUP_H + 4, "SOURCE", C_HINT, 1, 60);
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		const int y = row_y(channel);
+		fill(g, RAIL_W + 1, y + ROW_H - 1, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
+		if (is_dac(values, channel)) {
+			text(g, ALL_VOL_X, y + 14, "PLAYS SAMPLES (DAC)", C_DAC, 1);
+			continue;
+		}
+		if (channel_is_fm(channel)) {
+			const int16_t *v = values->channels[channel];
+			draw_mini_diagram(g, ALL_SOUND_X, y, v[PARAM_ALGORITHM], v[PARAM_FEEDBACK], is_special(values, channel) ? C_FM_LIGHT : C_FM);
+		} else {
+			patch_shape shape;
+			patch_shape_of(&values->psg[channel - PATCH_NUM_FM_CHANNELS], &shape);
+			draw_mini_envelope(g, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, &shape);
+			// Where the note is in it, a green line over the frame.
+			const int frame = envelope_frame(g, &shape, channel - PATCH_NUM_FM_CHANNELS, rate);
+			if (frame >= 0) {
+				const int n = shape.count > 0 ? shape.count : 1;
+				const int left = mini_edge(ALL_SOUND_X, ALL_SOUND_W, n, frame), right = mini_edge(ALL_SOUND_X, ALL_SOUND_W, n, frame + 1);
+				fill(g, left + (right - left) / 2, y + 2, 1, 35, C_PLAYING);
+			}
+		}
+		draw_all_more(g, values, channel, y + 28);
+	}
+}
+
 static void draw_editor(mdmi_gui *g)
 {
 	const patch_values *values = patch_view(g->source.patch);
@@ -1639,6 +1916,9 @@ static void draw_editor(mdmi_gui *g)
 	fill(g, RAIL_W, HEADER_H, 1, GLOBALS_Y - HEADER_H, C_LINE);
 	if (*g->source.page == PAGE_BANK) {
 		draw_bank(g, values);
+	} else if (*g->source.page == PAGE_ALL) {
+		g->bank_was_open = false;
+		draw_all(g, values);
 	} else {
 		g->bank_was_open = false;
 		draw_page(g, values);
@@ -1658,9 +1938,9 @@ static void draw_editor(mdmi_gui *g)
 		const cell *c = &g->cells[over];
 		frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 	}
-	int row = g->dragging || g->file_over ? -1 : rail_channel_at(g->mouse_x, g->mouse_y);
+	int row = g->dragging || g->file_over ? -1 : row_at(g, g->mouse_x, g->mouse_y);
 	if (row >= 0) {
-		frame(g, 0, row_y(row), RAIL_W, ROW_H, C_TEXT);
+		frame(g, 0, row_y(row), *g->source.page == PAGE_ALL ? GUI_WIDTH : RAIL_W, ROW_H, C_TEXT);
 	}
 }
 
@@ -1691,7 +1971,7 @@ static void draw_status(mdmi_gui *g)
 	mdmi_engine_stats stats = mdmi_engine_get_stats(g->source.engine);
 	// What failed is told in the footer.
 	if (stats.failed) {
-		text(g, STATUS_X, 7, "ENGINE FAILED", C_ERROR, 2);
+		text(g, STATUS_X, 7, "FAILED", C_ERROR, 2);
 	} else if (!stats.active) {
 		text(g, STATUS_X, 7, "STOPPED", C_HINT, 2);
 	} else if (!stats.booted) {
@@ -1718,9 +1998,10 @@ static void render(mdmi_gui *g)
 	text(g, 8, 7, "MDMI", C_TEXT, 2);
 	const int page = *g->source.page;
 	const bool rom = page == PAGE_ROM;
-	button(g, BUTTON_EDITOR_X, "EDITOR", page != PAGE_ROM && page != PAGE_BANK);
-	button(g, BUTTON_BANK_X, "BANK", page == PAGE_BANK);
-	button(g, BUTTON_ROM_X, "ROM", rom);
+	button(g, BUTTON_ALL_X, BUTTON_SMALL_W, "ALL", page == PAGE_ALL);
+	button(g, BUTTON_EDITOR_X, BUTTON_W, "EDITOR", page != PAGE_ROM && page != PAGE_BANK && page != PAGE_ALL);
+	button(g, BUTTON_BANK_X, BUTTON_W, "BANK", page == PAGE_BANK);
+	button(g, BUTTON_ROM_X, BUTTON_SMALL_W, "ROM", rom);
 	draw_status(g);
 	action_button(g, ACTION_LOAD, ACTION_LOAD_X, "LOAD", true);
 	action_button(g, ACTION_SAVE, ACTION_SAVE_X, "SAVE", true);
@@ -1758,9 +2039,31 @@ static void refresh(mdmi_gui *g)
 	}
 }
 
+// A knob the mouse moves is the window's: its host mark goes at once.
 static void edit(mdmi_gui *g, int kind, uint32_t id, int value)
 {
+	int channel, param;
+	if (kind != GUI_EDIT_END && patch_id_split(id, &channel, &param)) {
+		g->host_until[GUI_HOST_SLOT(channel, param)] = 0;
+	}
 	g->source.edit(g->source.context, kind, id, value);
+}
+
+// Once a timer tick: a knob whose count moved is marked for two seconds from its last value.
+#define HOST_MARK_MS 2000
+static void host_tick(mdmi_gui *g)
+{
+	if (!g->source.host_values) {
+		return;
+	}
+	const ULONGLONG now = GetTickCount64();
+	for (int i = 0; i < GUI_HOST_SLOTS; i++) {
+		const uint32_t count = __atomic_load_n(&g->source.host_values[i], __ATOMIC_RELAXED);
+		if (count != g->host_seen[i]) {
+			g->host_seen[i] = count;
+			g->host_until[i] = now + HOST_MARK_MS;
+		}
+	}
 }
 
 // One whole change, as a click on a button.
@@ -1956,11 +2259,13 @@ static void on_down(mdmi_gui *g, int x, int y)
 		return;
 	}
 	if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H) {
-		if (x >= BUTTON_EDITOR_X && x < BUTTON_EDITOR_X + BUTTON_W) {
+		if (x >= BUTTON_ALL_X && x < BUTTON_ALL_X + BUTTON_SMALL_W) {
+			*g->source.page = PAGE_ALL;
+		} else if (x >= BUTTON_EDITOR_X && x < BUTTON_EDITOR_X + BUTTON_W) {
 			*g->source.page = PAGE_EDITOR;
 		} else if (x >= BUTTON_BANK_X && x < BUTTON_BANK_X + BUTTON_W) {
 			*g->source.page = PAGE_BANK;
-		} else if (x >= BUTTON_ROM_X && x < BUTTON_ROM_X + BUTTON_W) {
+		} else if (x >= BUTTON_ROM_X && x < BUTTON_ROM_X + BUTTON_SMALL_W) {
 			*g->source.page = PAGE_ROM;
 		}
 		refresh(g);
@@ -1997,6 +2302,15 @@ static void on_down(mdmi_gui *g, int x, int y)
 	}
 	int index = hovered(g);
 	if (index < 0) {
+		// A row of ALL selects its channel; its sound opens the channel's page.
+		const int row = row_at(g, x, y);
+		if (row >= 0) {
+			*g->source.channel = row;
+			if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W) {
+				*g->source.page = PAGE_EDITOR;
+			}
+			refresh(g);
+		}
 		return;
 	}
 	const cell *c = &g->cells[index];
@@ -2215,7 +2529,7 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		hint(g, C_LABEL, "Open EDITOR or BANK to drop");
 		return false;
 	}
-	const int channel = rail_channel_at(x, y);
+	const int channel = row_at(g, x, y);
 	const bool in_list = page == PAGE_BANK && y >= BANK_ADD_Y && y < BANK_Y + BANK_ROWS * BANK_ROW_H;
 	const bool add = in_list && x >= BANK_ADD_X && x < BANK_RIGHT + 2;
 	const int place = in_list && !add ? bank_place_at(g, x, y) : -1;
@@ -2381,6 +2695,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_TIMER:
 		g->message_ticks -= g->message_ticks > 0;
 		g->flash_ticks -= g->flash_ticks > 0;
+		host_tick(g);
 		if (g->env_drag != ENV_NONE) {
 			envelope_hand(g);
 		}
@@ -2466,6 +2781,10 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->mouse_x = g->mouse_y = -1;
 	g->key_channel = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
+	// Values the host sent before the window opened mark nothing.
+	for (int i = 0; g->source.host_values && i < GUI_HOST_SLOTS; i++) {
+		g->host_seen[i] = __atomic_load_n(&g->source.host_values[i], __ATOMIC_RELAXED);
+	}
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
 }

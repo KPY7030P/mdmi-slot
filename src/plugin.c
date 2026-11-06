@@ -62,17 +62,41 @@ typedef struct {
 	uint32_t edits_read;
 	uint32_t notes[GUI_NUM_MIDI_CHANNELS];
 	uint8_t held[GUI_NUM_MIDI_CHANNELS];
+	// Written by the writer only.
+	gui_psg_times psg_times;
+	uint32_t host_values[GUI_HOST_SLOTS];
 } mdmi_plugin;
 
 typedef struct {
-	mdmi_engine *engine;
+	mdmi_plugin *self;
 	uint32_t offset;
 } emit_target;
+
+// What the ROM's PSG channels get decides where their envelopes are: a Note On starts one, a Note
+// Off of the key it plays or All Notes Off releases it (midi.c midi_note_off). Legato, a held note
+// coming back and portamento between held keys aren't followed (parking).
+static void time_psg_notes(mdmi_plugin *self, uint64_t when, const uint8_t *bytes, size_t length)
+{
+	const int status = bytes[0] & 0xF0, psg = (bytes[0] & 0x0F) - PATCH_NUM_FM_CHANNELS;
+	if (length < 3 || psg < 0 || psg >= PATCH_NUM_PSG_CHANNELS) {
+		return;
+	}
+	gui_psg_times *times = &self->psg_times;
+	if (status == 0x90 && bytes[2] > 0) {
+		times->key[psg] = bytes[1];
+		__atomic_store_n(&times->off[psg], GUI_NEVER, __ATOMIC_RELEASE);
+		__atomic_store_n(&times->on[psg], when, __ATOMIC_RELEASE);
+	} else if ((((status == 0x80 || status == 0x90) && bytes[1] == times->key[psg]) || (status == 0xB0 && bytes[1] == 123))
+		&& __atomic_load_n(&times->off[psg], __ATOMIC_ACQUIRE) == GUI_NEVER) {
+		__atomic_store_n(&times->off[psg], when, __ATOMIC_RELEASE);
+	}
+}
 
 static void emit_to_engine(void *context, const uint8_t *bytes, size_t length)
 {
 	emit_target *target = context;
-	mdmi_engine_midi(target->engine, target->offset, bytes, length);
+	time_psg_notes(target->self, target->self->psg_times.clock + target->offset, bytes, length);
+	mdmi_engine_midi(target->self->engine, target->offset, bytes, length);
 }
 
 static void apply_filter(mdmi_plugin *self)
@@ -169,7 +193,7 @@ static void plugin_stop_processing(const clap_plugin_t *plugin)
 static void plugin_reset(const clap_plugin_t *plugin)
 {
 	mdmi_plugin *self = self_of(plugin);
-	emit_target target = {self->engine, 0};
+	emit_target target = {self, 0};
 	patch_all_notes_off(&self->patch, emit_to_engine, &target);
 	for (int channel = 0; channel < GUI_NUM_MIDI_CHANNELS; channel++) {
 		release_notes(self, channel);
@@ -230,7 +254,7 @@ static void track_midi_notes(mdmi_plugin *self, const uint8_t *bytes)
 
 static void handle_midi(mdmi_plugin *self, uint32_t time, const uint8_t *bytes, size_t length)
 {
-	emit_target target = {self->engine, time};
+	emit_target target = {self, time};
 	if (patch_midi(&self->patch, bytes, length, emit_to_engine, &target)) {
 		self->knobs_moved = true;
 	}
@@ -244,12 +268,23 @@ static void set_param(mdmi_plugin *self, uint32_t id, int value, uint32_t time)
 	if (id == GLOBAL_FILTER) {
 		apply_filter(self);
 	}
-	emit_target target = {self->engine, time};
+	emit_target target = {self, time};
 	patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
+}
+
+// A value from the host, whatever it is: Live sends them only while a lane plays, and doesn't send
+// back what the window told it (stage 10 experiment, D32).
+static void count_host_value(mdmi_plugin *self, uint32_t id)
+{
+	int channel, param;
+	if (patch_id_split(id, &channel, &param)) {
+		__atomic_add_fetch(&self->host_values[GUI_HOST_SLOT(channel, param)], 1, __ATOMIC_RELAXED);
+	}
 }
 
 static void handle_param(mdmi_plugin *self, const clap_event_param_value_t *event)
 {
+	count_host_value(self, event->param_id);
 	set_param(self, event->param_id, (int)(event->value + 0.5), event->header.time);
 }
 
@@ -344,7 +379,7 @@ static void handle_event(mdmi_plugin *self, const clap_event_header_t *header)
 	}
 	case CLAP_EVENT_MIDI_SYSEX: {
 		const clap_event_midi_sysex_t *sysex = (const clap_event_midi_sysex_t *)header;
-		emit_target target = {self->engine, header->time};
+		emit_target target = {self, header->time};
 		if (sysex->size > 0) {
 			patch_midi(&self->patch, sysex->buffer, sysex->size, emit_to_engine, &target);
 		}
@@ -380,7 +415,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 	bool state_taken = patch_take_incoming(&self->patch);
 	if (__atomic_exchange_n(&self->sync_pending, 0, __ATOMIC_ACQ_REL) || state_taken) {
 		apply_filter(self);
-		emit_target target = {engine, 0};
+		emit_target target = {self, 0};
 		if (__atomic_exchange_n(&self->notes_off_pending, 0, __ATOMIC_ACQ_REL)) {
 			patch_all_notes_off(&self->patch, emit_to_engine, &target);
 		}
@@ -407,7 +442,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 				}
 			}
 		}
-		emit_target target = {engine, time};
+		emit_target target = {self, time};
 		patch_flush(&self->patch, emit_to_engine, &target);
 		first = end;
 	}
@@ -431,6 +466,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		mdmi_engine_render(engine, left ? left + done : scratch_left, right ? right + done : scratch_right, frames);
 		done += frames;
 	}
+	__atomic_store_n(&self->psg_times.clock, self->psg_times.clock + process->frames_count, __ATOMIC_RELEASE);
 	return CLAP_PROCESS_CONTINUE;
 }
 
@@ -576,6 +612,7 @@ static void params_flush(const clap_plugin_t *plugin, const clap_input_events_t 
 		const clap_event_header_t *header = in->get(in, i);
 		if (header->space_id == CLAP_CORE_EVENT_SPACE_ID && header->type == CLAP_EVENT_PARAM_VALUE) {
 			const clap_event_param_value_t *event = (const clap_event_param_value_t *)header;
+			count_host_value(self, event->param_id);
 			if (patch_set(&self->patch, event->param_id, (int)(event->value + 0.5))) {
 				request_mark_dirty(self);
 			}
@@ -685,6 +722,8 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.engine = self->engine,
 		.patch = &self->patch,
 		.notes = self->notes,
+		.psg_times = &self->psg_times,
+		.host_values = self->host_values,
 		.version = plugin_descriptor.version,
 		.page = &self->view.page,
 		.channel = &self->view.channel,
@@ -853,6 +892,9 @@ static const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *f
 		return NULL;
 	}
 	self->host = host;
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		self->psg_times.on[i] = self->psg_times.off[i] = GUI_NEVER;
+	}
 	self->plugin.desc = &plugin_descriptor;
 	self->plugin.plugin_data = self;
 	self->plugin.init = plugin_init;

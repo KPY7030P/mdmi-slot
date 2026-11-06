@@ -146,27 +146,44 @@ static void remember(mdmi_files *files, int undo, int target, const patch_instru
 	}
 }
 
-static void put_on_channel(mdmi_files *files, int channel, const patch_instrument *instrument)
+// Undo puts the channel's base back with its sound (D31).
+static void remember_base(mdmi_files *files, int channel)
+{
+	patch_base_view(files->host.patch, channel, &files->undo_base_instrument, &files->undo_base_envelope);
+}
+
+// A file is the channel's base as well; undo gives the one the channel had.
+static void put_on_channel(mdmi_files *files, int channel, const patch_instrument *instrument, const patch_instrument *base)
 {
 	patch_instrument before;
 	channel_instrument(files->host.patch, channel, &before);
-	patch_load_voice(files->host.patch, channel, instrument);
+	patch_instrument before_base;
+	patch_base_view(files->host.patch, channel, &before_base, NULL);
+	patch_load_voice(files->host.patch, channel, instrument, base);
 	remember(files, UNDO_CHANNEL, channel, &before, NULL, NULL, 0);
+	files->undo_base_instrument = before_base;
 	files->host.handed(files->host.context, false);
 }
 
-static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_envelope *envelope)
+static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_envelope *envelope, const patch_envelope *base)
 {
 	patch_envelope before;
 	channel_envelope(files->host.patch, channel, &before);
-	patch_load_envelope(files->host.patch, channel, envelope);
+	patch_envelope before_base;
+	patch_base_view(files->host.patch, channel, NULL, &before_base);
+	patch_load_envelope(files->host.patch, channel, envelope, base);
 	remember(files, UNDO_CHANNEL, channel, NULL, &before, NULL, 0);
+	files->undo_base_envelope = before_base;
 	files->host.handed(files->host.context, false);
 }
 
+// A drawing keeps the base: what the channel got stays what it is compared with.
 void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope)
 {
-	patch_load_envelope(files->host.patch, channel, envelope);
+	if (before) {
+		remember_base(files, channel);
+	}
+	patch_load_envelope(files->host.patch, channel, envelope, NULL);
 	if (before) {
 		remember(files, UNDO_CHANNEL, channel, NULL, before, NULL, 0);
 		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d envelope before drawing", channel + 1);
@@ -269,7 +286,7 @@ bool files_open(mdmi_files *files, const char *path, int channel, char *message,
 		if (!read_envelope(path, &envelope, message, size)) {
 			return false;
 		}
-		put_envelope_on_channel(files, channel, &envelope);
+		put_envelope_on_channel(files, channel, &envelope, &envelope);
 		snprintf(message, size, "Loaded %s to CH%d", envelope.name, channel + 1);
 		return true;
 	}
@@ -282,7 +299,7 @@ bool files_open(mdmi_files *files, const char *path, int channel, char *message,
 		if (!read_instrument(path, &instrument, message, size)) {
 			return false;
 		}
-		put_on_channel(files, channel, &instrument);
+		put_on_channel(files, channel, &instrument, &instrument);
 		snprintf(message, size, "Loaded %s to CH%d", instrument.name, channel + 1);
 		return true;
 	}
@@ -436,11 +453,11 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 	}
 	snprintf(message, size, "Undone: %s", files->undo_text);
 	if (undo == UNDO_CHANNEL && is_psg(target)) {
-		patch_envelope back = files->undo_envelope;
-		put_envelope_on_channel(files, target, &back);
+		patch_envelope back = files->undo_envelope, base = files->undo_base_envelope;
+		put_envelope_on_channel(files, target, &back, &base);
 	} else if (undo == UNDO_CHANNEL) {
-		patch_instrument back = files->undo_instrument;
-		put_on_channel(files, target, &back);
+		patch_instrument back = files->undo_instrument, base = files->undo_base_instrument;
+		put_on_channel(files, target, &back, &base);
 	} else if (undo == UNDO_ENVELOPE_PLACE) {
 		patch_envelope back = files->undo_envelope;
 		put_envelope_in_place(files, target, &back);

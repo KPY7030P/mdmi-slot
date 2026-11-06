@@ -21,6 +21,23 @@
 #define GUI_NOTE_PACK(key, velocity, held) \
 	((uint32_t)(key) | ((uint32_t)(velocity) << 8) | ((uint32_t)(held) << 16) | (1u << 24))
 
+// When the PSG channels' notes last started and stopped as sent to the ROM, in samples of the
+// plugin's clock, which counts the samples processed (stage 10). The window reckons the envelope's
+// frame from them (D29). GUI_NEVER: no note yet, or the note is still held.
+#define GUI_NEVER UINT64_MAX
+typedef struct {
+	uint64_t clock;
+	uint64_t on[PATCH_NUM_PSG_CHANNELS];
+	uint64_t off[PATCH_NUM_PSG_CHANNELS];
+	// The key of the last Note On, which the writer alone reads.
+	uint8_t key[PATCH_NUM_PSG_CHANNELS];
+} gui_psg_times;
+
+// How many values the host sent each knob (stage 10, D32), at GUI_HOST_SLOT of its channel (-1
+// for a global) and param. The window marks a knob for a while after its count moved.
+#define GUI_HOST_SLOTS ((PATCH_NUM_CHANNELS + 1) * PATCH_NUM_CHANNEL_PARAMS)
+#define GUI_HOST_SLOT(channel, param) (((channel) + 1) * PATCH_NUM_CHANNEL_PARAMS + (param))
+
 // What edit() asks for: a gesture around one or more values, as a host records a knob.
 enum { GUI_EDIT_BEGIN, GUI_EDIT_SET, GUI_EDIT_END };
 
@@ -28,6 +45,8 @@ typedef struct {
 	mdmi_engine *engine;
 	mdmi_patch *patch;
 	const uint32_t *notes;
+	const gui_psg_times *psg_times;
+	const uint32_t *host_values;
 	const char *version;
 	// Which page and channel are open. They belong to the plugin instance, so they outlive the
 	// window and are saved with the project. Only a view: no knob depends on them.

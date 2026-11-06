@@ -21,8 +21,10 @@
 #define HEADER_H 28
 #define TABLE_BOTTOM 480
 #define BOOT_TIMEOUT_MS 30000
-#define BUTTON_EDITOR_X 100
-#define BUTTON_ROM_X 260
+// Header buttons since stage 10: ALL 60-116, EDITOR 120-200, BANK 204-284, ROM 288-344.
+#define BUTTON_ALL_X 88
+#define BUTTON_EDITOR_X 160
+#define BUTTON_ROM_X 316
 #define BUTTON_Y 12
 // Channel 4 in the rail, Op1 TL on the FM page, and the ids of Op1 TL on channels 3 and 4.
 #define RAIL_X 100
@@ -37,7 +39,7 @@
 #define LFO_RATE_Y 484
 #define LFO_RATE 3
 // The bank page's button, its third place, and channel 4's Preset.
-#define BUTTON_BANK_X 180
+#define BUTTON_BANK_X 244
 #define BANK_ROW_X 400
 #define BANK_ROW3_Y 122
 #define CH4_PRESET 1400
@@ -71,6 +73,17 @@
 #define SCROLL_X 702
 #define SCROLL_TOP 72
 #define SCROLL_BOTTOM 452
+// Stage 10: the ALL page. Channel 2's row, its VOL and PAN R, its id, and the sound column.
+#define ALL_CH2_Y 96
+#define ALL_VOL_X 400
+#define ALL_PAN_R_X 518
+#define ALL_SOUND_X 290
+#define ALL_SOUND_RIGHT 346
+#define CH2_VOLUME 1201
+#define CH2_PAN 1202
+#define COLOR_FM 0x4422EE
+#define COLOR_MARK 0xEECC66
+#define FOOTER_TOP 504
 
 static int failures;
 
@@ -136,11 +149,11 @@ static float left[BLOCK], right[BLOCK];
 static uint32_t pixels[WIDTH * HEIGHT];
 
 // One block of audio, with an optional MIDI message, then whatever the window wants to do.
-static void run_block(const clap_event_midi_t *midi)
+static void run_block(const void *event)
 {
 	float *channels[2] = {left, right};
 	clap_audio_buffer_t out = {channels, NULL, 2, 0, 0};
-	clap_input_events_t in = {(void *)midi, in_size, in_get};
+	clap_input_events_t in = {(void *)event, in_size, in_get};
 	clap_output_events_t out_events = {NULL, out_try_push};
 	clap_process_t process = {0};
 	process.frames_count = BLOCK;
@@ -487,8 +500,35 @@ int main(int argc, char **argv)
 		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_OP1_TL && pushed_id[2] == CH4_OP1_TL, "a drag is one gesture on channel 4's Op1 TL");
 		CHECK(pushed[1] > 0 && pushed_id[1] == CH4_OP1_TL && (int)pushed_value == get_value(CH4_OP1_TL), "the host is told each value");
 		CHECK(get_value(CH4_OP1_TL) == ch4_before + 10 && get_value(CH3_OP1_TL) == ch3_before, "20 px up raises it by 10, from %d to %d, channel 3 untouched", ch4_before, get_value(CH4_OP1_TL));
+		// Stage 10: TL now differs from what the channel got, its GM place (D31).
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		run_ms(100);
 		capture(window);
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 10, OP1_TL_Y + 12, COLOR_MARK) > 10, "the tweaked TL is amber, with a mark where the place's value is");
 		save_bmp(argv[2], "fm");
+		// The hover leaves at once without a real mouse; held down, the cell stays the one pointed at.
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		run_ms(100);
+		capture(window);
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		run_ms(100);
+		CHECK(count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_MARK) > 50, "and the footer says TL against GM");
+		save_bmp(argv[2], "fm-footer");
+		// A value from the host marks its cell with a red dot for two seconds, even one the knob
+		// already has; the mouse on the cell takes the dot away (D32).
+		clap_event_param_value_t from_host = {{sizeof(from_host), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, CH4_OP1_TL, NULL, -1, -1, -1, -1, get_value(CH4_OP1_TL)};
+		run_block(&from_host);
+		run_ms(100);
+		capture(window);
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 9, "a TL value from the host puts a red dot on its cell");
+		click(window, OP1_TL_X, OP1_TL_Y);
+		run_ms(100);
+		capture(window);
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 0, "a touch with the mouse takes it away");
+		run_block(&from_host);
+		run_ms(2300);
+		capture(window);
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 0, "and two seconds without values do");
 		memset(pushed, 0, sizeof(pushed));
 		click(window, RAIL_X, RAIL_CH2_Y);
 		run_ms(100);
@@ -509,6 +549,36 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(LFO_RATE_X, LFO_RATE_Y));
 		run_ms(100);
 		CHECK(first == 1 && get_value(LFO_RATE) == 0, "a click steps LFO Rate to the next value, eight clicks go round to the first");
+
+		// The overview (stage 10): VOL on a row is one gesture on that row's channel, PAN a click,
+		// every FM row draws its algorithm and the sound opens the channel's page.
+		click(window, BUTTON_ALL_X, BUTTON_Y);
+		run_ms(100);
+		memset(pushed, 0, sizeof(pushed));
+		const int vol_before = get_value(CH2_VOLUME);
+		drag(window, ALL_VOL_X, ALL_CH2_Y, ALL_CH2_Y + 20);
+		run_ms(100);
+		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH2_VOLUME && pushed_id[1] == CH2_VOLUME && get_value(CH2_VOLUME) == vol_before - 10,
+			"VOL dragged on channel 2's row of ALL is one gesture on its Volume, %d to %d", vol_before, get_value(CH2_VOLUME));
+		click(window, ALL_PAN_R_X, ALL_CH2_Y);
+		run_ms(100);
+		CHECK(get_value(CH2_PAN) == 2, "a click on R pans channel 2 right");
+		capture(window);
+		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM) > 6 * 50, "the FM rows draw their algorithms");
+		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 30, RAIL_CH8_Y + 10, COLOR_PSG) > 0, "the PSG rows draw their envelopes");
+		// A held note on channel 8 puts the envelope's cursor on its row.
+		send_midi(0x97, 72, 100);
+		run_ms(300);
+		capture(window);
+		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, COLOR_PLAYING) > 20, "a held note on channel 8 draws the envelope's cursor");
+		save_bmp(argv[2], "all");
+		send_midi(0x87, 72, 0);
+		click(window, ALL_SOUND_X, RAIL_CH8_Y);
+		run_ms(100);
+		capture(window);
+		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) > 0, "a click on channel 8's sound opens its envelope page");
+		click(window, RAIL_X, RAIL_CH4_Y);
+		run_ms(100);
 
 		// The bank: a click on a place sets the selected channel's Preset, as one gesture.
 		click(window, BUTTON_BANK_X, BUTTON_Y);
