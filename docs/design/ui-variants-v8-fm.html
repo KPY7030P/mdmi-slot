@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: страница FM, v8</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 40px; }
+  p, ul { max-width: 1100px; margin: 6px 0; }
+  li { margin: 2px 0; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .done { border: 1px solid #444; background: #161616; padding: 8px 14px; max-width: 1100px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid #383838; padding: 5px 9px; vertical-align: top; }
+  th { color: #eee; text-align: left; background: #1a1a1a; }
+  code { color: #eee; }
+  #zoom { position: fixed; right: 16px; top: 12px; background: #222; color: #eee; border: 1px solid #555; padding: 6px 10px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="zoom">Макеты x2</button>
+<main>
+<h1>MDMI: страница FM, v8</h1>
+<p>art-director, 2026-11-06. Макет 1 из v7 (FB горизонтальный) с правками. Окно 720x528, кода нет.</p>
+<div class="done"><b>Без изменений из v7:</b> ячейки канала в одну строку; общий график; SSG активного оператора в правом верхнем углу
+графика; AMS и FMS сверху блока схемы, ряд алгоритмов снизу; FB горизонтальный; колонки y 212-456, девять строк по 22 px.</div>
+
+<h2>Что изменилось</h2>
+<ul>
+<li><b>DT, RS и AM на одной сетке сегментов.</b> Слева у каждой строки поле подписи 21 px (подпись на x+4, до сегментов 7 px).
+Сегменты 12 px с шагом 13 начинаются на x+22. DT — 7 сегментов, последний кончается на x+112, на правом краю колонки,
+как полоски TL-RR. RS — первые 4 таких же сегмента. AM занимает остаток строки RS: от x+74 до x+112. Правые края DT, AM
+и полосок совпадают.</li>
+<li><b>Блок схемы компактнее:</b> 172 px вместо 228 (x 530-702). Внутри блока одна ширина:
+  <ul>
+  <li>AMS и FMS по 84 px с зазором 4;</li>
+  <li>рамка схемы на всю ширину блока;</li>
+  <li>ряд алгоритмов: 8 кнопок по 18 px с зазором 4.</li>
+  </ul>
+Правый край блока на линии 702, как у колонки OP4.</li>
+<li><b>График шире:</b> 282 px (x 242-524) вместо 228. Граница графика и блока ушла с линий колонок, как разрешил владелец.</li>
+<li><b>Шина выхода</b> отстоит от нижнего края рамки схемы на 6 px. Рамка кончается на y 184, ряд алгоритмов начинается на y 190.</li>
+</ul>
+
+<canvas id="c1"></canvas>
+<p class="lbl">Активен OP3: указатель на его AR.</p>
+
+<h2>Проверка по сетке в x2</h2>
+<canvas id="cg1"></canvas>
+<p class="lbl">Колонки OP1-OP4, низ. Жёлтый пунктир: левый и правый край каждой колонки (242/354, 358/470, 474/586, 590/702) и линии
+сегментов x+22 и x+74. Левые и правые края всех строк каждой колонки совпадают с пунктиром.</p>
+<canvas id="cg2" style="margin-top:12px"></canvas>
+<p class="lbl">Блок схемы. Пунктир: края блока 530 и 702, середина AMS/FMS (614/618), низ рамки 184 и верх ряда алгоритмов 190.</p>
+
+<h2>Что выбрать</h2>
+<table>
+<tr><th>№</th><th>Вопрос</th><th>Варианты</th><th>Рекомендую</th></tr>
+<tr><td>1</td><td>Жёлтый #EEEE22 заменить янтарным #EECC66 во всех ролях</td><td>заменить, остаётся 16 цветов / янтарный 17-м цветом</td><td>заменить</td></tr>
+</table>
+</main>
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", amber: "#EECC66", err: "#EE2222",
+};
+let g;
+function use(id, w, h) { const cv = typeof id === "string" ? document.getElementById(id) : id; cv.width = w; cv.height = h; g = cv.getContext("2d"); g.imageSmoothingEnabled = false; R(0, 0, w, h, C.bg); return cv; }
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c) { R(x, y, w, 1, c); R(x, y + h - 1, w, 1, c); R(x, y, 1, h, c); R(x + w - 1, y, 1, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) { const bits = parseInt(hex.substr(col * 2, 2), 16); for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z); }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n) : s; }
+function L(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let e = dx - dy;
+  g.fillStyle = c;
+  for (;;) { g.fillRect(x0, y0, 1, 1); if (x0 === x1 && y0 === y1) break; const e2 = 2 * e; if (e2 > -dy) { e -= dy; x0 += sx; } if (e2 < dx) { e += dx; y0 += sy; } }
+}
+function crop(id, fn, x, y, w, h, z) {
+  const off = document.createElement("canvas"); use(off, 720, 528); fn();
+  const cv = document.getElementById(id); cv.width = w * z; cv.height = h * z;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false; cx.drawImage(off, x, y, w, h, 0, 0, w * z, h * z);
+}
+const NOTE = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
+const nn = p => NOTE[p % 12] + (Math.floor(p / 12) - 1);
+
+// ---------- data: channel 2 "Rhodes", algorithm 4 ----------
+const ALG = 4, FB = 6, CARR = [8, 8, 8, 8, 10, 14, 14, 15];
+// TL MUL DT(-3..3) AR DR SL SR RR RS AM SSG
+const OPS = [
+  { tl: 57, mul: 12, dt: -2, ar: 31, dr: 7, sl: 11, sr: 0, rr: 8, rs: 1, am: 0, ssg: 0, from: { tl: 34 } },
+  { tl: 9, mul: 1, dt: 0, ar: 31, dr: 4, sl: 1, sr: 4, rr: 8, rs: 2, am: 1, ssg: 0, from: { sr: 0 } },
+  { tl: 34, mul: 1, dt: 1, ar: 22, dr: 5, sl: 11, sr: 0, rr: 8, rs: 2, am: 0, ssg: 10 },
+  { tl: 9, mul: 1, dt: 0, ar: 31, dr: 4, sl: 6, sr: 4, rr: 8, rs: 2, am: 1, ssg: 0, host: { ar: 1 } },
+];
+const isCar = op => CARR[ALG] >> op & 1;
+
+// ---------- rail (0A, 16 segments) ----------
+const RAIL = [
+  { name: "Synth Bass 1", seen: 1, held: 1, note: 36, vel: 110, vol: 112 },
+  { name: "Rhodes", star: 1, seen: 1, held: 1, note: 64, vel: 84, vol: 100 },
+  { name: "Organ Stack", sp: 1, lead: [48, 1], aux: [[60, 1], [64, 1], [67, 0]] },
+  { name: "strings_warm", seen: 1, held: 1, note: 59, vel: 60, vol: 96 },
+  { name: "Overdrive Guit", seen: 1, held: 0, note: 52, vel: 96, vol: 104 },
+  { name: "Synth Brass 1", seen: 0, vol: 110 },
+  { name: "Envelope 0", psg: 1, seen: 1, held: 1, note: 72, vel: 100, vol: 96 },
+  { name: "Square Lead", psg: 1, seen: 1, held: 1, note: 76, vel: 88, vol: 90 },
+  { name: "tremolo_pad", psg: 1, seen: 1, held: 0, note: 67, vel: 50, vol: 90 },
+  { name: "Envelope 0", psg: 1, seen: 0, vol: 80 },
+];
+const rowY = i => i < 6 ? 44 + i * 40 : 300 + (i - 6) * 40;
+function segBar(x, y, w, h, c, dark) {
+  const n = 16, pitch = Math.floor(w / n), eff = c.seen ? c.vol * c.vel / 127 / 127 : 0;
+  const nv = Math.round(n * c.vol / 127), ne = c.seen ? Math.max(1, Math.round(n * eff)) : 0, lit = c.held ? C.lit : C.hint;
+  for (let k = 0; k < n; k++) R(x + k * pitch, y, pitch - 1, h, k < ne ? lit : k < nv ? dark : C.cell);
+}
+function spNotes(x, y, c) {
+  T(nn(c.lead[0]), x, y, c.lead[1] ? C.lit : C.hint, 1);
+  c.aux.forEach(([p, h], k) => T(nn(p), x + 30 + k * 24, y, h ? C.label : C.line, 1));
+}
+function railRow(i, sel) {
+  const c = RAIL[i], y = rowY(i), kind = c.sp ? C.fmL : c.psg ? C.psg : C.fm, dark = c.psg ? C.psgD : C.fmD;
+  R(0, y, 232, 39, C.bg); R(0, y + 39, 232, 1, C.cell);
+  if (sel) R(4, y, 229, 39, dark);
+  R(0, y, 4, 39, kind);
+  T(String(i + 1), 10, y + 8, C.text, 3);
+  T(cut(c.name, 13) + (c.star ? "*" : ""), 54, y + 8, C.text, 2);
+  if (c.sp) { spNotes(130, y + 22, c); return; }
+  segBar(54, y + 25, 140, 4, c, dark);
+  TR(c.seen ? nn(c.note) : "---", 226, y + 22, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1);
+}
+function frame(sel) {
+  R(0, 0, 720, 28, C.bg); R(0, 27, 720, 1, C.line); T("MDMI", 8, 7, C.text, 2);
+  [["ALL", 60, 56], ["EDITOR", 120, 80], ["BANK", 204, 80], ["ROM", 288, 56]].forEach(([l, x, w]) => { const on = l === "EDITOR"; R(x, 2, w, 24, on ? C.text : C.cell); TC(l, x, w, 7, on ? C.bg : C.label, 2); });
+  T("RUNNING", 356, 7, C.lit, 2);
+  [["LOAD", 536, 1], ["SAVE", 596, 1], ["UNDO", 656, 0]].forEach(([l, x, en]) => { B(x, 2, 56, 24, en ? C.line : C.cell); TC(l, x, 56, 7, en ? C.label : C.line, 2); });
+  R(0, 28, 232, 16, C.cell); T("YM2612", 8, 32, C.fmL, 1); R(0, 284, 232, 16, C.cell); T("SN76489", 8, 288, C.psg, 1);
+  for (let i = 0; i < 10; i++) railRow(i, i === sel);
+  R(232, 28, 1, 432, C.line);
+  R(0, 460, 720, 1, C.line);
+  [["LFO", "ON"], ["LFO RATE", "3.98 HZ"], ["FILTER", "OFF"], ["CH3 SPECIAL", "ON"], ["DAC", "OFF"]].forEach(([l, v], i) => { const x = 8 + i * 118; R(x, 466, 114, 32, C.cell); T(l, x + 4, 470, C.label, 1); T(v, x + 4, 480, C.text, 2); });
+}
+function footer(s) { T(s, 8, 512, C.label, 1); TR("0.9", 712, 512, C.hint, 1); }
+
+// ---------- cells ----------
+function vcell(x, y, w, h, label, val, max, o = {}) {
+  R(x, y, w, h, C.cell);
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), h, C.fmD); R(mid, y, 1, h, C.line); }
+  else R(x, y, Math.round(w * val / max), h, C.fmD);
+  if (o.from != null) R(x + Math.round(w * o.from / max) - 1, y - 2, 2, h + 4, C.amber);
+  if (label) T(label, x + 4, y + Math.floor((h - 7) / 2), o.from != null ? C.amber : C.label, 1);
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + Math.floor((h - 14) / 2), C.text, 2);
+  if (o.host) R(x + w - 3, y, 3, 3, C.err);
+}
+const COLS = [242, 358, 474, 590];
+function pageTop() {
+  T("2", 242, 30, C.text, 3); T("Rhodes*", 288, 34, C.text, 2); TR("GM 5", 708, 34, C.label, 2);
+  vcell(COLS[0], 56, 112, 20, "VOL", 100, 127); vcell(COLS[1], 56, 112, 20, "PAN", 0, 1, { text: "L" });
+  vcell(COLS[2], 56, 112, 20, "TUNE", 0, 99, { bip: 1, text: "+0 CT" }); vcell(COLS[3], 56, 112, 20, "BEND", 2, 24, { text: "2 ST" });
+  vcell(COLS[0], 78, 112, 20, "PORTA", 0, 1, { text: "OFF" }); vcell(COLS[1], 78, 112, 20, "P.TIME", 0, 127);
+  R(233, 101, 487, 1, C.cell);
+}
+// Small controls.
+function dtSeg(x, y, w, h, v, label) {
+  let x0 = x;
+  if (label) { T("DT", x + 2, y + Math.floor((h - 7) / 2), C.label, 1); x0 = x + 18; }
+  const pw = Math.floor((x + w - x0) / 7);
+  for (let k = 0; k < 7; k++) { const on = k - 3 === v; R(x0 + k * pw, y, pw - 1, h, on ? C.fmL : k === 3 ? C.line : C.cell); }
+}
+function rsSeg(x, y, w, h, v, label) {
+  let x0 = x;
+  if (label) { T("RS", x + 2, y + Math.floor((h - 7) / 2), C.label, 1); x0 = x + 18; }
+  const pw = Math.floor((x + w - x0) / 4);
+  for (let k = 0; k < 4; k++) R(x0 + k * pw, y, pw - 1, h, k === v ? C.fmL : C.cell);
+}
+function amBtn(x, y, w, h, on) { if (on) R(x, y, w, h, C.fm); else B(x, y, w, h, C.line); TC("AM", x, w, y + Math.floor((h - 7) / 2), on ? C.text : C.label, 1); }
+const SSG = {
+  8: [[0, 0], [.25, 1], [.25, 0], [.5, 1], [.5, 0], [.75, 1], [.75, 0], [1, 1]],
+  9: [[0, 0], [.25, 1], [1, 1]],
+  10: [[0, 0], [.25, 1], [.5, 0], [.75, 1], [1, 0]],
+  11: [[0, 0], [.25, 1], [.25, 0], [1, 0]],
+  12: [[0, 1], [.25, 0], [.25, 1], [.5, 0], [.5, 1], [.75, 0], [.75, 1], [1, 0]],
+  13: [[0, 1], [.25, 0], [1, 0]],
+  14: [[0, 1], [.25, 0], [.5, 1], [.75, 0], [1, 1]],
+  15: [[0, 1], [.25, 0], [.25, 1], [1, 1]],
+};
+function ssgIcon(x, y, w, h, v, c) {
+  const p = SSG[v]; if (!p) return;
+  for (let k = 1; k < p.length; k++) L(x + p[k - 1][0] * (w - 1), y + p[k - 1][1] * (h - 1), x + p[k][0] * (w - 1), y + p[k][1] * (h - 1), c);
+}
+function ssgCell(x, y, w, h, v, label) {
+  R(x, y, w, h, C.cell);
+  let x0 = x + 3;
+  if (label) { T("SSG", x + 3, y + Math.floor((h - 7) / 2), C.label, 1); x0 = x + 24; }
+  if (v >= 8) ssgIcon(x0, y + Math.floor((h - 8) / 2), Math.min(24, x + w - x0 - 3), 8, v, C.fmL);
+  else T("OFF", x + w - 4 - TW("OFF", 1) + 1, y + Math.floor((h - 7) / 2), C.text, 1);
+}
+
+// ---------- envelope model (approximate) ----------
+function att(o, t) {
+  const tA = o.ar >= 31 ? 0.002 : o.ar === 0 ? 99 : 4 * Math.pow(2, -o.ar / 3.2);
+  let a;
+  if (t < tA) a = 96 * Math.pow(1 - t / tA, 3);
+  else {
+    const sl = o.sl === 15 ? 93 : o.sl * 3, rd = o.dr === 0 ? 0 : 10 * Math.pow(2, o.dr / 4), rs = o.sr === 0 ? 0 : 10 * Math.pow(2, o.sr / 4);
+    const tt = Math.min(t, 1) - tA, tD = rd ? sl / rd : 99;
+    a = tt < tD ? tt * rd : sl + (tt - tD) * rs;
+    if (t > 1) a += (t - 1) * 10 * Math.pow(2, (o.rr * 2 + 1) / 4);
+  }
+  return Math.min(96, a + o.tl * 0.75);
+}
+// The op's graph: dark body under the curve, bright line, OFF mark at 1 s. o2: {line, body, points, thin}
+function envCurve(x, y, w, h, o, s) {
+  const ys = [];
+  for (let k = 0; k < w; k++) { const t = Math.pow(k / (w - 1), 2) * 2; ys.push(y + Math.round(att(o, t) / 96 * (h - 1))); }
+  if (s.body) for (let k = 0; k < w; k++) R(x + k, ys[k], 1, y + h - ys[k], s.body);
+  for (let k = 0; k < w; k++) { const a = ys[k], b = k ? ys[k - 1] : ys[k]; R(x + k, Math.min(a, b), 1, Math.abs(a - b) + 1, s.line); }
+  if (s.points) {
+    const kp = (t) => Math.round(Math.sqrt(t / 2) * (w - 1));
+    const tA = o.ar >= 31 ? 0.002 : 4 * Math.pow(2, -o.ar / 3.2);
+    [tA, tA + (o.sl * 3) / (10 * Math.pow(2, o.dr / 4))].forEach(t => { const k = Math.min(w - 1, kp(t)); R(x + k - 1, ys[k] - 1, 3, 3, C.text); });
+  }
+}
+function envBox(x, y, w, h, o, s = {}) {
+  R(x, y, w, h, C.bg); B(x, y, w, h, C.cell);
+  const off = x + Math.round(Math.sqrt(0.5) * (w - 3)) + 1;
+  for (let yy = y + 2; yy < y + h - 2; yy += 3) R(off, yy, 1, 1, C.line);
+  if (s.offLabel) T("OFF", off - 18, y + 2, C.hint, 1);
+  envCurve(x + 1, y + 1, w - 2, h - 2, o, s.curve || { body: C.fmD, line: C.fmL, points: true });
+}
+
+
+// ======================= v5 =======================
+// A value cell with its own fill colour.
+function vc(x, y, w, h, label, val, max, o = {}) {
+  const fill = o.fill || C.fmD;
+  R(x, y, w, h, C.cell);
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), h, fill); R(mid, y, 1, h, C.line); }
+  else R(x, y, Math.round(w * val / max), h, fill);
+  if (o.from != null) R(x + Math.round(w * o.from / max) - 1, y - 2, 2, h + 4, C.amber);
+  if (label) T(label, x + 4, y + Math.floor((h - 7) / 2), o.from != null ? C.amber : C.label, 1);
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + Math.floor((h - 14) / 2), C.text, 2);
+  if (o.host) R(x + w - 3, y, 3, 3, C.err);
+}
+function btn1(x, y, w, h, label, on, onFill) {
+  if (on) R(x, y, w, h, onFill || C.fm); else B(x, y, w, h, C.line);
+  TC(label, x, w, y + Math.floor((h - 7) / 2), on ? C.text : C.label, 1);
+}
+// The one channel row, y 56, the same places on every chip.
+function channelRow(kind) {
+  const y = 56, fill = kind === "psg" ? C.psgD : C.fmD;
+  if (kind === "dac") { T("VOLUME, PAN AND PITCH DO NOTHING ON SAMPLES. ONE SAMPLE AT A TIME.", 242, 62, C.hint, 1); return; }
+  vc(242, y, 112, 20, "VOL", kind === "psg" ? 96 : 100, 127, { fill });
+  if (kind === "psg") { B(358, y, 60, 20, C.cell); T("PAN", 362, y + 6, C.line, 1); TR("-", 414, y + 2, C.line, 2); }
+  else ["L", "C", "R"].forEach((l, k) => { const bx = 358 + k * 20, on = k === 0; R(bx, y, 19, 20, on ? C.text : C.cell); T(l, bx + 4, y + 3, on ? C.bg : C.label, 2); });
+  vc(422, y, 96, 20, "TUNE", 0, 99, { bip: 1, text: "+0", fill });
+  vc(522, y, 64, 20, "BEND", 2, 24, { fill });
+  btn1(590, y, 50, 20, "PORTA", false);
+  vc(644, y, 64, 20, "TIME", 0, 127, { fill });
+}
+function nameRow(n, name, src, file) {
+  T(String(n), 242, 30, C.text, 3); T(name, 288, 34, C.text, 2);
+  if (file) { TR("FILE", 708, 31, C.label, 1); TR(src, 708, 41, C.label, 1); } else TR(src, 708, 34, C.label, 2);
+  R(233, 79, 487, 1, C.cell);
+}
+function drawRow() {
+  use("crow", 487, 4 * 58);
+  const kinds = [["fm", C.fm, 2, "Rhodes*", "GM 5"], ["sp", C.fmL, 3, "Organ Stack", "organ_sp.vgi"], ["psg", C.psg, 7, "Envelope 0", "ROM 0"], ["dac", C.dac, 6, "Drum kit", "ROM KIT"]];
+  kinds.forEach(([k, col, n, name, src], i) => {
+    g.save(); g.translate(-233, i * 58 - 28);
+    R(233, 28, 4, 52, col); nameRow(n, name, src, k === "sp"); channelRow(k === "sp" ? "fm" : k);
+    g.restore();
+  });
+}
+
+// ---------- diagram, scalable, all eight algorithms ----------
+const APOS8 = [[[0,1],[1,1],[2,1],[3,1]], [[1,0],[1,2],[2,1],[3,1]], [[2,0],[1,1],[2,1],[3,1]], [[1,1],[2,1],[2,2],[3,1]],
+               [[0,1],[1,1],[2,1],[3,1]], [[0,0],[1,1],[2,1],[3,1]], [[0,1],[1,1],[2,1],[3,1]], [[0,1],[1,1],[2,1],[3,1]]];
+const LINK8 = [[[0,1],[1,2],[2,3]], [[0,2],[1,2],[2,3]], [[0,3],[1,2],[2,3]], [[0,1],[1,3],[2,3]], [[0,1],[2,3]], [[0,1],[0,2],[0,3]], [[0,1]], []];
+function diag(x0, y0, s) {
+  const xy = op => [x0 + s.ox + APOS8[ALG][op][0] * s.sx, y0 + s.oy + APOS8[ALG][op][1] * s.sy];
+  const b = s.b, half = b / 2 - 1, bus = y0 + s.bus;
+  for (const [f, t] of LINK8[ALG]) {
+    const [fx, fy] = xy(f), [tx, ty] = xy(t);
+    if (fy === ty) R(fx + b, fy + half, tx - fx - b, 2, C.label);
+    else { R(fx + b, fy + half, tx + half - fx - b + 2, 2, C.label); if (ty > fy) R(tx + half, fy + half, 2, ty - fy - half, C.label); else R(tx + half, ty + b, 2, fy + half - ty - b + 2, C.label); }
+  }
+  let left = x0 + s.right;
+  for (let op = 0; op < 4; op++) if (isCar(op)) { const [x, y] = xy(op); R(x + half, y + b, 2, bus - y - b, C.label); left = Math.min(left, x + half); }
+  R(left, bus, x0 + s.right - left, 2, C.label);
+  const [px, py] = xy(0);
+  R(px - 5, py - 4, 2, half + 6, C.label); R(px - 5, py - 4, b + 10, 2, C.label); R(px + b + 3, py - 4, 2, half + 6, C.label); R(px - 5, py + half, 5, 2, C.label);
+  for (let op = 0; op < 4; op++) {
+    const [x, y] = xy(op);
+    if (isCar(op)) R(x, y, b, b, C.fm); else { R(x, y, b, b, C.bg); B(x, y, b, b, C.fmL); B(x + 1, y + 1, b - 2, b - 2, C.fmL); }
+    T(String(op + 1), x + (b - 10) / 2, y + (b - 14) / 2, isCar(op) ? C.text : C.fmL, 2);
+  }
+  return [px, py];
+}
+// FB: label, value and 8 segments, put just above operator 1's loop.
+function fbWidget(x, y) {
+  T("FB", x, y + 1, C.label, 1);
+  for (let k = 0; k < 7; k++) R(x + 16 + k * 6, y, 5, 9, k < FB ? C.fmL : C.cell);
+  T(String(FB), x + 16 + 7 * 6 + 4, y + 1, C.text, 1);
+}
+function algButtons(x, y, w, h, step) {
+  for (let k = 0; k < 8; k++) { const bx = x + k * step, on = k === ALG; R(bx, y, w, h, on ? C.fm : C.cell); TC(String(k), bx, w, y + Math.floor((h - 14) / 2), on ? C.text : C.label, 2); }
+}
+
+
+
+// ======================= v7 =======================
+const ROWS7 = [["TL", "tl", 127], ["MUL", "mul", 15], ["AR", "ar", 31], ["DR", "dr", 31], ["SL", "sl", 15], ["SR", "sr", 31], ["RR", "rr", 15]];
+// Row tops: nine rows of 22, gap 3 inside a group and 6 between groups.
+const ROWY = (() => { const ys = [], groups = [2, 5, 2]; let y = 228; groups.forEach((n, gi) => { for (let k = 0; k < n; k++) { ys.push(y); y += 22 + (k < n - 1 ? 3 : 6); } }); return ys; })();
+function graph7(gx, gy, gw, gh, act, o = {}) {
+  R(gx, gy, gw, gh, C.bg); B(gx, gy, gw, gh, C.cell);
+  const iw = gw - 2, ih = gh - 2, off = gx + 1 + Math.round(Math.sqrt(0.5) * (iw - 1));
+  for (let yy = gy + 22; yy < gy + gh - 2; yy += 3) R(off, yy, 1, 1, C.line);
+  envCurve(gx + 1, gy + 1, iw, ih, OPS[act], { body: C.fmD, line: C.fmD });
+  [0, 1, 2, 3].filter(op => op !== act).forEach(op => envCurve(gx + 1, gy + 1, iw, ih, OPS[op], { line: C.hint }));
+  envCurve(gx + 1, gy + 1, iw, ih, OPS[act], { line: C.text, points: true });
+  T("OFF", off - 19, gy + 24, C.hint, 1);
+  const k = off - gx - 1, used = [];
+  [0, 1, 2, 3].forEach(op => {
+    let yy = gy + 1 + Math.round(att(OPS[op], Math.pow(k / (iw - 1), 2) * 2) / 96 * (ih - 1)) - 4;
+    yy = Math.max(gy + 24, yy);
+    while (used.some(u => Math.abs(u - yy) < 9)) yy += 9;
+    used.push(yy);
+    const c = op === act ? C.text : C.hint, ssg = OPS[op].ssg >= 8;
+    R(off + 3, yy, ssg ? 20 : 8, 9, C.bg); T(String(op + 1), off + 4, yy + 1, c, 1);
+    if (ssg) ssgIcon(off + 11, yy + 3, 9, 4, OPS[op].ssg, c);
+  });
+  [[0.1, "100 MS"], [0.5, "500 MS"], [2, "2 S"]].forEach(([t, s]) => { const x = gx + 1 + Math.round(Math.sqrt(t / 2) * (iw - 1)); R(x, gy + gh, 1, 3, C.hint); if (t < 2) T(s, x + 2, gy + gh - 10, C.label, 1); else TR(s, x - 2, gy + gh - 10, C.label, 1); });
+  // SSG of the active operator, top right.
+  const sx = gx + gw - 3 - 64, v = OPS[act].ssg;
+  R(sx, gy + 3, 64, 15, C.cell); T("SSG", sx + 3, gy + 7, C.label, 1);
+  if (v >= 8) ssgIcon(sx + 27, gy + 6, 33, 8, v, C.text); else TR("OFF", sx + 60, gy + 7, C.text, 1);
+  if (o.open) {
+    const w = 8 * 26 + 4 + 2, px = gx + gw - 3 - w, py = gy + 20;
+    R(px, py, w, 22, C.bg); B(px, py, w, 22, C.label);
+    // OFF and the eight shapes; 8 cells of 25 fit the narrower graph, OFF takes the first.
+    for (let n = 0; n < 9; n++) {
+      const cw = 22, x = px + 2 + n * 23, sv = n === 0 ? 0 : 7 + n, cur = sv === v, hov = sv === 13;
+      R(x, py + 2, cw, 18, cur ? C.fmD : C.cell); if (hov) B(x, py + 2, cw, 18, C.text);
+      if (n === 0) T("OFF", x + 2, py + 7, C.label, 1); else ssgIcon(x + 2, py + 7, 18, 8, sv, cur ? C.text : C.fmL);
+    }
+  }
+}
+function fbVertical(x, y, h) {
+  T("FB", x, y, C.label, 1); T(String(FB), x + 3, y + 10, C.text, 1);
+  const top = y + 22, seg = Math.floor((h - 22) / 7);
+  for (let k = 0; k < 7; k++) R(x, top + (6 - k) * seg, 12, seg - 1, k < FB ? C.fmL : C.cell);
+}
+
+// ======================= v8 =======================
+// One segment grid for DT, RS and AM: label field 21 px, segments 12 px on a 13 px pitch from x+22.
+const SEG0 = 22, SEGP = 13;
+function labelField(x, y, h, label) { R(x, y, SEG0 - 1, h, C.cell); T(label, x + 4, y + Math.floor((h - 7) / 2), C.label, 1); }
+function dtRow(x, y, h, v) {
+  labelField(x, y, h, "DT");
+  for (let k = 0; k < 7; k++) R(x + SEG0 + k * SEGP, y, SEGP - 1, h, k - 3 === v ? C.fmL : k === 3 ? C.line : C.cell);
+}
+function rsAmRow(x, y, h, rs, am) {
+  labelField(x, y, h, "RS");
+  for (let k = 0; k < 4; k++) R(x + SEG0 + k * SEGP, y, SEGP - 1, h, k === rs ? C.fmL : C.cell);
+  const ax = x + SEG0 + 4 * SEGP, aw = x + 112 - ax;
+  if (am) R(ax, y, aw, h, C.fm); else B(ax, y, aw, h, C.line);
+  TC("AM", ax, aw, y + Math.floor((h - 7) / 2), am ? C.text : C.label, 1);
+}
+function block8() {
+  const bx = 530, bw = 172;
+  vc(bx, 82, 84, 20, "AMS", 0, 3, { text: "0 DB" }); vc(bx + 88, 82, 84, 20, "FMS", 0, 7, { text: "0 %" });
+  R(bx, 106, bw, 78, C.bg); B(bx, 106, bw, 78, C.cell);
+  diag(bx, 106, { b: 18, sx: 38, sy: 18, ox: 14, oy: 14, bus: 69, right: 158 });
+  fbWidget(bx + 6, 110);
+  algButtons(bx, 190, 18, 16, 22);
+}
+function opColumn8(op, act) {
+  const x = COLS[op], o = OPS[op], f = o.from || {}, hs = o.host || {}, car = isCar(op), top = 212;
+  if (car) R(x, top, 112, 14, C.fm); else B(x, top, 112, 14, C.fmL);
+  T("OP" + (op + 1) + (car ? " CARRIER" : " MOD"), x + 4, top + 4, car ? C.text : C.fmL, 1);
+  ROWS7.forEach(([l, k, m], r) => vc(x, ROWY[r], 112, 22, l, o[k], m, { from: f[k], host: hs[k] }));
+  dtRow(x, ROWY[7], 22, o.dt);
+  rsAmRow(x, ROWY[8], 22, o.rs, o.am);
+  if (op === act) B(x - 2, top - 2, 116, 456 - top + 3, C.text);
+}
+function fmPage8() {
+  frame(1);
+  R(233, 28, 4, 52, C.fm);
+  nameRow(2, "Rhodes*", "GM 5", false); channelRow("fm");
+  block8();
+  graph7(242, 82, 282, 124, 2, {});
+  for (let op = 0; op < 4; op++) opColumn8(op, 2);
+  const px = COLS[2] + 60, py = ROWY[2] + 8; for (let k = 0; k < 9; k++) R(px, py + k, Math.max(1, 6 - Math.floor(k * 0.7)), 1, C.text);
+  footer("OP3 AR 22: DRAG UP OR DOWN");
+}
+const Y = "#EEEE22";
+function vdash(x, y0, y1) { for (let y = y0; y < y1; y += 3) R(x, y, 1, 1, Y); }
+function hdash(y, x0, x1) { for (let x = x0; x < x1; x += 3) R(x, y, 1, 1, Y); }
+use("c1", 720, 528); fmPage8();
+crop("cg1", () => {
+  fmPage8();
+  COLS.forEach(x => { [x, x + 111, x + SEG0, x + SEG0 + 4 * SEGP].forEach(xx => vdash(xx, 340, 460)); });
+}, 238, 344, 468, 116, 2);
+crop("cg2", () => {
+  fmPage8();
+  [530, 701, 613, 618].forEach(x => vdash(x, 78, 210)); [184, 190].forEach(y => hdash(y, 526, 706));
+}, 526, 78, 180, 132, 2);
+let zoomed = false;
+document.getElementById("zoom").onclick = () => {
+  zoomed = !zoomed;
+  document.querySelectorAll("canvas").forEach(cv => { cv.style.width = zoomed ? cv.width * 2 + "px" : ""; });
+  document.getElementById("zoom").textContent = zoomed ? "Макеты x1" : "Макеты x2";
+};
+</script>
+</body>
+</html>

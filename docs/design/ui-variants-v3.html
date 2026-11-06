@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: интерфейс, третья версия</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 40px; }
+  h3 { color: #AAEE22; font-size: 15px; margin: 22px 0 6px; }
+  p, ul { max-width: 1100px; margin: 6px 0; }
+  li { margin: 2px 0; }
+  .row { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; margin: 6px 0 12px; }
+  .t { flex: 1; min-width: 300px; max-width: 560px; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .plus::before { content: "+ "; color: #AAEE22; }
+  .minus::before { content: "- "; color: #EE8822; }
+  .plus, .minus { margin: 2px 0; }
+  .rec { border-left: 4px solid #AAEE22; background: #1a1a1a; padding: 8px 14px; margin: 12px 0; max-width: 1100px; }
+  .fact { border-left: 4px solid #22CCEE; background: #1a1a1a; padding: 8px 14px; margin: 10px 0; max-width: 1100px; }
+  .done { border: 1px solid #444; background: #161616; padding: 8px 14px; max-width: 1100px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid #383838; padding: 5px 9px; vertical-align: top; }
+  th { color: #eee; text-align: left; background: #1a1a1a; }
+  code { color: #eee; }
+  #zoom { position: fixed; right: 16px; top: 12px; background: #222; color: #eee; border: 1px solid #555; padding: 6px 10px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="zoom">Макеты x2</button>
+<main>
+<h1>MDMI: интерфейс, третья версия</h1>
+<p>art-director, 2026-11-06. Здесь только изменения и открытые вопросы после второй версии (ui-variants-v2.html).
+Макеты в настоящих пикселях окна 720x528, кнопка справа вверху увеличивает их вдвое.</p>
+<div class="done"><b>Решено:</b> общая сетка с ячейками канала наверху на всех чипах (страница PSG этапа 8 сдвигается);
+TUNE/BEND/PORTA в ALL только отличные от умолчания; полоска 2A (CC7 и CC7 x vel / 127); мини-графики как в v2;
+огибающая 4A как в v2; «изменено против файла» и звёздочка; курсор позиции на мини-огибающей; значение у указателя;
+метки каналов на полосе прокрутки; лампы MIDI нет.</div>
+
+<!-- ===================================================================== -->
+<h2>0. Номер канала в рельсе по общим линиям</h2>
+<p>В v2 цифра x3 (21 px) висела между строками: верх на y+8, имя на y+5, полоска на y+26..33. Ни верх, ни низ не совпадали.
+Два способа посадить её на линии:</p>
+<div class="row">
+<div><p class="lbl">0A. Цифра x3, верх = верх имени, низ = низ полоски</p><canvas id="c0a"></canvas></div>
+<div><p class="lbl">0B. Цифра x4, верх = верх имени, низ = низ полоски</p><canvas id="c0b"></canvas></div>
+</div>
+<div class="row">
+<div class="t"><p><b>0A.</b> Блок 21 px: имя x2 (14 px заглавных), щель 3 px, полоска 4 px. Нота x1 справа от полоски, её низ на
+той же линии. Строка y+8..y+28 по центру 40 px.</p>
+<p class="plus">Номер остаётся вторым по важности после имени.</p>
+<p class="minus">Полоска тоньше (4 px вместо 8); у длинного имени с хвостами (g, p, y) хвост в 1 px от полоски.</p></div>
+<div class="t"><p><b>0B.</b> Блок 28 px: имя 14, щель 6, полоска и нота 8. Цифра x4 (24 px шириной), текст сдвигается с x 54 на 62.</p>
+<p class="plus">Полоска остаётся 8 px, воздуха между строками больше.</p>
+<p class="minus">Номер крупнее имени: спорит с правилом «имя важнее»; имя короче на 1 знак (12 + звёздочка).</p></div>
+</div>
+<p class="lbl">Жёлтые пунктиры: общие линии верха и низа.</p>
+<div class="rec">Рекомендация: 0A.</div>
+
+<!-- ===================================================================== -->
+<h2>2. Полоска 2A: сплошная или из сегментов</h2>
+<canvas id="c2"></canvas>
+<p class="lbl">Колонки: сплошная, 16 сегментов, 8 сегментов. Строки: нота держится; нота отпущена; громкий удар при тихом CC7;
+нот не было. Цвета те же: тёмный цвет канала = CC7, салатовый = CC7 x vel / 127, серый после отпускания.</p>
+<div class="row">
+<div class="t"><p class="plus">Сплошная: точнее, лучше видны малые разницы.</p>
+<p class="plus">16 сегментов: как в mock.html и как 16 уровней PSG, аутентично; разница в 1/16 видна.</p>
+<p class="minus">8 сегментов: читается издали лучше всех, но шаг 1/8 грубый: 100 и 115 выглядят одинаково.</p></div>
+</div>
+<div class="rec">Рекомендация: 16 сегментов. Соответствует 16 уровням железа и mock.html, а точность почти та же.</div>
+
+<!-- ===================================================================== -->
+<h2>4. Страница PSG: место PAN и подписи над огибающей</h2>
+<h3>Место PAN в ячейках над огибающей</h3>
+<canvas id="c4p"></canvas>
+<p class="lbl">Сверху FM для сравнения, потом PSG (а) и PSG (б).</p>
+<div class="row">
+<div class="t"><p><b>(а) Место остаётся, в нём тусклое <code>PAN -</code></b>, рамка <code>#222222</code>, текст <code>#444444</code>, не кликается.</p>
+<p class="plus">Правило соблюдено полностью: TUNE и BEND на тех же местах на всех чипах.</p>
+<p class="plus">Видно, что пан есть у FM, а у PSG его нет. Это правда о железе.</p>
+<p class="minus">Пустая ячейка занимает место и выглядит как отключённая функция.</p></div>
+<div class="t"><p><b>(б) Ячейки сдвигаются без дырки</b>: VOL, TUNE, BEND, PORTA, потом P.TIME.</p>
+<p class="plus">Плотнее, без пустых мест.</p>
+<p class="minus">Правило ломается: TUNE на PSG стоит там, где на FM PAN. Рука, привыкшая к FM, попадает не туда.</p></div>
+</div>
+<div class="rec">Рекомендация: (а). Ради этого правила и делалась сетка.</div>
+
+<h3>Подписи над огибающей</h3>
+<canvas id="c4s"></canvas>
+<p class="lbl">Слева L1 (LOOP и RELEASE), справа L2 (SUSTAIN и RELEASE). Огибающая 46 кадров, сверху вниз: длинная петля;
+средняя; короткая петля и короткий хвост (REL); петля в 2 кадра и хвост в 3 (оба значком); петля в 1 кадр (между вкладками
+ничего); петля до конца (хвоста нет); петли нет.</p>
+<div class="row">
+<div class="t"><p>Правило ужатия для обоих слов одинаковое: полное слово → короткое → значок 7x7 → ничего.</p>
+<ul><li>L1: <code>LOOP</code> → значок петли; <code>RELEASE</code> → <code>REL</code> → значок «спад».</li>
+<li>L2: <code>SUSTAIN</code> → <code>LOOP</code> → значок петли; хвост как в L1.</li></ul>
+<p>Петли нет: <code>LOOP</code> в рамке (клик включает) и <code>NOTE OFF CUTS</code>.</p>
+<p class="plus">L2: точный музыкальный смысл: пока держишь клавишу, звучит эта часть.</p>
+<p class="minus">L2: в синтезаторах SUSTAIN это уровень, а не петля; у короткой петли слово всё равно станет LOOP.</p></div>
+</div>
+<div class="rec">Рекомендация: L1. LOOP говорит, что делают вкладки (повтор), RELEASE вместо AFTER NOTE OFF.</div>
+
+<!-- ===================================================================== -->
+<h2>5. Метка «изменено против файла» и FM SP</h2>
+<h3>Цвет метки</h3>
+<canvas id="c5"></canvas>
+<p class="lbl">Слева белая (как в v2, выглядит артефактом), посередине жёлтая, справа янтарная. Метка = подпись цвета метки и
+риска 2 px на месте значения файла.</p>
+<div class="row">
+<div class="t"><p><b>Жёлтая <code>#EEEE22</code></b>, уже в палитре.</p>
+<p class="plus">Заметна, нового цвета нет.</p>
+<p class="minus">Жёлтым уже обозначены цель броска и предупреждения: «изменено» читается как «внимание».</p></div>
+<div class="t"><p><b>Янтарная <code>#EECC66</code></b>, новый цвет.</p>
+<p class="plus">Своё значение, спокойнее жёлтого, не путается с DAC (оранжевый <code>#EE8822</code>).</p>
+<p class="minus">Ещё один цвет в палитре.</p></div>
+</div>
+<div class="fact">Оба цвета возможны на приставке: в CRAM 3 бита на канал, то есть значения 0, 2, 4 ... E в каждой цифре пары.
+<code>EE EE 22</code> и <code>EE CC 66</code> подходят.</div>
+<div class="rec">Рекомендация: янтарная. У жёлтого уже два смысла.</div>
+
+<h3>FM SP без номеров MIDI-каналов</h3>
+<canvas id="c5sp"></canvas>
+<div class="row"><div class="t">
+<p>Номера каналов операторов это константа ROM, поэтому не пишутся. Остаются цвет режима и то, что меняется: ноты операторов.
+В рельсе четыре ноты x1 по 43 px, салатовые пока держатся. В ALL вторая строка источника как у всех (<code>FILE VGI</code>).
+Шапки операторов на странице FM: <code>OP1 C-4</code>.</p>
+</div></div>
+<div class="fact">ROM: операторы 1-3 берут ноты с MIDI 11-13, оператор 4 играет сам канал 3 (third_party/mdmi/src/midi.c:163-175, midi.h:29-30).</div>
+
+<!-- ===================================================================== -->
+<h2>7. Метка «ведёт хост»: три тихих варианта</h2>
+<canvas id="c7"></canvas>
+<p class="lbl">Сверху вниз: (а) нейтральная слева; (б) нейтральная снизу; (в) красная точка как в Live. Справа та же ячейка
+вместе с меткой «изменено» (янтарная), чтобы было видно, что они не мешают друг другу.</p>
+<div class="row">
+<div class="t"><p><b>(а) Слева:</b> полоса 2x20 <code>#666666</code> у левого края ячейки. Далеко от числа.</p>
+<p><b>(б) Снизу:</b> линия 1 px <code>#AAAAAA</code> под ячейкой во всю ширину. Самая тихая, но в плотной сетке операторов
+её можно принять за разделитель.</p>
+<p><b>(в) Красная точка 4x4</b> <code>#EE2222</code> слева от подписи, как точка автоматизации у ручек Live.</p>
+<p class="plus">(в) читается сразу тем, кто знает Live.</p>
+<p class="minus">(в) в концепции красный зарезервирован за ошибкой и CONSOLE LOST.</p>
+<p class="minus">(в) смысл другой. Насколько я знаю, плагин не узнает, есть ли у ручки запись автоматизации в Live; он видит
+только, что значение пришло от хоста. Значит, красная точка значила бы «сейчас ведёт хост», а не то, что в Live.
+Подтвердить у архитектора.</p></div>
+</div>
+<div class="rec">Рекомендация: (а). Тихая, не спорит с числом и красным, не путается с разделителями.</div>
+
+<!-- ===================================================================== -->
+<h2>Что выбрать</h2>
+<table>
+<tr><th>№</th><th>Вопрос</th><th>Варианты</th><th>Рекомендую</th></tr>
+<tr><td>0</td><td>Номер в рельсе</td><td>0A x3, полоска 4 px / 0B x4, полоска 8 px</td><td>0A</td></tr>
+<tr><td>2</td><td>Вид полоски</td><td>сплошная / 16 сегментов / 8 сегментов</td><td>16</td></tr>
+<tr><td>4а</td><td>PSG на месте PAN</td><td>(а) тусклое PAN - / (б) сдвиг без дырки</td><td>(а)</td></tr>
+<tr><td>4б</td><td>Подписи над огибающей</td><td>L1 LOOP, RELEASE / L2 SUSTAIN, RELEASE</td><td>L1</td></tr>
+<tr><td>5</td><td>Цвет метки «изменено»</td><td>жёлтый #EEEE22 / янтарный #EECC66</td><td>янтарный</td></tr>
+<tr><td>7</td><td>Метка «ведёт хост»</td><td>(а) слева / (б) снизу / (в) красная точка</td><td>(а)</td></tr>
+<tr><td>D</td><td>Размер ноты в рельсе</td><td>x1 / x2</td><td>x1 (полоска уже говорит, что нота пришла)</td></tr>
+<tr><td>E</td><td>Цвет FM SP</td><td>розовый #EE22AA / #8888EE</td><td>розовый</td></tr>
+</table>
+</main>
+
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", target: "#EEEE22", err: "#EE2222",
+  spD: "#440022", sp: "#EE22AA", amber: "#EECC66",
+};
+let g;
+function use(id, w, h) {
+  const cv = typeof id === "string" ? document.getElementById(id) : id;
+  cv.width = w; cv.height = h; g = cv.getContext("2d"); g.imageSmoothingEnabled = false; R(0, 0, w, h, C.bg); return cv;
+}
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c) { R(x, y, w, 1, c); R(x, y + h - 1, w, 1, c); R(x, y, 1, h, c); R(x + w - 1, y, 1, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) { const bits = parseInt(hex.substr(col * 2, 2), 16); for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z); }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n) : s; }
+function dash(x0, x1, y) { for (let x = x0; x < x1; x += 3) R(x, y, 1, 1, C.target); }
+const NOTE = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
+const nn = p => NOTE[p % 12] + (Math.floor(p / 12) - 1);
+
+// ---------- rail rows ----------
+// lay: "A" (x3 digit, 4 px bar) or "B" (x4 digit, 8 px bar); bar: "solid", 16, 8.
+function bar(x, y, w, h, c, kind, dark, n) {
+  const eff = c.seen ? c.vol * c.vel / 127 / 127 : 0, vol = c.vol / 127, lit = c.held ? C.lit : C.hint;
+  if (n === "solid") { R(x, y, w, h, C.cell); R(x, y, Math.round(w * vol), h, dark); if (c.seen) R(x, y, Math.round(w * eff), h, lit); return; }
+  const pitch = Math.floor(w / n), sw = pitch - 1, nv = Math.round(n * vol), ne = c.seen ? Math.max(1, Math.round(n * eff)) : 0;
+  for (let k = 0; k < n; k++) R(x + k * pitch, y, sw, h, k < ne ? lit : k < nv ? dark : C.cell);
+}
+function railRow(x0, y, c, lay, n, guides) {
+  const kind = c.sp ? C.sp : c.psg ? C.psg : C.fm, dark = c.sp ? C.spD : c.psg ? C.psgD : C.fmD;
+  R(x0, y, 232, 39, C.bg); R(x0, y + 39, 232, 1, C.cell); R(x0, y, 4, 39, kind);
+  if (lay === "A") {
+    T(String(c.n), x0 + 10, y + 8, C.text, 3);
+    T(cut(c.name, 13) + (c.star ? "*" : ""), x0 + 54, y + 8, C.text, 2);
+    if (c.sp) { c.notes.forEach(([p, h], k) => T(nn(p), x0 + 54 + k * 43, y + 22, h ? C.lit : C.hint, 1)); }
+    else { bar(x0 + 54, y + 25, 140, 4, c, kind, dark, n); TR(c.seen ? nn(c.note) : "---", x0 + 226, y + 22, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1); }
+    if (guides) { dash(x0, x0 + 232, y + 8); dash(x0, x0 + 232, y + 28); }
+  } else {
+    T(String(c.n), x0 + 8, y + 6, C.text, 4);
+    T(cut(c.name, 12) + (c.star ? "*" : ""), x0 + 62, y + 6, C.text, 2);
+    T(c.seen ? nn(c.note) : "---", x0 + 62, y + 27, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1);
+    bar(x0 + 88, y + 26, 138, 8, c, kind, dark, n);
+    if (guides) { dash(x0, x0 + 232, y + 6); dash(x0, x0 + 232, y + 33); }
+  }
+}
+const ROWS = [
+  { n: 1, name: "Synth Bass 1", seen: 1, held: 1, note: 36, vel: 110, vol: 112 },
+  { n: 2, name: "Rhodes", star: 1, seen: 1, held: 0, note: 64, vel: 84, vol: 100 },
+  { n: 7, name: "Envelope 0", psg: 1, seen: 1, held: 1, note: 72, vel: 127, vol: 40 },
+  { n: 10, name: "Envelope 0", psg: 1, seen: 0, held: 0, note: 0, vel: 0, vol: 80 },
+];
+function draw0(id, lay) {
+  use(id, 240, 4 * 40 + 8);
+  ROWS.forEach((c, k) => railRow(4, 4 + k * 40, c, lay, 16, true));
+}
+function draw2() {
+  use("c2", 3 * 244, 4 * 40 + 8);
+  ["solid", 16, 8].forEach((n, col) => ROWS.forEach((c, k) => railRow(col * 244 + 4, 4 + k * 40, c, "A", n, false)));
+}
+
+// ---------- value cells ----------
+function vcell(x, y, w, label, val, max, dark, o = {}) {
+  R(x, y, w, 20, o.empty ? C.bg : C.cell);
+  if (o.empty) { B(x, y, w, 20, C.cell); T(label, x + 4, y + 6, C.line, 1); TR("-", x + w - 4, y + 2, C.line, 2); return; }
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), 20, dark); R(mid, y, 1, 20, C.line); }
+  else R(x, y, Math.round(w * val / max), 20, dark);
+  let lx = x + 4;
+  if (o.host === "left") R(x, y, 2, 20, C.hint);
+  if (o.host === "under") R(x, y + 20, w, 1, C.label);
+  if (o.host === "red") { R(x + 3, y + 8, 4, 4, C.err); lx = x + 10; }
+  const mark = o.markColor;
+  if (o.from != null) R(x + Math.round(w * o.from / max) - 1, y - 2, 2, 24, mark);
+  T(label, lx, y + 6, o.from != null ? mark : C.label, 1);
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + 2, C.text, 2);
+}
+const COLS = [242, 358, 474, 590];
+function pageTop(y0, kind, dark, n, name, src, psg, mode) {
+  R(233, y0, 4, 70, kind);
+  T(String(n), 242, y0 + 2, C.text, 3); T(name, 288, y0 + 6, C.text, 2); TR(src, 708, y0 + 6, C.label, 2);
+  const cells = psg
+    ? (mode === "a" ? [["VOL", 96, 127], ["PAN", 0, 1, { empty: 1 }], ["TUNE", 0, 99, { bip: 1, text: "+0 CT" }], ["BEND", 2, 24, { text: "2 ST" }], ["PORTA", 0, 1, { text: "OFF" }], ["P.TIME", 0, 127]]
+                     : [["VOL", 96, 127], ["TUNE", 0, 99, { bip: 1, text: "+0 CT" }], ["BEND", 2, 24, { text: "2 ST" }], ["PORTA", 0, 1, { text: "OFF" }], ["P.TIME", 0, 127]])
+    : [["VOL", 112, 127], ["PAN", 0, 1, { text: "C" }], ["TUNE", 0, 99, { bip: 1, text: "+0 CT" }], ["BEND", 2, 24, { text: "2 ST" }], ["PORTA", 0, 1, { text: "OFF" }], ["P.TIME", 0, 127]];
+  cells.forEach(([l, v, m, o], k) => vcell(COLS[k % 4], y0 + 28 + Math.floor(k / 4) * 22, 112, l, v, m, dark, o || {}));
+}
+function draw4p() {
+  const cv = use("c4p", 487, 3 * 80);
+  g.save(); g.translate(-233, 2);
+  pageTop(0, C.fm, C.fmD, 1, "Synth Bass 1", "GM 39", false);
+  pageTop(80, C.psg, C.psgD, 7, "Envelope 0", "ROM 0", true, "a");
+  pageTop(160, C.psg, C.psgD, 7, "Envelope 0", "ROM 0", true, "b");
+  g.restore();
+}
+
+// ---------- envelope strip ----------
+function loopIcon(x, y, c) { R(x + 1, y, 5, 1, c); R(x, y + 1, 1, 4, c); R(x + 6, y + 1, 1, 4, c); R(x + 1, y + 5, 4, 1, c); R(x + 4, y + 4, 1, 3, c); R(x + 3, y + 5, 3, 1, c); }
+function relIcon(x, y, c) { for (let k = 0; k < 4; k++) R(x + k * 2, y + k * 2, 2, 1, c); R(x + 7, y + 6, 1, 1, c); R(x, y, 1, 7, c); R(x, y + 6, 8, 1, c); }
+function fitWord(words, room, icon) { for (const w of words) if (TW(w, 1) + 4 <= room) return w; return room >= 11 ? icon : ""; }
+function strip(x0, y, len, a, b, set) {
+  // Lane 404 px from x0, as in the editor.
+  const col = i => x0 + Math.floor(i * 404 / len);
+  R(x0, y + 16, 404, 1, C.cell);
+  if (a < 0) { B(x0, y, 36, 14, C.line); T("LOOP", x0 + 3, y + 3, C.label, 1); T("NOTE OFF CUTS", x0 + 44, y + 3, C.hint, 1); return; }
+  const bs = col(a) - 1, be = col(b) - 1, room = be - bs - 1;
+  R(bs + 1, y, room, 14, C.cell);
+  const lw = fitWord(set === 2 ? ["SUSTAIN", "LOOP"] : ["LOOP"], room, "icon");
+  if (lw === "icon") loopIcon(bs + Math.floor((room - 7) / 2) + 1, y + 3, C.psg); else if (lw) TC(lw, bs, be - bs, y + 3, C.psg, 1);
+  if (b < len) {
+    const rx = be + 12, rroom = x0 + 404 - rx;
+    const rw = fitWord(["RELEASE", "REL"], rroom, "icon");
+    if (rw === "icon") relIcon(rx, y + 3, C.label); else if (rw) T(rw, rx, y + 3, C.label, 1);
+  }
+  R(bs - 8, y, 8, 14, C.psg); R(be + 1, y, 8, 14, C.psg);
+}
+function draw4s() {
+  const cases = [[6, 30], [23, 31], [36, 41], [41, 43], [23, 24], [23, 46], [-1, -1]];
+  use("c4s", 2 * 424, cases.length * 24 + 4);
+  [1, 2].forEach((set, k) => cases.forEach(([a, b], r) => strip(10 + k * 424, 6 + r * 24, 46, a, b, set)));
+}
+
+// ---------- 5: change marks ----------
+function draw5() {
+  use("c5", 3 * 140, 3 * 26 + 8);
+  [C.text, C.target, C.amber].forEach((mc, k) => {
+    const x = 8 + k * 140;
+    vcell(x, 6, 120, "TL", 57, 127, C.fmD, { from: 34, markColor: mc });
+    vcell(x, 32, 120, "MUL", 12, 15, C.fmD, {});
+    vcell(x, 58, 120, "SR", 4, 31, C.fmD, { from: 0, markColor: mc });
+  });
+}
+// ---------- FM SP ----------
+const APOS7 = [[0, 1], [1, 1], [2, 1], [3, 1]];
+function icon7(x0, y0) {
+  const b = 10, sx = 15, xy = op => [x0 + 5 + op * sx, y0 + 3 + 11];
+  const bus = y0 + 37;
+  for (let op = 0; op < 4; op++) { const [x, y] = xy(op); R(x + 4, y + b, 1, bus - y - b, C.label); }
+  R(x0 + 9, bus, 64 - 9, 1, C.label);
+  for (let op = 0; op < 4; op++) { const [x, y] = xy(op); R(x, y, b, b, C.sp); T(String(op + 1), x + 3, y + 2, C.text, 1); }
+  T("ALG 7", x0 + 72, y0 + 8, C.label, 1); T("FB 4", x0 + 72, y0 + 22, C.label, 1);
+}
+function draw5sp() {
+  use("c5sp", 720, 40 + 10 + 20);
+  const c = { n: 3, name: "Organ Stack", sp: 1, notes: [[60, 1], [64, 1], [67, 0], [48, 1]] };
+  railRow(0, 0, c, "A", 16, false);
+  R(232, 0, 1, 40, C.line);
+  icon7(242, 0);
+  vcell(354, 4, 112, "", 88, 127, C.spD, {});
+  ["L", "C", "R"].forEach((l, k) => { const x = 474 + k * 18, on = k === 2; if (on) R(x, 4, 17, 20, C.text); else B(x, 4, 17, 20, C.line); T(l, x + 3, 6, on ? C.bg : C.label, 2); });
+  T("organ_sp", 536, 5, C.text, 2); T("FILE VGI", 536, 27, C.label, 1); T("TUNE +3", 354, 28, C.label, 1);
+  ["C-4", "E-4", "G-4", "C-3"].forEach((nt, k) => {
+    const x = COLS[k], car = true; R(x, 50, 112, 14, C.sp); T("OP" + (k + 1), x + 4, 53, C.text, 1); TR(nt, x + 108, 53, k === 2 ? C.hint : C.lit, 1);
+  });
+  T("FM PAGE HEADERS", 4, 53, C.hint, 1);
+}
+
+// ---------- 7: host marks ----------
+function draw7() {
+  use("c7", 2 * 150 + 10, 3 * 30 + 8);
+  ["left", "under", "red"].forEach((h, r) => {
+    vcell(8, 6 + r * 30, 120, "TL", 57, 127, C.fmD, { host: h });
+    vcell(160, 6 + r * 30, 120, "TL", 57, 127, C.fmD, { host: h, from: 34, markColor: C.amber });
+    T(["A", "B", "C"][r], 290, 12 + r * 30, C.target, 1);
+  });
+}
+
+function drawAll() { draw0("c0a", "A"); draw0("c0b", "B"); draw2(); draw4p(); draw4s(); draw5(); draw5sp(); draw7(); }
+drawAll();
+let zoomed = false;
+document.getElementById("zoom").onclick = () => {
+  zoomed = !zoomed;
+  document.querySelectorAll("canvas").forEach(cv => { cv.style.width = zoomed ? cv.width * 2 + "px" : ""; });
+  document.getElementById("zoom").textContent = zoomed ? "Макеты x1" : "Макеты x2";
+};
+</script>
+</body>
+</html>

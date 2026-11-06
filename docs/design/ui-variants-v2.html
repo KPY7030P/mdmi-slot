@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: интерфейс, вторая версия</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1500px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 46px; }
+  h3 { color: #AAEE22; font-size: 15px; margin: 26px 0 6px; }
+  h3.ref { color: #AAAAAA; }
+  p, ul { max-width: 1100px; margin: 6px 0; }
+  li { margin: 2px 0; }
+  .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; margin: 6px 0 14px; }
+  .t { flex: 1; min-width: 320px; max-width: 640px; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .plus::before { content: "+ "; color: #AAEE22; }
+  .minus::before { content: "- "; color: #EE8822; }
+  .plus, .minus { margin: 2px 0; }
+  .rec { border-left: 4px solid #AAEE22; background: #1a1a1a; padding: 8px 14px; margin: 14px 0; max-width: 1100px; }
+  .fact { border-left: 4px solid #22CCEE; background: #1a1a1a; padding: 8px 14px; margin: 10px 0; max-width: 1100px; }
+  .ass { border-left: 4px solid #EEEE22; background: #1a1a1a; padding: 8px 14px; margin: 10px 0; max-width: 1100px; }
+  .future { border: 2px dashed #EE8822; padding: 10px 14px; margin: 14px 0; max-width: 1100px; }
+  table { border-collapse: collapse; margin: 8px 0; max-width: 1240px; }
+  td, th { border: 1px solid #383838; padding: 5px 9px; vertical-align: top; }
+  th { color: #eee; text-align: left; background: #1a1a1a; }
+  code { color: #eee; }
+  #zoom { position: fixed; right: 16px; top: 12px; background: #222; color: #eee; border: 1px solid #555; padding: 6px 10px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="zoom">Макеты x2</button>
+<main>
+<h1>MDMI: интерфейс, вторая версия</h1>
+<p>art-director, 2026-11-05, по замечаниям владельца к первому черновику. Не в коде, не утверждено. Все макеты в
+настоящих пикселях окна 720x528, рисуются прямоугольниками и шрифтом 5x7 (x1, x2, x3), как рисует плагин. Данные
+выдуманы. Кнопка справа вверху увеличивает макеты вдвое для просмотра.</p>
+
+<!-- ===================================================================== -->
+<h2>0. Общая раскладка: одна сетка для FM, FM SP, PSG и DAC</h2>
+<p>Главное правило второй версии: <b>одно и то же стоит на одном месте на любом чипе</b>. Номер, имя, звёздочка,
+источник, громкость, пан, подстройка находятся в одних координатах, на каком бы канале ты ни был. Что относится только к
+чипу (схема FM, огибающая PSG, карта DAC), живёт ниже, в «зоне чипа». Тип канала показывают цвет полосы и группа
+(YM2612 / SN76489), поэтому надписи «FM» и «PSG» над каждым каналом убраны.</p>
+<canvas id="c0"></canvas>
+<p class="lbl">Схема окна. Жёлтые линии: общие вертикали и строки текста. Подписи зон на английском, потому что битовый шрифт без кириллицы.</p>
+<canvas id="c0r"></canvas>
+<p class="lbl">Строка рельса в x2: линии x 10 / 54 / 80, строки текста y+5 (x2) и y+27 (x1), полоска y+26..33.</p>
+
+<table>
+<tr><th>Шрифт</th><th>Размер знака</th><th>Что им пишется</th></tr>
+<tr><td>x3</td><td>18x24</td><td>Только номер канала (в рельсе и в начале страницы). Это то, что ищут взглядом издали.</td></tr>
+<tr><td>x2</td><td>12x16</td><td>Имя звука, значения в ячейках, источник, кнопки шапки. Всё, что читают и правят.</td></tr>
+<tr><td>x1</td><td>6x8</td><td>Подписи в ячейках (VOL, TL), нота в рельсе, вторая строка (тип источника, отличия от
+умолчания), метки осей. Ничего, от чего зависит игра.</td></tr>
+</table>
+<table>
+<tr><th>Линия</th><th>Где</th><th>Что на ней стоит</th></tr>
+<tr><td>x 0-4</td><td>рельс</td><td>Полоса типа: синий FM, розовый FM SP, голубой PSG, оранжевый DAC.</td></tr>
+<tr><td>x 10</td><td>рельс</td><td>Номер x3.</td></tr>
+<tr><td>x 54</td><td>рельс</td><td>Левый край текста: имя x2 (y+5), нота x1 (y+27).</td></tr>
+<tr><td>x 80-226</td><td>рельс</td><td>Полоска громкости и velocity (п. 2), на одной линии с нотой.</td></tr>
+<tr><td>x 242 / 288</td><td>страница</td><td>Номер x3 / имя x2 в строке y 30. Источник прижат вправо к 708.</td></tr>
+<tr><td>x 242 / 358 / 474 / 590</td><td>страница и ALL</td><td>Четыре колонки ячеек канала, ячейка 112x20: VOL, PAN, TUNE, BEND (y 56), PORTA, P.TIME (y 78).
+На PSG место PAN пустое, на DAC в этих строках одна фраза, почему ничего нет.</td></tr>
+<tr><td>y 104-456</td><td>страница</td><td>Зона чипа: схема и операторы FM, огибающая PSG, карта DAC.</td></tr>
+</table>
+<div class="ass">Это меняет страницу PSG этапа 8: ячейки VOL, TUNE, BEND, PORTA, P.TIME уходят из-под огибающей наверх (y 56, 78),
+огибающая сдвигается вниз на 48 px. На FM ячейки канала тоже переезжают (сейчас VOL на 472,58). Решение за владельцем и архитектором.</div>
+
+<h3>Одинаковые места на всех типах каналов</h3>
+<canvas id="c0p"></canvas>
+<p class="lbl">Верх страницы для FM, FM SP, PSG и DAC. Номер, имя, источник и ячейки канала совпадают пиксель в пиксель.</p>
+
+<!-- ===================================================================== -->
+<h2>1. Страница ALL: обзор, в котором всё базовое правится</h2>
+<canvas id="c1"></canvas>
+<div class="row"><div class="t">
+<p>Кнопка ALL в шапке (ALL, EDITOR, BANK, ROM). Справа от рельса те же строки по 40 px. Колонки:</p>
+<ul>
+<li><b>Звук</b> 242-346: схема алгоритма или огибающая, крупно (п. 3). Клик открывает страницу канала.</li>
+<li><b>VOL</b> 354-466: ячейка 112x20, тянется вверх и вниз, как на странице канала.</li>
+<li><b>PAN</b> 474-528: три кнопки L C R, правятся кликом. У PSG колонки нет (пан на PSG ничего не делает).</li>
+<li><b>Источник</b> 536-708: x2 что играет (<code>GM 39</code>, <code>ROM 80</code>, имя файла), под ним x1 откуда (<code>GM BANK</code>, <code>FILE</code>, <code>ROM ENVELOPE</code>).</li>
+<li>Строка x1 под VOL и PAN: TUNE, BEND, PORTA, см. варианты 1A и 1B.</li>
+</ul>
+<p>Рельс по mock.html, но с другими пропорциями: имя x2 белым сверху (важнее), нота x1 снизу и рядом полоска (п. 2).
+Лента нот убрана.</p>
+</div></div>
+
+<h3>TUNE / BEND / PORTA: два варианта (на макете выше 1B)</h3>
+<canvas id="c1ab"></canvas>
+<div class="row">
+<div class="t"><p><b>1A. Всегда строкой x1.</b> <code>TUNE +0 BEND 2 PORTA OFF</code>: значения по умолчанию серые
+<code>#666666</code>, изменённые белые.</p>
+<p class="plus">Всё на виду, место у каждого значения постоянное.</p>
+<p class="minus">Десять одинаковых серых строк выглядят как шум; глаз ищет одно белое число.</p></div>
+<div class="t"><p><b>1B. Только то, что отличается от умолчания.</b> Строка пустая, если всё по умолчанию; иначе
+<code>TUNE +3</code>, <code>BEND 12</code>, <code>PORTA 64</code>.</p>
+<p class="plus">Пустая строка сама говорит «здесь всё обычно», а непустая сразу бросается в глаза.</p>
+<p class="minus">Править прямо здесь нельзя: клик ведёт на страницу канала.</p></div>
+</div>
+<div class="rec">Рекомендация: 1B. В обзоре важно заметить отличие, а не прочитать три нуля.</div>
+
+<!-- ===================================================================== -->
+<h2>2. Громкость и velocity в одной горизонтальной полоске рельса</h2>
+<div class="fact">Факт (hardware-specialist): FM слышит CC7 x velocity / 127 на несущих; PSG через таблицу вместе с огибающей; DAC не
+слышит ни velocity, ни громкость. Полоска строится только из того, что плагин сам послал. Полоска загорается, когда приходит нота,
+поэтому отдельная лампа MIDI не нужна (убрана).</div>
+<canvas id="c2"></canvas>
+<p class="lbl">Слева 2A, справа 2B. Сверху вниз: нота держится; нота отпущена; нот ещё не было; канал DAC.</p>
+<div class="row">
+<div class="t"><p><b>2A. Заливка CC7, внутри салатовое CC7 x vel / 127.</b> Тёмная заливка цвета канала до громкости
+канала. Пока нота держится, её часть салатовая; после отпускания та же часть серая.</p>
+<p class="plus">Одна длина = то, что реально ушло в чип для FM: тише канал или тише удар, видно сразу.</p>
+<p class="plus">Серая часть остаётся: видно, с какой силой был последний удар.</p>
+<p class="minus">Velocity отдельно не прочитать (только в подвале при наведении: <code>VEL 110 VOL 112</code>).</p></div>
+<div class="t"><p><b>2B. Салатовое = velocity, белая риска = CC7.</b> Две величины независимо: длина полоски это сила
+удара (0-127), риска 2 px это громкость канала.</p>
+<p class="plus">Обе величины читаются отдельно.</p>
+<p class="minus">Не показывает, что слышно: удар 127 при CC7 20 выглядит громко, а звучит тихо.</p>
+<p class="minus">Риска рядом с концом полоски сливается с ней.</p></div>
+</div>
+<div class="rec">Рекомендация: 2A. Для PSG та же формула приблизительна (там таблица и огибающая), но для «пришла ли нота и
+насколько громко» этого хватает. DAC: полоска только мигает, что сэмпл запущен, и пишет <code>VEL, VOL IGNORED</code>.</div>
+
+<!-- ===================================================================== -->
+<h2>3. Мини-графики крупнее</h2>
+<canvas id="c3"></canvas>
+<div class="row"><div class="t">
+<p>Ячейка звука на ALL 104x36. FM: та же схема, что на странице FM (операторы 10x10 с цифрой, несущие залиты, шина
+выхода внизу, скобка FB), справа <code>ALG 5</code> и <code>FB 7</code>. PSG: огибающая на всю ячейку 104x34,
+по-настоящему по кадрам: тёмное тело, яркая вершина, петля серым фоном. Короткий щелчок, долгий хвост, ровный
+орган и тремоло видны до того, как нажмёшь клавишу.</p>
+<p>Нижний ряд: так же для FM SP (розовый, операторы с номерами MIDI-каналов) и DAC (оранжевые столбики «удары»).</p>
+</div></div>
+
+<!-- ===================================================================== -->
+<h2>4. Огибающая PSG: 4A с правками владельца</h2>
+<canvas id="c4"></canvas>
+<p class="lbl">Страница PSG целиком, в новой общей сетке. Указатель на кадре 36.</p>
+<div class="row"><div class="t">
+<ul>
+<li>Отдельной кнопки LOOP нет. Полоса над лентой и есть петля: клик по ней включает и выключает.</li>
+<li>Слова LEN нет: длина это число в ячейке в конце оси (<code>46</code> x2, под ним мс), оно тянется вверх и вниз.
+На пределе вместо числа <code>MAX</code>.</li>
+<li>Строка <code>LOOPS, NOTE OFF ENDS PASS, PLAYS TAIL</code> убрана. Её смысл перенесён туда, где он виден: часть
+после петли подписана <code>AFTER NOTE OFF</code>. То есть «эти кадры звучат, когда отпустишь клавишу».</li>
+</ul>
+</div></div>
+<h3>Полоса петли в разных случаях</h3>
+<canvas id="c4s"></canvas>
+<div class="row"><div class="t">
+<p>Сверху вниз:</p>
+<ul>
+<li>Длинная петля: слово LOOP и хвост с подписью.</li>
+<li>Короткая петля: вместо слова значок петли 7x7.</li>
+<li>Петля в 1-2 кадра: между вкладками ничего, вкладки остаются.</li>
+<li>Петля до конца: хвоста нет, значит нет и подписи (отпускание просто доигрывает проход).</li>
+<li>Петли нет: <code>LOOP</code> в рамке (клик включает) и <code>NOTE OFF CUTS</code>.</li>
+</ul>
+</div></div>
+
+<!-- ===================================================================== -->
+<h2>5. Страница FM: значения полосками, FM SP своим цветом</h2>
+<canvas id="c5"></canvas>
+<div class="row"><div class="t">
+<p>Каждая ячейка заполняется полоской: длина = значение / максимум (TL из 127, AR из 31, MUL из 15 ...). Подпись x1
+слева, число x2 справа. Знаковые значения (TUNE) растут от середины.</p>
+<p>Операторы: четыре колонки по 112 px на тех же вертикалях, что ячейки канала. Шапка колонки залита для несущей и
+обведена для модулятора. Огибающие операторов из mock.html в окно 720x528 не помещаются вместе с полосками. Это
+сознательный выбор в пользу полосок.</p>
+<p>На макете у OP1 TL и у SR есть метки «изменено против файла» (п. 6), у имени звёздочка (п. 7).</p>
+</div></div>
+<h3>Канал 3 в специальном режиме (FM SP)</h3>
+<canvas id="c5sp"></canvas>
+<div class="row"><div class="t">
+<p>Свой цвет, как у DAC: розовый <code>#EE22AA</code> (тело <code>#440022</code>). В рельсе вторая строка вместо одной ноты
+показывает четыре: номер MIDI-канала x1 серым и нота. На странице FM шапки операторов пишут свой источник и ноту
+(<code>OP1 MIDI 11 C-4</code>). В ALL вторая строка источника: <code>VGI  OPS MIDI 11 12 13 + 3</code>.</p>
+</div></div>
+<div class="fact">ROM: в специальном режиме операторы 1-3 берут ноты с MIDI-каналов 11-13 (third_party/mdmi/src/midi.h,
+DEV_CHAN_MIN_SPECIAL_MODE 10 - 12, midi_fm_sm.c на 3 оператора). Предположение: оператор 4 продолжает играть с MIDI-канала 3. Проверить у hardware-specialist.</div>
+<div class="ass">Розовый это 17-й и 18-й цвет. Они остаются допустимыми значениями CRAM (у приставки 4 палитры по 16), так что
+правило «каждый цвет настоящий цвет CRAM» не ломается, ломается только «ровно 16». Если держать 16, FM SP рисуется полосой
+<code>#8888EE</code>, светлее обычного FM. Это хуже различимо.</div>
+
+<!-- ===================================================================== -->
+<h2>6-7. Изменено против файла, звёздочка: да</h2>
+<canvas id="c67"></canvas>
+<div class="row"><div class="t">
+<p><b>6.</b> Ячейка, отличная от файла или пресета: подпись белая вместо серой и белая риска 1 px на полоске там, где
+значение файла. Риска показывает, сколько накрутил и в какую сторону. При наведении подвал пишет <code>TL 57, FILE 34</code>.</p>
+<p><b>7.</b> Звёздочка сразу после имени, x2, в рельсе и в строке имени страницы, как <code>Set 1*</code> у банка.
+Пропадает при сохранении или новой загрузке.</p>
+</div></div>
+
+<!-- ===================================================================== -->
+<h2>9-12. Что это такое: до и после, крупно (x2)</h2>
+<h3>9. Значение у указателя</h3>
+<div class="row"><div><p class="lbl">До</p><canvas id="c9a"></canvas></div><div><p class="lbl">После</p><canvas id="c9b"></canvas></div></div>
+<p>Зачем: когда рисуешь огибающую, уровень под рукой пишется прямо над столбиком, и не надо смотреть вниз в подвал.</p>
+
+<h3>10. Метки всех каналов на полосе прокрутки списка пресетов</h3>
+<div class="row"><div><p class="lbl">До</p><canvas id="c10a"></canvas></div><div><p class="lbl">После</p><canvas id="c10b"></canvas></div></div>
+<p>Зачем: в списке из 128 мест видно, где стоят пресеты остальных каналов, не листая. Широкая метка своего канала уже есть,
+добавляются узкие метки других каналов.</p>
+
+<h3>11. Полоска силы последней ноты</h3>
+<div class="row"><div><p class="lbl">До (рельс сейчас)</p><canvas id="c11a"></canvas></div><div><p class="lbl">После</p><canvas id="c11b"></canvas></div></div>
+<p>Зачем: после отпускания видно, с какой силой была последняя нота. Это не отдельная вещь, а серая часть полоски из п. 2.</p>
+
+<h3>12. Метка «ведёт хост»</h3>
+<div class="row"><div><p class="lbl">До</p><canvas id="c12a"></canvas></div><div><p class="lbl">После</p><canvas id="c12b"></canvas></div></div>
+<p>Зачем: если ручку двигает автоматизация или CC из Live, правка мышью перезапишется на следующем шаге. Самый тихий
+вариант: уголок 4x4 px цвета подписей <code>#AAAAAA</code> в правом верхнем углу ячейки. Ни буквы, ни заливки, ни нового
+цвета. Уголок горит, пока значение менялось от хоста в последние 2 секунды. При наведении подвал пишет
+<code>TL: SET BY LIVE AUTOMATION, YOUR EDIT WILL BE OVERWRITTEN</code>.</p>
+
+<!-- ===================================================================== -->
+<h2>14. Курсор позиции на мини-огибающей PSG (предложение) и осциллограф (на будущее)</h2>
+<canvas id="c14c"></canvas>
+<div class="row"><div class="t">
+<p><b>Курсор позиции</b> входит в предложение и уже нарисован на странице ALL выше (каналы 7 и 8). Это салатовая вертикаль
+1 px на мини-огибающей: на каком кадре сейчас звучит нота. В петле ходит по кругу, после отпускания уходит в хвост,
+в конце пропадает. Салатовый здесь по правилу «звучит сейчас». Слева направо: нота держится в петле; хвост после отпускания;
+нота отзвучала, курсора нет.</p>
+<p><b>Источник данных решает архитектор.</b> Вариант без эмулятора: плагин сам считает кадры от note on и note off по
+известной огибающей. Тогда с приставкой курсор выглядит так же.</p>
+</div></div>
+<p>Уровни с чипа убраны по решению владельца.</p>
+<div class="future">
+<p><b>Осциллограф: на будущее. Не в этом этапе, только эмулятор</b> (на приставке этих данных нет, при игре с приставки он не рисуется).</p>
+<canvas id="c14"></canvas>
+<p>Форма волны 132x32 в строке ALL на месте источника (источник уходит в последнюю колонку). BlastEm уже хранит точку
+осциллографа на канал (third_party/blastem/ym2612.c, около строк 475-476).</p>
+</div>
+
+<!-- ===================================================================== -->
+<h2>Что выбрать (только открытые вопросы)</h2>
+<table>
+<tr><th>№</th><th>Вопрос</th><th>Варианты</th><th>Рекомендую</th></tr>
+<tr><td>A</td><td>Общая сетка: ячейки канала наверх на всех чипах (страница PSG этапа 8 сдвигается)</td><td>да / нет</td><td>да</td></tr>
+<tr><td>B</td><td>TUNE, BEND, PORTA в ALL</td><td>1A всегда строкой / 1B только отличные</td><td>1B</td></tr>
+<tr><td>C</td><td>Полоска в рельсе</td><td>2A CC7 и CC7 x vel / 127 / 2B velocity и риска CC7</td><td>2A</td></tr>
+<tr><td>D</td><td>Нота в рельсе</td><td>x1 рядом с полоской / x2 (тогда полоска короче на 30 px)</td><td>x1: «пришла ли нота» уже говорит полоска</td></tr>
+<tr><td>E</td><td>Цвет FM SP</td><td>розовый (18 цветов) / #8888EE (16 цветов)</td><td>розовый</td></tr>
+<tr><td>F</td><td>Правило Note Off</td><td>подпись AFTER NOTE OFF на хвосте / убрать совсем</td><td>подпись на хвосте</td></tr>
+<tr><td>G</td><td>Метка «ведёт хост» (12): устраивает ли уголок 4x4</td><td>уголок / отказаться</td><td>уголок</td></tr>
+<tr><td>H</td><td>Курсор позиции: откуда данные</td><td>плагин считает сам (одинаково с приставкой) / из эмулятора</td><td>решает архитектор</td></tr>
+</table>
+<p>Уже решено владельцем: страница ALL, 4A, «изменено против файла», звёздочка, значение у указателя (9), метки каналов на
+полосе (10), полоска громкости вместе с velocity (11), курсор позиции на мини-огибающей. Убрано: лампа MIDI, лента нот,
+подсветка связи, уровни с чипа. Осциллограф отложен.</p>
+</main>
+
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", target: "#EEEE22", err: "#EE2222",
+  spD: "#440022", sp: "#EE22AA",
+};
+let g;
+function use(id, w, h) {
+  const cv = typeof id === "string" ? document.getElementById(id) : id;
+  cv.width = w; cv.height = h;
+  g = cv.getContext("2d"); g.imageSmoothingEnabled = false;
+  R(0, 0, w, h, C.bg); return cv;
+}
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c) { R(x, y, w, 1, c); R(x, y + h - 1, w, 1, c); R(x, y, 1, h, c); R(x + w - 1, y, 1, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) {
+      const bits = parseInt(hex.substr(col * 2, 2), 16);
+      for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z);
+    }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n) : s; }
+// Draws fn into an offscreen window, then copies a crop at a whole scale.
+function crop(id, fn, x, y, w, h, z) {
+  const off = document.createElement("canvas"); use(off, 720, 528); fn();
+  const cv = document.getElementById(id); cv.width = w * z; cv.height = h * z;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false; cx.drawImage(off, x, y, w, h, 0, 0, w * z, h * z);
+}
+
+const NOTE = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
+const nn = p => NOTE[p % 12] + (Math.floor(p / 12) - 1);
+
+// Envelopes: low nibble attenuation (0 loud .. 15 off), high nibble pitch code.
+const ENV0 = { f: [0, 0].concat(Array(21).fill(1), [1, 1, 0x11, 0x11, 1, 1, 0x81, 0x81], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), a: 23, b: 31 };
+const ENVSQ = { f: [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], a: 1, b: 2 };
+const ENVPLUCK = { f: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], a: -1, b: -1 };
+const ENVTREM = (() => { const f = [0, 0, 1, 1, 2, 2]; for (let i = 0; i < 24; i++) f.push(3 + ((i >> 2) & 1) * 2); for (let i = 0; i < 12; i++) f.push(Math.min(15, 5 + i)); return { f, a: 6, b: 30 }; })();
+
+const CH = [
+  { name: "Synth Bass 1", seen: 1, held: 1, note: 36, vel: 110, vol: 112, pan: 1, tune: 0, bend: 2, porta: 0, src: "GM 39", from: "GM BANK", alg: 5, fb: 7 },
+  { name: "Rhodes", star: 1, seen: 1, held: 1, note: 64, vel: 84, vol: 100, pan: 0, tune: 0, bend: 2, porta: 0, src: "GM 5", from: "GM BANK", alg: 4, fb: 6 },
+  { name: "Organ Stack", sp: 1, seen: 1, held: 1, notes: [[11, 60, 1], [12, 64, 1], [13, 67, 0], [3, 48, 1]], note: 60, vel: 90, vol: 88, pan: 2, tune: 3, bend: 2, porta: 0, src: "organ_sp.vgi", from: "VGI  OPS MIDI 11 12 13 + 3", file: 1, alg: 7, fb: 4 },
+  { name: "strings_warm", file: 1, seen: 1, held: 1, note: 59, vel: 60, vol: 96, pan: 1, tune: 0, bend: 12, porta: 0, src: "strings_warm.tfi", from: "FILE TFI", alg: 2, fb: 5 },
+  { name: "Overdrive Guitar", seen: 1, held: 0, note: 52, vel: 96, vol: 104, pan: 1, tune: 0, bend: 2, porta: 64, src: "GM 30", from: "GM BANK", alg: 0, fb: 0 },
+  { name: "Drum kit", dac: 1, seen: 1, held: 1, note: 38, vel: 100, vol: 110, pan: 1, tune: 0, bend: 2, porta: 0, src: "ROM KIT", from: "ROM SAMPLES" },
+  { name: "Envelope 0", seen: 1, held: 1, note: 72, vel: 100, vol: 96, tune: 0, bend: 2, porta: 0, src: "ROM 0", from: "ROM ENVELOPE", env: ENV0, cursor: 27 },
+  { name: "Square Lead", seen: 1, held: 1, note: 76, vel: 88, vol: 90, tune: 0, bend: 2, porta: 40, src: "ROM 80", from: "ROM ENVELOPE", env: ENVSQ, cursor: 1 },
+  { name: "tremolo_pad", file: 1, seen: 1, held: 0, note: 67, vel: 50, vol: 90, tune: -2, bend: 2, porta: 0, src: "tremolo_pad.eef", from: "FILE EEF", env: ENVTREM },
+  { name: "Envelope 0", seen: 0, held: 0, note: 0, vel: 0, vol: 80, tune: 0, bend: 2, porta: 0, src: "ROM 0", from: "ROM ENVELOPE", env: ENVPLUCK },
+];
+const FM_Y = 44, PSG_Y = 300, RH = 40;
+const rowY = i => i < 6 ? FM_Y + i * RH : PSG_Y + (i - 6) * RH;
+const kindOf = i => CH[i].sp ? C.sp : CH[i].dac ? C.dac : i < 6 ? C.fm : C.psg;
+const darkOf = i => CH[i].sp ? C.spD : CH[i].dac ? C.dacD : i < 6 ? C.fmD : C.psgD;
+const lightOf = i => CH[i].sp ? C.sp : CH[i].dac ? C.dac : i < 6 ? C.fmL : C.psg;
+
+// ---------- frame ----------
+function header(page) {
+  R(0, 0, 720, 28, C.bg); R(0, 27, 720, 1, C.line);
+  T("MDMI", 8, 7, C.text, 2);
+  [["ALL", 60, 56], ["EDITOR", 120, 80], ["BANK", 204, 80], ["ROM", 288, 56]].forEach(([l, x, w]) => {
+    const on = l === page; R(x, 2, w, 24, on ? C.text : C.cell); TC(l, x, w, 7, on ? C.bg : C.label, 2);
+  });
+  T("RUNNING", 356, 7, C.lit, 2);
+  [["LOAD", 536, 1], ["SAVE", 596, 1], ["UNDO", 656, 0]].forEach(([l, x, en]) => { B(x, 2, 56, 24, en ? C.line : C.cell); TC(l, x, 56, 7, en ? C.label : C.line, 2); });
+}
+function globalsFooter(msg) {
+  R(0, 460, 720, 1, C.line);
+  [["LFO", "ON"], ["LFO RATE", "3.98 HZ"], ["FILTER", "OFF"], ["CH3 SPECIAL", "ON"], ["DAC", "ON"]].forEach(([l, v], i) => {
+    const x = 8 + i * 118; R(x, 466, 114, 32, C.cell); T(l, x + 4, 470, C.label, 1); T(v, x + 4, 480, C.text, 2);
+  });
+  if (msg) T(msg, 8, 512, C.label, 1); else T("UNDERRUNS 0 +0/S MIDI LOST 0 BLOCK 512 @ 48000", 8, 512, C.hint, 1);
+  TR("0.9", 712, 512, C.hint, 1);
+}
+// The note-and-level bar of a rail row (variant a or b).
+function levelBar(x, y, w, h, i, v) {
+  const c = CH[i];
+  R(x, y, w, h, C.cell);
+  if (c.dac) { if (c.held) R(x, y, 16, h, C.lit); T("VEL, VOL IGNORED", x + 22, y, C.hint, 1); return; }
+  if (v === "b") {
+    if (c.seen) R(x, y, Math.round(w * c.vel / 127), h, c.held ? C.lit : C.hint);
+    R(x + Math.round(w * c.vol / 127) - 1, y - 2, 2, h + 4, C.text);
+    return;
+  }
+  R(x, y, Math.round(w * c.vol / 127), h, darkOf(i));
+  if (c.seen) R(x, y, Math.round(w * c.vol * c.vel / 127 / 127), h, c.held ? C.lit : C.hint);
+}
+function railRow(i, o = {}) {
+  const c = CH[i], y = rowY(i);
+  R(0, y, 232, 39, C.bg); R(0, y + 39, 232, 1, C.cell);
+  if (o.sel === i) R(4, y, 229, 39, darkOf(i));
+  R(0, y, 4, 39, kindOf(i));
+  T(String(i + 1), 10, y + 8, C.text, 3);
+  T(cut(c.name, 13) + (c.star ? "*" : ""), 54, y + 5, C.text, 2);
+  if (c.sp) {
+    c.notes.forEach(([m, p, h], k) => { const x = 54 + k * 43; T(String(m), x, y + 27, C.hint, 1); T(nn(p), x + 14, y + 27, h ? C.lit : C.hint, 1); });
+    return;
+  }
+  T(c.seen ? nn(c.note) : "---", 54, y + 27, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1);
+  levelBar(80, y + 26, 146, 8, i, o.bar || "a");
+}
+function rail(o = {}) {
+  R(0, 28, 232, 16, C.cell); T("YM2612", 8, 32, C.fmL, 1);
+  R(0, 284, 232, 16, C.cell); T("SN76489", 8, 288, C.psg, 1);
+  for (let i = 0; i < 10; i++) railRow(i, o);
+  R(232, 28, 1, 432, C.line);
+}
+
+// ---------- FM diagram (port of draw_diagram) ----------
+const APOS = [[[0,1],[1,1],[2,1],[3,1]], [[1,0],[1,2],[2,1],[3,1]], [[2,0],[1,1],[2,1],[3,1]], [[1,1],[2,1],[2,2],[3,1]],
+              [[0,1],[1,1],[2,1],[3,1]], [[0,0],[1,1],[2,1],[3,1]], [[0,1],[1,1],[2,1],[3,1]], [[0,1],[1,1],[2,1],[3,1]]];
+const ALINK = [[[0,1],[1,2],[2,3]], [[0,2],[1,2],[2,3]], [[0,3],[1,2],[2,3]], [[0,1],[1,3],[2,3]], [[0,1],[2,3]], [[0,1],[0,2],[0,3]], [[0,1]], []];
+const CARR = [8, 8, 8, 8, 10, 14, 14, 15];
+const BIG = { b: 24, sx: 52, sy: 26, ox: 16, oy: 5, w: 222, h: 92, bus: 87, right: 214, th: 2, dz: 2, dx: 6, dy: 4, frame: true };
+const ICON = { b: 10, sx: 15, sy: 11, ox: 5, oy: 3, w: 70, h: 40, bus: 37, right: 64, th: 1, dz: 1, dx: 3, dy: 2 };
+function diagram(x0, y0, alg, fb, s, o = {}) {
+  const car = o.car || C.fm, mod = o.mod || C.fmL;
+  if (s.frame) { R(x0, y0, s.w, s.h, C.bg); B(x0, y0, s.w, s.h, C.cell); }
+  const xy = op => [x0 + s.ox + APOS[alg][op][0] * s.sx, y0 + s.oy + APOS[alg][op][1] * s.sy];
+  const half = (s.b >> 1) - (s.th >> 1), bus = y0 + s.bus, edge = C.label;
+  for (const [from, to] of ALINK[alg]) {
+    const [fx, fy] = xy(from), [tx, ty] = xy(to);
+    if (fy === ty) R(fx + s.b, fy + half, tx - fx - s.b, s.th, edge);
+    else {
+      R(fx + s.b, fy + half, tx + half - fx - s.b + s.th, s.th, edge);
+      if (ty > fy) R(tx + half, fy + half, s.th, ty - fy - half, edge); else R(tx + half, ty + s.b, s.th, fy + half - ty - s.b + s.th, edge);
+    }
+  }
+  let left = x0 + s.right;
+  for (let op = 0; op < 4; op++) if (CARR[alg] >> op & 1) { const [x, y] = xy(op); R(x + half, y + s.b, s.th, bus - y - s.b, edge); left = Math.min(left, x + half); }
+  R(left, bus, x0 + s.right - left, s.th, edge);
+  const [fx, fy] = xy(0), loop = fb ? C.label : C.line, t = s.th, b = s.b;
+  R(fx - 3 * t, fy - 2 * t - 1, t, b / 2 + 3, loop); R(fx - 3 * t, fy - 2 * t - 1, b + 6 * t, t, loop);
+  R(fx + b + 2 * t, fy - 2 * t - 1, t, b / 2 + 3, loop); R(fx - 3 * t, fy + half, 3 * t, t, loop);
+  for (let op = 0; op < 4; op++) {
+    const [x, y] = xy(op), c = CARR[alg] >> op & 1;
+    if (c) R(x, y, s.b, s.b, car); else { R(x, y, s.b, s.b, C.bg); B(x, y, s.b, s.b, mod); if (s.th === 2) B(x + 1, y + 1, s.b - 2, s.b - 2, mod); }
+    T(String(op + 1), x + s.dx, y + s.dy, c ? C.text : mod, s.dz);
+  }
+}
+function envThumb(x, y, w, h, env) {
+  const n = env.f.length, ed = i => x + Math.floor(i * w / n);
+  if (env.a >= 0) R(ed(env.a), y, ed(env.b) - ed(env.a), h, C.cell);
+  for (let i = 0; i < n; i++) {
+    const lv = env.f[i] & 15; if (lv >= 15) continue;
+    const top = y + Math.round((h - 3) * lv / 15), cw = Math.max(1, ed(i + 1) - ed(i) - (w / n >= 3 ? 1 : 0));
+    R(ed(i), top, cw, y + h - top, C.psgD); R(ed(i), top, cw, 2, C.psg);
+  }
+  R(x, y + h, w, 1, C.line);
+}
+function cursorAt(env, step, x, y, w, h) {
+  const n = env.f.length, cx = x + Math.floor(step * w / n) + Math.floor(w / n / 2);
+  R(cx, y - 1, 1, h + 2, C.lit);
+}
+function dacThumb(x, y, w, h) {
+  const hits = [1, 0, 0.6, 0, 1, 0.4, 0.6, 0, 1, 0, 0.6, 0.4];
+  hits.forEach((v, k) => { if (!v) return; const bh = Math.round(h * v), xx = x + k * Math.floor(w / hits.length); R(xx, y + h - bh, 3, bh, C.dacD); R(xx, y + h - bh, 3, 2, C.dac); });
+  R(x, y + h, w, 1, C.line);
+}
+function soundCell(i, x, y) {
+  const c = CH[i];
+  if (c.dac) { dacThumb(x, y + 4, 104, 32); return; }
+  if (c.env) { envThumb(x, y + 3, 104, 33, c.env); return; }
+  diagram(x, y, c.alg, c.fb, ICON, c.sp ? { car: C.sp, mod: C.sp } : {});
+  T("ALG " + c.alg, x + 72, y + 8, C.label, 1); T("FB " + c.fb, x + 72, y + 22, C.label, 1);
+}
+
+// ---------- value cells with bars ----------
+// k: value, max; o: {bip, changed(from), host, held, dim, text}
+function vcell(x, y, w, label, val, max, i, o = {}) {
+  const fill = o.dim ? C.cell : darkOf(i);
+  R(x, y, w, 20, C.cell);
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), 20, fill); R(mid, y, 1, 20, C.line); }
+  else R(x, y, Math.round(w * val / max), 20, fill);
+  if (o.from != null) R(x + Math.round(w * o.from / max), y - 2, 1, 24, C.text);
+  if (label) T(label, x + 4, y + 6, o.dim ? C.line : o.from != null ? C.text : C.label, 1);
+  if (o.host) { R(x + w - 4, y, 4, 1, C.label); R(x + w - 1, y, 1, 4, C.label); }
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + 2, o.dim ? C.line : C.text, 2);
+  if (o.held) B(x, y, w, 20, C.text);
+}
+const COLS = [242, 358, 474, 590];
+function pageTop(i) {
+  const c = CH[i];
+  T(String(i + 1), 242, 30, C.text, 3);
+  T(cut(c.name, 18) + (c.star ? "*" : ""), 288, 34, C.text, 2);
+  if (c.file) { TR("FILE", 708, 31, C.label, 1); TR(cut(c.src, 16), 708, 41, C.label, 1); }
+  else TR(c.src, 708, 34, C.label, 2);
+  if (c.dac) { T("VOLUME, PAN AND PITCH DO NOTHING ON SAMPLES.", 242, 62, C.hint, 1); T("ONE SAMPLE AT A TIME, NOTE OFF STOPS IT.", 242, 84, C.hint, 1); return; }
+  vcell(COLS[0], 56, 112, "VOL", c.vol, 127, i, i === 1 ? { from: 60 } : {});
+  if (c.env == null) vcell(COLS[1], 56, 112, "PAN", 0, 1, i, { text: ["L", "C", "R"][c.pan] });
+  vcell(COLS[2], 56, 112, "TUNE", c.tune, 99, i, { bip: 1, text: (c.tune >= 0 ? "+" : "") + c.tune + " CT" });
+  vcell(COLS[3], 56, 112, "BEND", c.bend, 24, i, { text: c.bend + " ST" });
+  vcell(COLS[0], 78, 112, "PORTA", c.porta ? 1 : 0, 1, i, { text: c.porta ? "ON" : "OFF" });
+  vcell(COLS[1], 78, 112, "P.TIME", c.porta, 127, i);
+  R(233, 101, 487, 1, C.cell);
+}
+
+// ---------- 0: layout scheme ----------
+function draw0() {
+  use("c0", 720, 528);
+  const zone = (x, y, w, h, l) => { R(x, y, w, h, C.cell); B(x, y, w, h, C.line); T(l, x + 4, y + 4, C.label, 1); };
+  zone(0, 0, 720, 28, "HEADER 28: MDMI / ALL EDITOR BANK ROM / STATUS / LOAD SAVE UNDO");
+  zone(0, 28, 232, 16, "YM2612");
+  for (let k = 0; k < 6; k++) zone(0, 44 + k * 40, 232, 40, "ROW " + (k + 1) + "  232x40");
+  zone(0, 284, 232, 16, "SN76489");
+  for (let k = 0; k < 4; k++) zone(0, 300 + k * 40, 232, 40, "ROW " + (k + 7));
+  zone(233, 28, 487, 24, "");
+  T("NO. X3   NAME X2 *                SOURCE X2", 242, 36, C.text, 1);
+  for (let r = 0; r < 2; r++) for (let k = 0; k < 4; k++) if (!(r === 1 && k > 1)) zone(COLS[k], 56 + r * 22, 112, 20, ["VOL", "PAN", "TUNE", "BEND", "PORTA", "P.TIME"][r * 4 + k]);
+  zone(242, 104, 466, 352, "CHIP AREA 466x352: FM DIAGRAM + OPERATORS / PSG ENVELOPE / DAC MAP");
+  zone(0, 460, 720, 44, "GLOBALS: LFO, LFO RATE, FILTER, CH3 SPECIAL, DAC");
+  zone(0, 504, 720, 24, "FOOTER: HINTS, MESSAGES, STATS");
+  const Y = C.target;
+  [10, 54, 80, 242, 288, 358, 474, 590, 708].forEach(x => { for (let y = 28; y < 460; y += 4) R(x, y, 1, 2, Y); });
+  [30, 56, 78, 104].forEach(y => { for (let x = 233; x < 720; x += 4) R(x, y, 2, 1, Y); });
+  [10, 54, 80, 242, 288, 358, 474, 590, 708].forEach(x => T(String(x), x + 2, 454 - 10, Y, 1));
+}
+function draw0r() {
+  crop("c0r", () => {
+    rail({});
+    const y = rowY(0), Y = C.target;
+    [10, 54, 80, 226].forEach(x => { for (let yy = y - 4; yy < y + 44; yy += 3) R(x, yy, 1, 1, Y); });
+    [y + 5, y + 27, y + 26, y + 34].forEach(yy => { for (let x = 0; x < 232; x += 3) R(x, yy, 1, 1, Y); });
+  }, 0, 40, 236, 88, 2);
+}
+function draw0p() {
+  const cv = use("c0p", 487, 4 * 80);
+  [0, 2, 6, 5].forEach((i, k) => {
+    const off = document.createElement("canvas"); const keep = g; use(off, 720, 528); pageTop(i);
+    R(233, 28, 4, 74, kindOf(i));
+    g = keep; g.drawImage(off, 233, 28, 487, 76, 0, k * 80, 487, 76);
+  });
+}
+
+// ---------- 1: ALL ----------
+function allRow(i, more) {
+  const c = CH[i], y = rowY(i);
+  R(233, y + 39, 487, 1, C.cell);
+  soundCell(i, 242, y);
+  if (c.env && c.cursor != null) cursorAt(c.env, c.cursor, 242, y + 3, 104, 33);
+  if (c.dac) { vcell(354, y + 4, 112, "", c.vol, 127, i, { dim: 1, text: "-" }); }
+  else vcell(354, y + 4, 112, "", c.vol, 127, i, i === 1 ? { from: 60 } : {});
+  if (i < 6 && !c.dac) ["L", "C", "R"].forEach((l, k) => {
+    const x = 474 + k * 18, on = c.pan === k;
+    if (on) R(x, y + 4, 17, 20, C.text); else B(x, y + 4, 17, 20, C.line);
+    T(l, x + 3, y + 6, on ? C.bg : C.label, 2);
+  });
+  T(cut(c.file ? c.src.replace(/[.][a-z]+$/, "") : c.src, 14), 536, y + 5, C.text, 2);
+  T(cut(c.from, 28), 536, y + 27, c.sp ? C.sp : C.label, 1);
+  if (c.dac) return;
+  const items = [["TUNE", (c.tune >= 0 ? "+" : "") + c.tune, c.tune !== 0], ["BEND", String(c.bend), c.bend !== 2], ["PORTA", c.porta ? String(c.porta) : "OFF", c.porta !== 0]];
+  let x = 354;
+  for (const [l, v, diff] of items) {
+    if (more === "b" && !diff) continue;
+    const s = l + " " + v; T(s, x, y + 28, more === "b" ? C.label : diff ? C.text : C.hint, 1); x += TW(s, 1) + 12;
+  }
+}
+function allPage(more) {
+  R(233, 28, 487, 16, C.cell); R(233, 284, 487, 16, C.cell);
+  [["VOL", 354], ["PAN", 474], ["SOURCE", 536]].forEach(([l, x]) => T(l, x, 32, C.hint, 1));
+  [["VOL", 354], ["SOURCE", 536]].forEach(([l, x]) => T(l, x, 288, C.hint, 1));
+  for (let i = 0; i < 10; i++) allRow(i, more);
+}
+function draw1() { use("c1", 720, 528); header("ALL"); rail({}); allPage("b"); globalsFooter(); }
+function draw1ab() {
+  const cv = use("c1ab", 487, 2 * 124);
+  ["a", "b"].forEach((m, k) => {
+    const off = document.createElement("canvas"); const keep = g; use(off, 720, 528); allPage(m);
+    g = keep; g.drawImage(off, 233, 44, 487, 120, 0, k * 124, 487, 120);
+    T(m === "a" ? "1A" : "1B", 470, k * 124 + 4, C.target, 1);
+  });
+}
+
+// ---------- 2 ----------
+function draw2() {
+  use("c2", 490, 4 * 44);
+  const cases = [[0, {}], [0, { held: 0 }], [0, { seen: 0 }], [5, {}]];
+  ["a", "b"].forEach((v, col) => cases.forEach(([i, patch], r) => {
+    const save = Object.assign({}, CH[i]); Object.assign(CH[i], patch);
+    g.save(); g.translate(col * 250, r * 44 + 2 - rowY(i)); railRow(i, { bar: v }); g.restore();
+    Object.assign(CH[i], save);
+  }));
+}
+
+// ---------- 3 ----------
+function draw3() {
+  use("c3", 4 * 116, 3 * 44);
+  const list = [0, 1, 3, 4, 6, 7, 8, 9, 2, 5];
+  list.forEach((i, k) => {
+    const x = 4 + (k % 4) * 116, y = 2 + Math.floor(k / 4) * 44;
+    if (k >= 8) { R(x - 4, y, 3, 40, kindOf(i)); }
+    soundCell(i, x, y);
+  });
+}
+
+// ---------- 4: envelope editor v2 ----------
+const PCODES = [7, 6, 5, 4, 3, 2, 1, 0, 8, 9, 10, 11, 12, 13, 14];
+const EV = { strip: 106, top: 122, base: 272, ptop: 290, centre: 335, axis: 384 };
+function loopIcon(x, y, c) { R(x + 1, y, 5, 1, c); R(x, y + 1, 1, 4, c); R(x + 6, y + 1, 1, 4, c); R(x + 1, y + 5, 4, 1, c); R(x + 4, y + 4, 1, 3, c); R(x + 3, y + 5, 3, 1, c); }
+function loopStrip(env, y) {
+  const n = env.f.length, colx = i => 296 + Math.floor(i * 404 / n);
+  if (env.a < 0) {
+    B(296, y, 36, 14, C.line); T("LOOP", 299, y + 3, C.label, 1); T("NOTE OFF CUTS", 340, y + 3, C.hint, 1); return;
+  }
+  const bs = colx(env.a) - 1, be = colx(env.b) - 1, room = be - bs - 1;
+  R(bs + 1, y, room, 14, C.cell);
+  if (room >= TW("LOOP", 1) + 6) TC("LOOP", bs, be - bs, y + 3, C.psg, 1);
+  else if (room >= 11) loopIcon(bs + Math.floor((room - 7) / 2) + 1, y + 3, C.psg);
+  if (env.b < n) {
+    const tx = be + 12, space = 700 - tx;
+    const w = TW("AFTER NOTE OFF", 1) <= space ? "AFTER NOTE OFF" : TW("TAIL", 1) <= space ? "TAIL" : "";
+    if (w) T(w, tx, y + 3, C.label, 1);
+  }
+  R(bs - 8, y, 8, 14, C.psg); R(be + 1, y, 8, 14, C.psg);
+  return [bs, be];
+}
+function envEditor(env, hover) {
+  const n = env.f.length, colx = i => 296 + Math.floor(i * 404 / n), a = env.a, b = env.b;
+  const inLoop = i => a >= 0 && i >= a && i < b;
+  const T0 = EV.top, BASE = EV.base, PT = EV.ptop, CEN = EV.centre;
+  TR("0DB", 292, T0, C.hint, 1); TR("-14", 292, T0 + 70, C.hint, 1); TR("-28", 292, T0 + 140, C.hint, 1); TR("OFF", 292, BASE + 2, C.hint, 1);
+  T("PITCH", 242, PT, C.label, 1);
+  [["+5", PT], ["+1", PT + 24], ["0", PT + 42], ["-1", PT + 60], ["-5", PT + 84]].forEach(([l, y]) => TR(l, 292, y, C.hint, 1));
+  for (let i = 0; i < n; i++) {
+    const x = colx(i), w = colx(i + 1) - x, lv = env.f[i] & 15, top = T0 + 10 * lv;
+    const back = i === hover ? C.line : inLoop(i) ? C.cell : C.bg;
+    R(x, T0, w, 160, back); R(x, PT, w, 90, back);
+    const grid = inLoop(i) ? C.line : C.cell;
+    for (let k = 1; k < 15; k++) R(x, T0 + 10 * k, w, 1, grid);
+    if (lv < 15) { R(x, top + 3, w - 1, BASE - top - 3, C.psgD); R(x, top, w - 1, 3, C.psg); }
+    const row = PCODES.indexOf(env.f[i] >> 4), pt = PT + row * 6;
+    if (row >= 0 && row < 7) R(x, pt, w - 1, CEN - pt, C.psg); else if (row > 7) R(x, CEN + 1, w - 1, pt + 6 - CEN - 1, C.psg);
+  }
+  R(296, BASE, 403, 1, C.line); R(296, CEN, 403, 1, C.line);
+  const ends = loopStrip(env, EV.strip);
+  if (ends) { R(ends[0], EV.strip, 1, PT + 90 - EV.strip, C.psg); R(ends[1], EV.strip, 1, PT + 90 - EV.strip, C.psg); }
+  const steps = [1, 3, 6, 15, 30]; let every = 30;
+  for (const s of steps) if (s * 404 >= 32 * n) { every = s; break; }
+  for (let f = 0; f < n; f++) {
+    const x = colx(f), lab = f % every === 0;
+    if (lab || 404 >= 6 * n) R(x, EV.axis, 1, 3, lab ? C.hint : C.line);
+    if (lab && x + 76 <= 699) { T(String(f), x - String(f).length * 3, EV.axis + 4, C.hint, 1); const ms = String(Math.round(f * 1000 / 60)); T(ms, x - ms.length * 3, EV.axis + 14, C.hint, 1); }
+  }
+  TR("FRAME", 286, EV.axis + 4, C.hint, 1); TR("MS", 286, EV.axis + 14, C.hint, 1);
+  R(648, EV.axis + 3, 52, 20, C.psgD); TR(String(n), 696, EV.axis + 5, C.text, 2);
+  TR(Math.round(n * 1000 / 60) + " MS", 700, EV.axis + 26, C.label, 1);
+  if (hover != null) {
+    const x = colx(hover), w = colx(hover + 1) - x, lv = env.f[hover] & 15;
+    const s = lv === 15 ? "OFF" : (-2 * lv) + "DB", tw = TW(s, 1) + 5, tx = Math.round(x + w / 2 - tw / 2), ty = T0 + 10 * lv - 16;
+    R(tx, ty, tw, 13, C.bg); B(tx, ty, tw, 13, C.label); T(s, tx + 3, ty + 3, C.text, 1);
+  }
+}
+function psgPage(hover) { header("EDITOR"); rail({ sel: 6 }); R(4, rowY(6), 229, 39, C.psgD); railRow(6, { sel: 6 }); pageTop(6); envEditor(ENV0, hover); globalsFooter(hover != null ? "STEP 37/46  600 MS  LEVEL -12 DB  PITCH 0" : ""); }
+function draw4() { use("c4", 720, 528); psgPage(36); }
+function draw4s() {
+  use("c4s", 484, 5 * 26);
+  const cases = [ENV0, { f: ENV0.f, a: 23, b: 26 }, { f: ENV0.f, a: 23, b: 24 }, { f: ENV0.f.slice(0, 31), a: 23, b: 31 }, ENVPLUCK];
+  cases.forEach((env, k) => { g.save(); g.translate(-230, k * 26 + 6 - EV.strip); loopStrip(env, EV.strip); R(296, EV.strip + 16, 404, 1, C.cell); g.restore(); });
+}
+
+// ---------- 5: FM page ----------
+const OPF = [["TL", 127], ["MUL", 15], ["DT", 7], ["AR", 31], ["DR", 31], ["SL", 15], ["SR", 31], ["RR", 15], ["RS", 3], ["AM", 1], ["SSG", 15]];
+const OPV = [[57, 12, 4, 31, 7, 11, 0, 8, 1, 0, 0], [9, 1, 0, 31, 4, 1, 4, 8, 2, 1, 0], [34, 1, 4, 22, 5, 11, 0, 8, 2, 0, 0], [9, 1, 0, 31, 4, 6, 4, 8, 2, 1, 0]];
+function fmChip(i, sp) {
+  const c = CH[i], alg = sp ? 7 : c.alg;
+  diagram(242, 104, alg, c.fb, BIG, sp ? { car: C.sp, mod: C.sp } : {});
+  vcell(474, 104, 112, "FB", c.fb, 7, i); vcell(590, 104, 112, "AMS", 0, 3, i, { text: "0 DB" }); vcell(474, 126, 112, "FMS", 0, 7, i, { text: "0 %" });
+  for (let k = 0; k < 8; k++) { const x = 474 + k * 29, on = k === alg; R(x, 152, 26, 20, on ? (sp ? C.sp : C.fm) : C.cell); T(String(k), x + 8, 154, on ? C.text : C.label, 2); }
+  T("ALGORITHM", 474, 176, C.hint, 1);
+  for (let op = 0; op < 4; op++) {
+    const x = COLS[op], car = CARR[alg] >> op & 1, kc = sp ? C.sp : C.fm;
+    if (car) R(x, 202, 112, 14, kc); else B(x, 202, 112, 14, sp ? C.sp : C.fmL);
+    const head = sp ? (op < 3 ? "OP" + (op + 1) + " MIDI " + (11 + op) : "OP4 MIDI 3") : "OP" + (op + 1) + (car ? " CARRIER" : " MOD");
+    T(head, x + 4, 205, car ? C.text : sp ? C.sp : C.fmL, 1);
+    if (sp) { const nt = CH[2].notes[op]; TR(nn(nt[1]), x + 108, 205, nt[2] ? C.lit : C.hint, 1); }
+    OPF.forEach(([l, max], r) => {
+      const y = 220 + r * 21 + (r >= 3 ? 4 : 0) + (r >= 8 ? 4 : 0), v = OPV[op][r];
+      const o = {};
+      if (l === "AM") o.text = v ? "ON" : "OFF";
+      if (l === "SSG") o.text = v ? String(v) : "OFF";
+      if (!sp && op === 0 && l === "TL") o.from = 34;
+      if (!sp && op === 1 && l === "SR") o.from = 0;
+      vcell(x, y, 112, l, v, max, i, o);
+    });
+  }
+}
+function draw5() { use("c5", 720, 528); header("EDITOR"); rail({ sel: 1 }); pageTop(1); fmChip(1, false); globalsFooter("TL 57, FILE 34"); }
+function draw5sp() {
+  const cv = document.getElementById("c5sp");
+  const offAll = document.createElement("canvas"); use(offAll, 720, 528); rail({}); allPage("b");
+  const offFm = document.createElement("canvas"); use(offFm, 720, 528); rail({ sel: 2 }); pageTop(2); fmChip(2, true);
+  use(cv, 720, 340);
+  g.drawImage(offAll, 0, rowY(2), 720, 40, 0, 14, 720, 40);
+  T("CH 3 IN THE RAIL AND ON THE ALL PAGE", 4, 2, C.hint, 1);
+  T("FM PAGE OF CH 3 IN SPECIAL MODE", 4, 66, C.hint, 1);
+  g.drawImage(offFm, 233, 28, 487, 262, 233, 76, 487, 262);
+  g.drawImage(offFm, 0, rowY(2), 232, 40, 0, 76, 232, 40);
+}
+
+// ---------- 6-7 ----------
+function draw67() {
+  use("c67", 720, 100);
+  vcell(16, 14, 112, "TL", 34, 127, 0); T("SAME AS FILE", 136, 20, C.hint, 1);
+  vcell(16, 44, 112, "TL", 57, 127, 0, { from: 34 }); T("CHANGED: WHITE LABEL, TICK AT THE FILE'S 34", 136, 50, C.hint, 1);
+  g.save(); g.translate(440, 10 - rowY(1)); railRow(1); g.restore();
+  T("STAR AFTER THE NAME", 440, 56, C.hint, 1);
+}
+
+// ---------- 9-12 before / after ----------
+function draw9() {
+  const area = [480, 106, 230, 180];
+  crop("c9a", () => { rail({ sel: 6 }); pageTop(6); envEditorNoTag(); }, ...area, 2);
+  crop("c9b", () => { rail({ sel: 6 }); pageTop(6); envEditor(ENV0, 36); }, ...area, 2);
+}
+function envEditorNoTag() { envEditor(ENV0, null); const x = 296 + Math.floor(36 * 404 / 46), w = Math.floor(37 * 404 / 46) - Math.floor(36 * 404 / 46); R(x, EV.top, w, 160, C.line); const lv = 6; R(x, EV.top + 10 * lv + 3, w - 1, EV.base - EV.top - 10 * lv - 3, C.psgD); R(x, EV.top + 10 * lv, w - 1, 3, C.psg); }
+function bankSide(others) {
+  const presets = [38, 4, 16, 48, 29, 5], sel = 1;
+  for (let r = 0; r < 19; r++) {
+    const y = 72 + r * 20;
+    if (r === presets[sel]) { R(560, y, 138, 19, C.fmD); }
+    R(560, y + 19, 138, 1, r % 8 === 7 ? C.line : C.cell);
+    for (let c = 0; c < 6; c++) if (presets[c] === r) R(616 + c * 12, y + 7, 6, 6, c === sel ? C.text : C.fmL);
+  }
+  for (let c = 0; c < 6; c++) T(String(c + 1), 616 + c * 12, 60, c === sel ? C.text : C.hint, 1);
+  R(702, 72, 6, 380, C.cell); R(702, 72, 6, Math.round(380 * 19 / 128), C.line);
+  if (others) presets.forEach((p, c) => { if (c !== sel) R(702, 72 + Math.round(p * 380 / 128), 3, 2, C.fmL); });
+  R(702, 72 + Math.round(presets[sel] * 380 / 128), 6, 3, C.fm);
+}
+function draw10() {
+  crop("c10a", () => bankSide(false), 600, 56, 112, 300, 2);
+  crop("c10b", () => bankSide(true), 600, 56, 112, 300, 2);
+}
+function oldRailRow(i) {
+  const c = CH[i], y = rowY(i);
+  R(0, y, 4, 39, kindOf(i)); T(String(i + 1), 10, y + 8, C.text, 3); T("FM", 54, y + 7, C.fmL, 1);
+  T(cut(c.name, 14), 54, y + 21, C.label, 2); const s = nn(c.note); T(s, 226 - s.length * 12, y + 3, C.hint, 2);
+}
+function draw11() {
+  crop("c11a", () => oldRailRow(4), 0, rowY(4), 232, 40, 2);
+  crop("c11b", () => railRow(4), 0, rowY(4), 232, 40, 2);
+}
+function draw12() {
+  crop("c12a", () => { vcell(8, 8, 112, "TL", 57, 127, 0); }, 0, 0, 128, 36, 2);
+  crop("c12b", () => { vcell(8, 8, 112, "TL", 57, 127, 0, { host: 1 }); }, 0, 0, 128, 36, 2);
+}
+
+// ---------- 14 future ----------
+function draw14c() {
+  use("c14c", 3 * 120, 44);
+  [[27, "HELD, IN LOOP"], [38, "TAIL AFTER NOTE OFF"], [null, "ENDED"]].forEach(([s, l], k) => {
+    const x = 4 + k * 120; envThumb(x, 3, 104, 33, ENV0); if (s != null) cursorAt(ENV0, s, x, 3, 104, 33);
+    T(l, x, 37, C.hint, 1);
+  });
+}
+function draw14() {
+  use("c14", 487, 84);
+  g.save(); g.translate(-233, -rowY(6) + 2);
+  futureRow(6, 0x5); g.restore();
+  g.save(); g.translate(-233, -rowY(0) + 44); futureRow(0, 0x3); g.restore();
+}
+function futureRow(i, seed) {
+  const c = CH[i], y = rowY(i);
+  R(233, y, 487, 40, C.bg);
+  soundCell(i, 242, y);
+  vcell(354, y + 4, 112, "", c.vol, 127, i);
+  const sx = 474, sw = 132, sh = 32, sy = y + 4; R(sx, sy, sw, sh, C.cell); R(sx, sy + sh / 2, sw, 1, C.line);
+  let prev = null;
+  for (let x = 0; x < sw; x++) {
+    const t = x / sw * 6.283 * 3;
+    const v = i < 6 ? Math.sin(t + 1.6 * Math.sin(t * 2)) * 0.8 : ((x / 11 | 0) % 2 ? 0.6 : -0.6);
+    const yy = Math.round(sy + sh / 2 - v * (sh / 2 - 2));
+    if (prev != null) R(sx + x, Math.min(prev, yy), 1, Math.abs(prev - yy) + 1, lightOf(i)); prev = yy;
+  }
+  T(c.src, 614, y + 5, C.text, 2); T(cut(c.from, 15), 614, y + 27, C.label, 1);
+}
+
+function drawAll() {
+  draw0(); draw0r(); draw0p(); draw1(); draw1ab(); draw2(); draw3(); draw4(); draw4s(); draw5(); draw5sp(); draw67();
+  draw9(); draw10(); draw11(); draw12(); draw14c(); draw14();
+}
+drawAll();
+let zoomed = false;
+document.getElementById("zoom").onclick = () => {
+  zoomed = !zoomed;
+  document.querySelectorAll("canvas").forEach(cv => { cv.style.width = zoomed ? cv.width * 2 + "px" : ""; });
+  document.getElementById("zoom").textContent = zoomed ? "Макеты x1" : "Макеты x2";
+};
+</script>
+</body>
+</html>
