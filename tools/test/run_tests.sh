@@ -77,6 +77,8 @@ run realtime-eight 48000 64 realtime 8
 rm -rf "$OUT/journal"; mkdir -p "$OUT/journal"
 export MDMI_TEST_BURST=16 MDMI_JOURNAL="$(cygpath -w "$OUT/journal")"; run realtime-burst 44100 256 realtime 6; unset MDMI_TEST_BURST MDMI_JOURNAL
 ! grep -q "underruns=[1-9]" "$OUT/realtime-burst.log" || fail "realtime-burst: $(grep -o "underruns=[0-9]*" "$OUT/realtime-burst.log" | tr '\n' ' ')"
+# The waits of a burst must not make the host itself late: no more than one block (5.8 ms).
+awk '/worst_host_late=/ { split($4, a, "="); if (a[2] + 0 > 5.8) bad = 1 } END { exit bad }' "$OUT/realtime-burst.log" || fail "realtime-burst: host late $(grep -o "worst_host_late=[0-9.]*ms" "$OUT/realtime-burst.log")"
 [ "$(cat "$OUT"/journal/mdmi-journal-*.csv 2>/dev/null | grep -c "^[0-9]")" -ge 24 ] || fail "realtime-burst: journal has fewer than 4 lines per instance"
 export MDMI_TEST_REACTIVATE=1; run reactivate 48000 128 realtime 1; unset MDMI_TEST_REACTIVATE
 export MDMI_TEST_CRASH=fatal; run crash-fatal 48000 128 realtime 1 dead

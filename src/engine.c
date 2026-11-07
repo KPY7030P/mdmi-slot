@@ -663,6 +663,12 @@ static void journal_reset(mdmi_engine *e)
 	e->j_block_min = UINT32_MAX;
 	e->j_avail_min = UINT32_MAX;
 	e->j_samples_base = 0;
+	// The worker is parked: what it counted before is not this activation's.
+	e->j_runs = 0;
+	e->j_run_ms = e->j_run_max_ms = e->j_worker_wait_ms = 0;
+	e->j_cpu_moves = 0;
+	e->j_slow_runs = 0;
+	e->j_slow_run_ms = 0;
 }
 
 // The worker's line for the second that just ended.
@@ -936,6 +942,10 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 			e->ring[ch] = calloc(ring_frames, sizeof(float));
 		}
 		if (!e->ring[0] || !e->ring[1]) {
+			// Both or neither: the next activation then allocates again.
+			free(e->ring[0]);
+			free(e->ring[1]);
+			e->ring[0] = e->ring[1] = NULL;
 			return false;
 		}
 		e->ring_mask = ring_frames - 1;
@@ -1008,11 +1018,10 @@ void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz)
 void mdmi_engine_set_offline(mdmi_engine *e, bool offline)
 {
 	// Whether a host says so when it freezes or exports (audit 5.4) is what the journal is asked for.
-	if (e->journal && __atomic_exchange_n(&e->offline, offline, __ATOMIC_ACQ_REL) != offline) {
+	if (__atomic_exchange_n(&e->offline, offline, __ATOMIC_ACQ_REL) != offline && e->journal) {
 		fprintf(e->journal, "# offline=%u\n", offline);
 		fflush(e->journal);
 	}
-	__atomic_store_n(&e->offline, offline, __ATOMIC_RELEASE);
 }
 
 uint32_t mdmi_engine_boots(const mdmi_engine *e)
