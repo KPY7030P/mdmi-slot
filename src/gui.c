@@ -729,8 +729,22 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	// The cell's own channel: ALL shows them all.
 	const bool fm = channel >= 0 && channel_is_fm(channel);
 	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
-	uint32_t background = held ? C_LINE : c->kind == CELL_COLUMN ? C_CELL : fm ? C_FM_DARK : C_PSG_DARK;
-	fill(g, c->x, c->y, c->w, c->h, background);
+	const uint32_t dark = held ? C_LINE : fm ? C_FM_DARK : C_PSG_DARK;
+	const int max = patch_param(c->id)->max > 0 ? patch_param(c->id)->max : 1;
+	if (c->kind == CELL_COLUMN) {
+		fill(g, c->x, c->y, c->w, c->h, held ? C_LINE : C_CELL);
+	} else {
+		// A channel's cell is a bar filled up to its value, as in the mockup; TUNE from its middle.
+		fill(g, c->x, c->y, c->w, c->h, C_CELL);
+		const int at = c->w * value / max;
+		if (param == PARAM_FINE_TUNE) {
+			const int middle = c->w * patch_param(c->id)->default_value / max;
+			fill(g, c->x + (at < middle ? at : middle), c->y, at < middle ? middle - at : at - middle, c->h, dark);
+			fill(g, c->x + middle, c->y, 1, c->h, C_LINE);
+		} else {
+			fill(g, c->x, c->y, at, c->h, dark);
+		}
+	}
 	const uint32_t label = held ? C_TEXT : changed ? C_AMBER : C_LABEL;
 	uint32_t shown = C_TEXT;
 	if (c->id == GLOBAL_DAC && value) {
@@ -744,8 +758,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		int label_end = text(g, c->x + 4, c->y + 6, c->label, label, 1);
 		text_right(g, c->x + c->w - 4, c->y + 2, buffer, shown, 2, c->x + c->w - 4 - label_end - 6);
 		if (changed) {
-			const int max = patch_param(c->id)->max;
-			fill(g, c->x + (c->w - 2) * base / (max > 0 ? max : 1), c->y + c->h - 4, 2, 4, C_AMBER);
+			fill(g, c->x + (c->w - 2) * base / max, c->y + c->h - 4, 2, 4, C_AMBER);
 		}
 	}
 	if (held) {
@@ -1230,6 +1243,8 @@ static void value_tag(mdmi_gui *g, int centre, int y, const char *value)
 	text(g, x + 3, y + 3, value, C_TEXT, 1);
 }
 
+static int envelope_frame(mdmi_gui *g, const patch_shape *shape, int psg, unsigned rate);
+
 static void draw_envelope(mdmi_gui *g, const patch_values *values)
 {
 	const bool noise = *g->source.channel == PATCH_NUM_CHANNELS - 1;
@@ -1288,6 +1303,12 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	}
 	fill(g, ENV_X, ENV_BASE_Y, ENV_LANE_W - 1, 1, C_LINE);
 	fill(g, ENV_X, ENV_CENTRE_Y, ENV_LANE_W - 1, 1, C_LINE);
+	// Where the note is, the same green line as on ALL, down both lanes.
+	const int playing = envelope_frame(g, shape, psg, mdmi_engine_get_stats(g->source.engine).sample_rate);
+	if (playing >= 0 && playing < count) {
+		const int x = column_x(count, playing), w = column_x(count, playing + 1) - x;
+		fill(g, x + (w - 1) / 2, ENV_LEVEL_Y, 1, ENV_PITCH_BOTTOM - ENV_LEVEL_Y, C_PLAYING);
+	}
 
 	// The loop's strip: its body is the switch, the tabs point outward so a loop of one step keeps
 	// them apart, LOOP between them and RELEASE over the tail that plays after Note Off.

@@ -58,6 +58,7 @@
 #define ENV_LENGTH_Y 397
 #define ENV_LOOP_STRIP_Y 112
 #define COLOR_PSG 0x22CCEE
+#define COLOR_CELL 0x222222
 // Stage 9: the rail's bars and the bank's scroll track.
 #define RAIL_CH1_TOP 44
 #define RAIL_CH3_TOP 124
@@ -505,6 +506,8 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 10, OP1_TL_Y + 12, COLOR_MARK) > 10, "the tweaked TL is amber, with a mark where the place's value is");
+		CHECK(count_color_in(OP1_TL_X - 30, OP1_TL_X + 30, OP1_TL_Y - 8, OP1_TL_Y + 8, COLOR_FM_DARK) > 20 && count_color_in(OP1_TL_X - 30, OP1_TL_X + 30, OP1_TL_Y - 8, OP1_TL_Y + 8, COLOR_CELL) > 20,
+			"the TL cell is a bar filled up to its value");
 		save_bmp(argv[2], "fm");
 		// The hover leaves at once without a real mouse; held down, the cell stays the one pointed at.
 		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
@@ -572,11 +575,12 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, COLOR_PLAYING) > 20, "a held note on channel 8 draws the envelope's cursor");
 		save_bmp(argv[2], "all");
-		send_midi(0x87, 72, 0);
 		click(window, ALL_SOUND_X, RAIL_CH8_Y);
 		run_ms(100);
 		capture(window);
 		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) > 0, "a click on channel 8's sound opens its envelope page");
+		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PLAYING) > 50, "the held note's cursor runs on the envelope editor too");
+		send_midi(0x87, 72, 0);
 		click(window, RAIL_X, RAIL_CH4_Y);
 		run_ms(100);
 
