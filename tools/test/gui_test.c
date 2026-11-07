@@ -648,6 +648,22 @@ int main(int argc, char **argv)
 		click(window, SSG_PICK_OFF_X, SSG_PICK_Y);
 		run_ms(100);
 		CHECK(pushed[0] == 1 && get_value(CH4_OP1_SSG) == 0, "a click beside the choice only closes it; OFF turns SSG off");
+		// A double click on a shape: the second press lands on TL under the closed choice and must
+		// leave it alone (review after 0.11.0).
+		const int tl_before = get_value(CH4_OP1_TL);
+		click(window, SSG_BUTTON_X, SSG_BUTTON_Y);
+		run_ms(50);
+		memset(pushed, 0, sizeof(pushed));
+		click(window, SSG_PICK_8_X, SSG_PICK_Y);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(SSG_PICK_8_X, SSG_PICK_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(SSG_PICK_8_X, SSG_PICK_Y));
+		run_ms(100);
+		CHECK(pushed[0] == 1 && get_value(CH4_OP1_SSG) == 8 && get_value(CH4_OP1_TL) == tl_before,
+			"a double click on a shape sets SSG once and leaves TL under it alone (%d gestures, TL %d to %d)", pushed[0], tl_before, get_value(CH4_OP1_TL));
+		click(window, SSG_BUTTON_X, SSG_BUTTON_Y);
+		run_ms(50);
+		click(window, SSG_PICK_OFF_X, SSG_PICK_Y);
+		run_ms(50);
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP_X[2] + 60, OP_AR_Y));
 		run_ms(50);
 		click(window, LFO_RATE_X, LFO_RATE_Y);

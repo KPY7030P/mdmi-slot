@@ -251,6 +251,8 @@ struct mdmi_gui {
 	// window's alone: no knob, no project.
 	int last_op;
 	int ssg_open;
+	// The last press only closed the choice of SSG: a double click's second press does nothing.
+	bool press_eaten;
 	// Each FM operator's envelope as the graph's columns, kept until its values change.
 	struct {
 		bool ready;
@@ -667,7 +669,6 @@ static const struct {
 #define OP_RS_Y 434
 // The ROM's DT 0-7 for the segments -3 to +3; 4 is -0 and shows as 0.
 static const int DT_VALUES[7] = {7, 6, 5, 0, 1, 2, 3};
-// The choice of SSG over the graph: OFF and the eight shapes.
 // Each operator's SSG is a button at its header's right end (art-director, after 0.11.0); a click
 // opens the choice under the header in the same column, 3 x 3 cells over TL, MUL and AR.
 #define SSG_BUTTON_X 78
@@ -764,7 +765,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		add_cell(g, SOURCE_X, 30, SOURCE_W, 22, PATCH_CHANNEL_ID(channel, PARAM_PRESET), "PRESET", CELL_SOURCE);
 	}
 	if (!is_dac(values, channel) && !bank && *g->source.page != PAGE_ALL) {
-		// The choice of SSG first: it lies over the graph, and the first cell under the mouse wins.
+		// The choice of SSG first: it lies over its column's rows, and the first cell under the mouse wins.
 		if (channel_is_fm(channel) && g->ssg_open >= 0) {
 			for (int n = 0; n < 9; n++) {
 				add_choice(g, GRID_X[g->ssg_open] + n % 3 * (SSG_CELL_W + 2), SSG_PICK_Y + 1 + n / 3 * (SSG_CELL_H + 2), SSG_CELL_W, SSG_CELL_H, op_id(channel, g->ssg_open, OP_SSG), "", n == 0 ? 0 : 7 + n, LOOK_SHAPE);
@@ -1821,7 +1822,13 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 
 static int hovered(const mdmi_gui *g)
 {
+	// The open choice of SSG covers the rows under it, gaps between its cells included.
+	const bool in_choice = g->ssg_open >= 0 && g->mouse_x >= GRID_X[g->ssg_open] - 1 && g->mouse_x < GRID_X[g->ssg_open] + OP_W + 1
+		&& g->mouse_y >= SSG_PICK_Y && g->mouse_y < SSG_PICK_Y + SSG_PICK_H;
 	for (int i = 0; i < g->cell_count; i++) {
+		if (in_choice && g->cells[i].look != LOOK_SHAPE) {
+			continue;
+		}
 		const cell *c = &g->cells[i];
 		if (g->mouse_x >= c->x && g->mouse_x < c->x + c->w && g->mouse_y >= c->y && g->mouse_y < c->y + c->h) {
 			return i;
@@ -2281,7 +2288,7 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 		}
 		if (channel_is_fm(channel)) {
 			const int16_t *v = values->channels[channel];
-			// The diagram or, after a click on it, the four envelopes in small, for every FM row at once.
+			// The diagram or, after a click on it, the four envelopes in small, each row its own.
 			if (*g->source.all_envelopes >> channel & 1) {
 				draw_curves(g, values, channel, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, -1);
 				fill(g, ALL_SOUND_X, y + 36, ALL_SOUND_W, 1, C_LINE);
@@ -2651,6 +2658,7 @@ static void on_action(mdmi_gui *g, int action)
 static void on_down(mdmi_gui *g, int x, int y)
 {
 	// The choice of SSG open: a shape sets it, any other click only closes the choice.
+	g->press_eaten = g->ssg_open >= 0;
 	if (g->ssg_open >= 0) {
 		g->mouse_x = x;
 		g->mouse_y = y;
@@ -2804,6 +2812,11 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 {
 	g->mouse_x = x;
 	g->mouse_y = y;
+	// The first press set or closed the choice of SSG; what is under the mouse now is another cell.
+	if (g->press_eaten) {
+		g->press_eaten = false;
+		return;
+	}
 	// A quick second press on the envelope draws as the first did.
 	patch_shape scratch;
 	if (is_envelope_page(g) && envelope_part_at(g, shown_shape(g, &scratch), x, y) != ENV_NONE) {

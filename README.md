@@ -100,7 +100,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   cell is a bar filled up to its value (TUNE from its middle), so the mark reads against the fill.
 - A red dot at a cell's top right: the host sent that knob a value since the mouse last edited it
   (D32, D33, D34). Live sends values only while a lane moves; it echoes the window's own edit
-  15-30 ms after the gesture ends, and a value within 200 ms of the window's last event on that
+  15-32 ms after the gesture ends, and a value within 200 ms of the window's last event on that
   knob is taken as that echo, not as a lane (D34). So
   the dot stays over the lane's flat stretches; a touch with the mouse takes it away.
 - ALL (stage 10): every channel on the rail's rows, so drops and clicks work as on EDITOR. A row
