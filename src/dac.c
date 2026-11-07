@@ -59,23 +59,50 @@ static int rate_for(double file_hz)
 }
 
 
-// What the source gives at a sample of the output, by windowed sinc: its cutoff below the lower of
-// the two rates' Nyquist.
-static double source_at(const int16_t *in, long frames, double t, double cutoff, int side)
+// The resampling filter, windowed sinc with its cutoff below the lower of the two rates' Nyquist,
+// tabled at SINC_PHASES fractions of a source frame and read between them: the window's thread
+// prepares a minute of sound in a fraction of a second (review of D38).
+#define SINC_PHASES 256
+
+static double kernel(double d, double cutoff, int side)
+{
+	if (fabs(d) >= side) {
+		return 0;
+	}
+	const double x = PI * cutoff * d;
+	const double sinc = fabs(x) < 1e-9 ? 1.0 : sin(x) / x;
+	return cutoff * sinc * (0.5 + 0.5 * cos(PI * d / side));
+}
+
+// table[phase * taps + j] weighs source frame centre - side + 1 + j for an output at centre + phase / SINC_PHASES.
+static double *sinc_table(double cutoff, int side)
+{
+	const int taps = 2 * side;
+	double *table = malloc((size_t)(SINC_PHASES + 1) * taps * sizeof(double));
+	for (int phase = 0; table && phase <= SINC_PHASES; phase++) {
+		for (int j = 0; j < taps; j++) {
+			table[phase * taps + j] = kernel((double)phase / SINC_PHASES + side - 1 - j, cutoff, side);
+		}
+	}
+	return table;
+}
+
+static double source_at(const int16_t *in, long frames, double t, const double *table, int side)
 {
 	const long centre = (long)floor(t);
+	const double where = (t - centre) * SINC_PHASES;
+	const int phase = (int)where;
+	const double between = where - phase;
+	const int taps = 2 * side;
+	const double *a = table + phase * taps, *b = a + taps;
 	double sum = 0;
-	for (long n = centre - side + 1; n <= centre + side; n++) {
-		if (n < 0 || n >= frames) {
-			continue;
+	for (int j = 0; j < taps; j++) {
+		const long n = centre - side + 1 + j;
+		if (n >= 0 && n < frames) {
+			sum += in[n] * (a[j] + (b[j] - a[j]) * between);
 		}
-		const double d = t - n;
-		const double x = PI * cutoff * d;
-		const double sinc = fabs(x) < 1e-9 ? 1.0 : sin(x) / x;
-		const double window = 0.5 + 0.5 * cos(PI * d / side);
-		sum += in[n] / 32768.0 * cutoff * sinc * window;
 	}
-	return sum;
+	return sum / 32768.0;
 }
 
 static int rate_of(const dac_sample *sample, const dac_edit *edit)
@@ -109,19 +136,22 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 		return false;
 	}
 	const uint32_t length = (uint32_t)length_wanted, cost = rom_image_cost(length);
-	double *out = malloc(length * sizeof(double));
-	int8_t *bytes = calloc(1, cost);
-	if (!out || !bytes) {
-		free(out);
-		free(bytes);
-		return false;
-	}
 	const double cutoff = step > 1 ? 0.95 / step : 1.0;
 	const int side = (int)ceil(SINC_SIDE * (step > 1 ? step : 1));
+	double *out = malloc(length * sizeof(double));
+	int8_t *bytes = calloc(1, cost);
+	double *table = sinc_table(cutoff, side);
+	if (!out || !bytes || !table) {
+		free(out);
+		free(bytes);
+		free(table);
+		return false;
+	}
 	const double gain = pow(10.0, edit->gain / 200.0);
 	for (uint32_t k = 0; k < length; k++) {
-		out[k] = source_at(sample->source + edit->start, frames, k * step, cutoff, side) * gain;
+		out[k] = source_at(sample->source + edit->start, frames, k * step, table, side) * gain;
 	}
+	free(table);
 	if (edit->fade) {
 		// The last few ms go down to silence, so the end doesn't click.
 		uint32_t fade = (uint32_t)lround(FADE_SECONDS * ROM_SAMPLE_HZ[rate]);
@@ -474,6 +504,7 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		used += bytes;
 		sources += source_bytes;
 		const bool fine = note < ROM_IMAGE_NOTES && s->sample.rate < ROM_SAMPLE_RATES && bytes && bytes % ROM_SAMPLE_BLOCK == 0
+			&& s->edit.rate >= DAC_RATE_AUTO && s->edit.rate < ROM_SAMPLE_RATES && abs(s->edit.pitch) <= DAC_PITCH_MAX && abs(s->edit.gain) <= DAC_GAIN_MAX
 			&& source_bytes + bytes <= length - at && used <= rom_image_room() && sources <= DAC_SOURCE_MAX
 			&& (!frames || (s->source_hz && s->edit.start < s->edit.end && s->edit.end <= frames));
 		s->source = frames && fine ? malloc(source_bytes) : NULL;

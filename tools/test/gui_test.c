@@ -966,20 +966,36 @@ int main(int argc, char **argv)
 		// The start's tab dragged in by a quarter, one restart.
 		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(238, DAC_TRIM_Y + 7));
 		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(300, DAC_TRIM_Y + 7));
-		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(356, DAC_TRIM_Y + 7));
-		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(356, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
 		const long trim_ms = wait_restart(window);
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "dac-trim");
 		const int moved = count_color_in(346, 358, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC);
 		CHECK(trim_ms >= 0 && moved >= 8 * 14, "the start's tab dragged to a quarter trims there, one restart %ld ms", trim_ms);
+		// As Windows sends a double click: down, up, double click, up. The first click moves nothing.
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
+		run_ms(100);
+		capture(window);
+		const bool still = count_color(0, HEADER_H, COLOR_AMBER) == 0 && count_color_in(346, 358, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) + count_color_in(346, 358, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_TEXT) >= 8 * 14;
+		CHECK(still, "a click on a tab without moving changes nothing, no restart");
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
 		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
 		const long untrim_ms = wait_restart(window);
 		capture(window);
 		CHECK(untrim_ms >= 0 && count_color_in(234, 242, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) >= 8 * 14, "a double click on the tab puts the start back");
-		drag(window, DAC_GAIN_X + 50, DAC_ROW_B_Y + 10, DAC_ROW_B_Y - 30);
+		// While the mouse is down nothing is prepared: the header stays RUNNING.
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y + 10));
+		for (int step = 1; step <= 4; step++) {
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y + 10 - step * 10));
+			run_ms(50);
+		}
+		capture(window);
+		const bool running = count_color(0, HEADER_H, COLOR_AMBER) == 0 && count_color(0, HEADER_H, COLOR_PLAYING) > 0;
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y - 30));
+		CHECK(running, "during the drag the engine keeps running");
 		const long gain_ms = wait_restart(window);
 		run_ms(100);
 		capture(window);

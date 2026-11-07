@@ -1626,6 +1626,10 @@ static void test_dac_edit(void)
 	int peak;
 	edit.pitch = 1200;
 	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / 880 - 1) < 0.01 && s->sample.length <= whole / 2 + 256, "an octave up: %.1f Hz, half as long", sine_hz(s, &peak));
+	edit.pitch = 2400;
+	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / 1760 - 1) < 0.01 && s->sample.length <= whole / 4 + 256, "two octaves up: %.1f Hz, a quarter as long", sine_hz(s, &peak));
+	edit.pitch = -2400;
+	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / 110 - 1) < 0.01 && s->sample.length >= whole * 4 - 1024 && s->sample.length <= whole * 4 + 256, "two octaves down: %.1f Hz, four times as long", sine_hz(s, &peak));
 	edit.pitch = -700;
 	const double fifth = 440 * pow(2.0, -7.0 / 12);
 	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / fifth - 1) < 0.01, "a fifth down: %.1f Hz, %.1f wanted", sine_hz(s, &peak), fifth);
@@ -1670,11 +1674,29 @@ static void test_dac_edit(void)
 	dac_edit back = read.notes[45]->edit;
 	back.start = 0;
 	CHECK(dac_prepare(read.notes[45], &back) && read.notes[45]->sample.length > s->sample.length, "after opening, the trim can go back");
+	block[3 + 52] = 9;
+	CHECK(!dac_block_read(&read, block, block_size), "a rate past the driver's is refused");
+	block[3 + 52] = 0xFF;
 	block[3 + 32] ^= 1;
 	dac_clear(&read);
 	CHECK(dac_block_read(&read, block, block_size) && !dac_same(&set, &read), "another source rate is another sample");
 	CHECK(!dac_block_read(&read, block, block_size - 10), "a cut block is refused");
 	free(block);
+
+	// What preparing costs the window's thread: a minute of 48 kHz sound at the highest rate.
+	uint8_t *minute = sine_wav(48000, 1, 16, false, 440, 58, 0.5, &size);
+	dac_sample *long_one = dac_from_wav(minute, size, "minute.wav", &error);
+	free(minute);
+	LARGE_INTEGER frequency, before, after;
+	QueryPerformanceFrequency(&frequency);
+	QueryPerformanceCounter(&before);
+	dac_edit up = long_one ? long_one->edit : edit;
+	up.pitch = 50;
+	const bool prepared = long_one && dac_prepare(long_one, &up);
+	QueryPerformanceCounter(&after);
+	const double prepare_ms = (after.QuadPart - before.QuadPart) * 1000.0 / frequency.QuadPart;
+	CHECK(prepared && prepare_ms < 1000, "58 s at 48 kHz prepared in %.0f ms", prepare_ms);
+	dac_free(long_one);
 
 	// Through the files layer: one undo step per change.
 	mdmi_patch *p = calloc(1, sizeof(*p));

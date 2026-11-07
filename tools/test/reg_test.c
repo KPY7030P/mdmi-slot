@@ -596,7 +596,7 @@ static void test_shaping(void)
 	static const struct {
 		int16_t pitch;
 		int8_t rate;
-	} EDITS[] = {{0, DAC_RATE_AUTO}, {1200, DAC_RATE_AUTO}, {-700, DAC_RATE_AUTO}, {0, 4}};
+	} EDITS[] = {{0, DAC_RATE_AUTO}, {1200, DAC_RATE_AUTO}, {-700, DAC_RATE_AUTO}, {2400, DAC_RATE_AUTO}, {-2400, DAC_RATE_AUTO}, {0, 4}};
 	for (size_t i = 0; i < sizeof(EDITS) / sizeof(EDITS[0]); i++) {
 		dac_edit edit = set.notes[50]->edit;
 		edit.pitch = EDITS[i].pitch;

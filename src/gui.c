@@ -229,6 +229,8 @@ struct mdmi_gui {
 	int dac_drag_y;
 	dac_edit dac_drag_from;
 	dac_edit dac_work;
+	// The mouse moved past DRAG_SLOP: before that a press changes nothing, so a double click resets.
+	bool dac_moved;
 	// The selected sample's wave, min and max a column, and what they were made from.
 	const void *wave_of;
 	int wave_note;
@@ -2133,7 +2135,13 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 		text(g, DAC_CONTROLS[DACC_GAIN].x + 4, DAC_CONTROLS[DACC_GAIN].y + 6, "CLIP", C_AMBER, 1);
 	}
 	switch_cell(g, DACC_NORMALIZE, false, booted);
-	switch_cell(g, DACC_FADE, edit->fade, booted);
+	// FADE is on almost always (owner): a dim word, and NO FADE in amber when it isn't.
+	{
+		const int x = DAC_CONTROLS[DACC_FADE].x, y = DAC_CONTROLS[DACC_FADE].y, w = DAC_CONTROLS[DACC_FADE].w;
+		const bool over = booted && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
+		const char *word = edit->fade ? "FADE" : "NO FADE";
+		text(g, x + (w - (int)strlen(word) * 6) / 2, y + 7, word, !booted ? C_LINE : over ? C_TEXT : edit->fade ? C_LINE : C_AMBER, 1);
+	}
 	switch_cell(g, DACC_ONE_SHOT, edit->one_shot, booted);
 	// RATE: the one chosen lit, AUTO's pick dark under it.
 	const int picked = dac_rate(own, edit);
@@ -2153,14 +2161,22 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 }
 
 // Whether the gain pushes the kept part past full scale.
+// Whether the gain cuts the peaks: the prepared bytes say it, and while a gesture lasts the wave's
+// columns of the kept part do.
 static bool gain_clips(const mdmi_gui *g, const dac_sample *own, const dac_edit *edit)
 {
-	(void)g;
+	if (edit == &own->edit) {
+		return own->clipped;
+	}
+	if (g->wave_of != (const void *)own->source) {
+		return false;
+	}
 	const double gain = pow(10.0, edit->gain / 200.0);
+	const int first = wave_x_of(own, edit->start) - WAVE_X, last = wave_x_of(own, edit->end) - WAVE_X;
 	int peak = 0;
-	for (uint32_t i = edit->start; i < edit->end; i++) {
-		const int v = abs(own->source[i]);
-		peak = v > peak ? v : peak;
+	for (int column = first; column < last && column < WAVE_W; column++) {
+		peak = abs(g->wave_low[column]) > peak ? abs(g->wave_low[column]) : peak;
+		peak = abs(g->wave_high[column]) > peak ? abs(g->wave_high[column]) : peak;
 	}
 	return peak * gain > 32767.5;
 }
@@ -2206,7 +2222,7 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 		const int x = WAVE_X + column;
 		const bool kept = x >= start && x < end;
 		const double high = g->wave_high[column] * gain / 32768.0, low = g->wave_low[column] * gain / 32768.0;
-		const bool cut = kept && (high > 1 || low < -1);
+		const bool cut = kept && (high > 1 || low < -1) && (edit != &own->edit || own->clipped);
 		int top = middle - (int)(fmin(high, 1) * half), bottom = middle - (int)(fmax(low, -1) * half);
 		top = top < WAVE_Y ? WAVE_Y : top;
 		bottom = bottom >= WAVE_Y + WAVE_H ? WAVE_Y + WAVE_H - 1 : bottom;
@@ -2255,23 +2271,27 @@ static void dac_drag_to(mdmi_gui *g, int x, int y)
 	}
 	dac_edit *work = &g->dac_work;
 	const dac_edit *from = &g->dac_drag_from;
-	const int dy = g->dac_drag_y - y;
+	const int dy = g->dac_drag_y - y, dx = x - g->dac_drag_x;
+	g->dac_moved = g->dac_moved || abs(dx) >= DRAG_SLOP || abs(dy) >= DRAG_SLOP;
+	if (!g->dac_moved) {
+		return;
+	}
+	// A tab moves by as much as the mouse did, from where it was.
+	const long shift = (long)((int64_t)dx * own->source_frames / WAVE_W);
 	const uint32_t gap = (uint32_t)(own->source_hz / 1000) + 1;
 	int semitones, cents;
 	split_pitch(from->pitch, &semitones, &cents);
 	switch (g->dac_drag) {
 	case DACC_START:
 	case DACC_MARK_START: {
-		long frame = g->dac_drag == DACC_START ? (long)from->start + dy
-			: (long)((int64_t)(x - WAVE_X) * own->source_frames / WAVE_W);
+		long frame = g->dac_drag == DACC_START ? (long)from->start + dy : (long)from->start + shift;
 		const long most = (long)work->end - (long)gap;
 		work->start = (uint32_t)(frame < 0 ? 0 : frame > most ? (most > 0 ? most : 0) : frame);
 		break;
 	}
 	case DACC_END:
 	case DACC_MARK_END: {
-		long frame = g->dac_drag == DACC_END ? (long)from->end + dy
-			: (long)((int64_t)(x - WAVE_X) * own->source_frames / WAVE_W);
+		long frame = g->dac_drag == DACC_END ? (long)from->end + dy : (long)from->end + shift;
 		const long least = (long)work->start + (long)gap;
 		work->end = (uint32_t)(frame > (long)own->source_frames ? (long)own->source_frames : frame < least ? least : frame);
 		break;
@@ -2341,8 +2361,8 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 	g->dac_drag_y = y;
 	g->dac_drag_from = edit;
 	g->dac_work = edit;
+	g->dac_moved = false;
 	SetCapture(g->window);
-	dac_drag_to(g, x, y);
 	return true;
 }
 
@@ -2424,10 +2444,10 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		snprintf(out, size, gain_clips(g, own, edit) ? "GAIN %+.1f DB: THE PEAKS CLIP" : "GAIN %+.1f DB. DOUBLE CLICK: 0", edit->gain / 10.0);
 		break;
 	case DACC_NORMALIZE:
-		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT 0 DB", dac_normalize_gain(own) / 10.0);
+		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT -0.5", dac_normalize_gain(own) / 10.0);
 		break;
 	case DACC_FADE:
-		snprintf(out, size, "FADE: LAST 4 MS FADE OUT, NO CLICK");
+		snprintf(out, size, edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
 		break;
 	case DACC_ONE_SHOT:
 		snprintf(out, size, edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
