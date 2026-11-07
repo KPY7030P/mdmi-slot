@@ -506,6 +506,8 @@ static void test_samples(void)
 	set_global(GLOBAL_DAC, 0);
 	// Switching the DAC resets the chip, and the voices come back some 170 ms later.
 	wait_for_voices(FM_CHANNELS - 1);
+	// Channel 6's last notes went to the DAC at another velocity.
+	full_velocity();
 	dac_clear(&set);
 	boot_image(rom, rom_size);
 	check_voices("back on the built-in image every voice is as before", 0, FM_CHANNELS - 1, -1);
