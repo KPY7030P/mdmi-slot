@@ -2,6 +2,7 @@
 // the main thread can ever read half a preset while the writer works.
 //
 //   patch_test [folder of the test instrument files]
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1310,6 +1311,67 @@ static void test_cursor(void)
 	CHECK(patch_shape_position(&organ, 2, 0) == -1, "Note Off before the loop began is silent at once, as the ROM does");
 }
 
+// Stage 11: the FM graph's envelope, against hardware-specialist's facts about the chip.
+#define FM_COLUMNS 280
+static int fm_column(double seconds)
+{
+	return (int)(FM_COLUMNS * sqrt(seconds / PATCH_FM_SECONDS));
+}
+
+static void fm_curve(int tl, int ar, int dr, int sl, int sr, int rr, int rs, int ssg, uint16_t *low, uint16_t *high)
+{
+	// patch.h's order: TL MUL DT RS AR DR SR SL RR AM SSG.
+	const int16_t op[PATCH_OP_PARAMS] = {(int16_t)tl, 1, 0, (int16_t)rs, (int16_t)ar, (int16_t)dr, (int16_t)sr, (int16_t)sl, (int16_t)rr, 0, (int16_t)ssg};
+	patch_fm_envelope(op, 16, FM_COLUMNS, low, high);
+}
+
+static void test_fm_envelope(void)
+{
+	uint16_t low[FM_COLUMNS], high[FM_COLUMNS], low2[FM_COLUMNS], high2[FM_COLUMNS];
+	fm_curve(20, 31, 31, 15, 0, 15, 0, 0, low, high);
+	CHECK(low[0] == 160 && low[fm_column(0.010)] == PATCH_FM_SILENT,
+		"AR 31 is loud at once, down by TL 20 (%d steps), DR 31 is silent within 10 ms (%d)", low[0], low[fm_column(0.010)]);
+	fm_curve(0, 20, 6, 8, 3, 5, 1, 0, low, high);
+	bool falls = true;
+	int peak = 0;
+	for (int c = 1; c < FM_COLUMNS; c++) {
+		peak = low[c] < low[peak] ? c : peak;
+	}
+	for (int c = peak + 1; c < FM_COLUMNS; c++) {
+		falls = falls && low[c] >= low[c - 1];
+	}
+	CHECK(low[0] > 900 && low[peak] == 0 && peak > 0 && falls, "without SSG an attack rises to 0 dB (column %d) and the rest only falls", peak);
+	fm_curve(0, 31, 4, 15, 0, 5, 0, 0, low, high);
+	fm_curve(0, 31, 4, 15, 31, 5, 0, 0, low2, high2);
+	CHECK(!memcmp(low, low2, sizeof(low)), "SL 15 is silence: SR never comes");
+	fm_curve(0, 31, 0, 0, 6, 5, 0, 0, low, high);
+	fm_curve(0, 31, 31, 0, 6, 5, 0, 0, low2, high2);
+	CHECK(!memcmp(low, low2, sizeof(low)), "SL 0 skips DR: SR falls from the top");
+	fm_curve(0, 31, 4, 15, 0, 5, 0, 0, low, high);
+	fm_curve(0, 31, 4, 15, 0, 5, 3, 0, low2, high2);
+	const int at = fm_column(0.3);
+	CHECK(low2[at] > low[at], "RS 3 makes the same DR faster at C4 (%d against %d at 0.3 s)", low2[at], low[at]);
+	// SSG 8: DR to 48 dB and again, fast enough that a column spans its whole range.
+	fm_curve(0, 31, 28, 15, 0, 5, 0, 8, low, high);
+	const int middle = fm_column(0.5);
+	CHECK(low[middle] == 0 && high[middle] >= 500 && high[middle] <= 512, "SSG 8 repeats between 0 and 48 dB (%d to %d at 0.5 s)", low[middle], high[middle]);
+	// SSG 10 with SL 11 and SR 0 stops at 33 dB and never turns over (hardware-specialist's trap).
+	fm_curve(0, 31, 20, 11, 0, 5, 0, 10, low, high);
+	CHECK(low[middle] == 352 && high[middle] == 352, "SSG 10 with SR 0 holds at SL, no triangle (%d)", low[middle]);
+	// SSG 11 holds loud after its first fall; 9 goes silent.
+	fm_curve(0, 31, 20, 15, 0, 5, 0, 11, low, high);
+	fm_curve(0, 31, 20, 15, 0, 5, 0, 9, low2, high2);
+	CHECK(low[middle] == 0 && high[middle] == 0 && low2[middle] == PATCH_FM_SILENT, "SSG 11 holds at 0 dB, SSG 9 goes silent");
+	// After Note Off SSG falls 4 times as fast to 48 dB: 9 then goes silent, 11 stays there (BlastEm).
+	fm_curve(0, 31, 4, 15, 0, 5, 0, 9, low, high);
+	fm_curve(0, 31, 4, 15, 0, 5, 0, 11, low2, high2);
+	CHECK(low[fm_column(0.9)] < 512 && low[fm_column(1.9)] == PATCH_FM_SILENT && low2[fm_column(1.9)] == 512,
+		"after Note Off SSG 9 goes silent at 48 dB (%d), SSG 11 stays there (%d)", low[fm_column(1.9)], low2[fm_column(1.9)]);
+	// Release: RR 15 goes silent soon after Note Off at 1 s.
+	fm_curve(0, 31, 0, 0, 0, 15, 0, 0, low, high);
+	CHECK(low[fm_column(0.9)] == 0 && low[fm_column(1.05)] == PATCH_FM_SILENT, "DR 0 holds the top until Note Off, RR 15 closes in 50 ms");
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -1332,6 +1394,7 @@ int main(int argc, char **argv)
 	test_sound_changed();
 	test_bases();
 	test_cursor();
+	test_fm_envelope();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

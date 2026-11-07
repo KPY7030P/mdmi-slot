@@ -239,6 +239,16 @@ int patch_shape_room(const patch_shape *shape);
 // per frame from frame 0, round the loop while held; after Note Off on from where it was, through
 // the loop's end. -1 when silent: past the end, or Note Off without a loop or before the loop began.
 int patch_shape_position(const patch_shape *shape, long held, long released);
+// An FM operator's envelope as the YM2612 steps it, for the window's graph only (stage 11): the
+// attenuation in the chip's 10-bit steps (0 loud, 1023 silent, 0.094 dB each) with TL added, its
+// lowest and highest in each of columns columns. Column c of n spans from 2 (c / n)^2 to
+// 2 ((c + 1) / n)^2 seconds after Note On; Note Off comes at PATCH_FM_OFF_SECONDS. op holds the
+// operator's PATCH_OP_PARAMS values in patch.h's order; keycode is the chip's for the note (16 for
+// C4), which RS scales the rates by.
+#define PATCH_FM_SECONDS 2.0
+#define PATCH_FM_OFF_SECONDS 1.0
+#define PATCH_FM_SILENT 1023
+void patch_fm_envelope(const int16_t *op, int keycode, int columns, uint16_t *low, uint16_t *high);
 // Only what the ROM reads as drawn (D28, stage 8): at least one frame, a frame inside the loop, an
 // end at the last frame is no end, frames cut to the room. Keeps the envelope's name.
 void patch_shape_to_envelope(patch_shape *shape, patch_envelope *envelope);

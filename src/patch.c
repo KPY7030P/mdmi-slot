@@ -388,6 +388,118 @@ int patch_shape_position(const patch_shape *shape, long held, long released)
 	return at < shape->count ? (int)at : -1;
 }
 
+// The YM2612's envelope generator for the graph (stage 11), from hardware-specialist's notes on it
+// (BlastEm ym2612.c, ym_common.c). It steps once every 3 samples, 7670453 / 144 / 3 Hz. A rate R is
+// 2 * rate + KS up to 63; it moves the 10-bit attenuation (4 + R % 4) * 2^(R / 4) / 16384 steps a
+// tick on average, at most 8, nothing below R 2: 96 dB in 7.2 ms at R 60 and up, twice as long
+// every 4 lower. The chip steps in whole increments on some ticks; the average is close enough to
+// draw. The attack closes in on 0 exponentially, in about a 14th of the time a decay at its rate
+// takes. SSG works between 0 and 48 dB (512 steps), four times as fast there, and repeats, turns
+// over, holds or stops at 48 dB by its bits.
+#define FM_EG_HZ (7670453.0 / 144 / 3)
+#define FM_EG_SSG_LEVEL 512
+#define FM_EG_ATTACK 0.0948
+enum { FM_ATTACK, FM_DECAY, FM_SUSTAIN, FM_RELEASE, FM_HOLD };
+
+static double fm_rate_steps(int rate, int ks)
+{
+	if (rate <= 0) {
+		return 0;
+	}
+	const int r = 2 * rate + ks > 63 ? 63 : 2 * rate + ks;
+	if (r < 2) {
+		return 0;
+	}
+	if (r >= 60) {
+		return 8;
+	}
+	return (4 + r % 4) * (double)(1 << (r / 4)) / 16384.0;
+}
+
+void patch_fm_envelope(const int16_t *op, int keycode, int columns, uint16_t *low, uint16_t *high)
+{
+	const int ks = keycode >> (3 - (op[3] & 3));
+	const int ssg = op[10] >= 8 ? op[10] : 0;
+	const bool instant = 2 * op[4] + ks >= 62;
+	const double attack = fm_rate_steps(op[4], ks), decay = fm_rate_steps(op[5], ks), sustain = fm_rate_steps(op[6], ks);
+	const double release = fm_rate_steps(2 * op[8] + 1, ks);
+	const double sustain_level = op[7] >= 15 ? PATCH_FM_SILENT : op[7] * 32;
+	const int total = op[0] * 8;
+	for (int c = 0; c < columns; c++) {
+		low[c] = PATCH_FM_SILENT;
+		high[c] = 0;
+	}
+	double env = PATCH_FM_SILENT;
+	bool invert = ssg & 4;
+	int state = FM_ATTACK, last = -1, seen = PATCH_FM_SILENT;
+	const long ticks = (long)(PATCH_FM_SECONDS * FM_EG_HZ), off = (long)(PATCH_FM_OFF_SECONDS * FM_EG_HZ);
+	for (long tick = 0; tick < ticks; tick++) {
+		if (tick == off) {
+			// Note Off: an inverted SSG level is kept as it sounds.
+			if (invert) {
+				env = FM_EG_SSG_LEVEL - env < 0 ? 0 : FM_EG_SSG_LEVEL - env;
+				invert = false;
+			}
+			state = env >= PATCH_FM_SILENT ? FM_HOLD : FM_RELEASE;
+		}
+		if (state == FM_ATTACK) {
+			env = instant ? 0 : env - (env + 1) * attack * FM_EG_ATTACK;
+			if (env <= 0) {
+				env = 0;
+				state = FM_DECAY;
+			}
+		} else if (state != FM_HOLD) {
+			// Decay ends at SL before it steps: SL 0 goes straight to SR.
+			if (state == FM_DECAY && env >= sustain_level) {
+				state = FM_SUSTAIN;
+			}
+			double step = state == FM_DECAY ? decay : state == FM_SUSTAIN ? sustain : release;
+			if (ssg && env < FM_EG_SSG_LEVEL) {
+				step *= 4;
+			}
+			env += step;
+			if (state == FM_DECAY && env >= sustain_level) {
+				state = FM_SUSTAIN;
+			}
+			if (ssg && env >= FM_EG_SSG_LEVEL) {
+				if (state == FM_RELEASE) {
+					// After Note Off the shapes stop at 48 dB into silence; 11 and 13 stay there.
+					env = ssg == 11 || ssg == 13 ? FM_EG_SSG_LEVEL : PATCH_FM_SILENT;
+					state = FM_HOLD;
+				} else if (ssg & 1) {
+					// Hold: 11 and 13 stay loud, turned over at 48 dB; 9 and 15 go silent.
+					invert ^= (ssg & 2) != 0;
+					env = invert ? FM_EG_SSG_LEVEL : PATCH_FM_SILENT;
+					state = FM_HOLD;
+				} else {
+					// Repeat, turned over each time by alternate: the attack again from 48 dB.
+					invert ^= (ssg & 2) != 0;
+					env = instant ? 0 : FM_EG_SSG_LEVEL;
+					state = instant ? FM_DECAY : FM_ATTACK;
+				}
+			}
+			if (env > PATCH_FM_SILENT) {
+				env = PATCH_FM_SILENT;
+			}
+		}
+		int out = (int)(invert ? FM_EG_SSG_LEVEL - env : env) + total;
+		out = out < 0 ? 0 : out > PATCH_FM_SILENT ? PATCH_FM_SILENT : out;
+		int c = (int)(columns * sqrt(tick / FM_EG_HZ / PATCH_FM_SECONDS));
+		c = c >= columns ? columns - 1 : c;
+		// Columns too narrow for a tick of their own take the level before them.
+		for (int k = last + 1; k < c; k++) {
+			low[k] = high[k] = (uint16_t)seen;
+		}
+		low[c] = out < low[c] ? (uint16_t)out : low[c];
+		high[c] = out > high[c] ? (uint16_t)out : high[c];
+		last = c;
+		seen = out;
+	}
+	for (int k = last + 1; k < columns; k++) {
+		low[k] = high[k] = (uint16_t)seen;
+	}
+}
+
 int patch_shape_room(const patch_shape *shape)
 {
 	return PATCH_ENVELOPE_STEPS - (shape->loop_start >= 0) - (shape->loop_end >= 0);

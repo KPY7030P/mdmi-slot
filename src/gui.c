@@ -1,4 +1,5 @@
 #define COBJMACROS
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,12 +52,10 @@
 #define NAME_X 288
 #define NAME_CHARS 23
 #define ENVELOPE_NAME_CHARS 20
-// The page's grid (stage 9, D29): the channel's cells in four columns of 112 px, two rows, the same
-// on FM, PSG and DAC; what belongs to the chip starts under them.
+// The page's grid (stage 9, D29): four columns of 112 px. The channel's cells are one row, the same
+// on FM, PSG and DAC (ui-variants-v8-fm); what belongs to the chip starts under them.
 #define GRID_W 112
 #define GRID_ROW1_Y 56
-#define GRID_ROW2_Y 78
-#define CHIP_Y 104
 #define SOURCE_X 592
 #define SOURCE_W 116
 static const int GRID_X[4] = {242, 358, 474, 590};
@@ -71,15 +70,30 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define FOOTER_Y 504
 #define ROM_SCALE 2
 #define CELL_H 20
-#define DIAGRAM_X 242
-#define DIAGRAM_Y CHIP_Y
+// The FM page (stage 11, ui-variants-v8-fm): the graph of the four envelopes at the left, the block
+// of AMS, FMS, the diagram and the algorithms at the right, the operators' columns under them.
+#define GRAPH_X 242
+#define GRAPH_Y 82
+#define GRAPH_W 282
+#define GRAPH_H 124
+#define BLOCK_X 530
+#define BLOCK_W 172
+#define DIAGRAM_Y 106
+#define DIAGRAM_H 78
+#define ALGORITHM_Y 190
+#define ALGORITHM_W 18
+#define ALGORITHM_H 16
+#define ALGORITHM_STEP 22
 #define OP_W GRID_W
-#define OP_HEADER_Y 202
+#define OP_HEADER_Y 212
 #define OP_HEADER_H 14
-#define ALGORITHM_X 474
-#define ALGORITHM_Y 152
+#define OP_ROW_H 22
+#define OP_BOTTOM 456
+// DT and RS on one grid of segments: a label field, then segments of 12 px on a 13 px pitch.
+#define SEG_X 22
+#define SEG_PITCH 13
 #define DRAG_SLOP 3
-#define MAX_CELLS 80
+#define MAX_CELLS 160
 #define TIMER_PER_SECOND (1000 / TIMER_MS)
 // The bank page: one row per place, scrolled.
 #define BANK_X 242
@@ -127,6 +141,8 @@ enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, E
 
 // The page is saved with the project: a new one goes last.
 enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK, PAGE_ALL };
+// An operator's fields in patch.h's order.
+enum { OP_TL, OP_MUL, OP_DT, OP_RS, OP_AR, OP_DR, OP_SR, OP_SL, OP_RR, OP_AM, OP_SSG };
 
 // The overview (stage 10, D29): its rows continue the rail's, its columns as in ui-variants-v2.
 #define ALL_SOUND_X 242
@@ -143,7 +159,11 @@ typedef struct {
 } drop_target;
 // A row cell is dragged, a column cell is a global knob, a choice is one of a row of buttons (the
 // algorithm, pan L C R), the source is the Preset drawn as where the sound comes from.
-enum { CELL_ROW, CELL_COLUMN, CELL_CHOICE, CELL_SOURCE };
+// SSG is the button that opens the choice of shapes over the graph (stage 11).
+enum { CELL_ROW, CELL_COLUMN, CELL_CHOICE, CELL_SOURCE, CELL_SSG };
+// How a cell looks, apart from what it does: a bar filled to its value, a segment of DT, RS or FB, a
+// switch button (AM, PORTA), an SSG shape.
+enum { LOOK_BAR, LOOK_SEGMENT, LOOK_SWITCH, LOOK_SHAPE, LOOK_FEEDBACK };
 
 // A value the mouse can change. Rebuilt for each frame from what the page shows.
 typedef struct {
@@ -152,6 +172,7 @@ typedef struct {
 	const char *label;
 	int kind;
 	int choice;
+	int look;
 } cell;
 
 struct mdmi_gui {
@@ -224,6 +245,19 @@ struct mdmi_gui {
 	// A drag on the length starts from these, so shortening and lengthening back keeps the frames.
 	patch_shape env_start;
 	int env_start_y;
+
+	// The FM page (stage 11): the operator last edited by the mouse, the operator whose choice of SSG
+	// is open (-1 when closed), and whether ALL draws the FM rows' envelopes instead of diagrams. The
+	// window's alone: no knob, no project.
+	int last_op;
+	int ssg_open;
+	bool all_envelopes;
+	// Each FM operator's envelope as the graph's columns, kept until its values change.
+	struct {
+		bool ready;
+		int16_t op[PATCH_OP_PARAMS];
+		uint16_t low[GRAPH_W - 2], high[GRAPH_W - 2];
+	} curves[PATCH_NUM_FM_CHANNELS][PATCH_OPS];
 
 	// The footer's message, and the row or places a file just went to.
 	char message[FILES_MESSAGE];
@@ -358,6 +392,22 @@ static void say(mdmi_gui *g, const char *message, uint32_t color, int ticks)
 	g->message_ticks = ticks;
 }
 
+// What a value is shown as: the ROM's DT 4 is -0, the same as 0; SSG 1-7 are off like 0.
+static int shown_value(uint32_t id, int value)
+{
+	int channel, param;
+	if (patch_id_split(id, &channel, &param) && channel >= 0 && param >= PARAM_OP_BASE) {
+		const int field = (param - PARAM_OP_BASE) % PATCH_OP_PARAMS;
+		if (field == OP_DT && value == 4) {
+			return 0;
+		}
+		if (field == OP_SSG && value < 8) {
+			return 0;
+		}
+	}
+	return value;
+}
+
 static int value_of(mdmi_gui *g, const patch_values *values, uint32_t id)
 {
 	if (g->dragging && id == g->drag_id) {
@@ -365,7 +415,7 @@ static int value_of(mdmi_gui *g, const patch_values *values, uint32_t id)
 	}
 	int channel, param;
 	patch_id_split(id, &channel, &param);
-	return channel < 0 ? values->globals[param] : values->channels[channel][param];
+	return shown_value(id, channel < 0 ? values->globals[param] : values->channels[channel][param]);
 }
 
 // The channel's sound is tweaked against what it got, its bank place or a dropped file: a * after
@@ -590,35 +640,85 @@ static void draw_lends(mdmi_gui *g)
 static void add_cell(mdmi_gui *g, int x, int y, int w, int h, uint32_t id, const char *label, int kind)
 {
 	if (g->cell_count < MAX_CELLS) {
-		g->cells[g->cell_count++] = (cell){x, y, w, h, id, label, kind, -1};
+		g->cells[g->cell_count++] = (cell){x, y, w, h, id, label, kind, -1, LOOK_BAR};
 	}
 }
 
-// Operator fields in the order the page shows them: level and pitch, times, the rest.
+// One of a row of buttons, which sets its value.
+static void add_choice(mdmi_gui *g, int x, int y, int w, int h, uint32_t id, const char *label, int choice, int look)
+{
+	add_cell(g, x, y, w, h, id, label, CELL_CHOICE);
+	if (g->cell_count > 0) {
+		g->cells[g->cell_count - 1].choice = choice;
+		g->cells[g->cell_count - 1].look = look;
+	}
+}
+
+// An operator's field in its column (v8): TL, MUL | AR, DR, SL, SR, RR as bars, nine rows of 22 px,
+// 3 px apart inside a group and 6 between groups; DT and RS are segments.
 static const struct {
 	const char *label;
 	int field;
 	int y;
-} OP_CELLS[PATCH_OP_PARAMS] = {
-	{"TL", 0, 220}, {"MUL", 1, 241}, {"DT", 2, 262},
-	{"AR", 4, 287}, {"DR", 5, 308}, {"SL", 7, 329}, {"SR", 6, 350}, {"RR", 8, 371},
-	{"RS", 3, 396}, {"AM", 9, 417}, {"SSG", 10, 438},
+} OP_BARS[] = {
+	{"TL", OP_TL, 228}, {"MUL", OP_MUL, 253},
+	{"AR", OP_AR, 281}, {"DR", OP_DR, 306}, {"SL", OP_SL, 331}, {"SR", OP_SR, 356}, {"RR", OP_RR, 381},
 };
+#define OP_DT_Y 409
+#define OP_RS_Y 434
+// The ROM's DT 0-7 for the segments -3 to +3; 4 is -0 and shows as 0.
+static const int DT_VALUES[7] = {7, 6, 5, 0, 1, 2, 3};
+// The choice of SSG over the graph: OFF and the eight shapes.
+#define SSG_PICK_CELL 22
+#define SSG_PICK_STEP 23
+#define SSG_PICK_W (9 * SSG_PICK_STEP + 3)
+#define SSG_PICK_X (GRAPH_X + GRAPH_W - 3 - SSG_PICK_W)
+#define SSG_PICK_Y (GRAPH_Y + 20)
+#define SSG_BUTTON_W 64
+#define SSG_BUTTON_X (GRAPH_X + GRAPH_W - 3 - SSG_BUTTON_W)
+#define SSG_BUTTON_Y (GRAPH_Y + 3)
+
+static uint32_t op_id(int channel, int op, int field)
+{
+	return PATCH_CHANNEL_ID(channel, PARAM_OP_BASE + op * PATCH_OP_PARAMS + field);
+}
+
+// The operator whose column the mouse is over, header included, or -1.
+static int op_column_at(int x, int y)
+{
+	for (int op = 0; op < PATCH_OPS; op++) {
+		if (x >= GRID_X[op] - 2 && x < GRID_X[op] + OP_W + 2 && y >= OP_HEADER_Y - 2 && y < OP_BOTTOM + 1) {
+			return op;
+		}
+	}
+	return -1;
+}
+
+// The operator the graph and the frame follow: the one whose SSG is being chosen, the column under the
+// mouse, else the one last edited. A value from the host changes none of it.
+static int active_op(const mdmi_gui *g)
+{
+	if (g->ssg_open >= 0) {
+		return g->ssg_open;
+	}
+	const int over = g->dragging || g->file_over ? -1 : op_column_at(g->mouse_x, g->mouse_y);
+	return over >= 0 ? over : g->last_op;
+}
+
+static int feedback_x(int algorithm);
 
 // The cells of the open page and the global knobs, so drawing and the mouse agree.
 static void layout(mdmi_gui *g, const patch_values *values)
 {
-	// One row of the channel's cells for every kind of channel: the column and the row of each. PAN
-	// is buttons; PSG has none, its place stays (draw_page).
+	// One row of the channel's cells for every kind of channel (v8): x and width of each. PAN is
+	// buttons; PSG has none, its place stays (draw_page).
 	static const struct {
 		int param;
 		const char *label;
-		int column, y;
+		int x, w;
 	} CHANNEL_CELLS[] = {
-		{PARAM_VOLUME, "VOL", 0, GRID_ROW1_Y}, {PARAM_FINE_TUNE, "TUNE", 2, GRID_ROW1_Y}, {PARAM_BEND_RANGE, "BEND", 3, GRID_ROW1_Y},
-		{PARAM_PORTA_ON, "PORTA", 0, GRID_ROW2_Y}, {PARAM_PORTA_TIME, "P.TIME", 1, GRID_ROW2_Y},
-	}, FM_CELLS[] = {
-		{PARAM_FEEDBACK, "FB", 2, CHIP_Y}, {PARAM_AMS, "AMS", 3, CHIP_Y}, {PARAM_FMS, "FMS", 2, CHIP_Y + 22},
+		{PARAM_VOLUME, "VOL", 242, 112}, {PARAM_FINE_TUNE, "TUNE", 422, 96}, {PARAM_BEND_RANGE, "BEND", 522, 64},
+		{PARAM_PORTA_ON, "PORTA", 590, 50}, {PARAM_PORTA_TIME, "TIME", 644, 64},
 	};
 	static const char *const PANS[3] = {"L", "C", "R"};
 	static const char *const DIGITS[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
@@ -653,33 +753,99 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		add_cell(g, SOURCE_X, 30, SOURCE_W, 22, PATCH_CHANNEL_ID(channel, PARAM_PRESET), "PRESET", CELL_SOURCE);
 	}
 	if (!is_dac(values, channel) && !bank && *g->source.page != PAGE_ALL) {
+		// The choice of SSG first: it lies over the graph, and the first cell under the mouse wins.
+		if (channel_is_fm(channel) && g->ssg_open >= 0) {
+			for (int n = 0; n < 9; n++) {
+				add_choice(g, SSG_PICK_X + 2 + n * SSG_PICK_STEP, SSG_PICK_Y + 2, SSG_PICK_CELL, 18, op_id(channel, g->ssg_open, OP_SSG), "", n == 0 ? 0 : 7 + n, LOOK_SHAPE);
+			}
+		}
 		for (size_t i = 0; i < sizeof(CHANNEL_CELLS) / sizeof(*CHANNEL_CELLS); i++) {
-			add_cell(g, GRID_X[CHANNEL_CELLS[i].column], CHANNEL_CELLS[i].y, GRID_W, CELL_H, PATCH_CHANNEL_ID(channel, CHANNEL_CELLS[i].param), CHANNEL_CELLS[i].label, CELL_ROW);
+			add_cell(g, CHANNEL_CELLS[i].x, GRID_ROW1_Y, CHANNEL_CELLS[i].w, CELL_H, PATCH_CHANNEL_ID(channel, CHANNEL_CELLS[i].param), CHANNEL_CELLS[i].label, CELL_ROW);
+			if (CHANNEL_CELLS[i].param == PARAM_PORTA_ON) {
+				g->cells[g->cell_count - 1].look = LOOK_SWITCH;
+			}
 		}
 		if (patch_channel_has(channel, PARAM_PAN)) {
 			for (int pan = 0; pan < 3; pan++) {
-				add_cell(g, GRID_X[1] + 28 + pan * 28, GRID_ROW1_Y, 26, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_PAN), PANS[pan], CELL_CHOICE);
-				g->cells[g->cell_count - 1].choice = pan;
+				add_choice(g, GRID_X[1] + pan * 20, GRID_ROW1_Y, 19, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_PAN), PANS[pan], pan, LOOK_BAR);
 			}
 		}
 		if (channel_is_fm(channel)) {
-			for (size_t i = 0; i < sizeof(FM_CELLS) / sizeof(*FM_CELLS); i++) {
-				add_cell(g, GRID_X[FM_CELLS[i].column], FM_CELLS[i].y, GRID_W, CELL_H, PATCH_CHANNEL_ID(channel, FM_CELLS[i].param), FM_CELLS[i].label, CELL_ROW);
-			}
+			add_cell(g, BLOCK_X, GRAPH_Y, 84, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_AMS), "AMS", CELL_ROW);
+			add_cell(g, BLOCK_X + 88, GRAPH_Y, 84, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_FMS), "FMS", CELL_ROW);
+			// FB sits in the diagram's corner over operator 1's loop: dragged, a click steps it.
+			add_cell(g, feedback_x(values->channels[channel][PARAM_ALGORITHM]), DIAGRAM_Y + 2, 72, 13, PATCH_CHANNEL_ID(channel, PARAM_FEEDBACK), "FB", CELL_ROW);
+			g->cells[g->cell_count - 1].look = LOOK_FEEDBACK;
 			for (int algorithm = 0; algorithm < 8; algorithm++) {
-				add_cell(g, ALGORITHM_X + algorithm * 29, ALGORITHM_Y, 26, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM), DIGITS[algorithm], CELL_CHOICE);
-				g->cells[g->cell_count - 1].choice = algorithm;
+				add_choice(g, BLOCK_X + algorithm * ALGORITHM_STEP, ALGORITHM_Y, ALGORITHM_W, ALGORITHM_H, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM), DIGITS[algorithm], algorithm, LOOK_BAR);
 			}
+			add_cell(g, SSG_BUTTON_X, SSG_BUTTON_Y, SSG_BUTTON_W, 15, op_id(channel, active_op(g), OP_SSG), "SSG", CELL_SSG);
 			for (int op = 0; op < PATCH_OPS; op++) {
-				for (int i = 0; i < PATCH_OP_PARAMS; i++) {
-					int param = PARAM_OP_BASE + op * PATCH_OP_PARAMS + OP_CELLS[i].field;
-					add_cell(g, GRID_X[op], OP_CELLS[i].y, OP_W, CELL_H, PATCH_CHANNEL_ID(channel, param), OP_CELLS[i].label, CELL_ROW);
+				const int x = GRID_X[op];
+				for (size_t i = 0; i < sizeof(OP_BARS) / sizeof(*OP_BARS); i++) {
+					add_cell(g, x, OP_BARS[i].y, OP_W, OP_ROW_H, op_id(channel, op, OP_BARS[i].field), OP_BARS[i].label, CELL_ROW);
 				}
+				for (int k = 0; k < 7; k++) {
+					add_choice(g, x + SEG_X + k * SEG_PITCH, OP_DT_Y, SEG_PITCH - 1, OP_ROW_H, op_id(channel, op, OP_DT), "DT", DT_VALUES[k], LOOK_SEGMENT);
+				}
+				for (int k = 0; k < 4; k++) {
+					add_choice(g, x + SEG_X + k * SEG_PITCH, OP_RS_Y, SEG_PITCH - 1, OP_ROW_H, op_id(channel, op, OP_RS), "RS", k, LOOK_SEGMENT);
+				}
+				// AM takes the rest of RS's row, a switch a click flips.
+				const int am = x + SEG_X + 4 * SEG_PITCH;
+				add_cell(g, am, OP_RS_Y, x + OP_W - am, OP_ROW_H, op_id(channel, op, OP_AM), "AM", CELL_ROW);
+				g->cells[g->cell_count - 1].look = LOOK_SWITCH;
 			}
 		}
 	}
 	for (int i = 0; i < (int)(sizeof(GLOBAL_CELLS) / sizeof(*GLOBAL_CELLS)); i++) {
 		add_cell(g, 8 + i * 118, GLOBALS_Y + 6, 114, 32, (uint32_t)GLOBAL_CELLS[i].global, GLOBAL_CELLS[i].label, CELL_COLUMN);
+	}
+}
+
+// A line of 1 px from one point to another.
+static void line(mdmi_gui *g, int x0, int y0, int x1, int y1, uint32_t color)
+{
+	const int dx = abs(x1 - x0), dy = abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+	int e = dx - dy;
+	for (;;) {
+		fill(g, x0, y0, 1, 1, color);
+		if (x0 == x1 && y0 == y1) {
+			break;
+		}
+		const int e2 = 2 * e;
+		if (e2 > -dy) {
+			e -= dy;
+			x0 += sx;
+		}
+		if (e2 < dx) {
+			e += dx;
+			y0 += sy;
+		}
+	}
+}
+
+// The shapes of SSG 8-15 in small, loud at the top: points in quarters of the width, 0 top, 4 bottom,
+// ended by -1.
+static const int8_t SSG_SHAPES[8][10][2] = {
+	{{0, 0}, {1, 4}, {1, 0}, {2, 4}, {2, 0}, {3, 4}, {3, 0}, {4, 4}, {-1, 0}},
+	{{0, 0}, {1, 4}, {4, 4}, {-1, 0}},
+	{{0, 0}, {1, 4}, {2, 0}, {3, 4}, {4, 0}, {-1, 0}},
+	{{0, 0}, {1, 4}, {1, 0}, {4, 0}, {-1, 0}},
+	{{0, 4}, {1, 0}, {1, 4}, {2, 0}, {2, 4}, {3, 0}, {3, 4}, {4, 0}, {-1, 0}},
+	{{0, 4}, {1, 0}, {4, 0}, {-1, 0}},
+	{{0, 4}, {1, 0}, {2, 4}, {3, 0}, {4, 4}, {-1, 0}},
+	{{0, 4}, {1, 0}, {1, 4}, {4, 4}, {-1, 0}},
+};
+
+static void ssg_icon(mdmi_gui *g, int x, int y, int w, int h, int ssg, uint32_t color)
+{
+	if (ssg < 8 || ssg > 15 || w < 2) {
+		return;
+	}
+	const int8_t (*p)[2] = SSG_SHAPES[ssg - 8];
+	for (int k = 1; k < 10 && p[k][0] >= 0; k++) {
+		line(g, x + p[k - 1][0] * (w - 1) / 4, y + p[k - 1][1] * (h - 1) / 4, x + p[k][0] * (w - 1) / 4, y + p[k][1] * (h - 1) / 4, color);
 	}
 }
 
@@ -691,15 +857,74 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	int channel, param;
 	patch_id_split(c->id, &channel, &param);
 	// What the channel got has another value here (D31): amber, and a mark where the base's value is.
-	const int base = channel >= 0 ? patch_base_value(values, channel, param) : -1;
+	const int base_raw = channel >= 0 ? patch_base_value(values, channel, param) : -1;
+	const int base = base_raw >= 0 ? shown_value(c->id, base_raw) : -1;
 	const bool changed = base >= 0 && value != base;
 	if (c->kind == CELL_CHOICE) {
-		// The algorithm lit in FM's colour, the pan in white as a switch.
-		const bool on = value == c->choice, pan = param == PARAM_PAN;
-		fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : C_FM) : C_CELL);
-		text(g, c->x + (c->w - 11) / 2, c->y + 2, c->label, on ? (pan ? C_BG : C_TEXT) : C_LABEL, 2);
+		const bool on = value == c->choice;
+		if (c->look == LOOK_SEGMENT) {
+			// DT and RS: the value's segment lit, DT's middle (0) marked.
+			const bool middle = c->choice == 0 && !strcmp(c->label, "DT");
+			fill(g, c->x, c->y, c->w, c->h, on ? C_FM_LIGHT : middle ? C_LINE : C_CELL);
+		} else if (c->look == LOOK_SHAPE) {
+			// One of the choice of SSG: OFF or a shape.
+			fill(g, c->x, c->y, c->w, c->h, on ? C_FM_DARK : C_CELL);
+			if (c->choice == 0) {
+				text(g, c->x + 2, c->y + 6, "OFF", C_LABEL, 1);
+			} else {
+				ssg_icon(g, c->x + 2, c->y + 5, c->w - 4, 8, c->choice, on ? C_TEXT : C_FM_LIGHT);
+			}
+			return;
+		} else {
+			// The algorithm lit in FM's colour, the pan in white as a switch. A label too wide for the
+			// big font takes the small one.
+			const bool pan = param == PARAM_PAN;
+			const int scale = (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
+			const int width = (int)strlen(c->label) * 6 * scale - scale;
+			fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : C_FM) : C_CELL);
+			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, on ? (pan ? C_BG : C_TEXT) : C_LABEL, scale);
+		}
 		if (changed && c->choice == base) {
 			fill(g, c->x, c->y + c->h - 2, c->w, 2, C_AMBER);
+		}
+		return;
+	}
+	if (c->kind == CELL_SSG) {
+		// The active operator's SSG at the graph's top right: its shape or OFF; a click opens the choice.
+		fill(g, c->x, c->y, c->w, c->h, C_CELL);
+		text(g, c->x + 3, c->y + 4, c->label, changed ? C_AMBER : C_LABEL, 1);
+		if (value >= 8) {
+			ssg_icon(g, c->x + 27, c->y + 3, c->w - 31, 8, value, C_TEXT);
+		} else {
+			text_right(g, c->x + c->w - 4, c->y + 4, "OFF", C_TEXT, 1, 30);
+		}
+		if (g->ssg_open >= 0) {
+			frame(g, c->x, c->y, c->w, c->h, C_TEXT);
+		}
+		return;
+	}
+	if (c->look == LOOK_SWITCH) {
+		// AM and PORTA: lit in the channel's colour when on, a click flips it.
+		const uint32_t lit = channel >= 0 && !channel_is_fm(channel) ? C_PSG_DARK : C_FM;
+		const int width = (int)strlen(c->label) * 6 - 1;
+		fill(g, c->x, c->y, c->w, c->h, value ? lit : C_BG);
+		if (!value) {
+			frame(g, c->x, c->y, c->w, c->h, held ? C_TEXT : C_LINE);
+		}
+		text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7) / 2, c->label, changed ? C_AMBER : value ? C_TEXT : C_LABEL, 1);
+		return;
+	}
+	if (c->look == LOOK_FEEDBACK) {
+		// FB over operator 1's loop: seven segments filled up to it, and the number.
+		fill(g, c->x, c->y, c->w, c->h, C_BG);
+		text(g, c->x + 2, c->y + 3, c->label, held ? C_TEXT : changed ? C_AMBER : C_LABEL, 1);
+		for (int k = 0; k < 7; k++) {
+			fill(g, c->x + 16 + k * 6, c->y + 2, 5, 9, k < value ? C_FM_LIGHT : C_CELL);
+		}
+		snprintf(buffer, sizeof(buffer), "%d", value);
+		text(g, c->x + 16 + 7 * 6 + 4, c->y + 3, buffer, C_TEXT, 1);
+		if (held) {
+			frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 		}
 		return;
 	}
@@ -750,8 +975,14 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		buffer[(c->w - 8) / 12] = 0;
 		text(g, c->x + 4, c->y + 14, buffer, shown, 2);
 	} else {
-		int label_end = text(g, c->x + 4, c->y + 6, c->label, label, 1);
-		text_right(g, c->x + c->w - 4, c->y + 2, buffer, shown, 2, c->x + c->w - 4 - label_end - 6);
+		int label_end = text(g, c->x + 4, c->y + (c->h - 7) / 2, c->label, label, 1);
+		// A value without room for its unit drops it: +0 for +0 ct.
+		const int room = c->x + c->w - 4 - label_end - 6;
+		char *space = strchr(buffer, ' ');
+		if ((int)strlen(buffer) * 12 > room && space) {
+			*space = 0;
+		}
+		text_right(g, c->x + c->w - 4, c->y + (c->h - 14) / 2, buffer, shown, 2, room);
 		if (changed) {
 			fill(g, c->x + (c->w - 2) * base / max, c->y + c->h - 4, 2, 4, C_AMBER);
 		}
@@ -761,8 +992,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	}
 }
 
-// A knob the host sent a value since the mouse last touched it (D33): a red dot 3x3 at the cell's top right, on the last button
-// of a row of choices.
+// A knob the host sent a value since the mouse last touched it (D33): a red dot 3x3 at the cell's top right.
 static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 {
 	draw_cell_body(g, c, values);
@@ -770,7 +1000,8 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 	if (!g->source.host_values || !patch_id_split(c->id, &channel, &param) || !__atomic_load_n(&g->source.host_values[GUI_HOST_SLOT(channel, param)], __ATOMIC_RELAXED)) {
 		return;
 	}
-	if (c->kind == CELL_CHOICE && c->choice != patch_param(c->id)->max) {
+	// A row of choices has its dot on its last button.
+	if (c->look == LOOK_SHAPE || (c + 1 < g->cells + g->cell_count && c[1].id == c->id)) {
 		return;
 	}
 	fill(g, c->x + c->w - 4, c->y + 1, 3, 3, C_ERROR);
@@ -799,18 +1030,30 @@ static const int8_t ALGORITHM_LINKS[8][3][2] = {
 };
 static const uint8_t CARRIERS[8] = {8, 8, 8, 8, 10, 14, 14, 15};
 
+// The diagram in the block (v8): operators of 18 px on a grid of 38 by 21, so three rows keep their
+// links apart (the mockup's 18 put rows on each other), the output bus 6 px over
+// the frame's bottom, the feedback loop over operator 1.
+#define OP_BOX 18
+#define OP_HALF (OP_BOX / 2 - 1)
+#define DIAGRAM_BUS (DIAGRAM_Y + 69)
+#define DIAGRAM_RIGHT (BLOCK_X + 158)
 static void op_xy(int algorithm, int op, int *x, int *y)
 {
-	*x = DIAGRAM_X + 16 + ALGORITHM_POS[algorithm][op][0] * 52;
-	*y = DIAGRAM_Y + 5 + ALGORITHM_POS[algorithm][op][1] * 26;
+	*x = BLOCK_X + 14 + ALGORITHM_POS[algorithm][op][0] * 38;
+	*y = DIAGRAM_Y + 13 + ALGORITHM_POS[algorithm][op][1] * 21;
+}
+
+// FB stands at the frame's top left, or top right when operator 1's loop is under it there.
+static int feedback_x(int algorithm)
+{
+	return ALGORITHM_POS[algorithm][0][1] == 0 && ALGORITHM_POS[algorithm][0][0] < 2 ? BLOCK_X + BLOCK_W - 76 : BLOCK_X + 4;
 }
 
 static void draw_diagram(mdmi_gui *g, int algorithm, int feedback)
 {
-	fill(g, DIAGRAM_X, DIAGRAM_Y, 222, 92, C_BG);
-	frame(g, DIAGRAM_X, DIAGRAM_Y, 222, 92, C_CELL);
-	const int bus = DIAGRAM_Y + 87;
-	int leftmost = DIAGRAM_X + 214;
+	fill(g, BLOCK_X, DIAGRAM_Y, BLOCK_W, DIAGRAM_H, C_BG);
+	frame(g, BLOCK_X, DIAGRAM_Y, BLOCK_W, DIAGRAM_H, C_CELL);
+	int leftmost = DIAGRAM_RIGHT;
 	for (int link = 0; link < 3; link++) {
 		int from = ALGORITHM_LINKS[algorithm][link][0], to = ALGORITHM_LINKS[algorithm][link][1];
 		if (from < 0) {
@@ -820,13 +1063,13 @@ static void draw_diagram(mdmi_gui *g, int algorithm, int feedback)
 		op_xy(algorithm, from, &fx, &fy);
 		op_xy(algorithm, to, &tx, &ty);
 		if (fy == ty) {
-			fill(g, fx + 24, fy + 11, tx - fx - 24, 2, C_LABEL);
+			fill(g, fx + OP_BOX, fy + OP_HALF, tx - fx - OP_BOX, 2, C_LABEL);
 		} else {
-			fill(g, fx + 24, fy + 11, tx + 11 - fx - 24 + 2, 2, C_LABEL);
+			fill(g, fx + OP_BOX, fy + OP_HALF, tx + OP_HALF - fx - OP_BOX + 2, 2, C_LABEL);
 			if (ty > fy) {
-				fill(g, tx + 11, fy + 11, 2, ty - fy - 11, C_LABEL);
+				fill(g, tx + OP_HALF, fy + OP_HALF, 2, ty - fy - OP_HALF, C_LABEL);
 			} else {
-				fill(g, tx + 11, ty + 24, 2, fy + 11 - ty - 24 + 2, C_LABEL);
+				fill(g, tx + OP_HALF, ty + OP_BOX, 2, fy + OP_HALF - ty - OP_BOX + 2, C_LABEL);
 			}
 		}
 	}
@@ -834,31 +1077,33 @@ static void draw_diagram(mdmi_gui *g, int algorithm, int feedback)
 		int x, y;
 		op_xy(algorithm, op, &x, &y);
 		if (CARRIERS[algorithm] >> op & 1) {
-			fill(g, x + 11, y + 24, 2, bus - y - 24, C_LABEL);
-			leftmost = x + 11 < leftmost ? x + 11 : leftmost;
+			fill(g, x + OP_HALF, y + OP_BOX, 2, DIAGRAM_BUS - y - OP_BOX, C_LABEL);
+			leftmost = x + OP_HALF < leftmost ? x + OP_HALF : leftmost;
 		}
 	}
-	fill(g, leftmost, bus, DIAGRAM_X + 214 - leftmost, 2, C_LABEL);
+	fill(g, leftmost, DIAGRAM_BUS, DIAGRAM_RIGHT - leftmost, 2, C_LABEL);
 	int x, y;
 	op_xy(algorithm, 0, &x, &y);
 	const uint32_t loop = feedback ? C_LABEL : C_LINE;
-	fill(g, x - 6, y - 4, 2, 16, loop);
-	fill(g, x - 6, y - 4, 36, 2, loop);
-	fill(g, x + 29, y - 4, 2, 16, loop);
-	fill(g, x - 6, y + 11, 6, 2, loop);
+	fill(g, x - 5, y - 4, 2, OP_HALF + 6, loop);
+	fill(g, x - 5, y - 4, OP_BOX + 10, 2, loop);
+	fill(g, x + OP_BOX + 3, y - 4, 2, OP_HALF + 6, loop);
+	fill(g, x - 5, y + OP_HALF, 5, 2, loop);
 	for (int op = 0; op < PATCH_OPS; op++) {
 		op_xy(algorithm, op, &x, &y);
 		char digit[2] = {(char)('1' + op), 0};
 		if (CARRIERS[algorithm] >> op & 1) {
-			fill(g, x, y, 24, 24, C_FM);
-			text(g, x + 6, y + 4, digit, C_TEXT, 2);
+			fill(g, x, y, OP_BOX, OP_BOX, C_FM);
+			text(g, x + (OP_BOX - 10) / 2, y + (OP_BOX - 14) / 2, digit, C_TEXT, 2);
 		} else {
-			fill(g, x, y, 24, 24, C_BG);
-			frame(g, x, y, 24, 24, C_FM_LIGHT);
-			text(g, x + 6, y + 4, digit, C_FM_LIGHT, 2);
+			fill(g, x, y, OP_BOX, OP_BOX, C_BG);
+			frame(g, x, y, OP_BOX, OP_BOX, C_FM_LIGHT);
+			frame(g, x + 1, y + 1, OP_BOX - 2, OP_BOX - 2, C_FM_LIGHT);
+			text(g, x + (OP_BOX - 10) / 2, y + (OP_BOX - 14) / 2, digit, C_FM_LIGHT, 2);
 		}
 	}
 }
+
 
 // The channel's number, the name of what it plays with its *, and the source at the right end (its
 // cell): one line for the editor and the bank.
@@ -1395,6 +1640,133 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	}
 }
 
+// The graph's columns and the note its rates are drawn for (KS by RS, hardware-specialist): C4.
+#define CURVE_COLUMNS (GRAPH_W - 2)
+#define CURVE_KEYCODE 16
+
+// An operator's envelope as the graph's columns, the values being dragged included.
+static void curve_of(mdmi_gui *g, const patch_values *values, int channel, int op, const uint16_t **low, const uint16_t **high)
+{
+	int16_t now[PATCH_OP_PARAMS];
+	for (int f = 0; f < PATCH_OP_PARAMS; f++) {
+		const uint32_t id = op_id(channel, op, f);
+		now[f] = g->dragging && g->drag_id == id ? (int16_t)g->drag_value : values->channels[channel][PARAM_OP_BASE + op * PATCH_OP_PARAMS + f];
+	}
+	if (!g->curves[channel][op].ready || memcmp(now, g->curves[channel][op].op, sizeof(now))) {
+		memcpy(g->curves[channel][op].op, now, sizeof(now));
+		patch_fm_envelope(now, CURVE_KEYCODE, CURVE_COLUMNS, g->curves[channel][op].low, g->curves[channel][op].high);
+		g->curves[channel][op].ready = true;
+	}
+	*low = g->curves[channel][op].low;
+	*high = g->curves[channel][op].high;
+}
+
+// The x of a time on the graph's axis, from its left edge, w px wide.
+static int curve_x(double seconds, int w)
+{
+	return (int)(sqrt(seconds / PATCH_FM_SECONDS) * w);
+}
+
+// The four envelopes in a box w x h, loud at the top: the active one bright over a dark body, the
+// others grey. Without an active one (ALL) carriers are light FM and modulators grey. Columns that
+// span a range (a fast SSG) are drawn as the range.
+static void draw_curves(mdmi_gui *g, const patch_values *values, int channel, int x0, int y0, int w, int h, int active)
+{
+	const int algorithm = values->channels[channel][PARAM_ALGORITHM] & 7;
+	for (int pass = 0; pass < 3; pass++) {
+		for (int op = 0; op < PATCH_OPS; op++) {
+			// The active one's body first, then the others' lines, the active one's line on top.
+			if ((pass == 1) == (op == active)) {
+				continue;
+			}
+			const uint16_t *low, *high;
+			curve_of(g, values, channel, op, &low, &high);
+			const uint32_t color = op == active ? C_TEXT : active < 0 && CARRIERS[algorithm] >> op & 1 ? C_FM_LIGHT : C_HINT;
+			int last_top = -1, last_bottom = -1;
+			for (int k = 0; k < w; k++) {
+				// The cached columns this one covers.
+				const int from = k * CURVE_COLUMNS / w, to = (k + 1) * CURVE_COLUMNS / w > from ? (k + 1) * CURVE_COLUMNS / w : from + 1;
+				int lo = PATCH_FM_SILENT, hi = 0;
+				for (int c = from; c < to && c < CURVE_COLUMNS; c++) {
+					lo = low[c] < lo ? low[c] : lo;
+					hi = high[c] > hi ? high[c] : hi;
+				}
+				int top = y0 + lo * (h - 1) / PATCH_FM_SILENT, bottom = y0 + hi * (h - 1) / PATCH_FM_SILENT;
+				if (pass == 0) {
+					fill(g, x0 + k, top, 1, y0 + h - top, C_FM_DARK);
+					continue;
+				}
+				// Joined to the column before, so a step is a line, not a gap.
+				const int a = last_top >= 0 && last_bottom < top ? last_bottom : top;
+				const int b = last_top >= 0 && last_top > bottom ? last_top : bottom;
+				fill(g, x0 + k, a, 1, b - a + 1, color);
+				last_top = top;
+				last_bottom = bottom;
+			}
+		}
+	}
+}
+
+// The graph of the FM page (v8): the four envelopes, Note Off dotted at 1 s with each curve's number
+// there (a tiny SSG shape by it when on), the time marks, the active operator's SSG at the top right.
+static void draw_graph(mdmi_gui *g, const patch_values *values, int channel, int active)
+{
+	const int x0 = GRAPH_X + 1, y0 = GRAPH_Y + 1, w = GRAPH_W - 2, h = GRAPH_H - 2;
+	fill(g, GRAPH_X, GRAPH_Y, GRAPH_W, GRAPH_H, C_BG);
+	frame(g, GRAPH_X, GRAPH_Y, GRAPH_W, GRAPH_H, C_CELL);
+	const int off = x0 + curve_x(PATCH_FM_OFF_SECONDS, w);
+	for (int y = GRAPH_Y + 22; y < GRAPH_Y + GRAPH_H - 2; y += 3) {
+		fill(g, off, y, 1, 1, C_LINE);
+	}
+	draw_curves(g, values, channel, x0, y0, w, h, active);
+	text(g, off - 19, GRAPH_Y + 24, "OFF", C_HINT, 1);
+	// The numbers at Note Off, kept 9 px apart.
+	int used[PATCH_OPS], count = 0;
+	for (int op = 0; op < PATCH_OPS; op++) {
+		const uint16_t *low, *high;
+		curve_of(g, values, channel, op, &low, &high);
+		int y = y0 + low[off - x0 < CURVE_COLUMNS ? off - x0 : CURVE_COLUMNS - 1] * (h - 1) / PATCH_FM_SILENT - 4;
+		y = y < GRAPH_Y + 24 ? GRAPH_Y + 24 : y;
+		for (bool moved = true; moved;) {
+			moved = false;
+			for (int i = 0; i < count; i++) {
+				if (abs(used[i] - y) < 9) {
+					y += 9;
+					moved = true;
+				}
+			}
+		}
+		used[count++] = y;
+		const int ssg = values->channels[channel][PARAM_OP_BASE + op * PATCH_OP_PARAMS + OP_SSG];
+		const uint32_t color = op == active ? C_TEXT : C_HINT;
+		const char digit[2] = {(char)('1' + op), 0};
+		fill(g, off + 3, y, ssg >= 8 ? 20 : 8, 9, C_BG);
+		text(g, off + 4, y + 1, digit, color, 1);
+		if (ssg >= 8) {
+			ssg_icon(g, off + 11, y + 3, 9, 4, ssg, color);
+		}
+	}
+	static const struct {
+		double seconds;
+		const char *label;
+	} MARKS[3] = {{0.1, "100 MS"}, {0.5, "500 MS"}, {2.0, "2 S"}};
+	for (int i = 0; i < 3; i++) {
+		const int x = x0 + curve_x(MARKS[i].seconds, w - 1);
+		fill(g, x, GRAPH_Y + GRAPH_H, 1, 3, C_HINT);
+		if (i < 2) {
+			text(g, x + 2, GRAPH_Y + GRAPH_H - 10, MARKS[i].label, C_LABEL, 1);
+		} else {
+			text_right(g, x - 2, GRAPH_Y + GRAPH_H - 10, MARKS[i].label, C_LABEL, 1, 40);
+		}
+	}
+	text(g, x0 + 3, GRAPH_Y + GRAPH_H - 10, "C4", C_HINT, 1);
+	// The choice of SSG, its cells drawn over this box.
+	if (g->ssg_open >= 0) {
+		fill(g, SSG_PICK_X, SSG_PICK_Y, SSG_PICK_W, 22, C_BG);
+		frame(g, SSG_PICK_X, SSG_PICK_Y, SSG_PICK_W, 22, C_LABEL);
+	}
+}
+
 static void draw_page(mdmi_gui *g, const patch_values *values)
 {
 	const int channel = *g->source.channel;
@@ -1416,19 +1788,17 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 	}
 	if (!channel_is_fm(channel)) {
 		// PSG has no pan; its place stays so TUNE and BEND are where they are on FM.
-		frame(g, GRID_X[1], GRID_ROW1_Y, GRID_W, CELL_H, C_CELL);
+		frame(g, GRID_X[1], GRID_ROW1_Y, 60, CELL_H, C_CELL);
 		text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LINE, 1);
-		text_right(g, GRID_X[1] + GRID_W - 4, GRID_ROW1_Y + 2, "-", C_LINE, 2, 20);
+		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
 		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
 		draw_envelope(g, values);
 		return;
 	}
 	const int algorithm = value_of(g, values, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM));
 	draw_diagram(g, algorithm, value_of(g, values, PATCH_CHANNEL_ID(channel, PARAM_FEEDBACK)));
-	text(g, ALGORITHM_X, ALGORITHM_Y + 24, "ALGORITHM", C_HINT, 1);
-	// The pan's label, left of its three buttons.
-	fill(g, GRID_X[1], GRID_ROW1_Y, 26, CELL_H, C_FM_DARK);
-	text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LABEL, 1);
+	const int active = active_op(g);
+	draw_graph(g, values, channel, active);
 	for (int op = 0; op < PATCH_OPS; op++) {
 		const int x = GRID_X[op];
 		const bool carrier = CARRIERS[algorithm] >> op & 1;
@@ -1438,7 +1808,22 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		} else {
 			frame(g, x, OP_HEADER_Y, OP_W, OP_HEADER_H, C_FM_LIGHT);
 		}
-		text(g, x + 4, OP_HEADER_Y + 3, buffer, carrier ? C_TEXT : C_FM_LIGHT, 1);
+		text(g, x + 4, OP_HEADER_Y + 4, buffer, carrier ? C_TEXT : C_FM_LIGHT, 1);
+		// The label fields of DT and RS, amber when the value differs from the base (D31).
+		static const struct {
+			const char *label;
+			int field, y;
+		} FIELDS[2] = {{"DT", OP_DT, OP_DT_Y}, {"RS", OP_RS, OP_RS_Y}};
+		for (int i = 0; i < 2; i++) {
+			const uint32_t id = op_id(channel, op, FIELDS[i].field);
+			const int base = patch_base_value(values, channel, PARAM_OP_BASE + op * PATCH_OP_PARAMS + FIELDS[i].field);
+			const bool changed = base >= 0 && shown_value(id, base) != value_of(g, values, id);
+			fill(g, x, FIELDS[i].y, SEG_X - 1, OP_ROW_H, C_CELL);
+			text(g, x + 4, FIELDS[i].y + (OP_ROW_H - 7) / 2, FIELDS[i].label, changed ? C_AMBER : C_LABEL, 1);
+		}
+		if (op == active) {
+			frame(g, x - 2, OP_HEADER_Y - 2, OP_W + 4, OP_BOTTOM - OP_HEADER_Y + 3, C_TEXT);
+		}
 	}
 }
 
@@ -1904,7 +2289,13 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 		}
 		if (channel_is_fm(channel)) {
 			const int16_t *v = values->channels[channel];
-			draw_mini_diagram(g, ALL_SOUND_X, y, v[PARAM_ALGORITHM], v[PARAM_FEEDBACK], is_special(values, channel) ? C_FM_LIGHT : C_FM);
+			// The diagram or, after a click on it, the four envelopes in small, for every FM row at once.
+			if (g->all_envelopes) {
+				draw_curves(g, values, channel, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, -1);
+				fill(g, ALL_SOUND_X, y + 36, ALL_SOUND_W, 1, C_LINE);
+			} else {
+				draw_mini_diagram(g, ALL_SOUND_X, y, v[PARAM_ALGORITHM], v[PARAM_FEEDBACK], is_special(values, channel) ? C_FM_LIGHT : C_FM);
+			}
 		} else {
 			patch_shape shape;
 			patch_shape_of(&values->psg[channel - PATCH_NUM_FM_CHANNELS], &shape);
@@ -2252,8 +2643,30 @@ static void on_action(mdmi_gui *g, int action)
 	refresh(g);
 }
 
+// The operator a cell of the FM page belongs to, or -1.
+static int op_of(uint32_t id)
+{
+	int channel, param;
+	if (!patch_id_split(id, &channel, &param) || channel < 0 || param < PARAM_OP_BASE) {
+		return -1;
+	}
+	return (param - PARAM_OP_BASE) / PATCH_OP_PARAMS;
+}
+
 static void on_down(mdmi_gui *g, int x, int y)
 {
+	// The choice of SSG open: a shape sets it, any other click only closes the choice.
+	if (g->ssg_open >= 0) {
+		g->mouse_x = x;
+		g->mouse_y = y;
+		const int index = hovered(g);
+		if (index >= 0 && g->cells[index].look == LOOK_SHAPE) {
+			edit_once(g, g->cells[index].id, g->cells[index].choice);
+		}
+		g->ssg_open = -1;
+		refresh(g);
+		return;
+	}
 	if (action_at(g, x, y) >= 0) {
 		on_action(g, action_at(g, x, y));
 		return;
@@ -2306,7 +2719,11 @@ static void on_down(mdmi_gui *g, int x, int y)
 		const int row = row_at(g, x, y);
 		if (row >= 0) {
 			*g->source.channel = row;
-			if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W) {
+			// The sound of a PSG row opens its page; of an FM row it switches every FM row between
+			// diagram and envelopes (stage 11).
+			if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && takes_fm(patch_view(g->source.patch), row)) {
+				g->all_envelopes = !g->all_envelopes;
+			} else if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W) {
 				*g->source.page = PAGE_EDITOR;
 			}
 			refresh(g);
@@ -2314,6 +2731,14 @@ static void on_down(mdmi_gui *g, int x, int y)
 		return;
 	}
 	const cell *c = &g->cells[index];
+	if (c->kind == CELL_SSG) {
+		g->ssg_open = active_op(g);
+		refresh(g);
+		return;
+	}
+	if (op_of(c->id) >= 0) {
+		g->last_op = op_of(c->id);
+	}
 	if (c->kind == CELL_CHOICE) {
 		edit_once(g, c->id, c->choice);
 		return;
@@ -2390,7 +2815,17 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		on_down(g, x, y);
 		return;
 	}
+	// On ALL a quick second click on a row's sound switches again, as the first did.
+	if (*g->source.page == PAGE_ALL && x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && row_at(g, x, y) >= 0) {
+		on_down(g, x, y);
+		return;
+	}
 	int index = *g->source.page == PAGE_EDITOR ? hovered(g) : -1;
+	// The choice of SSG and its button take a quick second click as a click.
+	if (g->ssg_open >= 0 || (index >= 0 && g->cells[index].kind == CELL_SSG)) {
+		on_down(g, x, y);
+		return;
+	}
 	if (index < 0 || g->cells[index].kind == CELL_CHOICE) {
 		return;
 	}
@@ -2779,6 +3214,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->scale = 1;
 	g->mouse_x = g->mouse_y = -1;
 	g->key_channel = -1;
+	g->ssg_open = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;

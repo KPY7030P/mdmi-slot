@@ -85,6 +85,28 @@
 #define COLOR_FM 0x4422EE
 #define COLOR_MARK 0xEECC66
 #define FOOTER_TOP 504
+// Stage 11: the FM page of v8. The operators' columns, the graph, the SSG button and its choice,
+// a row's y in each column, and the ids of channel 4's operator 3 AR and RS, operator 1 DT, RS, AM and SSG.
+static const int OP_X[4] = {242, 358, 474, 590};
+#define OP_RIGHT_W 112
+#define OP_AR_Y 291
+#define OP_DT_Y 419
+#define OP_RS_Y 444
+#define GRAPH_LEFT 243
+#define GRAPH_RIGHT 523
+#define GRAPH_TOP 83
+#define GRAPH_BOTTOM 205
+#define SSG_BUTTON_X 467
+#define SSG_BUTTON_Y 92
+#define SSG_PICK_Y 113
+#define SSG_PICK_OFF_X 324
+#define SSG_PICK_8_X 347
+#define CH4_OP3_AR 1437
+#define CH4_OP3_RS 1436
+#define CH4_OP1_SSG 1421
+#define CH4_OP1_DT 1413
+#define CH4_OP1_RS 1414
+#define CH4_OP1_AM 1420
 
 static int failures;
 
@@ -523,15 +545,15 @@ int main(int argc, char **argv)
 		run_block(&from_host);
 		run_ms(100);
 		capture(window);
-		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 9, "a TL value from the host puts a red dot on its cell");
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 2, OP1_TL_Y + 2, COLOR_ERROR) == 9, "a TL value from the host puts a red dot on its cell");
 		click(window, OP1_TL_X, OP1_TL_Y);
 		run_ms(100);
 		capture(window);
-		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 0, "a touch with the mouse takes it away");
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 2, OP1_TL_Y + 2, COLOR_ERROR) == 0, "a touch with the mouse takes it away");
 		run_block(&from_host);
 		run_ms(2300);
 		capture(window);
-		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 9, "a flat stretch of the lane, seconds without values, keeps it (D33)");
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 2, OP1_TL_Y + 2, COLOR_ERROR) == 9, "a flat stretch of the lane, seconds without values, keeps it (D33)");
 		memset(pushed, 0, sizeof(pushed));
 		click(window, RAIL_X, RAIL_CH2_Y);
 		run_ms(100);
@@ -541,6 +563,84 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
 		run_ms(100);
 		CHECK(get_value(CH4_OP1_TL) == ch4_before, "a double click returns it to the preset's value");
+
+		// Stage 11, the FM page. A click on operator 3's lit RS segment changes no value but makes it
+		// the operator last edited: its curve turns bright and its column is framed.
+		capture(window);
+		static uint32_t graph_before[WIDTH * HEIGHT];
+		memcpy(graph_before, pixels, sizeof(pixels));
+		click(window, OP_X[2] + 22 + get_value(CH4_OP3_RS) * 13 + 6, OP_RS_Y);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "fm-active");
+		CHECK(count_color_in(OP_X[2] - 2, OP_X[2] - 1, 220, 450, COLOR_TEXT) > 200 && count_color_in(OP_X[0] - 2, OP_X[0] - 1, 220, 450, COLOR_TEXT) == 0,
+			"operator 3's column is framed, operator 1's no longer");
+		int graph_changed = 0;
+		for (int y = GRAPH_TOP; y < GRAPH_BOTTOM; y++) {
+			for (int x = GRAPH_LEFT; x < GRAPH_RIGHT; x++) {
+				graph_changed += pixels[y * WIDTH + x] != graph_before[y * WIDTH + x];
+			}
+		}
+		CHECK(graph_changed > 100 && count_color_in(GRAPH_LEFT, GRAPH_RIGHT, GRAPH_TOP, GRAPH_BOTTOM, COLOR_TEXT) > 100,
+			"the graph draws operator 3's curve bright instead (%d px changed)", graph_changed);
+		memset(pushed, 0, sizeof(pushed));
+		drag(window, OP_X[2] + 60, OP_AR_Y, OP_AR_Y + 30);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_OP3_AR && pushed_id[2] == CH4_OP3_AR, "a drag on operator 3's AR is one gesture on it");
+		// The right edges of every row of a column meet: the last pixel inside, the next one black.
+		bool edges = true;
+		const int rows[9] = {238, 263, 291, 316, 341, 366, 391, OP_DT_Y, OP_RS_Y};
+		for (int op = 0; op < 4; op++) {
+			for (int r = 0; r < 9; r++) {
+				const uint32_t inside = pixels[rows[r] * WIDTH + OP_X[op] + OP_RIGHT_W - 1] & 0xFFFFFF, past = pixels[rows[r] * WIDTH + OP_X[op] + OP_RIGHT_W] & 0xFFFFFF;
+				if (!inside || past) {
+					edges = false;
+					printf("    column %d row %d: %06X then %06X\n", op + 1, r, (unsigned)inside, (unsigned)past);
+				}
+			}
+		}
+		CHECK(edges, "every row of every operator's column ends on the same right edge");
+		// DT, RS and AM: a click is one gesture setting the segment's value; AM flips.
+		const int am_before = get_value(CH4_OP1_AM);
+		memset(pushed, 0, sizeof(pushed));
+		click(window, OP_X[0] + 22 + 6, OP_DT_Y);
+		run_ms(50);
+		const int dt_gestures = pushed[0];
+		click(window, OP_X[0] + 22 + 3 * 13 + 6, OP_RS_Y);
+		run_ms(50);
+		click(window, OP_X[0] + 90, OP_RS_Y);
+		run_ms(100);
+		CHECK(dt_gestures == 1 && pushed[0] == 3 && pushed[2] == 3 && get_value(CH4_OP1_DT) == 7 && get_value(CH4_OP1_RS) == 3 && get_value(CH4_OP1_AM) == !am_before,
+			"a click on DT's first segment sets -3 (7), on RS's last 3, on AM flips it, one gesture each");
+		// SSG of the operator last edited, now 1: the button opens the choice, a shape sets it, the button
+		// shows it.
+		memset(pushed, 0, sizeof(pushed));
+		click(window, SSG_BUTTON_X, SSG_BUTTON_Y);
+		run_ms(100);
+		capture(window);
+		const int choice_open = count_color_in(GRAPH_LEFT, GRAPH_RIGHT, SSG_PICK_Y - 12, SSG_PICK_Y + 12, COLOR_LABEL);
+		click(window, SSG_PICK_8_X, SSG_PICK_Y);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "fm-ssg");
+		CHECK(choice_open > 40 && pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_OP1_SSG && get_value(CH4_OP1_SSG) == 8,
+			"the SSG button opens the choice of shapes (%d px), a click on the first sets operator 1's SSG to 8 (%d, %d gestures)", choice_open, get_value(CH4_OP1_SSG), pushed[0]);
+		CHECK(count_color_in(SSG_BUTTON_X + 10, SSG_BUTTON_X + 54, SSG_BUTTON_Y - 6, SSG_BUTTON_Y + 6, COLOR_TEXT) > 10, "the SSG button draws the shape");
+		click(window, SSG_BUTTON_X, SSG_BUTTON_Y);
+		run_ms(50);
+		memset(pushed, 0, sizeof(pushed));
+		click(window, GRAPH_LEFT + 20, GRAPH_BOTTOM - 20);
+		run_ms(50);
+		click(window, SSG_BUTTON_X, SSG_BUTTON_Y);
+		run_ms(50);
+		click(window, SSG_PICK_OFF_X, SSG_PICK_Y);
+		run_ms(100);
+		CHECK(pushed[0] == 1 && get_value(CH4_OP1_SSG) == 0, "a click beside the choice only closes it; OFF turns SSG off");
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP_X[2] + 60, OP_AR_Y));
+		run_ms(50);
 		click(window, LFO_RATE_X, LFO_RATE_Y);
 		run_ms(100);
 		const int first = get_value(LFO_RATE);
@@ -569,6 +669,19 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM) > 6 * 50, "the FM rows draw their algorithms");
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 30, RAIL_CH8_Y + 10, COLOR_PSG) > 0, "the PSG rows draw their envelopes");
+		// Stage 11: a click on an FM row's sound puts every FM row's envelopes in place of the diagram,
+		// a second click brings the diagrams back.
+		click(window, ALL_SOUND_X, ALL_CH2_Y);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "all-envelopes");
+		const int boxes = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM);
+		const int curves = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM_LIGHT);
+		click(window, ALL_SOUND_X, ALL_CH2_Y);
+		run_ms(100);
+		capture(window);
+		CHECK(boxes == 0 && curves > 6 * 50 && count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM) > 6 * 50,
+			"a click on an FM row's diagram shows the envelopes (%d px of carriers), a second one the diagrams again", curves);
 		// A held note on channel 8 puts the envelope's cursor on its row.
 		send_midi(0x97, 72, 100);
 		run_ms(300);
