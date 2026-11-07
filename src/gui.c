@@ -1914,9 +1914,13 @@ static void dac_short(const char *name, char *out, size_t size)
 #define GRID_CELL_W 34
 #define GRID_CELL_H 16
 #define WAVE_X 242
-#define WAVE_Y 302
+// The trim's strip over the wave, as the PSG loop's: tabs at the kept part's ends (owner after D38).
+#define TRIM_Y 295
+#define TRIM_H 14
+#define TRIM_TAB_W 8
+#define WAVE_Y 311
 #define WAVE_W DAC_WAVE_COLUMNS
-#define WAVE_H 52
+#define WAVE_H 44
 #define DAC_BUTTON_Y 358
 #define DAC_LINE1_Y 377
 #define DAC_LINE2_Y 387
@@ -2013,10 +2017,11 @@ static const struct {
 	int x, y, w;
 	const char *label;
 } DAC_CONTROLS[] = {
-	{242, DAC_ROW_A_Y, 92, "START"}, {336, DAC_ROW_A_Y, 92, "END"}, {242, DAC_ROW_B_Y, 84, "PITCH"}, {328, DAC_ROW_B_Y, 62, "CT"},
+	// START and END are the trim strip's tabs, no cells.
+	{0, 0, 0, "START"}, {0, 0, 0, "END"}, {242, DAC_ROW_B_Y, 84, "PITCH"}, {328, DAC_ROW_B_Y, 62, "CT"},
 	{396, DAC_ROW_B_Y, 100, "GAIN"}, {498, DAC_ROW_B_Y, 62, "NORMALIZE"}, {566, DAC_ROW_B_Y, 52, "FADE"}, {620, DAC_ROW_B_Y, 80, "ONE-SHOT"},
-	{434, DAC_ROW_A_Y, 32, "AUTO"}, {468, DAC_ROW_A_Y, 22, "32"}, {492, DAC_ROW_A_Y, 22, "22"}, {516, DAC_ROW_A_Y, 22, "16"},
-	{540, DAC_ROW_A_Y, 28, "13.4"}, {570, DAC_ROW_A_Y, 22, "11"}, {594, DAC_ROW_A_Y, 22, "8"},
+	{274, DAC_ROW_A_Y, 32, "AUTO"}, {308, DAC_ROW_A_Y, 22, "32"}, {332, DAC_ROW_A_Y, 22, "22"}, {356, DAC_ROW_A_Y, 22, "16"},
+	{380, DAC_ROW_A_Y, 28, "13.4"}, {410, DAC_ROW_A_Y, 22, "11"}, {434, DAC_ROW_A_Y, 22, "8"},
 };
 
 static bool gain_clips(const mdmi_gui *g, const dac_sample *own, const dac_edit *edit);
@@ -2036,6 +2041,17 @@ static int dac_control_at(const mdmi_gui *g, int x, int y)
 {
 	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
 	if (!own || !own->source) {
+		return DACC_NONE;
+	}
+	if (y >= TRIM_Y && y < TRIM_Y + TRIM_H) {
+		const dac_edit *edit = shown_edit(g, own);
+		const int start = wave_x_of(own, edit->start), end = wave_x_of(own, edit->end);
+		if (x >= start - TRIM_TAB_W && x < start) {
+			return DACC_MARK_START;
+		}
+		if (x >= end && x < end + TRIM_TAB_W) {
+			return DACC_MARK_END;
+		}
 		return DACC_NONE;
 	}
 	if (y >= WAVE_Y && y < WAVE_Y + WAVE_H) {
@@ -2101,12 +2117,7 @@ static void switch_cell(mdmi_gui *g, int c, bool on, bool booted)
 static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *edit, bool booted)
 {
 	char buffer[32];
-	const double length_ms = ms_of(own, own->source_frames);
-	ms_text(ms_of(own, edit->start), buffer, sizeof(buffer));
-	setting_cell(g, DACC_START, buffer, 0, (double)edit->start / own->source_frames, true, booted, C_LABEL);
-	ms_text(ms_of(own, edit->end), buffer, sizeof(buffer));
-	setting_cell(g, DACC_END, buffer, 0, (double)edit->end / own->source_frames, true, booted, C_LABEL);
-	(void)length_ms;
+	text(g, BANK_X, DAC_ROW_A_Y + 7, "RATE", booted ? C_LABEL : C_LINE, 1);
 	int semitones, cents;
 	split_pitch(edit->pitch, &semitones, &cents);
 	snprintf(buffer, sizeof(buffer), "%+d", semitones);
@@ -2136,9 +2147,9 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 		text(g, x + (w - width) / 2, y + 7, DAC_CONTROLS[c].label, !booted ? C_LINE : chosen ? C_BG : auto_pick ? C_TEXT : C_LABEL, 1);
 	}
 	// What the sample takes of the ROM.
-	text(g, 622, 404, "KB", C_LABEL, 1);
 	snprintf(buffer, sizeof(buffer), "%.1f", dac_cost(own, edit) / 1024.0);
-	text_right(g, 700, 401, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_TEXT, 2, 60);
+	text_right(g, 520, DAC_ROW_A_Y + 3, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_TEXT, 2, 54);
+	text(g, 524, DAC_ROW_A_Y + 7, "KB OF ROM", C_LABEL, 1);
 }
 
 // Whether the gain pushes the kept part past full scale.
@@ -2202,15 +2213,34 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 		fill(g, x, top, 1, bottom - top + 1, cut ? C_AMBER : kept ? C_DAC : C_DAC_DARK);
 	}
 	if (edit) {
-		static const int MARKS[2] = {DACC_MARK_START, DACC_MARK_END};
-		for (int m = 0; m < 2; m++) {
-			const int x = m ? end - 1 : start;
-			const bool lit = g->dac_drag == MARKS[m] || (g->dac_drag == DACC_NONE && dac_control_at(g, g->mouse_x, g->mouse_y) == MARKS[m]);
-			const uint32_t color = lit ? C_TEXT : C_LABEL;
-			fill(g, x, WAVE_Y, 1, WAVE_H, color);
-			// A flag at the top, pointing into the kept part.
-			for (int k = 0; k < 5; k++) {
-				fill(g, m ? x - 1 - k : x + 1 + k, WAVE_Y + k, 1, 9 - 2 * k, color);
+		// The strip: the kept part's body with its length, a tab outside each end as on the PSG loop,
+		// the ends' times beside the tabs, lines from the tabs down the wave.
+		const int over = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
+		char words[32], a[16];
+		fill(g, start, TRIM_Y, end - start, TRIM_H, C_CELL);
+		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
+		snprintf(words, sizeof(words), "%s MS", a);
+		if ((int)strlen(words) * 6 + 4 <= end - start) {
+			text(g, start + (end - start - (int)strlen(words) * 6) / 2, TRIM_Y + 4, words, C_DAC, 1);
+		}
+		const uint32_t start_ink = g->dac_drag == DACC_MARK_START ? C_AMBER : over == DACC_MARK_START ? C_TEXT : C_DAC;
+		const uint32_t end_ink = g->dac_drag == DACC_MARK_END ? C_AMBER : over == DACC_MARK_END ? C_TEXT : C_DAC;
+		fill(g, start - TRIM_TAB_W, TRIM_Y, TRIM_TAB_W, TRIM_H, start_ink);
+		fill(g, end, TRIM_Y, TRIM_TAB_W, TRIM_H, end_ink);
+		fill(g, start, TRIM_Y, 1, WAVE_Y + WAVE_H - TRIM_Y, start_ink);
+		fill(g, end - 1, TRIM_Y, 1, WAVE_Y + WAVE_H - TRIM_Y, end_ink);
+		// A trimmed start says where it is, left of its tab when there is room.
+		if (edit->start) {
+			ms_text(ms_of(own, edit->start), a, sizeof(a));
+			const int width = (int)strlen(a) * 6;
+			if (start - TRIM_TAB_W - 3 - width >= WAVE_X) {
+				text(g, start - TRIM_TAB_W - 3 - width, TRIM_Y + 4, a, C_LABEL, 1);
+			}
+		}
+		if (edit->end < own->source_frames) {
+			ms_text(ms_of(own, edit->end), a, sizeof(a));
+			if (end + TRIM_TAB_W + 3 + (int)strlen(a) * 6 <= WAVE_X + WAVE_W) {
+				text(g, end + TRIM_TAB_W + 3, TRIM_Y + 4, a, C_LABEL, 1);
 			}
 		}
 	}
@@ -2338,8 +2368,9 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 		edit.end = own->source_frames;
 		break;
 	case DACC_MARK_START:
-	case DACC_MARK_END:
 		edit.start = 0;
+		break;
+	case DACC_MARK_END:
 		edit.end = own->source_frames;
 		break;
 	case DACC_PITCH:
@@ -2479,7 +2510,7 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 	const dac_sample *own = dac_of(g)->notes[note];
 	const bool editable = own && own->source;
 	const dac_edit *edit = editable ? shown_edit(g, own) : NULL;
-	fill(g, BANK_X, 297, WAVE_W, 1, C_CELL);
+	fill(g, BANK_X, TRIM_Y, WAVE_W, TRIM_H, C_BG);
 	draw_wave(g, note, has ? &sample : NULL, own, edit);
 	// The note's name big, its number first on the line below (owner, D37).
 	char key[8], rate[8];

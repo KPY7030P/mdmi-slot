@@ -100,7 +100,7 @@
 // The panel's cells under the grid (D38).
 #define DAC_ROW_A_Y 398
 #define DAC_ROW_B_Y 422
-#define DAC_END_X 336
+#define DAC_TRIM_Y 295
 #define DAC_GAIN_X 396
 #define CH2_PAN 1202
 #define COLOR_FM 0x4422EE
@@ -961,8 +961,24 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "dac-panel");
-		const int whole = count_color_in(DAC_END_X, DAC_END_X + 92, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
-		CHECK(whole > 500 && count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0, "the panel shows the file kept whole (%d px of END), no gain", whole);
+		const int tabs = count_color_in(234, 250, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) + count_color_in(692, 708, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC);
+		CHECK(tabs >= 2 * 8 * 14 && count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0, "the trim's tabs stand at the wave's ends (%d px), no gain", tabs);
+		// The start's tab dragged in by a quarter, one restart.
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(238, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(300, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(356, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(356, DAC_TRIM_Y + 7));
+		const long trim_ms = wait_restart(window);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "dac-trim");
+		const int moved = count_color_in(346, 358, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC);
+		CHECK(trim_ms >= 0 && moved >= 8 * 14, "the start's tab dragged to a quarter trims there, one restart %ld ms", trim_ms);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
+		const long untrim_ms = wait_restart(window);
+		capture(window);
+		CHECK(untrim_ms >= 0 && count_color_in(234, 242, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) >= 8 * 14, "a double click on the tab puts the start back");
 		drag(window, DAC_GAIN_X + 50, DAC_ROW_B_Y + 10, DAC_ROW_B_Y - 30);
 		const long gain_ms = wait_restart(window);
 		run_ms(100);
