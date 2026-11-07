@@ -60,6 +60,9 @@ dac_sample *dac_from_wav(const uint8_t *wav, size_t size, const char *name, cons
 // Makes the bytes from the source and edit again. False, the sample unchanged, if they don't fit
 // the ROM or out of memory.
 bool dac_prepare(dac_sample *sample, const dac_edit *edit);
+// The driver rate an edit gives, and what its bytes would take of the ROM, without preparing them.
+int dac_rate(const dac_sample *sample, const dac_edit *edit);
+uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit);
 // The gain that brings the kept part's peak just under full scale.
 int dac_normalize_gain(const dac_sample *sample);
 dac_sample *dac_copy(const dac_sample *sample);

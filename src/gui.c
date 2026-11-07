@@ -123,6 +123,7 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define DAC_RESET_W 60
 #define DAC_FREE_X 592
 #define DAC_FREE_W 116
+#define DAC_WAVE_COLUMNS 458
 #define MESSAGE_TICKS (4 * TIMER_PER_SECOND)
 #define ERROR_TICKS (10 * TIMER_PER_SECOND)
 #define FLASH_TICKS 9
@@ -220,6 +221,19 @@ struct mdmi_gui {
 	bool dac_was_open;
 	// The note the DAC's grid shows below it, the window's alone (not in the project).
 	int dac_selected;
+	// The DAC panel's gesture (D38): what is dragged, on which note, the edit while it lasts and
+	// where it began. Nothing reaches the sample before the mouse goes up.
+	int dac_drag;
+	int dac_drag_note;
+	int dac_drag_x;
+	int dac_drag_y;
+	dac_edit dac_drag_from;
+	dac_edit dac_work;
+	// The selected sample's wave, min and max a column, and what they were made from.
+	const void *wave_of;
+	int wave_note;
+	int16_t wave_low[DAC_WAVE_COLUMNS];
+	int16_t wave_high[DAC_WAVE_COLUMNS];
 	// The arrows' last step: the channel, the place it played and the place asked for.
 	int key_channel;
 	int key_from;
@@ -1901,9 +1915,11 @@ static void dac_short(const char *name, char *out, size_t size)
 #define GRID_CELL_H 16
 #define WAVE_X 242
 #define WAVE_Y 302
-#define WAVE_W 458
-#define WAVE_H 64
-#define DAC_BUTTON_Y 372
+#define WAVE_W DAC_WAVE_COLUMNS
+#define WAVE_H 52
+#define DAC_BUTTON_Y 358
+#define DAC_LINE1_Y 377
+#define DAC_LINE2_Y 387
 #define DAC_REPLACE_X 496
 #define DAC_CLEAR_X 600
 #define DAC_BUTTON_W 100
@@ -1982,6 +1998,421 @@ static void dac_button(mdmi_gui *g, int x, const char *label, bool enabled)
 	text(g, x + (DAC_BUTTON_W - width) / 2, DAC_BUTTON_Y + 5, label, !enabled ? C_LINE : over ? C_TEXT : C_LABEL, 2);
 }
 
+// The DAC panel's settings (D38, docs/design/dac-page.md): cells of the selected file's edit, the
+// trim marks on its wave. None is a knob of the host: a gesture changes the window's copy, and the
+// mouse going up prepares the sample once and restarts the core.
+enum {
+	DACC_NONE = -1, DACC_START, DACC_END, DACC_PITCH, DACC_CENTS, DACC_GAIN, DACC_NORMALIZE, DACC_FADE, DACC_ONE_SHOT,
+	DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
+};
+#define DAC_ROW_A_Y 398
+#define DAC_ROW_B_Y 422
+#define DAC_CELL_H 20
+
+static const struct {
+	int x, y, w;
+	const char *label;
+} DAC_CONTROLS[] = {
+	{242, DAC_ROW_A_Y, 92, "START"}, {336, DAC_ROW_A_Y, 92, "END"}, {242, DAC_ROW_B_Y, 84, "PITCH"}, {328, DAC_ROW_B_Y, 62, "CT"},
+	{396, DAC_ROW_B_Y, 100, "GAIN"}, {498, DAC_ROW_B_Y, 62, "NORMALIZE"}, {566, DAC_ROW_B_Y, 52, "FADE"}, {620, DAC_ROW_B_Y, 80, "ONE-SHOT"},
+	{434, DAC_ROW_A_Y, 32, "AUTO"}, {468, DAC_ROW_A_Y, 22, "32"}, {492, DAC_ROW_A_Y, 22, "22"}, {516, DAC_ROW_A_Y, 22, "16"},
+	{540, DAC_ROW_A_Y, 28, "13.4"}, {570, DAC_ROW_A_Y, 22, "11"}, {594, DAC_ROW_A_Y, 22, "8"},
+};
+
+static bool gain_clips(const mdmi_gui *g, const dac_sample *own, const dac_edit *edit);
+static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac_sample *own, const dac_edit *edit);
+
+static const dac_edit *shown_edit(const mdmi_gui *g, const dac_sample *own)
+{
+	return g->dac_drag != DACC_NONE && g->dac_drag_note == g->dac_selected ? &g->dac_work : &own->edit;
+}
+
+static int wave_x_of(const dac_sample *own, uint32_t frame)
+{
+	return WAVE_X + (int)((uint64_t)frame * WAVE_W / own->source_frames);
+}
+
+static int dac_control_at(const mdmi_gui *g, int x, int y)
+{
+	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	if (!own || !own->source) {
+		return DACC_NONE;
+	}
+	if (y >= WAVE_Y && y < WAVE_Y + WAVE_H) {
+		const dac_edit *edit = shown_edit(g, own);
+		const int start = wave_x_of(own, edit->start), end = wave_x_of(own, edit->end);
+		const bool near_start = abs(x - start) <= 4, near_end = abs(x - end) <= 4;
+		if (near_start && near_end) {
+			return x < (start + end) / 2 ? DACC_MARK_START : DACC_MARK_END;
+		}
+		return near_start ? DACC_MARK_START : near_end ? DACC_MARK_END : DACC_NONE;
+	}
+	for (int c = 0; c < (int)(sizeof(DAC_CONTROLS) / sizeof(*DAC_CONTROLS)); c++) {
+		if (in_box(x, y, DAC_CONTROLS[c].x, DAC_CONTROLS[c].y, DAC_CONTROLS[c].w, DAC_CELL_H)) {
+			return c;
+		}
+	}
+	return DACC_NONE;
+}
+
+static void split_pitch(int pitch, int *semitones, int *cents)
+{
+	*semitones = (int)lround(pitch / 100.0);
+	*cents = pitch - *semitones * 100;
+}
+
+static double ms_of(const dac_sample *own, uint32_t frames)
+{
+	return frames * 1000.0 / own->source_hz;
+}
+
+static void ms_text(double ms, char *out, size_t size)
+{
+	snprintf(out, size, ms < 10 ? "%.2f" : ms < 100 ? "%.1f" : "%.0f", ms);
+}
+
+// A cell of the panel: a bar from the left, or from the middle for a signed value, the value at its right.
+static void setting_cell(mdmi_gui *g, int c, const char *value, double fill_from, double fill_to, bool lit, bool booted, uint32_t label_color)
+{
+	const int x = DAC_CONTROLS[c].x, y = DAC_CONTROLS[c].y, w = DAC_CONTROLS[c].w;
+	const bool held = g->dac_drag == c || (c == DACC_START && g->dac_drag == DACC_MARK_START) || (c == DACC_END && g->dac_drag == DACC_MARK_END);
+	fill(g, x, y, w, DAC_CELL_H, held ? C_LINE : C_CELL);
+	if (lit && booted) {
+		const int from = x + (int)(fill_from * w), to = x + (int)(fill_to * w);
+		fill(g, from < to ? from : to, y, abs(to - from) + 1, DAC_CELL_H, C_DAC_DARK);
+	}
+	if (held) {
+		frame(g, x, y, w, DAC_CELL_H, C_TEXT);
+	}
+	text(g, x + 4, y + 6, DAC_CONTROLS[c].label, booted ? label_color : C_LINE, 1);
+	text_right(g, x + w - 4, y + 3, value, booted ? C_TEXT : C_LINE, 2, w - 8 - (int)strlen(DAC_CONTROLS[c].label) * 6);
+}
+
+static void switch_cell(mdmi_gui *g, int c, bool on, bool booted)
+{
+	const int x = DAC_CONTROLS[c].x, y = DAC_CONTROLS[c].y, w = DAC_CONTROLS[c].w;
+	const bool over = booted && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
+	fill(g, x, y, w, DAC_CELL_H, on && booted ? C_DAC_DARK : C_CELL);
+	frame(g, x, y, w, DAC_CELL_H, over ? C_TEXT : on && booted ? C_DAC : C_LINE);
+	const int width = (int)strlen(DAC_CONTROLS[c].label) * 6;
+	text(g, x + (w - width) / 2, y + 7, DAC_CONTROLS[c].label, !booted ? C_LINE : on ? C_TEXT : C_LABEL, 1);
+}
+
+static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *edit, bool booted)
+{
+	char buffer[32];
+	const double length_ms = ms_of(own, own->source_frames);
+	ms_text(ms_of(own, edit->start), buffer, sizeof(buffer));
+	setting_cell(g, DACC_START, buffer, 0, (double)edit->start / own->source_frames, true, booted, C_LABEL);
+	ms_text(ms_of(own, edit->end), buffer, sizeof(buffer));
+	setting_cell(g, DACC_END, buffer, 0, (double)edit->end / own->source_frames, true, booted, C_LABEL);
+	(void)length_ms;
+	int semitones, cents;
+	split_pitch(edit->pitch, &semitones, &cents);
+	snprintf(buffer, sizeof(buffer), "%+d", semitones);
+	setting_cell(g, DACC_PITCH, buffer, 0.5, 0.5 + semitones / 48.0, semitones != 0, booted, C_LABEL);
+	snprintf(buffer, sizeof(buffer), "%+d", cents);
+	setting_cell(g, DACC_CENTS, buffer, 0.5, 0.5 + cents / 100.0, cents != 0, booted, C_LABEL);
+	const bool clips = gain_clips(g, own, edit);
+	snprintf(buffer, sizeof(buffer), "%+.1f", edit->gain / 10.0);
+	setting_cell(g, DACC_GAIN, buffer, 0.5, 0.5 + edit->gain / 480.0, edit->gain != 0, booted, clips ? C_AMBER : C_LABEL);
+	if (clips) {
+		// The label says it: what the gain pushes past full scale is cut.
+		fill(g, DAC_CONTROLS[DACC_GAIN].x + 4, DAC_CONTROLS[DACC_GAIN].y + 6, 24, 7, g->dac_drag == DACC_GAIN ? C_LINE : edit->gain ? C_DAC_DARK : C_CELL);
+		text(g, DAC_CONTROLS[DACC_GAIN].x + 4, DAC_CONTROLS[DACC_GAIN].y + 6, "CLIP", C_AMBER, 1);
+	}
+	switch_cell(g, DACC_NORMALIZE, false, booted);
+	switch_cell(g, DACC_FADE, edit->fade, booted);
+	switch_cell(g, DACC_ONE_SHOT, edit->one_shot, booted);
+	// RATE: the one chosen lit, AUTO's pick dark under it.
+	const int picked = dac_rate(own, edit);
+	for (int c = DACC_RATE_AUTO; c < DACC_RATE_END; c++) {
+		const int x = DAC_CONTROLS[c].x, y = DAC_CONTROLS[c].y, w = DAC_CONTROLS[c].w;
+		const int rate = c - DACC_RATE_AUTO - 1;
+		const bool chosen = rate == edit->rate, auto_pick = edit->rate == DAC_RATE_AUTO && rate == picked;
+		const bool over = booted && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
+		fill(g, x, y, w, DAC_CELL_H, !booted ? C_CELL : chosen ? C_DAC : auto_pick ? C_DAC_DARK : over ? C_LINE : C_CELL);
+		const int width = (int)strlen(DAC_CONTROLS[c].label) * 6;
+		text(g, x + (w - width) / 2, y + 7, DAC_CONTROLS[c].label, !booted ? C_LINE : chosen ? C_BG : auto_pick ? C_TEXT : C_LABEL, 1);
+	}
+	// What the sample takes of the ROM.
+	text(g, 622, 404, "KB", C_LABEL, 1);
+	snprintf(buffer, sizeof(buffer), "%.1f", dac_cost(own, edit) / 1024.0);
+	text_right(g, 700, 401, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_TEXT, 2, 60);
+}
+
+// Whether the gain pushes the kept part past full scale.
+static bool gain_clips(const mdmi_gui *g, const dac_sample *own, const dac_edit *edit)
+{
+	(void)g;
+	const double gain = pow(10.0, edit->gain / 200.0);
+	int peak = 0;
+	for (uint32_t i = edit->start; i < edit->end; i++) {
+		const int v = abs(own->source[i]);
+		peak = v > peak ? v : peak;
+	}
+	return peak * gain > 32767.5;
+}
+
+// The wave: a file's source whole, its kept part lit and the trim marks; the ROM's bytes as they are.
+static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac_sample *own, const dac_edit *edit)
+{
+	fill(g, WAVE_X, WAVE_Y, WAVE_W, WAVE_H, edit ? C_BG : C_CELL);
+	const int middle = WAVE_Y + WAVE_H / 2, half = WAVE_H / 2;
+	if (!sample) {
+		fill(g, WAVE_X, middle, WAVE_W, 1, C_LINE);
+		const char *empty = "EMPTY. DROP A WAV HERE OR PRESS REPLACE";
+		text(g, WAVE_X + (WAVE_W - (int)strlen(empty) * 6) / 2, middle - 10, empty, C_HINT, 1);
+		return;
+	}
+	// Min and max a column, made again only for another sample.
+	const void *of = edit ? (const void *)own->source : (const void *)sample->bytes;
+	if (g->wave_of != of || g->wave_note != note) {
+		g->wave_of = of;
+		g->wave_note = note;
+		const uint32_t count = edit ? own->source_frames : sample->length;
+		for (int column = 0; column < WAVE_W; column++) {
+			uint32_t from = (uint32_t)((uint64_t)column * count / WAVE_W);
+			uint32_t to = (uint32_t)((uint64_t)(column + 1) * count / WAVE_W);
+			to = to > from ? to : from + 1;
+			int low = 32767, high = -32768;
+			for (uint32_t i = from; i < to && i < count; i++) {
+				const int v = edit ? own->source[i] : sample->bytes[i] * 256;
+				low = v < low ? v : low;
+				high = v > high ? v : high;
+			}
+			g->wave_low[column] = (int16_t)(low > high ? 0 : low);
+			g->wave_high[column] = (int16_t)(low > high ? 0 : high);
+		}
+	}
+	const double gain = edit ? pow(10.0, edit->gain / 200.0) : 1.0;
+	const int start = edit ? wave_x_of(own, edit->start) : WAVE_X, end = edit ? wave_x_of(own, edit->end) : WAVE_X + WAVE_W;
+	if (edit) {
+		fill(g, start, WAVE_Y, end - start, WAVE_H, C_CELL);
+	}
+	fill(g, WAVE_X, middle, WAVE_W, 1, C_LINE);
+	for (int column = 0; column < WAVE_W; column++) {
+		const int x = WAVE_X + column;
+		const bool kept = x >= start && x < end;
+		const double high = g->wave_high[column] * gain / 32768.0, low = g->wave_low[column] * gain / 32768.0;
+		const bool cut = kept && (high > 1 || low < -1);
+		int top = middle - (int)(fmin(high, 1) * half), bottom = middle - (int)(fmax(low, -1) * half);
+		top = top < WAVE_Y ? WAVE_Y : top;
+		bottom = bottom >= WAVE_Y + WAVE_H ? WAVE_Y + WAVE_H - 1 : bottom;
+		fill(g, x, top, 1, bottom - top + 1, cut ? C_AMBER : kept ? C_DAC : C_DAC_DARK);
+	}
+	if (edit) {
+		static const int MARKS[2] = {DACC_MARK_START, DACC_MARK_END};
+		for (int m = 0; m < 2; m++) {
+			const int x = m ? end - 1 : start;
+			const bool lit = g->dac_drag == MARKS[m] || (g->dac_drag == DACC_NONE && dac_control_at(g, g->mouse_x, g->mouse_y) == MARKS[m]);
+			const uint32_t color = lit ? C_TEXT : C_LABEL;
+			fill(g, x, WAVE_Y, 1, WAVE_H, color);
+			// A flag at the top, pointing into the kept part.
+			for (int k = 0; k < 5; k++) {
+				fill(g, m ? x - 1 - k : x + 1 + k, WAVE_Y + k, 1, 9 - 2 * k, color);
+			}
+		}
+	}
+}
+
+// What a gesture on the panel makes of the edit at this point.
+static void dac_drag_to(mdmi_gui *g, int x, int y)
+{
+	const dac_sample *own = dac_of(g)->notes[g->dac_drag_note];
+	if (!own || !own->source) {
+		return;
+	}
+	dac_edit *work = &g->dac_work;
+	const dac_edit *from = &g->dac_drag_from;
+	const int dy = g->dac_drag_y - y;
+	const uint32_t gap = (uint32_t)(own->source_hz / 1000) + 1;
+	int semitones, cents;
+	split_pitch(from->pitch, &semitones, &cents);
+	switch (g->dac_drag) {
+	case DACC_START:
+	case DACC_MARK_START: {
+		long frame = g->dac_drag == DACC_START ? (long)from->start + dy
+			: (long)((int64_t)(x - WAVE_X) * own->source_frames / WAVE_W);
+		const long most = (long)work->end - (long)gap;
+		work->start = (uint32_t)(frame < 0 ? 0 : frame > most ? (most > 0 ? most : 0) : frame);
+		break;
+	}
+	case DACC_END:
+	case DACC_MARK_END: {
+		long frame = g->dac_drag == DACC_END ? (long)from->end + dy
+			: (long)((int64_t)(x - WAVE_X) * own->source_frames / WAVE_W);
+		const long least = (long)work->start + (long)gap;
+		work->end = (uint32_t)(frame > (long)own->source_frames ? (long)own->source_frames : frame < least ? least : frame);
+		break;
+	}
+	case DACC_PITCH: {
+		int s = semitones + dy / 2;
+		s = s < -24 ? -24 : s > 24 ? 24 : s;
+		int p = s * 100 + cents;
+		work->pitch = (int16_t)(p < -DAC_PITCH_MAX ? -DAC_PITCH_MAX : p > DAC_PITCH_MAX ? DAC_PITCH_MAX : p);
+		break;
+	}
+	case DACC_CENTS: {
+		int c = cents + dy / 2;
+		c = c < -50 ? -50 : c > 50 ? 50 : c;
+		int p = semitones * 100 + c;
+		work->pitch = (int16_t)(p < -DAC_PITCH_MAX ? -DAC_PITCH_MAX : p > DAC_PITCH_MAX ? DAC_PITCH_MAX : p);
+		break;
+	}
+	case DACC_GAIN: {
+		int gain = from->gain + dy / 2 * 5;
+		work->gain = (int16_t)(gain < -DAC_GAIN_MAX ? -DAC_GAIN_MAX : gain > DAC_GAIN_MAX ? DAC_GAIN_MAX : gain);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+// The edit goes to the sample: prepared once, the core restarts (D38).
+static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
+{
+	const dac_sample *own = dac_of(g)->notes[note];
+	if (!own || (edit->start == own->edit.start && edit->end == own->edit.end && edit->pitch == own->edit.pitch && edit->gain == own->edit.gain
+			&& edit->rate == own->edit.rate && edit->fade == own->edit.fade && edit->one_shot == own->edit.one_shot)) {
+		return;
+	}
+	char message[FILES_MESSAGE];
+	const bool done = files_edit_sample(g->source.files, note, edit, message, sizeof(message));
+	say(g, message, done ? C_AMBER : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
+}
+
+// A press on the panel: a drag begins, or a switch, a rate or NORMALIZE applies at once.
+static bool dac_panel_down(mdmi_gui *g, int x, int y)
+{
+	const int c = dac_control_at(g, x, y);
+	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	if (c == DACC_NONE || !own || !engine_booted(g)) {
+		return c != DACC_NONE;
+	}
+	dac_edit edit = own->edit;
+	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_NORMALIZE || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
+		if (c == DACC_FADE) {
+			edit.fade = !edit.fade;
+		} else if (c == DACC_ONE_SHOT) {
+			edit.one_shot = !edit.one_shot;
+		} else if (c == DACC_NORMALIZE) {
+			edit.gain = (int16_t)dac_normalize_gain(own);
+		} else {
+			edit.rate = (int8_t)(c - DACC_RATE_AUTO - 1);
+		}
+		dac_apply(g, g->dac_selected, &edit);
+		return true;
+	}
+	g->dac_drag = c;
+	g->dac_drag_note = g->dac_selected;
+	g->dac_drag_x = x;
+	g->dac_drag_y = y;
+	g->dac_drag_from = edit;
+	g->dac_work = edit;
+	SetCapture(g->window);
+	dac_drag_to(g, x, y);
+	return true;
+}
+
+// A double click on a cell or a mark puts that value back: no trim, no pitch, no gain.
+static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
+{
+	const int c = dac_control_at(g, x, y);
+	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	if (c == DACC_NONE || !own) {
+		return false;
+	}
+	if (!engine_booted(g)) {
+		return true;
+	}
+	dac_edit edit = own->edit;
+	int semitones, cents;
+	split_pitch(edit.pitch, &semitones, &cents);
+	switch (c) {
+	case DACC_START:
+		edit.start = 0;
+		break;
+	case DACC_END:
+		edit.end = own->source_frames;
+		break;
+	case DACC_MARK_START:
+	case DACC_MARK_END:
+		edit.start = 0;
+		edit.end = own->source_frames;
+		break;
+	case DACC_PITCH:
+		edit.pitch = (int16_t)cents;
+		break;
+	case DACC_CENTS:
+		edit.pitch = (int16_t)(semitones * 100);
+		break;
+	case DACC_GAIN:
+		edit.gain = 0;
+		break;
+	default:
+		return dac_panel_down(g, x, y);
+	}
+	dac_apply(g, g->dac_selected, &edit);
+	return true;
+}
+
+// What the footer says about the panel under the mouse or the gesture.
+static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
+{
+	const int c = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
+	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	if (c == DACC_NONE || !own || !own->source) {
+		return false;
+	}
+	const dac_edit *edit = shown_edit(g, own);
+	const bool held = g->dac_drag != DACC_NONE;
+	char a[16], b[16];
+	int semitones, cents;
+	split_pitch(edit->pitch, &semitones, &cents);
+	switch (c) {
+	case DACC_START:
+	case DACC_MARK_START:
+		ms_text(ms_of(own, edit->start), a, sizeof(a));
+		snprintf(out, size, held ? "START %s MS. RELEASE TO APPLY" : "START %s MS. DRAG. DOUBLE CLICK: 0", a);
+		break;
+	case DACC_END:
+	case DACC_MARK_END:
+		ms_text(ms_of(own, edit->end), a, sizeof(a));
+		ms_text(ms_of(own, own->source_frames), b, sizeof(b));
+		snprintf(out, size, held ? "END %s MS. RELEASE TO APPLY" : "END %s MS OF %s. DOUBLE CLICK: ALL", a, b);
+		break;
+	case DACC_PITCH:
+		snprintf(out, size, "PITCH %+d ST: %.2f S. DOUBLE CLICK: 0", semitones, dac_cost(own, edit) / ROM_SAMPLE_HZ[dac_rate(own, edit)]);
+		break;
+	case DACC_CENTS:
+		snprintf(out, size, "CENTS %+d, -50..+50. DOUBLE CLICK: 0", cents);
+		break;
+	case DACC_GAIN:
+		snprintf(out, size, gain_clips(g, own, edit) ? "GAIN %+.1f DB: THE PEAKS CLIP" : "GAIN %+.1f DB. DOUBLE CLICK: 0", edit->gain / 10.0);
+		break;
+	case DACC_NORMALIZE:
+		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT 0 DB", dac_normalize_gain(own) / 10.0);
+		break;
+	case DACC_FADE:
+		snprintf(out, size, "FADE: LAST 4 MS FADE OUT, NO CLICK");
+		break;
+	case DACC_ONE_SHOT:
+		snprintf(out, size, edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
+		break;
+	default: {
+		dac_edit other = *edit;
+		other.rate = (int8_t)(c - DACC_RATE_AUTO - 1);
+		const int rate = dac_rate(own, &other);
+		rate_text(rate, a, sizeof(a));
+		snprintf(out, size, other.rate == DAC_RATE_AUTO ? "AUTO: %s KHZ FOR THIS SAMPLE, %.1f KB" : "RATE %s KHZ: %.1f KB OF ROM", a, dac_cost(own, &other) / 1024.0);
+		break;
+	}
+	}
+	return true;
+}
+
 // EDITOR of channel 6 with the DAC on: every note in a grid, the selected one's sample below.
 static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 {
@@ -2039,32 +2470,17 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 			frame(g, x - 1, y - 1, GRID_CELL_W + 2, GRID_CELL_H + 2, C_LABEL);
 		}
 	}
-	// The selected note's sample.
+	// The selected note's sample: a file's can be prepared (D38), the ROM's only replaced.
 	const int note = g->dac_selected;
 	rom_sample sample;
 	const char *name;
 	bool file;
 	const bool has = note_sample(g, note, &sample, &name, &file);
+	const dac_sample *own = dac_of(g)->notes[note];
+	const bool editable = own && own->source;
+	const dac_edit *edit = editable ? shown_edit(g, own) : NULL;
 	fill(g, BANK_X, 297, WAVE_W, 1, C_CELL);
-	fill(g, WAVE_X, WAVE_Y, WAVE_W, WAVE_H, C_CELL);
-	fill(g, WAVE_X, WAVE_Y + WAVE_H / 2, WAVE_W, 1, C_LINE);
-	if (has) {
-		for (int column = 0; column < WAVE_W; column++) {
-			uint32_t from = (uint32_t)((uint64_t)column * sample.length / WAVE_W);
-			uint32_t to = (uint32_t)((uint64_t)(column + 1) * sample.length / WAVE_W);
-			to = to > from ? to : from + 1;
-			int low = 127, high = -128;
-			for (uint32_t i = from; i < to && i < sample.length; i++) {
-				low = sample.bytes[i] < low ? sample.bytes[i] : low;
-				high = sample.bytes[i] > high ? sample.bytes[i] : high;
-			}
-			const int top = WAVE_Y + WAVE_H / 2 - high * (WAVE_H / 2) / 128, bottom = WAVE_Y + WAVE_H / 2 - low * (WAVE_H / 2) / 128;
-			fill(g, WAVE_X + column, top, 1, bottom - top + 1, C_DAC);
-		}
-	} else {
-		const char *empty = "EMPTY. DROP A WAV HERE OR PRESS REPLACE";
-		text(g, WAVE_X + (WAVE_W - (int)strlen(empty) * 6) / 2, WAVE_Y + WAVE_H / 2 - 10, empty, C_HINT, 1);
-	}
+	draw_wave(g, note, has ? &sample : NULL, own, edit);
 	// The note's name big, its number first on the line below (owner, D37).
 	char key[8], rate[8];
 	note_name(note, key, sizeof(key));
@@ -2076,25 +2492,37 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 		text(g, DAC_PANEL_TEXT_X, DAC_BUTTON_Y, "EMPTY", C_HINT, 2);
 	}
 	snprintf(buffer, sizeof(buffer), "%d", note);
-	text(g, DAC_PANEL_TEXT_X, 391, buffer, C_TEXT, 1);
+	text(g, DAC_PANEL_TEXT_X, DAC_LINE1_Y, buffer, C_TEXT, 1);
 	const int after = DAC_PANEL_TEXT_X + (int)strlen(buffer) * 6;
 	if (has) {
-		rate_text(sample.rate, rate, sizeof(rate));
-		snprintf(buffer, sizeof(buffer), "  %.2f S  %s KHZ", sample.length / ROM_SAMPLE_HZ[sample.rate], rate);
-		text(g, after, 391, buffer, C_LABEL, 1);
-	}
-	if (has) {
-		text(g, 448, 391, !booted && file ? "LOADING" : file ? "FILE" : "ROM", !booted && file ? C_AMBER : file ? C_DAC : C_HINT, 1);
+		// While a gesture lasts, what the edit would make.
+		const int shown_rate = edit ? dac_rate(own, edit) : sample.rate;
+		const double seconds = (edit ? dac_cost(own, edit) : sample.length) / ROM_SAMPLE_HZ[shown_rate];
+		rate_text(shown_rate, rate, sizeof(rate));
+		snprintf(buffer, sizeof(buffer), "  %.2f S  %s KHZ", seconds, rate);
+		text(g, after, DAC_LINE1_Y, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_LABEL, 1);
+		text(g, 448, DAC_LINE1_Y, !booted && file ? "LOADING" : file ? "FILE" : "ROM", !booted && file ? C_AMBER : file ? C_DAC : C_HINT, 1);
 	}
 	if (file) {
 		snprintf(buffer, sizeof(buffer), rom_has(note) ? "ROM HAD %s" : "ROM HAD NOTHING", ROM_SAMPLE_NAMES[note]);
 	} else {
 		snprintf(buffer, sizeof(buffer), has ? "BUILT INTO THE ROM" : "ROM HAS NOTHING HERE");
 	}
-	text(g, DAC_PANEL_TEXT_X, 401, buffer, C_HINT, 1);
+	text(g, DAC_PANEL_TEXT_X, DAC_LINE2_Y, buffer, C_HINT, 1);
 	dac_button(g, DAC_REPLACE_X, "REPLACE", booted);
 	dac_button(g, DAC_CLEAR_X, "CLEAR", booted && file);
-	dac_warnings(g, values, 411);
+	if (editable) {
+		draw_settings(g, own, edit, booted);
+		// One line of warnings: what matters now first.
+		const bool tuned = values->channels[PATCH_NUM_FM_CHANNELS - 1][PARAM_FINE_TUNE] != 64;
+		const int player = patch_voice_player(g->source.patch, PATCH_NUM_FM_CHANNELS - 1);
+		const bool lent = player >= 0 && player != PATCH_NUM_FM_CHANNELS - 1;
+		text(g, BANK_X, 448, lent ? "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM."
+			: tuned ? "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE."
+			: "ONE SAMPLE AT A TIME. NO VOLUME. ALL NOTES/SOUND OFF DO NOT STOP IT.", lent || tuned ? C_AMBER : C_HINT, 1);
+	} else {
+		dac_warnings(g, values, 400);
+	}
 }
 
 static int dac_note_at(const mdmi_gui *g, int x, int y)
@@ -2234,6 +2662,9 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 		return false;
 	}
 	const int x = g->mouse_x, y = g->mouse_y;
+	if (grid && engine_booted(g) && dac_panel_hint(g, out, size)) {
+		return true;
+	}
 	if (in_box(x, y, DAC_FREE_X, 30, DAC_FREE_W, 22)) {
 		const double free = rom_image_room() - dac_used(dac_of(g));
 		snprintf(out, size, "FREE %.2f MB: %.0f S AT 32 KHZ, %.0f S AT 22 KHZ", free / 1048576.0, free / ROM_SAMPLE_HZ[0], free / ROM_SAMPLE_HZ[1]);
@@ -3238,6 +3669,10 @@ static void on_down(mdmi_gui *g, int x, int y)
 	if (dac_editor(g, patch_view(g->source.patch))) {
 		const int note = grid_note_at(x, y);
 		const bool booted = engine_booted(g);
+		if (dac_panel_down(g, x, y)) {
+			refresh(g);
+			return;
+		}
 		if (note >= 0) {
 			g->dac_selected = note;
 		} else if (booted && in_box(x, y, DAC_REPLACE_X, DAC_BUTTON_Y, DAC_BUTTON_W, DAC_BUTTON_H)) {
@@ -3336,6 +3771,11 @@ static void on_move(mdmi_gui *g, int x, int y)
 {
 	g->mouse_x = x;
 	g->mouse_y = y;
+	if (g->dac_drag != DACC_NONE) {
+		dac_drag_to(g, x, y);
+		refresh(g);
+		return;
+	}
 	if (g->env_drag != ENV_NONE) {
 		envelope_move(g, x, y);
 		return;
@@ -3359,6 +3799,17 @@ static void on_move(mdmi_gui *g, int x, int y)
 
 static void on_up(mdmi_gui *g)
 {
+	if (g->dac_drag != DACC_NONE) {
+		const dac_edit edit = g->dac_work;
+		const int note = g->dac_drag_note;
+		g->dac_drag = DACC_NONE;
+		if (GetCapture() == g->window) {
+			ReleaseCapture();
+		}
+		dac_apply(g, note, &edit);
+		refresh(g);
+		return;
+	}
 	if (g->env_drag != ENV_NONE) {
 		envelope_up(g);
 		return;
@@ -3387,6 +3838,14 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	// The first press set or closed the choice of SSG; what is under the mouse now is another cell.
 	if (g->press_eaten) {
 		g->press_eaten = false;
+		return;
+	}
+	if (dac_editor(g, patch_view(g->source.patch))) {
+		if (dac_panel_double_click(g, x, y)) {
+			refresh(g);
+		} else {
+			on_down(g, x, y);
+		}
 		return;
 	}
 	// A quick second press on the envelope draws as the first did.
@@ -3806,6 +4265,16 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_LBUTTONDBLCLK:
 		on_double_click(g, x, y);
 		return 0;
+	case WM_SETCURSOR:
+		// The trim marks are the window's one sideways drag.
+		if (LOWORD(lparam) == HTCLIENT && dac_editor(g, patch_view(g->source.patch))) {
+			const int c = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
+			if (c == DACC_MARK_START || c == DACC_MARK_END) {
+				SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+				return TRUE;
+			}
+		}
+		return DefWindowProcA(window, message, wparam, lparam);
 	default:
 		return DefWindowProcA(window, message, wparam, lparam);
 	}
@@ -3835,6 +4304,8 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->key_channel = -1;
 	g->ssg_open = -1;
 	g->dac_selected = DAC_DEFAULT_NOTE;
+	g->dac_drag = DACC_NONE;
+	g->wave_note = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;

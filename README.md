@@ -70,6 +70,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   restarts the core with a patched image: 0.3-0.6 s without sound (gui_test and reg_test), the header says LOADING, then
   every channel gets its sound again. TUNE is the page's only cell: off centre, as bend, a note plays
   its neighbour's sample. The rates are those BlastEm plays, 2-3% below what SGDK names them.
+- A WAV's sample is prepared on EDITOR (D38): START and END (cells, or the marks on the wave), PITCH and
+  CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
+  last 4 ms) and ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads). Nothing changes while the
+  mouse is down; on mouse up the sample is prepared once and the core restarts. A double click puts a
+  value back. The project keeps the file's sound (mono, 16 bits, up to 16 MB in all), the settings and
+  the ROM's bytes, so an opened project plays the same bytes and the trim can still go back.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square
   Lead on 81, 90 and 100, Plain elsewhere). On a PSG channel Preset, CC 3 and a clip's Pgm choose from
   it, and the BANK page lists it while a channel 7-10 is selected. An EEF works there as a TFI does on

@@ -83,6 +83,19 @@ static int rate_of(const dac_sample *sample, const dac_edit *edit)
 	return edit->rate == DAC_RATE_AUTO ? rate_for(sample->source_hz) : edit->rate;
 }
 
+int dac_rate(const dac_sample *sample, const dac_edit *edit)
+{
+	return rate_of(sample, edit);
+}
+
+uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit)
+{
+	const int rate = rate_of(sample, edit);
+	const double step = sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate];
+	const double length = ceil((edit->end > edit->start ? edit->end - edit->start : 1) / step);
+	return rom_image_cost(length < ROM_IMAGE_MAX ? (uint32_t)length : ROM_IMAGE_MAX);
+}
+
 bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 {
 	if (!sample->source || edit->start >= edit->end || edit->end > sample->source_frames || edit->rate < DAC_RATE_AUTO || edit->rate >= ROM_SAMPLE_RATES) {

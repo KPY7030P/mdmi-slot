@@ -6,6 +6,7 @@
 // window to report a dead engine.
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,6 +97,11 @@
 // On EDITOR's grid note N is at 270 + N % 12 * 36, 96 + N / 12 * 18, 34x16.
 #define GRID_NOTE40_X 414
 #define GRID_NOTE40_Y 150
+// The panel's cells under the grid (D38).
+#define DAC_ROW_A_Y 398
+#define DAC_ROW_B_Y 422
+#define DAC_END_X 336
+#define DAC_GAIN_X 396
 #define CH2_PAN 1202
 #define COLOR_FM 0x4422EE
 #define COLOR_MARK 0xEECC66
@@ -916,9 +922,10 @@ int main(int argc, char **argv)
 		clap_ostream_t out_stream = {NULL, project_write};
 		project_size = 0;
 		CHECK(state && state->save(plugin, &out_stream), "the project saves");
-		// A block of samples (D38): note 40, a head of 61 bytes (name, no source, the edit at
-		// zero, rate 1, 4096 bytes), then 4096 bytes of a quiet ramp.
-		const uint32_t type = 9, bytes = 4096, head = 61, length = 1 + 2 + head + bytes;
+		// A block of samples (D38): note 40, a head of 61 bytes (name, a source of 4410 frames at
+		// 22050 Hz kept whole, rate AUTO picked 1, 4096 bytes), the source, then the bytes.
+		const uint32_t type = 9, bytes = 4096, head = 61, frames = 4410, hz = 22050;
+		const uint32_t length = 1 + 2 + head + frames * 2 + bytes;
 		memcpy(project + project_size, &type, 4);
 		memcpy(project + project_size + 4, &length, 4);
 		uint8_t *block = project + project_size + 8;
@@ -926,10 +933,19 @@ int main(int argc, char **argv)
 		block[0] = 40;
 		memcpy(block + 1, &head, 2);
 		memcpy(block + 3, "ramp.wav", 8);
-		block[3 + 32 + 16 + 4 + 3] = 1;
+		memcpy(block + 3 + 32, &hz, 4);
+		memcpy(block + 3 + 36, &frames, 4);
+		memcpy(block + 3 + 44, &frames, 4);
+		block[3 + 52] = 0xFF;
+		block[3 + 53] = 1;
+		block[3 + 55] = 1;
 		memcpy(block + 3 + head - 4, &bytes, 4);
+		for (uint32_t i = 0; i < frames; i++) {
+			const int16_t v = (int16_t)(8000 * sin(2 * 3.14159265358979 * 220 * i / hz));
+			memcpy(block + 3 + head + i * 2, &v, 2);
+		}
 		for (uint32_t i = 0; i < bytes; i++) {
-			block[3 + head + i] = (uint8_t)(i % 64);
+			block[3 + head + frames * 2 + i] = (uint8_t)(i % 64);
 		}
 		project_size += 8 + length;
 		project_read = 0;
@@ -940,6 +956,25 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "dac-file");
 		const int cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
 		CHECK(restart_ms >= 0 && cell > 300, "the engine restarts in %ld ms with the sample, note 40's cell is a file's (%d px)", restart_ms, cell);
+		// The panel prepares a file's sample (D38): a drag on GAIN is one restart, on mouse up.
+		click(window, GRID_NOTE40_X + 17, GRID_NOTE40_Y + 8);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "dac-panel");
+		const int whole = count_color_in(DAC_END_X, DAC_END_X + 92, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
+		CHECK(whole > 500 && count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0, "the panel shows the file kept whole (%d px of END), no gain", whole);
+		drag(window, DAC_GAIN_X + 50, DAC_ROW_B_Y + 10, DAC_ROW_B_Y - 30);
+		const long gain_ms = wait_restart(window);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "dac-gain");
+		const int gain = count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
+		CHECK(gain_ms >= 0 && gain > 100, "a drag on GAIN prepares the sample once on mouse up, restart %ld ms, the bar shows it (%d px)", gain_ms, gain);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y + 10));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y + 10));
+		const long back_ms = wait_restart(window);
+		capture(window);
+		CHECK(back_ms >= 0 && count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0, "a double click puts GAIN back to 0");
 		click(window, BUTTON_BANK_X, BUTTON_Y);
 		run_ms(200);
 		capture(window);
