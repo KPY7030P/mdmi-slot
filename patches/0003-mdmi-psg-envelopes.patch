@@ -75,6 +75,36 @@ index 731aa8c..f85f64f 100644
  
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
+diff --git a/src/midi_dac.c b/src/midi_dac.c
+index 33ac142..8249995 100644
+--- a/src/midi_dac.c
++++ b/src/midi_dac.c
+@@ -1,12 +1,15 @@
+ #include "midi_dac.h"
+ #include "pcm_sample.h"
+ 
++static const PcmSample* playing;
++
+ void midi_dac_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity)
+ {
+     const PcmSample* sample = percussionPcmSample[pitch];
+     if (!sample) {
+         return;
+     }
++    playing = sample;
+     SND_PCM_startPlay(sample->data, sample->length, sample->rate, SOUND_PAN_CENTER, 0);
+ }
+ 
+@@ -16,6 +19,9 @@ void midi_dac_reset(void)
+ 
+ void midi_dac_note_off(u8 chan, u8 pitch)
+ {
++    if (playing && (playing->flags & PCM_ONE_SHOT)) {
++        return;
++    }
+     SND_PCM_stopPlay();
+ }
+ 
 diff --git a/src/midi_psg.c b/src/midi_psg.c
 index 82a5655..7d69893 100644
 --- a/src/midi_psg.c
@@ -185,8 +215,183 @@ index e5bb02e..b5c5749 100644
  void midi_psg_load_envelope(const u8* eef);
 +void midi_psg_store_envelope(u8 program, const u8* eef, u16 length);
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents);
+diff --git a/src/pcm_sample.c b/src/pcm_sample.c
+index 46e6069..3fa0ada 100644
+--- a/src/pcm_sample.c
++++ b/src/pcm_sample.c
+@@ -4,78 +4,78 @@
+ #include "snd/pcm/snd_pcm.h"
+ 
+ // clang-format off
+-static const PcmSample bellride = { pcm_BellRide, sizeof(pcm_BellRide), SOUND_PCM_RATE_22050 };
+-static const PcmSample belltree = { pcm_BellTree, sizeof(pcm_BellTree), SOUND_PCM_RATE_22050 };
+-static const PcmSample bongorim = { pcm_BongoRim, sizeof(pcm_BongoRim), SOUND_PCM_RATE_22050 };
+-static const PcmSample cabasa = { pcm_Cabasa, sizeof(pcm_Cabasa), SOUND_PCM_RATE_22050 };
+-static const PcmSample castanet = { pcm_Castanet, sizeof(pcm_Castanet), SOUND_PCM_RATE_22050 };
+-static const PcmSample chinacrash = { pcm_ChinaCrash, sizeof(pcm_ChinaCrash), SOUND_PCM_RATE_22050 };
+-static const PcmSample clap = { pcm_Clap, sizeof(pcm_Clap), SOUND_PCM_RATE_22050 };
+-static const PcmSample clave = { pcm_Clave, sizeof(pcm_Clave), SOUND_PCM_RATE_22050 };
+-static const PcmSample closedslap = { pcm_ClosedSlap, sizeof(pcm_ClosedSlap), SOUND_PCM_RATE_22050 };
+-static const PcmSample cowbell = { pcm_CowBell, sizeof(pcm_CowBell), SOUND_PCM_RATE_22050 };
+-static const PcmSample crsh1 = { pcm_Crsh1, sizeof(pcm_Crsh1), SOUND_PCM_RATE_22050 };
+-static const PcmSample crsh2 = { pcm_Crsh2, sizeof(pcm_Crsh2), SOUND_PCM_RATE_22050 };
+-static const PcmSample flrstudio = { pcm_FlrStudio, sizeof(pcm_FlrStudio), SOUND_PCM_RATE_22050 };
+-static const PcmSample guirodown = { pcm_GuiroDown, sizeof(pcm_GuiroDown), SOUND_PCM_RATE_22050 };
+-static const PcmSample guiroup = { pcm_GuiroUp, sizeof(pcm_GuiroUp), SOUND_PCM_RATE_22050 };
+-static const PcmSample histudio = { pcm_HiStudio, sizeof(pcm_HiStudio), SOUND_PCM_RATE_22050 };
+-static const PcmSample hi_hatclosed = { pcm_Hi_HatClosed, sizeof(pcm_Hi_HatClosed), SOUND_PCM_RATE_22050 };
+-static const PcmSample hi_hatfoot = { pcm_Hi_HatFoot, sizeof(pcm_Hi_HatFoot), SOUND_PCM_RATE_22050 };
+-static const PcmSample hi_hathalf_open = { pcm_Hi_HatHalf_Open, sizeof(pcm_Hi_HatHalf_Open), SOUND_PCM_RATE_22050 };
+-static const PcmSample highagogo = { pcm_HighAgogo, sizeof(pcm_HighAgogo), SOUND_PCM_RATE_22050 };
+-static const PcmSample highconga = { pcm_HighConga, sizeof(pcm_HighConga), SOUND_PCM_RATE_22050 };
+-static const PcmSample highq = { pcm_HighQ, sizeof(pcm_HighQ), SOUND_PCM_RATE_22050 };
+-static const PcmSample hightimbale = { pcm_HighTimbale, sizeof(pcm_HighTimbale), SOUND_PCM_RATE_22050 };
+-static const PcmSample highwoodblock = { pcm_HighWoodblock, sizeof(pcm_HighWoodblock), SOUND_PCM_RATE_22050 };
+-static const PcmSample longtaikohit = { pcm_LongTaikoHit, sizeof(pcm_LongTaikoHit), SOUND_PCM_RATE_22050 };
+-static const PcmSample longwhistle = { pcm_LongWhistle, sizeof(pcm_LongWhistle), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowagogo = { pcm_LowAgogo, sizeof(pcm_LowAgogo), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowbongo = { pcm_LowBongo, sizeof(pcm_LowBongo), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowflrstudio = { pcm_LowFlrStudio, sizeof(pcm_LowFlrStudio), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowstudio = { pcm_LowStudio, sizeof(pcm_LowStudio), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowtimbale = { pcm_LowTimbale, sizeof(pcm_LowTimbale), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowtumba = { pcm_LowTumba, sizeof(pcm_LowTumba), SOUND_PCM_RATE_22050 };
+-static const PcmSample lowwoodblock = { pcm_LowWoodblock, sizeof(pcm_LowWoodblock), SOUND_PCM_RATE_22050 };
+-static const PcmSample maracas = { pcm_Maracas, sizeof(pcm_Maracas), SOUND_PCM_RATE_22050 };
+-static const PcmSample mdhistudio = { pcm_MdHiStudio, sizeof(pcm_MdHiStudio), SOUND_PCM_RATE_22050 };
+-static const PcmSample mdstudio = { pcm_MdStudio, sizeof(pcm_MdStudio), SOUND_PCM_RATE_22050 };
+-static const PcmSample metronomebell = { pcm_MetronomeBell, sizeof(pcm_MetronomeBell), SOUND_PCM_RATE_22050 };
+-static const PcmSample metronomeclick = { pcm_MetronomeClick, sizeof(pcm_MetronomeClick), SOUND_PCM_RATE_22050 };
+-// static const PcmSample piccolo1_1 = { pcm_Piccolo1_1, sizeof(pcm_Piccolo1_1), SOUND_PCM_RATE_22050 };
+-// static const PcmSample piccolo1_2 = { pcm_Piccolo1_2, sizeof(pcm_Piccolo1_2), SOUND_PCM_RATE_22050 };
+-static const PcmSample quicahi = { pcm_QuicaHi, sizeof(pcm_QuicaHi), SOUND_PCM_RATE_22050 };
+-static const PcmSample quicalow = { pcm_QuicaLow, sizeof(pcm_QuicaLow), SOUND_PCM_RATE_22050 };
+-static const PcmSample ride1 = { pcm_Ride1, sizeof(pcm_Ride1), SOUND_PCM_RATE_22050 };
+-static const PcmSample ride2 = { pcm_Ride2, sizeof(pcm_Ride2), SOUND_PCM_RATE_22050 };
+-static const PcmSample rimtap = { pcm_RimTap, sizeof(pcm_RimTap), SOUND_PCM_RATE_22050 };
+-static const PcmSample scratchpull = { pcm_ScratchPull, sizeof(pcm_ScratchPull), SOUND_PCM_RATE_22050 };
+-static const PcmSample scratchpush = { pcm_ScratchPush, sizeof(pcm_ScratchPush), SOUND_PCM_RATE_22050 };
+-static const PcmSample shorttaikohit = { pcm_ShortTaikoHit, sizeof(pcm_ShortTaikoHit), SOUND_PCM_RATE_22050 };
+-static const PcmSample shortwhistle = { pcm_ShortWhistle, sizeof(pcm_ShortWhistle), SOUND_PCM_RATE_22050 };
+-static const PcmSample slap = { pcm_Slap, sizeof(pcm_Slap), SOUND_PCM_RATE_22050 };
+-static const PcmSample sleighbells = { pcm_SleighBells, sizeof(pcm_SleighBells), SOUND_PCM_RATE_22050 };
+-static const PcmSample smallshaker = { pcm_SmallShaker, sizeof(pcm_SmallShaker), SOUND_PCM_RATE_22050 };
+-// static const PcmSample snr1_1 = { pcm_Snr1_1, sizeof(pcm_Snr1_1), SOUND_PCM_RATE_22050 };
+-// static const PcmSample snr1_2 = { pcm_Snr1_2, sizeof(pcm_Snr1_2), SOUND_PCM_RATE_22050 };
+-// static const PcmSample snr2_1 = { pcm_Snr2_1, sizeof(pcm_Snr2_1), SOUND_PCM_RATE_22050 };
+-// static const PcmSample snr2_2 = { pcm_Snr2_2, sizeof(pcm_Snr2_2), SOUND_PCM_RATE_22050 };
+-static const PcmSample splash = { pcm_Splash, sizeof(pcm_Splash), SOUND_PCM_RATE_22050 };
+-static const PcmSample squareclick = { pcm_SquareClick, sizeof(pcm_SquareClick), SOUND_PCM_RATE_22050 };
+-static const PcmSample stdkick = { pcm_StdKick, sizeof(pcm_StdKick), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick1 = { pcm_StdKick1, sizeof(pcm_StdKick1), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick2 = { pcm_StdKick2, sizeof(pcm_StdKick2), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick3 = { pcm_StdKick3, sizeof(pcm_StdKick3), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick4 = { pcm_StdKick4, sizeof(pcm_StdKick4), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick5 = { pcm_StdKick5, sizeof(pcm_StdKick5), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick6 = { pcm_StdKick6, sizeof(pcm_StdKick6), SOUND_PCM_RATE_22050 };
+-// static const PcmSample stdkick7 = { pcm_StdKick7, sizeof(pcm_StdKick7), SOUND_PCM_RATE_22050 };
+-static const PcmSample stdsnr1 = { pcm_StdSnr1, sizeof(pcm_StdSnr1), SOUND_PCM_RATE_22050 };
+-static const PcmSample stdsnr2 = { pcm_StdSnr2, sizeof(pcm_StdSnr2), SOUND_PCM_RATE_22050 };
+-static const PcmSample sticks = { pcm_Sticks, sizeof(pcm_Sticks), SOUND_PCM_RATE_22050 };
+-static const PcmSample tambourine = { pcm_Tambourine, sizeof(pcm_Tambourine), SOUND_PCM_RATE_22050 };
+-static const PcmSample triangle = { pcm_Triangle, sizeof(pcm_Triangle), SOUND_PCM_RATE_22050 };
+-static const PcmSample vibraslap = { pcm_VibraSlap, sizeof(pcm_VibraSlap), SOUND_PCM_RATE_22050 };
++static const PcmSample bellride = { pcm_BellRide, sizeof(pcm_BellRide), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample belltree = { pcm_BellTree, sizeof(pcm_BellTree), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample bongorim = { pcm_BongoRim, sizeof(pcm_BongoRim), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample cabasa = { pcm_Cabasa, sizeof(pcm_Cabasa), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample castanet = { pcm_Castanet, sizeof(pcm_Castanet), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample chinacrash = { pcm_ChinaCrash, sizeof(pcm_ChinaCrash), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample clap = { pcm_Clap, sizeof(pcm_Clap), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample clave = { pcm_Clave, sizeof(pcm_Clave), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample closedslap = { pcm_ClosedSlap, sizeof(pcm_ClosedSlap), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample cowbell = { pcm_CowBell, sizeof(pcm_CowBell), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample crsh1 = { pcm_Crsh1, sizeof(pcm_Crsh1), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample crsh2 = { pcm_Crsh2, sizeof(pcm_Crsh2), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample flrstudio = { pcm_FlrStudio, sizeof(pcm_FlrStudio), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample guirodown = { pcm_GuiroDown, sizeof(pcm_GuiroDown), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample guiroup = { pcm_GuiroUp, sizeof(pcm_GuiroUp), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample histudio = { pcm_HiStudio, sizeof(pcm_HiStudio), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample hi_hatclosed = { pcm_Hi_HatClosed, sizeof(pcm_Hi_HatClosed), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample hi_hatfoot = { pcm_Hi_HatFoot, sizeof(pcm_Hi_HatFoot), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample hi_hathalf_open = { pcm_Hi_HatHalf_Open, sizeof(pcm_Hi_HatHalf_Open), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample highagogo = { pcm_HighAgogo, sizeof(pcm_HighAgogo), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample highconga = { pcm_HighConga, sizeof(pcm_HighConga), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample highq = { pcm_HighQ, sizeof(pcm_HighQ), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample hightimbale = { pcm_HighTimbale, sizeof(pcm_HighTimbale), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample highwoodblock = { pcm_HighWoodblock, sizeof(pcm_HighWoodblock), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample longtaikohit = { pcm_LongTaikoHit, sizeof(pcm_LongTaikoHit), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample longwhistle = { pcm_LongWhistle, sizeof(pcm_LongWhistle), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowagogo = { pcm_LowAgogo, sizeof(pcm_LowAgogo), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowbongo = { pcm_LowBongo, sizeof(pcm_LowBongo), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowflrstudio = { pcm_LowFlrStudio, sizeof(pcm_LowFlrStudio), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowstudio = { pcm_LowStudio, sizeof(pcm_LowStudio), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowtimbale = { pcm_LowTimbale, sizeof(pcm_LowTimbale), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowtumba = { pcm_LowTumba, sizeof(pcm_LowTumba), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample lowwoodblock = { pcm_LowWoodblock, sizeof(pcm_LowWoodblock), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample maracas = { pcm_Maracas, sizeof(pcm_Maracas), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample mdhistudio = { pcm_MdHiStudio, sizeof(pcm_MdHiStudio), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample mdstudio = { pcm_MdStudio, sizeof(pcm_MdStudio), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample metronomebell = { pcm_MetronomeBell, sizeof(pcm_MetronomeBell), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample metronomeclick = { pcm_MetronomeClick, sizeof(pcm_MetronomeClick), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample piccolo1_1 = { pcm_Piccolo1_1, sizeof(pcm_Piccolo1_1), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample piccolo1_2 = { pcm_Piccolo1_2, sizeof(pcm_Piccolo1_2), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample quicahi = { pcm_QuicaHi, sizeof(pcm_QuicaHi), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample quicalow = { pcm_QuicaLow, sizeof(pcm_QuicaLow), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample ride1 = { pcm_Ride1, sizeof(pcm_Ride1), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample ride2 = { pcm_Ride2, sizeof(pcm_Ride2), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample rimtap = { pcm_RimTap, sizeof(pcm_RimTap), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample scratchpull = { pcm_ScratchPull, sizeof(pcm_ScratchPull), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample scratchpush = { pcm_ScratchPush, sizeof(pcm_ScratchPush), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample shorttaikohit = { pcm_ShortTaikoHit, sizeof(pcm_ShortTaikoHit), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample shortwhistle = { pcm_ShortWhistle, sizeof(pcm_ShortWhistle), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample slap = { pcm_Slap, sizeof(pcm_Slap), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample sleighbells = { pcm_SleighBells, sizeof(pcm_SleighBells), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample smallshaker = { pcm_SmallShaker, sizeof(pcm_SmallShaker), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample snr1_1 = { pcm_Snr1_1, sizeof(pcm_Snr1_1), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample snr1_2 = { pcm_Snr1_2, sizeof(pcm_Snr1_2), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample snr2_1 = { pcm_Snr2_1, sizeof(pcm_Snr2_1), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample snr2_2 = { pcm_Snr2_2, sizeof(pcm_Snr2_2), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample splash = { pcm_Splash, sizeof(pcm_Splash), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample squareclick = { pcm_SquareClick, sizeof(pcm_SquareClick), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample stdkick = { pcm_StdKick, sizeof(pcm_StdKick), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick1 = { pcm_StdKick1, sizeof(pcm_StdKick1), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick2 = { pcm_StdKick2, sizeof(pcm_StdKick2), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick3 = { pcm_StdKick3, sizeof(pcm_StdKick3), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick4 = { pcm_StdKick4, sizeof(pcm_StdKick4), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick5 = { pcm_StdKick5, sizeof(pcm_StdKick5), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick6 = { pcm_StdKick6, sizeof(pcm_StdKick6), SOUND_PCM_RATE_22050, 0 };
++// static const PcmSample stdkick7 = { pcm_StdKick7, sizeof(pcm_StdKick7), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample stdsnr1 = { pcm_StdSnr1, sizeof(pcm_StdSnr1), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample stdsnr2 = { pcm_StdSnr2, sizeof(pcm_StdSnr2), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample sticks = { pcm_Sticks, sizeof(pcm_Sticks), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample tambourine = { pcm_Tambourine, sizeof(pcm_Tambourine), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample triangle = { pcm_Triangle, sizeof(pcm_Triangle), SOUND_PCM_RATE_22050, 0 };
++static const PcmSample vibraslap = { pcm_VibraSlap, sizeof(pcm_VibraSlap), SOUND_PCM_RATE_22050, 0 };
+ 
+ const PcmSample* percussionPcmSample[128] = {
+     NULL, NULL, NULL, NULL, NULL,
+diff --git a/src/pcm_sample.h b/src/pcm_sample.h
+index df535e9..9fb9088 100644
+--- a/src/pcm_sample.h
++++ b/src/pcm_sample.h
+@@ -1,10 +1,15 @@
+ #pragma once
+ #include "types.h"
+ 
++// flags: PCM_ONE_SHOT lets the sample play to its end whatever Note Off comes (MDMI plugin, D38).
++// The record stays 10 bytes, the flags byte was its padding.
++#define PCM_ONE_SHOT 0x02
++
+ typedef struct PcmSample {
+     const u8* data;
+     u32 length;
+     u8 rate;
++    u8 flags;
+ } PcmSample;
+ 
+ extern const PcmSample* percussionPcmSample[128];
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..9f4c868 100644
+index d2449c4..0dac5d6 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -202,7 +407,15 @@ index d2449c4..9f4c868 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -249,6 +255,7 @@ int main(void)
+@@ -229,6 +235,7 @@ int main(void)
+ 
+         midi_dac_test(test_midi_dac_plays_note),
+         midi_dac_test(test_midi_dac_stops_note),
++        midi_dac_test(test_midi_dac_one_shot_ignores_note_off),
+         midi_dac_test(test_midi_dac_does_not_play_null_sample),
+ 
+         pitchcents_test(test_pitchcents_shift_extreme_up),
+@@ -249,6 +256,7 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -211,21 +424,41 @@ index d2449c4..9f4c868 100644
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..1e5409f 100644
+index 9650279..428152b 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,8 @@
  #include "test_midi_dac.h"
  #include "test_midi.h"
  #include "mocks/mock_midi.h"
 +#include "mocks/mock_psg.h"
++#include "pcm_sample.h"
  #include "snd/sound.h"
  #include "snd/pcm/snd_pcm.h"
  
-@@ -62,3 +63,30 @@ void test_midi_dac_stops_note(UNUSED void** state)
+@@ -62,3 +64,49 @@ void test_midi_dac_stops_note(UNUSED void** state)
  
      __real_midi_note_off(dacFmChannel, noteKey);
  }
++
++// A one-shot sample plays to its end: Note Off leaves it, as the plugin marks drums (D38).
++void test_midi_dac_one_shot_ignores_note_off(UNUSED void** state)
++{
++    static const u8 data[256] = { 0 };
++    static const PcmSample oneShot = { data, sizeof(data), 1, PCM_ONE_SHOT };
++    const PcmSample* saved = percussionPcmSample[nullNoteKey];
++    percussionPcmSample[nullNoteKey] = &oneShot;
++
++    expect_value(__wrap_SND_PCM_startPlay, sample, data);
++    expect_value(__wrap_SND_PCM_startPlay, len, sizeof(data));
++    expect_value(__wrap_SND_PCM_startPlay, rate, 1);
++    expect_value(__wrap_SND_PCM_startPlay, pan, SOUND_PAN_CENTER);
++    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
++    __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
++    __real_midi_note_off(dacFmChannel, nullNoteKey);
++
++    percussionPcmSample[nullNoteKey] = saved;
++}
 +
 +// Changing the driver resets the PSG behind the ROM: a sounding note is written again, and the
 +// same note after the switch is written at all.
@@ -254,10 +487,10 @@ index 9650279..1e5409f 100644
 +    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
 +}
 diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
-index 5e63f7b..7b48ac3 100644
+index 5e63f7b..f9ed7bf 100644
 --- a/tests/unit/test_midi_dac.h
 +++ b/tests/unit/test_midi_dac.h
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,8 @@
  int test_midi_dac_setup(UNUSED void** state);
  void test_midi_enables_dac(UNUSED void** state);
  void test_midi_disables_dac(UNUSED void** state);
@@ -265,6 +498,7 @@ index 5e63f7b..7b48ac3 100644
  void test_midi_dac_plays_note(UNUSED void** state);
  void test_midi_dac_does_not_play_null_sample(UNUSED void** state);
  void test_midi_dac_stops_note(UNUSED void** state);
++void test_midi_dac_one_shot_ignores_note_off(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
 index 9ce9691..8a738a6 100644
 --- a/tests/unit/test_midi_sysex.c

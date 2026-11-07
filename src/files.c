@@ -481,7 +481,7 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 		return 0;
 	}
 	dac_sample *read[ROM_IMAGE_NOTES] = {0};
-	uint32_t used = dac_used(dac);
+	uint32_t used = dac_used(dac), sources = dac_sources(dac);
 	int loaded = 0;
 	for (; loaded < count; loaded++) {
 		const int note = first + loaded;
@@ -498,16 +498,22 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 		}
 		if (dac->notes[note]) {
 			used -= rom_image_cost(dac->notes[note]->sample.length);
+			sources -= dac->notes[note]->source_frames * (uint32_t)sizeof(int16_t);
 		}
 		used += rom_image_cost(read[loaded]->sample.length);
+		sources += read[loaded]->source_frames * (uint32_t)sizeof(int16_t);
 		if (used > rom_image_room()) {
 			snprintf(message, size, "No room: %.2f MB more than the ROM has", (used - rom_image_room()) / 1048576.0);
+			break;
+		}
+		if (sources > DAC_SOURCE_MAX) {
+			snprintf(message, size, "No room: the project keeps 16 MB of sounds");
 			break;
 		}
 	}
 	if (loaded < count) {
 		for (int i = 0; i <= loaded && i < count; i++) {
-			free(read[i]);
+			dac_free(read[i]);
 		}
 		return 0;
 	}
@@ -525,6 +531,33 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 	}
 	files->host.handed(files->host.context, false);
 	return count;
+}
+
+bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *message, size_t size)
+{
+	dac_set *dac = files->host.view->dac;
+	const dac_sample *now = dac && note >= 0 && note < ROM_IMAGE_NOTES ? dac->notes[note] : NULL;
+	if (!now || !now->source) {
+		return false;
+	}
+	dac_sample *changed = dac_copy(now);
+	if (!changed || !dac_prepare(changed, edit)) {
+		dac_free(changed);
+		snprintf(message, size, "Note %d: the ROM has no room for that", note);
+		return false;
+	}
+	if (dac_used(dac) - rom_image_cost(now->sample.length) + rom_image_cost(changed->sample.length) > rom_image_room()) {
+		dac_free(changed);
+		snprintf(message, size, "Note %d: the ROM has no room for that", note);
+		return false;
+	}
+	char text[FILES_MESSAGE];
+	snprintf(text, sizeof(text), "note %d before the change", note);
+	remember_samples(files, text);
+	dac_put(dac, note, changed);
+	snprintf(message, size, "Note %d changed, the engine restarts", note);
+	files->host.handed(files->host.context, false);
+	return true;
 }
 
 bool files_reset_sample(mdmi_files *files, int note, char *message, size_t size)

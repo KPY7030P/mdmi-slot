@@ -916,18 +916,20 @@ int main(int argc, char **argv)
 		clap_ostream_t out_stream = {NULL, project_write};
 		project_size = 0;
 		CHECK(state && state->save(plugin, &out_stream), "the project saves");
-		// A block of samples (D36): note 40, rate 1, 4096 bytes of a quiet ramp, a name.
-		const uint32_t type = 9, bytes = 4096, length = 1 + 1 + 4 + 32 + bytes;
+		// A block of samples (D38): note 40, a head of 61 bytes (name, no source, the edit at
+		// zero, rate 1, 4096 bytes), then 4096 bytes of a quiet ramp.
+		const uint32_t type = 9, bytes = 4096, head = 61, length = 1 + 2 + head + bytes;
 		memcpy(project + project_size, &type, 4);
 		memcpy(project + project_size + 4, &length, 4);
 		uint8_t *block = project + project_size + 8;
 		memset(block, 0, length);
 		block[0] = 40;
-		block[1] = 1;
-		memcpy(block + 2, &bytes, 4);
-		memcpy(block + 6, "ramp.wav", 8);
+		memcpy(block + 1, &head, 2);
+		memcpy(block + 3, "ramp.wav", 8);
+		block[3 + 32 + 16 + 4 + 3] = 1;
+		memcpy(block + 3 + head - 4, &bytes, 4);
 		for (uint32_t i = 0; i < bytes; i++) {
-			block[38 + i] = (uint8_t)(i % 64);
+			block[3 + head + i] = (uint8_t)(i % 64);
 		}
 		project_size += 8 + length;
 		project_read = 0;

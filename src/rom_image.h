@@ -19,11 +19,15 @@
 // The console's own rates are still to be measured (ROADMAP).
 extern const double ROM_SAMPLE_HZ[ROM_SAMPLE_RATES];
 
-// Signed 8-bit samples at a rate index, the length a whole number of blocks.
+// Our ROM's flag in a sample's record (D38): Note Off doesn't stop it.
+#define ROM_SAMPLE_ONE_SHOT 0x02
+
+// Signed 8-bit samples at a rate index, the length a whole number of blocks, and the record's flags.
 typedef struct {
 	uint8_t rate;
 	uint32_t length;
 	const int8_t *bytes;
+	uint8_t flags;
 } rom_sample;
 
 // Whether the image has the sample table the plugin was built for.

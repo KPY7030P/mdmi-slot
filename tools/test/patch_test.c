@@ -1458,7 +1458,7 @@ static void test_dac(void)
 		const double seconds = s ? s->sample.length / ROM_SAMPLE_HZ[s->sample.rate] : 0;
 		CHECK(s && s->sample.rate == WAVS[i].index && s->sample.length % ROM_SAMPLE_BLOCK == 0 && fabs(hz / 440 - 1) < 0.005 && peak >= 60 && peak <= 66 && seconds >= 0.5 && seconds < 0.5 + 256 / ROM_SAMPLE_HZ[WAVS[i].index] + 0.001,
 			"WAV %u Hz, %d ch, %d bit%s: driver rate %d, %.1f Hz, peak %d, %.3f s", WAVS[i].rate, WAVS[i].channels, WAVS[i].bits, WAVS[i].is_float ? " float" : "", s ? s->sample.rate : -1, hz, peak, seconds);
-		free(s);
+		dac_free(s);
 		free(wav);
 	}
 	const char *error;
@@ -1603,6 +1603,100 @@ static void test_dac_files(void)
 	DeleteFileA(big2);
 }
 
+// Preparing a sample from its source (D38): trim, pitch, gain, rate, fade, one-shot, and the
+// project keeps it all.
+static void test_dac_edit(void)
+{
+	printf("DAC samples prepared\n");
+	size_t size;
+	uint8_t *wav = sine_wav(22050, 1, 16, false, 440, 1.0, 0.25, &size);
+	const char *error;
+	dac_sample *s = dac_from_wav(wav, size, "sine.wav", &error);
+	free(wav);
+	CHECK(s && s->source && s->source_frames == 22050 && s->source_hz == 22050 && s->edit.end == 22050 && s->edit.rate == DAC_RATE_AUTO && s->edit.fade && !s->edit.one_shot,
+		"a WAV keeps its source, 22050 frames, all of it kept, rate AUTO, fade on");
+	const uint32_t whole = s->sample.length;
+	dac_edit edit = s->edit;
+	edit.start = 5512;
+	edit.end = 16537;
+	CHECK(dac_prepare(s, &edit) && s->sample.length < whole * 6 / 10 && s->sample.length > whole * 4 / 10, "half the source kept: %u bytes of %u", s->sample.length, whole);
+	edit.start = 0;
+	edit.end = 22050;
+	CHECK(dac_prepare(s, &edit) && s->sample.length == whole, "and all of it again, as long as before");
+	int peak;
+	edit.pitch = 1200;
+	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / 880 - 1) < 0.01 && s->sample.length <= whole / 2 + 256, "an octave up: %.1f Hz, half as long", sine_hz(s, &peak));
+	edit.pitch = -700;
+	const double fifth = 440 * pow(2.0, -7.0 / 12);
+	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / fifth - 1) < 0.01, "a fifth down: %.1f Hz, %.1f wanted", sine_hz(s, &peak), fifth);
+	edit.pitch = 0;
+	edit.rate = 4;
+	CHECK(dac_prepare(s, &edit) && s->sample.rate == 4 && fabs(sine_hz(s, &peak) / 440 - 1) < 0.01 && s->sample.length < whole / 2 + 512, "rate 11 kHz by hand: same pitch %.1f Hz, %u bytes", sine_hz(s, &peak), s->sample.length);
+	edit.rate = DAC_RATE_AUTO;
+	CHECK(dac_prepare(s, &edit) && sine_hz(s, &peak) > 0 && peak >= 30 && peak <= 34 && !s->clipped, "a quarter of full scale peaks at %d", peak);
+	edit.gain = (int16_t)dac_normalize_gain(s);
+	CHECK(dac_prepare(s, &edit) && sine_hz(s, &peak) > 0 && peak >= 118 && peak <= 127 && !s->clipped, "NORMALIZE: gain %+.1f dB, peak %d, nothing clipped", edit.gain / 10.0, peak);
+	const int16_t normal = edit.gain;
+	edit.gain = (int16_t)(normal + 60);
+	CHECK(dac_prepare(s, &edit) && s->clipped, "6 dB over NORMALIZE clips, and says so");
+	edit.gain = normal;
+	dac_prepare(s, &edit);
+	int last = (int)s->sample.length - 1, tail = 0;
+	while (last > 0 && !s->bytes[last]) {
+		last--;
+	}
+	for (int i = last - 2; i <= last; i++) {
+		tail = abs(s->bytes[i]) > tail ? abs(s->bytes[i]) : tail;
+	}
+	CHECK(tail <= 8 && !s->sample.flags, "a full-scale sine fades to silence at its end (last 3 samples at most %d), no flag", tail);
+	edit.gain = 0;
+	edit.one_shot = true;
+	CHECK(dac_prepare(s, &edit) && s->sample.flags == ROM_SAMPLE_ONE_SHOT, "ONE-SHOT is the record's flag");
+	edit.start = 30000;
+	CHECK(!dac_prepare(s, &edit) && s->edit.start == 0, "a start past the source is refused, the sample unchanged");
+
+	dac_set set = {0}, read = {0};
+	edit = s->edit;
+	edit.start = 1000;
+	edit.pitch = 300;
+	edit.gain = -30;
+	dac_prepare(s, &edit);
+	dac_put(&set, 45, s);
+	const size_t block_size = dac_block_size(&set);
+	uint8_t *block = malloc(block_size);
+	dac_block_write(&set, block);
+	CHECK(dac_block_read(&read, block, block_size) && dac_same(&set, &read) && read.notes[45]->edit.start == 1000 && read.notes[45]->edit.pitch == 300 && read.notes[45]->source_frames == 22050,
+		"the project keeps the source, the edit and the bytes: %zu bytes", block_size);
+	dac_edit back = read.notes[45]->edit;
+	back.start = 0;
+	CHECK(dac_prepare(read.notes[45], &back) && read.notes[45]->sample.length > s->sample.length, "after opening, the trim can go back");
+	block[3 + 32] ^= 1;
+	dac_clear(&read);
+	CHECK(dac_block_read(&read, block, block_size) && !dac_same(&set, &read), "another source rate is another sample");
+	CHECK(!dac_block_read(&read, block, block_size - 10), "a cut block is refused");
+	free(block);
+
+	// Through the files layer: one undo step per change.
+	mdmi_patch *p = calloc(1, sizeof(*p));
+	patch_init(p);
+	state_view view = {0};
+	view.dac = &set;
+	const files_host host = {p, &view, count_handed, NULL};
+	mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	edit = set.notes[45]->edit;
+	edit.pitch = -1200;
+	const uint32_t version = set.version;
+	CHECK(files_edit_sample(&files, 45, &edit, message, sizeof(message)) && set.notes[45]->edit.pitch == -1200 && set.version != version, "an edit goes in: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[45]->edit.pitch == 300, "undo puts the edit before back");
+	CHECK(!files_edit_sample(&files, 46, &edit, message, sizeof(message)), "a note without a file has nothing to edit");
+	files_free(&files);
+	dac_clear(&set);
+	dac_clear(&read);
+	free(p);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -1628,6 +1722,7 @@ int main(int argc, char **argv)
 	test_fm_envelope();
 	test_dac();
 	test_dac_files();
+	test_dac_edit();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

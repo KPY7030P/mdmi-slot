@@ -3,6 +3,7 @@
 // note, and that scales the TL of the carriers, so notes here are at full velocity.
 //
 //   reg_test [folder of the test instrument files]
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -419,12 +420,13 @@ static void boot_image(const uint8_t *image, size_t size)
 // A ramp, so the DAC register says which byte of the sample plays: the driver adds 0x80.
 static dac_sample *ramp_sample(int rate, uint32_t length)
 {
-	dac_sample *s = calloc(1, sizeof(dac_sample) + length);
+	dac_sample *s = calloc(1, sizeof(dac_sample));
+	s->bytes = malloc(length);
 	for (uint32_t i = 0; i < length; i++) {
 		s->bytes[i] = (int8_t)((int)(i % 256) - 128);
 	}
 	snprintf(s->name, sizeof(s->name), "ramp");
-	s->sample = (rom_sample){(uint8_t)rate, length, s->bytes};
+	s->sample = (rom_sample){(uint8_t)rate, length, s->bytes, 0};
 	return s;
 }
 
@@ -495,6 +497,139 @@ static void test_samples(void)
 	dac_clear(&set);
 	boot_image(rom, rom_size);
 	check_voices("back on the built-in image every voice is as before", 0, FM_CHANNELS - 1, -1);
+}
+
+// A sine as a WAV, for the prepared samples.
+static uint8_t *sine_wav(uint32_t rate, double hz, double seconds, size_t *size)
+{
+	const uint32_t frames = (uint32_t)(rate * seconds);
+	*size = 44 + (size_t)frames * 2;
+	uint8_t *wav = calloc(1, *size);
+	uint32_t u;
+	uint16_t h;
+	memcpy(wav, "RIFF", 4);
+	u = (uint32_t)*size - 8;
+	memcpy(wav + 4, &u, 4);
+	memcpy(wav + 8, "WAVEfmt ", 8);
+	u = 16;
+	memcpy(wav + 16, &u, 4);
+	h = 1;
+	memcpy(wav + 20, &h, 2);
+	memcpy(wav + 22, &h, 2);
+	memcpy(wav + 24, &rate, 4);
+	u = rate * 2;
+	memcpy(wav + 28, &u, 4);
+	h = 2;
+	memcpy(wav + 32, &h, 2);
+	h = 16;
+	memcpy(wav + 34, &h, 2);
+	memcpy(wav + 36, "data", 4);
+	u = frames * 2;
+	memcpy(wav + 40, &u, 4);
+	for (uint32_t i = 0; i < frames; i++) {
+		const int16_t v = (int16_t)lround(16000 * sin(2 * 3.14159265358979 * hz * i / rate));
+		memcpy(wav + 44 + i * 2, &v, 2);
+	}
+	return wav;
+}
+
+// Plays the note on the DAC's channel and measures the sound that comes out: rising crossings in the
+// left channel over half a second, after the start, with hysteresis against the 8-bit steps.
+static double played_hz(int key)
+{
+	midi(0x95, (uint8_t)key, 127);
+	render(4);
+	long crossings = 0, first = -1, last = 0, at = 0;
+	bool low = false;
+	for (int block = 0; block < RATE / 2 / BLOCK; block++) {
+		mdmi_engine_render(engine, left, right, BLOCK);
+		for (int i = 0; i < BLOCK; i++, at++) {
+			if (left[i] < -0.01f) {
+				low = true;
+			} else if (low && left[i] > 0.01f) {
+				low = false;
+				first = first < 0 ? at : first;
+				last = at;
+				crossings++;
+			}
+		}
+	}
+	midi(0x85, (uint8_t)key, 0);
+	render(SETTLE_BLOCKS);
+	return crossings > 1 ? (crossings - 1) * (double)RATE / (last - first) : 0;
+}
+
+// The loudest sample of the left channel over some blocks.
+static float loudest(int blocks)
+{
+	float most = 0;
+	for (int b = 0; b < blocks; b++) {
+		mdmi_engine_render(engine, left, right, BLOCK);
+		for (int i = 0; i < BLOCK; i++) {
+			most = fabsf(left[i]) > most ? fabsf(left[i]) : most;
+		}
+	}
+	return most;
+}
+
+static void boot_set(const dac_set *set)
+{
+	size_t rom_size, image_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	uint8_t *image = dac_image(set, rom, rom_size, &image_size);
+	boot_image(image, image_size);
+	free(image);
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+}
+
+// Prepared samples as the emulator plays them (D38): pitch and rate by ear, one-shot past Note Off.
+static void test_shaping(void)
+{
+	size_t size;
+	uint8_t *wav = sine_wav(22050, 440, 2.0, &size);
+	const char *error;
+	dac_set set = {0};
+	dac_put(&set, 50, dac_from_wav(wav, size, "sine.wav", &error));
+	free(wav);
+	static const struct {
+		int16_t pitch;
+		int8_t rate;
+	} EDITS[] = {{0, DAC_RATE_AUTO}, {1200, DAC_RATE_AUTO}, {-700, DAC_RATE_AUTO}, {0, 4}};
+	for (size_t i = 0; i < sizeof(EDITS) / sizeof(EDITS[0]); i++) {
+		dac_edit edit = set.notes[50]->edit;
+		edit.pitch = EDITS[i].pitch;
+		edit.rate = EDITS[i].rate;
+		dac_prepare(set.notes[50], &edit);
+		set.version++;
+		boot_set(&set);
+		const double wanted = 440 * pow(2.0, EDITS[i].pitch / 1200.0), hz = played_hz(50);
+		printf("    pitch %+d cents, rate %d: %.1f Hz played, %.1f wanted\n", EDITS[i].pitch, set.notes[50]->sample.rate, hz, wanted);
+		check(fabs(hz / wanted - 1) < 0.01, EDITS[i].rate >= 0 ? "a rate by hand keeps the pitch" : "a sample prepared with a pitch sounds at it");
+	}
+	// One-shot: Note Off after 100 ms; the driver would stop within 50 ms.
+	for (int shot = 0; shot < 2; shot++) {
+		dac_edit edit = set.notes[50]->edit;
+		edit.rate = DAC_RATE_AUTO;
+		edit.one_shot = shot;
+		dac_prepare(set.notes[50], &edit);
+		set.version++;
+		boot_set(&set);
+		midi(0x95, 50, 127);
+		render(RATE / 10 / BLOCK);
+		midi(0x85, 50, 0);
+		render(RATE / 10 / BLOCK);
+		const float after = loudest(RATE / 10 / BLOCK);
+		printf("    %s: loudest %.3f from 100 to 200 ms after Note Off\n", shot ? "one-shot" : "plain", after);
+		check(shot ? after > 0.05f : after < 0.01f, shot ? "a one-shot sample plays on after Note Off" : "a plain one stops at Note Off");
+	}
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	dac_clear(&set);
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	boot_image(rom, rom_size);
 }
 
 static void test_load(void)
@@ -1575,6 +1710,7 @@ int main(int argc, char **argv)
 	test_dac_psg();
 	test_restart();
 	test_samples();
+	test_shaping();
 	test_load();
 	test_voice_by_hand();
 	test_reset();

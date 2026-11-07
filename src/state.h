@@ -11,8 +11,8 @@
 // names of the FM channels, the PSG channels' envelopes, the loops switched off, the channels' bases
 // (D31), the bank and its envelopes, the DAC samples (D36). A snapshot file is the same bytes, a bank file has only the
 // bank (D25). Main thread only.
-// The DAC samples can fill the ROM image's room.
-#define STATE_READ_MAX (ROM_IMAGE_MAX + 65536)
+// The DAC samples can fill the ROM image's room, with their sources (D38).
+#define STATE_READ_MAX (DAC_SOURCE_MAX + ROM_IMAGE_MAX + (1u << 20))
 
 // A PSG loop switched off in the envelope editor: where it was, so switching it on puts it back
 // there. An EEF has no switched-off loop, so the project keeps it with the view (D30). It goes when

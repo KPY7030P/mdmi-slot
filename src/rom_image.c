@@ -7,8 +7,8 @@ const double ROM_SAMPLE_HZ[ROM_SAMPLE_RATES] = {
 	31460, 21600, 15820, 13235, 10880, 7930,
 };
 
-// A PcmSample in the image: the data's address, its length, the rate index and a pad byte, big
-// endian like everything the 68000 reads. The table holds 128 addresses of such records.
+// A PcmSample in the image: the data's address, its length, the rate index and the flags (our ROM,
+// D38), big endian like everything the 68000 reads. The table holds 128 addresses of such records.
 #define RECORD_BYTES 10
 #define RECORDS_AT ((ROM_USED_END + 1u) & ~1u)
 #define DATA_AT ((RECORDS_AT + ROM_IMAGE_NOTES * RECORD_BYTES + ROM_SAMPLE_BLOCK - 1) & ~(ROM_SAMPLE_BLOCK - 1))
@@ -66,6 +66,7 @@ bool rom_image_sample(const uint8_t *rom, size_t size, int note, rom_sample *sam
 	sample->bytes = (const int8_t *)(rom + get32(rom + record));
 	sample->length = get32(rom + record + 4);
 	sample->rate = rom[record + 8];
+	sample->flags = rom[record + 9];
 	return true;
 }
 
@@ -109,7 +110,7 @@ uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *cons
 		put32(out + record, data);
 		put32(out + record + 4, length);
 		out[record + 8] = sample->rate;
-		out[record + 9] = 0;
+		out[record + 9] = sample->flags;
 		put32(out + ROM_PCM_TABLE + note * 4, record);
 		record += RECORD_BYTES;
 		data += length;

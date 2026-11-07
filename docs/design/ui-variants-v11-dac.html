@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: настройка сэмпла DAC, v11</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 40px; }
+  p, ul { max-width: 1100px; margin: 6px 0; }
+  li { margin: 2px 0; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .done { border: 1px solid #444; background: #161616; padding: 8px 14px; max-width: 1100px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid #383838; padding: 5px 9px; vertical-align: top; }
+  th { color: #eee; text-align: left; background: #1a1a1a; }
+  code { color: #eee; }
+  #zoom { position: fixed; right: 16px; top: 12px; background: #222; color: #eee; border: 1px solid #555; padding: 6px 10px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="zoom">Макеты x2</button>
+<main>
+<h1>MDMI: EDITOR канала 6 при DAC, v11 (настройка сэмпла из файла)</h1>
+<p>art-director, 2026-11-07. Окно 720x528, палитра и шрифт те же, новых цветов нет. Сетка 128 нот не меняется (y 96-292).
+Под ней: волна 52 px с метками обрезки, строка имени, две строки настроек, одна строка предупреждения. Описание:
+<code>docs/design/dac-page.md</code>, раздел «EDITOR: панель выбранного сэмпла».</p>
+<div class="done"><b>Решение владельца (D38):</b> сэмпл из файла настраивается на EDITOR перед упаковкой в ROM: обрезка,
+PITCH, GAIN и NORMALIZE, RATE, FADE, ONE-SHOT. Во время перетаскивания меняются только числа и метки; на отпускании один
+перевод и перезапуск ядра, одна отмена на жест. Сэмплы ROM не настраиваются.</div>
+
+<h2>1. Файл с настройками, мышь на RATE 16</h2>
+<canvas id="c1"></canvas>
+<p class="lbl">Выбрана 34 (808_kick). Слева от метки начала и справа от метки конца волна тусклая: эти части не войдут.
+Ряд A: где начало и конец (мс исходника), RATE (AUTO выбрал 22: тёмная заливка), цена в ROM. Ряд B: PITCH и CT, GAIN и
+NORMALIZE, FADE, ONE-SHOT. Подвал говорит, что даст 16 кГц.</p>
+
+<h2>2. Тянется метка начала</h2>
+<canvas id="c2"></canvas>
+<p class="lbl">Метка и ячейка START белые, тусклая часть растёт. Ничего не пересчитывается и не звучит: меняются START,
+длина в строке под именем, KB и FREE (янтарь: ещё не применено). Отпустили: один перевод, LOADING (кадр 5).</p>
+
+<h2>3. GAIN +6 дБ: CLIP</h2>
+<canvas id="c3"></canvas>
+<p class="lbl">Пики, которые не влезают в 8 бит, янтарные и упираются в край волны. Подпись ячейки GAIN стала CLIP
+янтарём. Подвал после применения говорит, сколько отсчётов обрезано. NORMALIZE вернёт пик к 0 дБ.</p>
+
+<h2>4. Сэмпл ROM: как в v10</h2>
+<canvas id="c4"></canvas>
+<p class="lbl">Настроек нет: на месте рядов четыре предупреждения, как раньше. Сэмпл ROM меняется только через REPLACE.</p>
+
+<h2>5. После отпускания: LOADING</h2>
+<canvas id="c5"></canvas>
+<p class="lbl">Ядро перезапускается ~0,5 с. Клетка серая с янтарным именем, в шапке LOADING, ячейки серые и мышь не
+берут, пока ядро не загрузится.</p>
+
+<h2>6. Панель в x2 (кадр 1)</h2>
+<canvas id="cz"></canvas>
+<p class="lbl">Метки: линия 1 px на всю высоту волны и флажок-треугольник 5x9 у верха, внутрь оставляемой части. Ячейки
+как TUNE: полоска от середины у PITCH, CT, GAIN; от левого края у START и END. Переключатели как PORTA, но DAC-цвета.</p>
+</main>
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", amber: "#EECC66", err: "#EE2222",
+};
+let g;
+function use(id, w, h) { const cv = typeof id === "string" ? document.getElementById(id) : id; cv.width = w; cv.height = h; g = cv.getContext("2d"); g.imageSmoothingEnabled = false; R(0, 0, w, h, C.bg); return cv; }
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c, t = 1) { R(x, y, w, t, c); R(x, y + h - t, w, t, c); R(x, y, t, h, c); R(x + w - t, y, t, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) { const bits = parseInt(hex.substr(col * 2, 2), 16); for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z); }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n) : s; }
+function crop(id, fn, x, y, w, h, z) {
+  const off = document.createElement("canvas"); use(off, 720, 528); fn();
+  const cv = document.getElementById(id); cv.width = w * z; cv.height = h * z;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false; cx.drawImage(off, x, y, w, h, 0, 0, w * z, h * z);
+}
+const NOTE = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
+const nn = p => NOTE[p % 12] + (Math.floor(p / 12) - 1);
+
+// ---------- the ROM's map ----------
+const ROMMAP = ("26 HighQ .05|27 Slap .66|28 ScratchPush .13|29 ScratchPull .12|30 Sticks .19|31 SquareClick .03|32 MetroClick .01|" +
+  "33 MetroBell .45|34 StdKick .29|35 StdKick .29|36 RimTap 1.45|37 StdSnr1 .48|38 Clap .38|39 StdSnr2 .53|40 LowFlrStudio 1.0|" +
+  "41 HiHatClosed .72|42 FlrStudio .84|43 HiHatFoot .51|44 LowStudio 1.17|45 HiHatHalfOpen 3.17|46 MdStudio 1.01|47 MdHiStudio .95|" +
+  "48 Crsh1 8.53|49 HiStudio 1.01|50 Ride1 2.59|51 ChinaCrash 3.59|52 BellRide 3.29|53 Tambourine .52|54 Splash 2.71|55 CowBell .39|" +
+  "56 Crsh2 5.70|57 VibraSlap 1.52|58 Ride2 2.95|59 BongoRim .33|60 LowBongo .39|61 ClosedSlap .28|62 HighConga .72|63 LowTumba .64|" +
+  "64 HighTimbale 1.49|65 LowTimbale 1.60|66 HighAgogo .29|67 LowAgogo .41|68 Cabasa .19|69 Maracas .12|70 ShortWhistle .20|" +
+  "71 LongWhistle .45|72 GuiroDown .22|73 GuiroUp .51|74 Clave .10|75 HighWoodblock .31|76 LowWoodblock .33|77 QuicaHi 1.57|" +
+  "78 QuicaLow 1.87|79 Triangle 1.64|80 Triangle 1.64|81 SmallShaker .70|82 SleighBells 2.02|83 BellTree 6.47|84 Castanet .07|" +
+  "85 ShortTaikoHit 1.44|86 LongTaikoHit 1.88").split("|");
+function baseMap() {
+  const m = [];
+  for (let n = 0; n < 128; n++) m.push(null);
+  ROMMAP.forEach(e => { const [n, name, s] = e.split(" "); m[+n] = { name, len: +s, rate: "22K", file: false }; });
+  return m;
+}
+function mapWith(files) { const s = baseMap(); (files || []).forEach(([n, name, len, rate]) => { s[n] = { name, len, rate, file: true, rom: s[n] && s[n].name }; }); return s; }
+
+// dac_short(): 5 letters. Words split at _ - space . and where a capital follows a small letter; digits stay with the
+// word before them. Fits whole: joined. Else: first letter of every word but the last, then the last word, cut to 5.
+function short(name) {
+  const words = name.replace(/([a-z])([A-Z])/g, "$1 $2").split(/[_\-\s.]+/).filter(Boolean);
+  const joined = words.join("");
+  if (joined.length <= 5) return joined;
+  return (words.slice(0, -1).map(w => w[0]).join("") + words[words.length - 1]).slice(0, 5);
+}
+
+// ---------- frame: header, rail, globals (v8, v9) ----------
+const RAIL = [
+  { name: "Synth Bass 1", seen: 1, held: 1, note: 36, vel: 110, vol: 112 },
+  { name: "Rhodes", star: 1, seen: 1, held: 0, note: 64, vel: 84, vol: 100 },
+  { name: "Square Lead", seen: 1, held: 1, note: 72, vel: 96, vol: 100 },
+  { name: "strings_warm", seen: 1, held: 1, note: 59, vel: 60, vol: 96 },
+  { name: "Overdrive Guit", seen: 1, held: 0, note: 52, vel: 96, vol: 104 },
+  { dac: 1 },
+  { name: "Envelope 0", psg: 1, seen: 1, held: 1, note: 72, vel: 100, vol: 96 },
+  { name: "Square Lead", psg: 1, seen: 1, held: 1, note: 76, vel: 88, vol: 90 },
+  { name: "tremolo_pad", psg: 1, seen: 1, held: 0, note: 67, vel: 50, vol: 90 },
+  { name: "Envelope 0", psg: 1, seen: 0, vol: 80 },
+];
+const rowY = i => i < 6 ? 44 + i * 40 : 300 + (i - 6) * 40;
+function segBar(x, y, w, h, c, dark) {
+  const n = 16, pitch = Math.floor(w / n), eff = c.seen ? c.vol * c.vel / 127 / 127 : 0;
+  const nv = Math.round(n * c.vol / 127), ne = c.seen ? Math.max(1, Math.round(n * eff)) : 0, lit = c.held ? C.lit : C.hint;
+  for (let k = 0; k < n; k++) R(x + k * pitch, y, pitch - 1, h, k < ne ? lit : k < nv ? dark : C.cell);
+}
+function railRow(i, sel, st) {
+  const c = RAIL[i], y = rowY(i);
+  R(0, y, 232, 39, C.bg); R(0, y + 39, 232, 1, C.cell);
+  if (c.dac) {
+    if (sel) R(4, y, 229, 39, C.dacD);
+    R(0, y, 4, 39, C.dac);
+    T(String(i + 1), 10, y + 7, C.text, 3); T("Samples", 54, y + 5, C.text, 2);
+    if (st.play != null) TR(nn(st.play), 226, y + 22, st.held ? C.lit : C.hint, 1);
+    R(54, y + 25, 16, 4, st.held ? C.lit : C.cell);
+    return;
+  }
+  const kind = c.psg ? C.psg : C.fm, dark = c.psg ? C.psgD : C.fmD;
+  if (sel) R(4, y, 229, 39, dark);
+  R(0, y, 4, 39, kind);
+  T(String(i + 1), 10, y + 7, C.text, 3);
+  T(cut(c.name, 13) + (c.star ? "*" : ""), 54, y + 5, C.text, 2);
+  segBar(54, y + 25, 140, 4, c, dark);
+  TR(c.seen ? nn(c.note) : "---", 226, y + 22, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1);
+}
+function frame(st) {
+  R(0, 0, 720, 28, C.bg); R(0, 27, 720, 1, C.line); T("MDMI", 8, 7, C.text, 2);
+  const tab = st.tab || "EDITOR";
+  [["ALL", 60, 56], ["EDITOR", 120, 80], ["BANK", 204, 80], ["ROM", 288, 56]].forEach(([l, x, w]) => { const on = l === tab; R(x, 2, w, 24, on ? C.text : C.cell); TC(l, x, w, 7, on ? C.bg : C.label, 2); });
+  if (st.loading) T("LOADING", 352, 7, C.amber, 2); else T("RUNNING", 352, 7, C.lit, 2);
+  [["LOAD", 536, 1], ["SAVE", 596, 1], ["UNDO", 656, 1]].forEach(([l, x, en]) => { B(x, 2, 56, 24, en ? C.line : C.cell); TC(l, x, 56, 7, en ? C.label : C.line, 2); });
+  R(0, 28, 232, 16, C.cell); T("YM2612", 8, 32, C.fmL, 1); R(0, 284, 232, 16, C.cell); T("SN76489", 8, 288, C.psg, 1);
+  for (let i = 0; i < 10; i++) railRow(i, i === 5, st);
+  R(232, 28, 1, 432, C.line);
+  R(0, 460, 720, 1, C.line);
+  [["LFO", "ON"], ["LFO RATE", "3.98 HZ"], ["FILTER", "OFF"], ["CH3 SPECIAL", "OFF"], ["DAC", "ON"]].forEach(([l, v], i) => {
+    const x = 8 + i * 118; R(x, 466, 114, 32, C.cell); T(l, x + 4, 470, C.label, 1); T(v, x + 4, 480, l === "DAC" ? C.dac : C.text, 2);
+  });
+}
+function footer(s, c = C.label) { T(s || "", 8, 512, c, 1); TR("0.12.0", 712, 512, C.hint, 1); }
+function vc(x, y, w, h, label, val, max, o = {}) {
+  const fill = o.fill || C.dacD;
+  R(x, y, w, h, C.cell);
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), h, fill); R(mid, y, 1, h, C.line); }
+  else R(x, y, Math.round(w * val / max), h, fill);
+  if (label) T(label, x + 4, y + Math.floor((h - 7) / 2), C.label, 1);
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + Math.floor((h - 14) / 2), o.ink || C.text, 2);
+}
+// A frame button like LOAD / SAVE / UNDO.
+function button(label, x, y, w, h, o = {}) {
+  const c = o.dis ? C.cell : o.over ? C.text : C.line;
+  B(x, y, w, h, c); TC(label, x, w, y + Math.floor((h - 14) / 2), o.dis ? C.line : o.over ? C.text : C.label, 2);
+}
+
+// ---------- common top: name line, FREE, TUNE (v9) ----------
+const SPACE_MB = 1.9;
+function pageTop(st) {
+  R(233, 28, 4, 52, C.dac);
+  T("6", 242, 30, C.text, 3); T("Samples", 288, 34, C.text, 2);
+  const free = SPACE_MB - st.used, x = 592, y = 30, w = 116, h = 22;
+  R(x, y, w, h, C.cell);
+  const fw = Math.round(w * free / SPACE_MB);
+  R(x, y, fw, h, C.dacD);
+  if (st.incoming) { const iw = Math.max(2, Math.round(w * st.incoming / SPACE_MB)); R(x + fw - iw, y + h - 4, iw, 4, C.amber); }
+  const left = free - (st.incoming || 0), low = left < SPACE_MB * 0.1;
+  T("FREE", x + 4, y + 8, C.label, 1);
+  TR((left < 0 ? "-" : "") + Math.abs(left).toFixed(1) + " MB", x + w - 4, y + 4, left < 0 ? C.err : low || st.incoming ? C.amber : C.text, 2);
+  vc(422, 56, 96, 20, "TUNE", st.tune, 99, { bip: 1, text: (st.tune > 0 ? "+" : "") + st.tune, ink: st.tune ? C.amber : C.text });
+  R(233, 79, 487, 1, C.cell);
+}
+// Four lines on both pages; the first two of v9 are one line now.
+const WARN = [
+  { s: "ONE SAMPLE AT A TIME. NO VOLUME. ALL NOTES/SOUND OFF DO NOT STOP IT." },
+  { s: "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE.", live: "tune" },
+  { s: "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM.", live: "lent" },
+  { s: "THE DAC SWITCH BELOW RESETS THE CHIP: ALL SOUNDING NOTES ARE CUT." },
+];
+function warnings(st, lineY, y0) {
+  R(242, lineY, 458, 1, C.cell);
+  WARN.forEach((w, i) => {
+    const live = (w.live === "tune" && st.tune) || (w.live === "lent" && st.lent);
+    T(w.s, 242, y0 + i * 10, live ? C.amber : C.hint, 1);
+  });
+}
+
+// ======================= v10: EDITOR = grid + selected sample =======================
+const GX = 270, GY = 96, PX = 36, PY = 18, CW = 34, CH = 16, OCT_R = 264;
+const cellX = n => GX + (n % 12) * PX, cellY = n => GY + Math.floor(n / 12) * PY;
+const COLS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+function gridCell(n, s, st) {
+  const x = cellX(n), y = cellY(n), e = s[n];
+  const target = st.drop && n >= st.drop[0] && n < st.drop[0] + st.drop[1];
+  const loading = st.loadingNotes && st.loadingNotes.includes(n);
+  const playing = st.held && st.play === n;
+  let fillC, ink, label = e ? short(e.name) : "";
+  if (target) { fillC = C.amber; ink = C.bg; label = short(st.dropFiles[n - st.drop[0]]); }
+  else if (loading) { fillC = C.cell; ink = C.amber; }
+  else if (playing) { fillC = C.lit; ink = C.bg; }
+  else if (!e) { fillC = C.cell; ink = C.bg; }
+  else if (e.file) { fillC = C.dac; ink = C.bg; }
+  else { fillC = C.dacD; ink = C.label; }
+  R(x, y, CW, CH, fillC);
+  if (label) T(label, x + 3, y + 4, ink, 1);
+  // Frames sit in the 2 px gap: selection 2 px white, mouse 1 px grey.
+  if (st.sel === n) B(x - 1, y - 1, CW + 2, CH + 2, C.text, 2);
+  else if (st.hover === n) B(x - 1, y - 1, CW + 2, CH + 2, C.label, 1);
+}
+
+
+// ======================= v11: the selected sample, with a file's settings =======================
+const WX = 242, WY = 302, WW = 458, WH = 52, WMID = WY + 26;
+const NAME_Y = 358, ROW_A = 398, ROW_B = 422, WARN_ONE_Y = 448;
+const RATES = [["AUTO", 434, 32], ["32", 468, 22], ["22", 492, 22], ["16", 516, 22], ["13.4", 540, 28], ["11", 570, 22], ["8", 594, 22]];
+const RATE_HZ = { "32": 32000, "22": 22050, "16": 16000, "13.4": 13400, "11": 11025, "8": 8000 };
+
+function footer2(s, c = C.label) { T(cut(s || "", 42), 8, 508, c, 2); TR("0.12.0", 712, 512, C.hint, 1); }
+
+// The source's peak per pixel column, 0..1 of 16-bit full scale (stand-in for the real data).
+function sourceColumns(n, len) {
+  let seed = n * 7919 + 13;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const decay = len < 0.5 ? 50 : len < 2 ? 110 : 260, cols = [];
+  for (let i = 0; i < WW; i++) {
+    const env = i < 4 ? 0.02 : Math.min(1, (i - 3) / 3) * Math.exp(-(i - 4) / decay);
+    cols.push([env * (0.62 + 0.38 * rnd()) * 0.86, env * (0.62 + 0.38 * rnd()) * 0.86]);
+  }
+  return cols;
+}
+
+// Whole source across 458 px; kept part bright on C_CELL, cut parts C_DAC_DARK on black; clipped columns amber.
+function wave11(st, e) {
+  R(WX, WY, WW, WH, C.cell);
+  if (!e) { TC("EMPTY. DROP A WAV HERE OR PRESS REPLACE", WX, WW, WMID - 3, C.hint, 1); return; }
+  const cols = sourceColumns(st.sel, e.src || e.len);
+  const file = e.file && st.set;
+  const s = file ? st.set.s : 0, en = file ? st.set.e : WW, gain = file ? Math.pow(10, st.set.gain / 20) : 1;
+  R(WX, WY, s, WH, C.bg); R(WX + en, WY, WW - en, WH, C.bg);
+  R(WX, WMID, WW, 1, C.line);
+  const half = WH / 2 - 1;
+  cols.forEach(([up, down], i) => {
+    const kept = i >= s && i < en;
+    let a = up * gain, b = down * gain, clip = kept && (a > 1 || b > 1);
+    a = Math.min(1, a); b = Math.min(1, b);
+    const top = Math.round(a * half), bot = Math.round(b * half);
+    R(WX + i, WMID - top, 1, top + bot + 1, !kept ? C.dacD : clip ? C.amber : C.dac);
+  });
+  if (!file) return;
+  // Markers: start at its first kept column, end at its last; flags point into the kept part.
+  const cs = st.markerHeld === "start" ? C.text : st.markerOver === "start" ? C.text : C.label;
+  const ce = st.markerHeld === "end" ? C.text : st.markerOver === "end" ? C.text : C.label;
+  const xs = WX + s, xe = WX + en - 1;
+  R(xs, WY, 1, WH, cs); R(xe, WY, 1, WH, ce);
+  for (let k = 0; k < 5; k++) { R(xs + 1 + k, WY + k, 1, 9 - 2 * k, cs); R(xe - 1 - k, WY + k, 1, 9 - 2 * k, ce); }
+}
+
+// A sample's value cell: CELL_ROW look, DAC colours, bar from the middle (bip) or from the left.
+function sc(x, y, w, label, val, frac, o = {}) {
+  const dark = o.held ? C.line : C.dacD;
+  R(x, y, w, 20, C.cell);
+  if (o.bip) { const mid = x + Math.floor(w / 2), len = Math.round(w / 2 * frac); R(Math.min(mid, mid + len), y, Math.abs(len), 20, o.dim ? C.cell : dark); R(mid, y, 1, 20, C.line); }
+  else R(x, y, Math.round(w * frac), 20, o.dim ? C.cell : dark);
+  T(label, x + 4, y + 6, o.dim ? C.line : o.labelC || (o.held ? C.text : C.label), 1);
+  TR(val, x + w - 4, y + 3, o.dim ? C.label : C.text, 2);
+  if (o.held) B(x, y, w, 20, C.text);
+}
+function sw(x, y, w, label, on, o = {}) {
+  if (on) R(x, y, w, 20, o.dim ? C.cell : C.dacD); else B(x, y, w, 20, o.dim ? C.cell : o.over ? C.text : C.line);
+  TC(label, x, w, y + 6, o.dim ? C.line : on ? C.text : C.label, 1);
+}
+function smallButton(x, y, w, label, o = {}) {
+  B(x, y, w, 20, o.dim ? C.cell : o.over ? C.text : C.line);
+  TC(label, x, w, y + 6, o.dim ? C.line : o.over ? C.text : C.label, 1);
+}
+function rateRow(st, kb) {
+  const set = st.set, dim = st.loading;
+  RATES.forEach(([l, x, w]) => {
+    const on = l === set.rate, auto = set.rate === "AUTO" && l === set.autoPick;
+    const bg = dim ? C.cell : on ? C.dac : auto ? C.dacD : st.over === "rate" + l ? C.line : C.cell;
+    R(x, ROW_A, w, 20, bg);
+    TC(l, x, w, ROW_A + 6, dim ? C.line : on ? C.bg : auto ? C.text : C.label, 1);
+  });
+  T("KB", 622, ROW_A + 6, C.label, 1);
+  TR(kb.toFixed(kb < 100 ? 1 : 0), 700, ROW_A + 3, st.pending ? C.amber : C.text, 2);
+}
+
+function ms(v) { return v < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(1) : v.toFixed(0); }
+
+function oneWarning(st) {
+  const w = st.lent ? WARN[2] : st.tune ? WARN[1] : WARN[0];
+  T(w.s, 242, WARN_ONE_Y, st.lent || st.tune ? C.amber : C.hint, 1);
+}
+
+function panel11(s, st) {
+  const n = st.sel, e = s[n], loading = st.loading, set = e && e.file ? st.set : null;
+  const held = st.held && st.play === n;
+  R(242, 297, 458, 1, C.cell);
+  wave11(st, e);
+  T(nn(n), 242, NAME_Y, held ? C.lit : C.text, 3);
+  if (e) {
+    T(cut(e.name, 14), 320, NAME_Y, e.file ? C.text : C.label, 2);
+    const len = set ? set.outLen : e.len, rate = set ? (set.rate === "AUTO" ? set.autoPick : set.rate) : e.rate.replace("K", "");
+    T(String(n), 320, 377, C.text, 1);
+    T("  " + len.toFixed(2) + " S  " + rate + " KHZ", 320 + String(n).length * 6, 377, st.pending ? C.amber : C.label, 1);
+    if (loading && e.file) T("LOADING", 448, 377, C.amber, 1);
+    else T(e.file ? "FILE" : "ROM", 448, 377, e.file ? C.dac : C.hint, 1);
+    T(e.file ? "ROM HAD " + (e.rom || "NOTHING") : "BUILT INTO THE ROM", 320, 387, C.hint, 1);
+  } else {
+    T("EMPTY", 320, NAME_Y, C.hint, 2);
+    T(String(n), 320, 377, C.text, 1);
+    T("ROM HAS NOTHING HERE", 320, 387, C.hint, 1);
+  }
+  const btn = (label, x, o) => { B(x, NAME_Y, 100, 24, o.dis ? C.cell : o.over ? C.text : C.line); TC(label, x, 100, NAME_Y + 5, o.dis ? C.line : o.over ? C.text : C.label, 2); };
+  btn("REPLACE", 496, { dis: loading, over: st.over === "replace" });
+  btn("CLEAR", 600, { dis: loading || !(e && e.file), over: st.over === "clear" });
+  if (!set) { warnings(st, 400, 405); return; }
+  const dim = loading;
+  // Row A: where the sample starts and ends in the source, the rate, what it costs.
+  sc(242, ROW_A, 92, "START", ms(set.startMs), set.startMs / set.srcMs, { held: st.held1 === "start", dim });
+  sc(336, ROW_A, 92, "END", ms(set.endMs), set.endMs / set.srcMs, { held: st.held1 === "end", dim });
+  rateRow(st, set.kb);
+  // Row B: pitch, gain, the two switches.
+  sc(242, ROW_B, 84, "PITCH", (set.st > 0 ? "+" : "") + set.st, set.st / 24, { bip: 1, dim });
+  sc(328, ROW_B, 62, "CT", (set.ct > 0 ? "+" : "") + set.ct, set.ct / 50, { bip: 1, dim });
+  const clip = set.clip;
+  sc(396, ROW_B, 100, clip ? "CLIP" : "GAIN", (set.gain > 0 ? "+" : "") + set.gain.toFixed(1), set.gain / 24, { bip: 1, dim, labelC: clip ? C.amber : null });
+  smallButton(498, ROW_B, 62, "NORMALIZE", { dim, over: st.over === "norm" });
+  sw(566, ROW_B, 52, "FADE", set.fade, { dim });
+  sw(620, ROW_B, 80, "ONE-SHOT", set.one, { dim });
+  oneWarning(st);
+}
+
+function editorPage11(st) {
+  frame(st);
+  const s = mapWith(st.files);
+  pageTop(st);
+  COLS.forEach((c, q) => TC(c, GX + q * PX, CW, 84, C.hint, 1));
+  for (let r = 0; r < 11; r++) TR(String(r * 12), OCT_R, GY + r * PY + 4, r >= 2 && r <= 6 ? C.label : C.hint, 1);
+  for (let n = 0; n < 128; n++) gridCell(n, s, st);
+  panel11(s, st);
+  footer2(st.foot, st.footC);
+}
+
+// ---------- states ----------
+const FILES = [[34, "808_kick", 0.71, "22K"], [37, "snare_tight", 0.41, "32K"]];
+// 808_kick: source 0.80 s at 44.1 kHz. Kept 3.2..640 ms, PITCH -2: 0.637 s * 2^(2/12) = 0.71 s; at 22 kHz 15.4 KB.
+const SET = { srcMs: 800, startMs: 3.2, endMs: 640, s: 2, e: 366, st: -2, ct: 0, gain: 2.5, rate: "AUTO", autoPick: "22", fade: true, one: true, outLen: 0.71, kb: 15.4, clip: false };
+FILES.forEach(f => { if (f[0] === 34) f.src = 0.8; });
+
+use("c1", 720, 528);
+editorPage11({ used: 0.48, tune: 0, files: FILES, sel: 34, set: SET, over: "rate16",
+  foot: "RATE 16 KHZ: 11.2 KB, 4.2 KB LESS" });
+
+use("c2", 720, 528);
+editorPage11({ used: 0.48, incoming: 0.002, tune: 0, files: FILES, sel: 34, markerHeld: "start", held1: "start", pending: true,
+  set: Object.assign({}, SET, { startMs: 18.4, s: 11, outLen: 0.69, kb: 15.0 }),
+  foot: "START 18.4 MS. RELEASE TO APPLY" });
+
+use("c3", 720, 528);
+editorPage11({ used: 0.48, tune: 0, files: FILES, sel: 34, over: "norm",
+  set: Object.assign({}, SET, { gain: 6, clip: true }),
+  foot: "GAIN +6.0 DB: 312 SAMPLES CLIP", footC: C.amber });
+
+use("c4", 720, 528);
+editorPage11({ used: 0.48, tune: 0, files: FILES, play: 38, held: true, sel: 36, hover: 42, over: "replace",
+  foot: "REPLACE 36 C-2 FROM A WAV. ENGINE RESTARTS" });
+
+use("c5", 720, 528);
+editorPage11({ used: 0.48, tune: 0, files: FILES, sel: 34, loading: true, loadingNotes: [34],
+  set: Object.assign({}, SET, { startMs: 18.4, s: 11, outLen: 0.69, kb: 15.0 }),
+  foot: "ENGINE RESTARTS: NO SOUND UNTIL LOADED", footC: C.amber });
+
+crop("cz", () => {
+  editorPage11({ used: 0.48, tune: 0, files: FILES, sel: 34, set: SET, over: "rate16", markerOver: "end", foot: "" });
+}, 236, 294, 470, 166, 2);
+
+let zoomed = false;
+document.getElementById("zoom").onclick = () => {
+  zoomed = !zoomed;
+  document.querySelectorAll("canvas").forEach(cv => { cv.style.width = zoomed ? cv.width * 2 + "px" : ""; });
+  document.getElementById("zoom").textContent = zoomed ? "Макеты x1" : "Макеты x2";
+};
+</script>
+</body>
+</html>
