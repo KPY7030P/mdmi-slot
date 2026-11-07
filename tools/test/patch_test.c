@@ -1712,7 +1712,7 @@ static void test_dac_edit(void)
 	const uint32_t version = set.version;
 	CHECK(files_edit_sample(&files, 45, &edit, message, sizeof(message)) && set.notes[45]->edit.pitch == -1200 && set.version != version, "an edit goes in: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[45]->edit.pitch == 300, "undo puts the edit before back");
-	CHECK(!files_edit_sample(&files, 46, &edit, message, sizeof(message)), "a note without a file has nothing to edit");
+	CHECK(!files_edit_sample(&files, 100, &edit, message, sizeof(message)), "an empty note has nothing to edit");
 	files_free(&files);
 	dac_clear(&set);
 	dac_clear(&read);
@@ -1762,6 +1762,13 @@ static void test_dac_moves(void)
 	free(block);
 	CHECK(files_reset_sample(&files, 36, message, sizeof(message)) && !set.removed[36] && !set.notes[36], "and on it, RESTORE brings the ROM's back: %s", message);
 	CHECK(!files_move_sample(&files, 95, 96, false, message, sizeof(message)), "an empty note has nothing to move");
+	// A sample of the ROM's changed on the panel becomes the project's (owner after 0.12.0).
+	rom_sample kick;
+	rom_image_sample(rom, rom_size, 34, &kick);
+	dac_edit louder = {.start = 0, .end = kick.length, .gain = 30, .rate = (int8_t)kick.rate};
+	CHECK(!set.notes[34] && files_edit_sample(&files, 34, &louder, message, sizeof(message)) && set.notes[34] && set.notes[34]->edit.gain == 30
+		&& !strcmp(set.notes[34]->name, "StdKick"), "a ROM sample changed becomes the project's: %s", message);
+	CHECK(files_reset_sample(&files, 34, message, sizeof(message)) && !set.notes[34] && !set.removed[34], "and CLEAR gives the ROM's back");
 	files_free(&files);
 	dac_clear(&set);
 	dac_clear(&read);

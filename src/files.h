@@ -66,7 +66,8 @@ bool files_undo(mdmi_files *files, char *message, size_t size);
 // the core restarts with them. The set's room is checked for all of them first: if they don't fit,
 // or one can't be read, nothing changes. Returns how many went in.
 int files_put_samples(mdmi_files *files, const char *const *paths, int count, int first, char *message, size_t size);
-// Prepares a note's sample from its source another way (D38): one undo step, the core restarts.
+// Prepares a note's sample from its source another way (D38): one undo step. A sample of the ROM's
+// becomes the project's own, a copy of its bytes, at its first change.
 bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *message, size_t size);
 // A sample to another note (owner after 0.12.0): swapped with what that note played, or copied
 // there. The ROM's samples go as copies of their bytes. One undo step. 1 if it went.

@@ -536,20 +536,30 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 	return count;
 }
 
+static dac_sample *note_content(const dac_set *dac, int note, bool *empty);
+
 bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *message, size_t size)
 {
 	dac_set *dac = files->host.view->dac;
-	const dac_sample *now = dac && note >= 0 && note < ROM_IMAGE_NOTES ? dac->notes[note] : NULL;
-	if (!now || !now->source) {
+	if (!dac || note < 0 || note >= ROM_IMAGE_NOTES) {
 		return false;
 	}
-	dac_sample *changed = dac_copy(now);
-	if (!changed || !dac_prepare(changed, edit)) {
+	// A sample of the ROM's becomes the project's own at its first change (owner after 0.12.0).
+	const dac_sample *now = dac->notes[note];
+	bool empty;
+	dac_sample *changed = now ? dac_copy(now) : note_content(dac, note, &empty);
+	if (!changed || !changed->source) {
+		dac_free(changed);
+		return false;
+	}
+	if (!dac_prepare(changed, edit)) {
 		dac_free(changed);
 		snprintf(message, size, "Note %d: the ROM has no room for that", note);
 		return false;
 	}
-	if (dac_used(dac) - rom_image_cost(now->sample.length) + rom_image_cost(changed->sample.length) > rom_image_room()) {
+	const uint32_t was = now ? rom_image_cost(now->sample.length) : 0, was_source = now ? now->source_frames * (uint32_t)sizeof(int16_t) : 0;
+	if (dac_used(dac) - was + rom_image_cost(changed->sample.length) > rom_image_room()
+		|| dac_sources(dac) - was_source + changed->source_frames * (uint32_t)sizeof(int16_t) > DAC_SOURCE_MAX) {
 		dac_free(changed);
 		snprintf(message, size, "Note %d: the ROM has no room for that", note);
 		return false;

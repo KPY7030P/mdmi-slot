@@ -73,7 +73,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   play stray bytes to its old length. Only the first boot, or an image that differs outside the samples,
   restarts the core: 0.3-0.6 s without sound, the header says LOADING. TUNE is the page's only cell: off centre, as bend, a note plays
   its neighbour's sample. The rates are those BlastEm plays, 2-3% below what SGDK names them.
-- A WAV's sample is prepared on EDITOR (D38): START and END (the tabs of a strip over the wave, as the PSG loop's), PITCH and
+- Any sample is prepared on EDITOR (D38, D39; one of the ROM's becomes the project's own, a copy of
+  its bytes, at its first change): START and END (the tabs of a strip over the wave, as the PSG loop's), PITCH and
   CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
   last 4 ms) and ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads). Nothing changes while the
   mouse is down; on mouse up the sample is prepared once and goes into the running core. A double click puts a

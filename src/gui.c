@@ -238,6 +238,11 @@ struct mdmi_gui {
 	int grid_target;
 	int grid_press_x;
 	int grid_press_y;
+	// The selected note's ROM sample as one of the project's, for the panel to show and change: made
+	// when the note or the samples change. Changing it makes it the project's (owner after 0.12.0).
+	dac_sample *rom_copy;
+	int rom_copy_note;
+	uint32_t rom_copy_version;
 	// The selected sample's wave, min and max a column, and what they were made from.
 	const void *wave_of;
 	int wave_note;
@@ -2041,6 +2046,33 @@ static const struct {
 };
 
 static bool gain_clips(const mdmi_gui *g, const dac_sample *own, const dac_edit *edit);
+
+// What the panel shows and changes for a note: the project's sample, or a copy of the ROM's that
+// becomes the project's when changed. NULL for an empty note.
+static const dac_sample *panel_sample(const mdmi_gui *gui, int note)
+{
+	mdmi_gui *g = (mdmi_gui *)gui;
+	const dac_set *dac = dac_of(g);
+	if (note < 0 || note >= ROM_IMAGE_NOTES) {
+		return NULL;
+	}
+	if (dac->notes[note]) {
+		return dac->notes[note]->source ? dac->notes[note] : NULL;
+	}
+	if (g->rom_copy_note != note || g->rom_copy_version != dac->version) {
+		dac_free(g->rom_copy);
+		g->rom_copy = NULL;
+		g->rom_copy_note = note;
+		g->rom_copy_version = dac->version;
+		size_t size;
+		const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+		rom_sample sample;
+		if (!dac->removed[note] && rom_image_sample(rom, size, note, &sample)) {
+			g->rom_copy = dac_from_rom(&sample, ROM_SAMPLE_NAMES[note]);
+		}
+	}
+	return g->rom_copy;
+}
 static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac_sample *own, const dac_edit *edit);
 
 static const dac_edit *shown_edit(const mdmi_gui *g, const dac_sample *own)
@@ -2055,7 +2087,7 @@ static int wave_x_of(const dac_sample *own, uint32_t frame)
 
 static int dac_control_at(const mdmi_gui *g, int x, int y)
 {
-	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	const dac_sample *own = panel_sample(g, g->dac_selected);
 	if (!own || !own->source) {
 		return DACC_NONE;
 	}
@@ -2279,7 +2311,7 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 // What a gesture on the panel makes of the edit at this point.
 static void dac_drag_to(mdmi_gui *g, int x, int y)
 {
-	const dac_sample *own = dac_of(g)->notes[g->dac_drag_note];
+	const dac_sample *own = panel_sample(g, g->dac_drag_note);
 	if (!own || !own->source) {
 		return;
 	}
@@ -2337,7 +2369,7 @@ static void dac_drag_to(mdmi_gui *g, int x, int y)
 // The edit goes to the sample: prepared once, the core restarts (D38).
 static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
 {
-	const dac_sample *own = dac_of(g)->notes[note];
+	const dac_sample *own = panel_sample(g, note);
 	if (!own || (edit->start == own->edit.start && edit->end == own->edit.end && edit->pitch == own->edit.pitch && edit->gain == own->edit.gain
 			&& edit->rate == own->edit.rate && edit->fade == own->edit.fade && edit->one_shot == own->edit.one_shot)) {
 		return;
@@ -2351,7 +2383,7 @@ static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
 static bool dac_panel_down(mdmi_gui *g, int x, int y)
 {
 	const int c = dac_control_at(g, x, y);
-	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	const dac_sample *own = panel_sample(g, g->dac_selected);
 	if (c == DACC_NONE || !own || !engine_booted(g)) {
 		return c != DACC_NONE;
 	}
@@ -2384,7 +2416,7 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 {
 	const int c = dac_control_at(g, x, y);
-	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	const dac_sample *own = panel_sample(g, g->dac_selected);
 	if (c == DACC_NONE || !own) {
 		return false;
 	}
@@ -2427,7 +2459,7 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 {
 	const int c = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
-	const dac_sample *own = dac_of(g)->notes[g->dac_selected];
+	const dac_sample *own = panel_sample(g, g->dac_selected);
 	if (c == DACC_NONE || !own || !own->source) {
 		return false;
 	}
@@ -2551,7 +2583,7 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 	const char *name;
 	bool file;
 	const bool has = note_sample(g, note, &sample, &name, &file);
-	const dac_sample *own = dac_of(g)->notes[note];
+	const dac_sample *own = panel_sample(g, note);
 	const bool editable = own && own->source;
 	const dac_edit *edit = editable ? shown_edit(g, own) : NULL;
 	fill(g, BANK_X, TRIM_Y, WAVE_W, TRIM_H, C_BG);
@@ -4436,6 +4468,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->dac_drag = DACC_NONE;
 	g->wave_note = -1;
 	g->grid_from = -1;
+	g->rom_copy_note = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
@@ -4447,6 +4480,8 @@ void gui_destroy(mdmi_gui *g)
 		return;
 	}
 	mdmi_engine_watch_frames(g->source.engine, false);
+	dac_free(g->rom_copy);
+	g->rom_copy = NULL;
 	if (g->window) {
 		DestroyWindow(g->window);
 	}
