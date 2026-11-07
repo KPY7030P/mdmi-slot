@@ -2301,15 +2301,6 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 			}
 		}
 		draw_all_more(g, values, channel, y + 28);
-		// Under the mouse an FM row's sound says what a click shows instead (art-director).
-		if (takes_fm(values, channel) && !g->dragging && !g->file_over && row_at(g, g->mouse_x, g->mouse_y) == channel
-			&& g->mouse_x >= ALL_SOUND_X && g->mouse_x < ALL_SOUND_X + ALL_SOUND_W) {
-			const char *next = *g->source.all_envelopes >> channel & 1 ? "ALG" : "ADSR";
-			const int width = (int)strlen(next) * 6;
-			frame(g, ALL_SOUND_X, y + 1, ALL_SOUND_W, 38, C_HINT);
-			fill(g, ALL_SOUND_X + ALL_SOUND_W - 3 - width, y + 2, width + 2, 10, C_BG);
-			text(g, ALL_SOUND_X + ALL_SOUND_W - 2 - width, y + 3, next, C_LABEL, 1);
-		}
 	}
 }
 
@@ -2352,15 +2343,16 @@ static void draw_editor(mdmi_gui *g)
 			}
 		}
 	}
-	// Hover last, so nothing covers it.
-	int over = g->dragging || g->file_over ? -1 : hovered(g);
+	// Hover last, so nothing covers it. ALL has no hover frames (owner after 0.11.0).
+	const bool all = *g->source.page == PAGE_ALL;
+	int over = g->dragging || g->file_over || all ? -1 : hovered(g);
 	if (over >= 0) {
 		const cell *c = &g->cells[over];
 		frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 	}
-	int row = g->dragging || g->file_over ? -1 : row_at(g, g->mouse_x, g->mouse_y);
+	int row = g->dragging || g->file_over || all ? -1 : row_at(g, g->mouse_x, g->mouse_y);
 	if (row >= 0) {
-		frame(g, 0, row_y(row), *g->source.page == PAGE_ALL ? GUI_WIDTH : RAIL_W, ROW_H, C_TEXT);
+		frame(g, 0, row_y(row), RAIL_W, ROW_H, C_TEXT);
 	}
 }
 

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <clap/clap.h>
+#include <windows.h>
 #include "engine.h"
 #include "gui.h"
 #include "patch.h"
@@ -66,6 +67,9 @@ typedef struct {
 	gui_psg_times psg_times;
 	// Set by the audio thread, cleared by the window (D33).
 	uint32_t host_values[GUI_HOST_SLOTS];
+	// When the window last sent each knob something, in ms (D34): what the host sends back within
+	// HOST_ECHO_MS is Live's echo of it, not a lane.
+	uint32_t window_ms[GUI_HOST_SLOTS];
 } mdmi_plugin;
 
 typedef struct {
@@ -276,11 +280,18 @@ static void set_param(mdmi_plugin *self, uint32_t id, int value, uint32_t time)
 // A value from the host, whatever it is: Live sends them only while a lane plays, and doesn't send
 // back what the window told it (stage 10 experiment, D32). The knob stays marked until the window
 // edits it (D33).
+// Live echoes the window's edit right after its gesture ends, sometimes the old value and then the
+// new (journal after 0.11.0, D34). A lane can't come then: after a mouse edit Live stays quiet (D32).
+#define HOST_ECHO_MS 200
 static void count_host_value(mdmi_plugin *self, uint32_t id)
 {
 	int channel, param;
 	if (patch_id_split(id, &channel, &param)) {
-		__atomic_store_n(&self->host_values[GUI_HOST_SLOT(channel, param)], 1, __ATOMIC_RELAXED);
+		const int slot = GUI_HOST_SLOT(channel, param);
+		if ((uint32_t)GetTickCount() - __atomic_load_n(&self->window_ms[slot], __ATOMIC_RELAXED) < HOST_ECHO_MS) {
+			return;
+		}
+		__atomic_store_n(&self->host_values[slot], 1, __ATOMIC_RELAXED);
 	}
 }
 
@@ -323,6 +334,10 @@ static void take_edits(mdmi_plugin *self, const clap_output_events_t *out, bool 
 	uint32_t written = __atomic_load_n(&self->edits_written, __ATOMIC_ACQUIRE);
 	for (; read != written; read++) {
 		const edit_command *command = &self->edits[read % EDIT_QUEUE];
+		int channel, param;
+		if (patch_id_split(command->id, &channel, &param)) {
+			__atomic_store_n(&self->window_ms[GUI_HOST_SLOT(channel, param)], (uint32_t)GetTickCount(), __ATOMIC_RELAXED);
+		}
 		switch (command->kind) {
 		case GUI_EDIT_BEGIN:
 			push_gesture(out, CLAP_EVENT_PARAM_GESTURE_BEGIN, command->id);

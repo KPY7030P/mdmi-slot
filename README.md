@@ -99,7 +99,9 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   label and a mark where the base's value is; held, the footer says `TL 49, GM 39`. A channel's
   cell is a bar filled up to its value (TUNE from its middle), so the mark reads against the fill.
 - A red dot at a cell's top right: the host sent that knob a value since the mouse last edited it
-  (D32, D33). Live sends values only while a lane moves and never echoes the window's own edits, so
+  (D32, D33, D34). Live sends values only while a lane moves; it echoes the window's own edit
+  15-30 ms after the gesture ends, and a value within 200 ms of the window's last event on that
+  knob is taken as that echo, not as a lane (D34). So
   the dot stays over the lane's flat stretches; a touch with the mouse takes it away.
 - ALL (stage 10): every channel on the rail's rows, so drops and clicks work as on EDITOR. A row
   has its algorithm or envelope in small (a click opens the channel's page), VOL, PAN, the source,
@@ -109,7 +111,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   The envelope editor draws the same line down its lanes.
   A click on an FM row's diagram puts its four envelopes in its place, a second click brings the
   diagram back; each row keeps its own choice, saved with the view (the view block's third byte).
-  Under the mouse the row says what a click shows (ADSR or ALG). EDITOR opens the selected channel.
+  ALL draws no hover frames. EDITOR opens the selected channel.
 - FM page (stage 11, `docs/design/ui-variants-v8-fm.html`): the channel's cells in one row on every
   page; a graph of the four operators' envelopes at the left, AMS, FMS, the diagram with FB and the
   algorithms 0-7 at the right; under them a column per operator: TL, MUL, AR, DR, SL, SR, RR as

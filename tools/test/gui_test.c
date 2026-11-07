@@ -543,6 +543,12 @@ int main(int argc, char **argv)
 		// A value from the host marks its cell with a red dot until the mouse edits it, even one the knob
 		// already has; the mouse on the cell takes the dot away (D32).
 		clap_event_param_value_t from_host = {{sizeof(from_host), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, CH4_OP1_TL, NULL, -1, -1, -1, -1, get_value(CH4_OP1_TL)};
+		// Within 200 ms of the window's gesture a value is Live's echo of it, no dot (D34).
+		run_block(&from_host);
+		run_ms(50);
+		capture(window);
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 2, OP1_TL_Y + 2, COLOR_ERROR) == 0, "a TL value right after the mouse's gesture is its echo: no dot");
+		run_ms(300);
 		run_block(&from_host);
 		run_ms(100);
 		capture(window);
@@ -551,6 +557,7 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 2, OP1_TL_Y + 2, COLOR_ERROR) == 0, "a touch with the mouse takes it away");
+		run_ms(300);
 		run_block(&from_host);
 		run_ms(2300);
 		capture(window);
