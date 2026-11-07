@@ -729,6 +729,7 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.version = plugin_descriptor.version,
 		.page = &self->view.page,
 		.channel = &self->view.channel,
+		.all_envelopes = &self->view.envelopes,
 		.loop_shadows = self->view.loops,
 		.files = &self->files,
 		.edit = gui_edit,

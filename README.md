@@ -107,20 +107,22 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   ROM is in the envelope, reckoned by the plugin from the Note On and Note Off it sent and the
   shape (`patch_shape_position`, tested against a byte walk of the ROM's code), for show only.
   The envelope editor draws the same line down its lanes.
-  A click on an FM row's diagram puts every FM row's four envelopes in its place, a second click
-  brings the diagrams back (the window's own switch, not saved); EDITOR opens the selected channel.
+  A click on an FM row's diagram puts its four envelopes in its place, a second click brings the
+  diagram back; each row keeps its own choice, saved with the view (the view block's third byte).
+  Under the mouse the row says what a click shows (ADSR or ALG). EDITOR opens the selected channel.
 - FM page (stage 11, `docs/design/ui-variants-v8-fm.html`): the channel's cells in one row on every
   page; a graph of the four operators' envelopes at the left, AMS, FMS, the diagram with FB and the
   algorithms 0-7 at the right; under them a column per operator: TL, MUL, AR, DR, SL, SR, RR as
-  bars, DT in 7 segments (-3 to +3; the ROM's 4 is -0 and shows as 0), RS in 4 and AM. The graph
-  and a frame follow the column under the mouse, else the operator last edited; a value from the
-  host moves neither. The graph is the chip's envelope generator stepped for a note C4
+  bars, DT in 7 segments (-3 to +3; the ROM's 4 is -0 and shows as 0), RS in 4 and AM. The graph's
+  bright curve and a white frame on the header follow the column under the mouse, else the operator
+  last edited; a value from the host moves neither. The graph is the chip's envelope generator stepped for a note C4
   (`patch_fm_envelope`, hardware-specialist's facts from BlastEm): rates double every 2 steps,
   KS by RS, SL 15 is silence, SL 0 skips DR, SSG works between 0 and 48 dB four times as fast,
   columns too short for a fast SSG show its range. Time runs on a square-root axis to 2 s, Note
-  Off at 1 s. The active operator's SSG is at the graph's top right: a click opens OFF and the 8
-  shapes, a click on one sets it as one gesture, any other click closes the choice. Other
-  operators with SSG on show a tiny shape by their curve's number.
+  Off at 1 s, where the active curve has its number. Each operator's SSG is a button at its
+  header's right end, its shape or a dim SSG: a click opens OFF and the 8 shapes under the header,
+  a click on one sets it as one gesture, any other click closes the choice. In Ch3 Special Mode
+  channel 3's number on the page is light FM, as in the rail.
 
 Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
 the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.

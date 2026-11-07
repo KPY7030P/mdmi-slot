@@ -52,6 +52,8 @@ typedef struct {
 	// window and are saved with the project. Only a view: no knob depends on them.
 	int *page;
 	int *channel;
+	// A bit per FM channel whose row on ALL shows the envelopes, the view's too (stage 11).
+	uint8_t *all_envelopes;
 	// The PSG loops switched off, PATCH_NUM_PSG_CHANNELS of them, the view's like page and channel.
 	state_loop *loop_shadows;
 	// What the window does with dropped and opened files.

@@ -23,10 +23,13 @@ typedef struct {
 	char name[PATCH_NAME];
 } state_loop;
 
-// The window's page and channel and the loops switched off, saved with the state.
+// The window's page and channel and the loops switched off, saved with the state. envelopes has a
+// bit per FM channel whose row on ALL shows the envelopes instead of the diagram (stage 11), the
+// view block's third byte.
 typedef struct {
 	int page;
 	int channel;
+	uint8_t envelopes;
 	state_loop loops[PATCH_NUM_PSG_CHANNELS];
 } state_view;
 
