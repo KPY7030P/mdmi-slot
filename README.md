@@ -98,9 +98,9 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   gives it back, a drawing keeps it. An FM cell whose value differs from the base has an amber
   label and a mark where the base's value is; held, the footer says `TL 49, GM 39`. A channel's
   cell is a bar filled up to its value (TUNE from its middle), so the mark reads against the fill.
-- A red dot at a cell's top right: the host sent that knob a value in the last 2 seconds (D32).
-  Live sends values only while a lane plays and never echoes the window's own edits; a touch with
-  the mouse takes the dot away.
+- A red dot at a cell's top right: the host sent that knob a value since the mouse last edited it
+  (D32, D33). Live sends values only while a lane moves and never echoes the window's own edits, so
+  the dot stays over the lane's flat stretches; a touch with the mouse takes it away.
 - ALL (stage 10): every channel on the rail's rows, so drops and clicks work as on EDITOR. A row
   has its algorithm or envelope in small (a click opens the channel's page), VOL, PAN, the source,
   and TUNE, BEND, PORTA only when not at their default. On a PSG row a green line shows where the

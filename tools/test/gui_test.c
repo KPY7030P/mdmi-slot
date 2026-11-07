@@ -517,7 +517,7 @@ int main(int argc, char **argv)
 		run_ms(100);
 		CHECK(count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_MARK) > 50, "and the footer says TL against GM");
 		save_bmp(argv[2], "fm-footer");
-		// A value from the host marks its cell with a red dot for two seconds, even one the knob
+		// A value from the host marks its cell with a red dot until the mouse edits it, even one the knob
 		// already has; the mouse on the cell takes the dot away (D32).
 		clap_event_param_value_t from_host = {{sizeof(from_host), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, CH4_OP1_TL, NULL, -1, -1, -1, -1, get_value(CH4_OP1_TL)};
 		run_block(&from_host);
@@ -531,7 +531,7 @@ int main(int argc, char **argv)
 		run_block(&from_host);
 		run_ms(2300);
 		capture(window);
-		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 0, "and two seconds without values do");
+		CHECK(count_color_in(OP1_TL_X - 60, OP1_TL_X + 60, OP1_TL_Y - 12, OP1_TL_Y - 4, COLOR_ERROR) == 9, "a flat stretch of the lane, seconds without values, keeps it (D33)");
 		memset(pushed, 0, sizeof(pushed));
 		click(window, RAIL_X, RAIL_CH2_Y);
 		run_ms(100);

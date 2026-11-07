@@ -33,8 +33,8 @@ typedef struct {
 	uint8_t key[PATCH_NUM_PSG_CHANNELS];
 } gui_psg_times;
 
-// How many values the host sent each knob (stage 10, D32), at GUI_HOST_SLOT of its channel (-1
-// for a global) and param. The window marks a knob for a while after its count moved.
+// 1 when the host sent a knob a value since the window last edited it (D32, D33), at GUI_HOST_SLOT
+// of its channel (-1 for a global) and param. The audio thread sets it, the window clears it.
 #define GUI_HOST_SLOTS ((PATCH_NUM_CHANNELS + 1) * PATCH_NUM_CHANNEL_PARAMS)
 #define GUI_HOST_SLOT(channel, param) (((channel) + 1) * PATCH_NUM_CHANNEL_PARAMS + (param))
 
@@ -46,7 +46,7 @@ typedef struct {
 	mdmi_patch *patch;
 	const uint32_t *notes;
 	const gui_psg_times *psg_times;
-	const uint32_t *host_values;
+	uint32_t *host_values;
 	const char *version;
 	// Which page and channel are open. They belong to the plugin instance, so they outlive the
 	// window and are saved with the project. Only a view: no knob depends on them.

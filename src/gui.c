@@ -234,11 +234,6 @@ struct mdmi_gui {
 	int flash_count;
 	int flash_ticks;
 	uint32_t flash_color;
-
-	// The host's values seen so far per knob, and until when, in GetTickCount64 ms, each knob stays
-	// marked (D32).
-	uint32_t host_seen[GUI_HOST_SLOTS];
-	ULONGLONG host_until[GUI_HOST_SLOTS];
 };
 
 static LONG window_count;
@@ -766,13 +761,13 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	}
 }
 
-// A value from the host lately (D32): a red dot 3x3 at the cell's top right, on the last button
+// A knob the host sent a value since the mouse last touched it (D33): a red dot 3x3 at the cell's top right, on the last button
 // of a row of choices.
 static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 {
 	draw_cell_body(g, c, values);
 	int channel, param;
-	if (!patch_id_split(c->id, &channel, &param) || g->host_until[GUI_HOST_SLOT(channel, param)] <= GetTickCount64()) {
+	if (!g->source.host_values || !patch_id_split(c->id, &channel, &param) || !__atomic_load_n(&g->source.host_values[GUI_HOST_SLOT(channel, param)], __ATOMIC_RELAXED)) {
 		return;
 	}
 	if (c->kind == CELL_CHOICE && c->choice != patch_param(c->id)->max) {
@@ -2060,31 +2055,15 @@ static void refresh(mdmi_gui *g)
 	}
 }
 
-// A knob the mouse moves is the window's: its host mark goes at once.
+// A knob the mouse moves is the window's: its host mark goes at once, until the host sends it a
+// value again (D33).
 static void edit(mdmi_gui *g, int kind, uint32_t id, int value)
 {
 	int channel, param;
-	if (kind != GUI_EDIT_END && patch_id_split(id, &channel, &param)) {
-		g->host_until[GUI_HOST_SLOT(channel, param)] = 0;
+	if (kind != GUI_EDIT_END && g->source.host_values && patch_id_split(id, &channel, &param)) {
+		__atomic_store_n(&g->source.host_values[GUI_HOST_SLOT(channel, param)], 0, __ATOMIC_RELAXED);
 	}
 	g->source.edit(g->source.context, kind, id, value);
-}
-
-// Once a timer tick: a knob whose count moved is marked for two seconds from its last value.
-#define HOST_MARK_MS 2000
-static void host_tick(mdmi_gui *g)
-{
-	if (!g->source.host_values) {
-		return;
-	}
-	const ULONGLONG now = GetTickCount64();
-	for (int i = 0; i < GUI_HOST_SLOTS; i++) {
-		const uint32_t count = __atomic_load_n(&g->source.host_values[i], __ATOMIC_RELAXED);
-		if (count != g->host_seen[i]) {
-			g->host_seen[i] = count;
-			g->host_until[i] = now + HOST_MARK_MS;
-		}
-	}
 }
 
 // One whole change, as a click on a button.
@@ -2716,7 +2695,6 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_TIMER:
 		g->message_ticks -= g->message_ticks > 0;
 		g->flash_ticks -= g->flash_ticks > 0;
-		host_tick(g);
 		if (g->env_drag != ENV_NONE) {
 			envelope_hand(g);
 		}
@@ -2802,10 +2780,6 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->mouse_x = g->mouse_y = -1;
 	g->key_channel = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
-	// Values the host sent before the window opened mark nothing.
-	for (int i = 0; g->source.host_values && i < GUI_HOST_SLOTS; i++) {
-		g->host_seen[i] = __atomic_load_n(&g->source.host_values[i], __ATOMIC_RELAXED);
-	}
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
 }

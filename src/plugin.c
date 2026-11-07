@@ -64,6 +64,7 @@ typedef struct {
 	uint8_t held[GUI_NUM_MIDI_CHANNELS];
 	// Written by the writer only.
 	gui_psg_times psg_times;
+	// Set by the audio thread, cleared by the window (D33).
 	uint32_t host_values[GUI_HOST_SLOTS];
 } mdmi_plugin;
 
@@ -273,12 +274,13 @@ static void set_param(mdmi_plugin *self, uint32_t id, int value, uint32_t time)
 }
 
 // A value from the host, whatever it is: Live sends them only while a lane plays, and doesn't send
-// back what the window told it (stage 10 experiment, D32).
+// back what the window told it (stage 10 experiment, D32). The knob stays marked until the window
+// edits it (D33).
 static void count_host_value(mdmi_plugin *self, uint32_t id)
 {
 	int channel, param;
 	if (patch_id_split(id, &channel, &param)) {
-		__atomic_add_fetch(&self->host_values[GUI_HOST_SLOT(channel, param)], 1, __ATOMIC_RELAXED);
+		__atomic_store_n(&self->host_values[GUI_HOST_SLOT(channel, param)], 1, __ATOMIC_RELAXED);
 	}
 }
 
