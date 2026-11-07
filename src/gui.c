@@ -9,6 +9,8 @@
 #include <ole2.h>
 #include <shellapi.h>
 #include "gui.h"
+#include "dac.h"
+#include "rom_map.h"
 #include "font5x7.h"
 
 #define TIMER_ID 1
@@ -110,6 +112,17 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define SCROLL_H (BANK_ROWS * BANK_ROW_H)
 #define BANK_TOP_MAX (PATCH_BANK_SIZE - BANK_ROWS)
 #define WHEEL_ROWS 3
+// The DAC page (stage 12, docs/design/dac-page.md): a list of the 128 notes like the bank's.
+#define DAC_Y 96
+#define DAC_ROW_H 20
+#define DAC_ROWS 15
+#define DAC_SCROLL_H (DAC_ROWS * DAC_ROW_H)
+#define DAC_TOP_MAX (ROM_IMAGE_NOTES - DAC_ROWS)
+#define DAC_FIRST_ROM_NOTE 26
+#define DAC_RESET_X 636
+#define DAC_RESET_W 60
+#define DAC_FREE_X 592
+#define DAC_FREE_W 116
 #define MESSAGE_TICKS (4 * TIMER_PER_SECOND)
 #define ERROR_TICKS (10 * TIMER_PER_SECOND)
 #define FLASH_TICKS 9
@@ -202,6 +215,9 @@ struct mdmi_gui {
 	int bank_top;
 	int bank_seen_channel;
 	bool bank_was_open;
+	// The first note the DAC page shows, and whether it has been open.
+	int dac_top;
+	bool dac_was_open;
 	// The arrows' last step: the channel, the place it played and the place asked for.
 	int key_channel;
 	int key_from;
@@ -218,6 +234,10 @@ struct mdmi_gui {
 	int file_count;
 	int file_instruments;
 	int file_envelopes;
+	// WAV among the files, and the notes they would go to on the DAC page.
+	int file_samples;
+	int dac_drop_note;
+	int dac_drop_count;
 	bool drop_envelopes;
 	char file_paths[PATCH_BANK_SIZE][MAX_PATH * 3];
 	char file_name[64];
@@ -760,6 +780,9 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			}
 			add_cell(g, ALL_SOURCE_X, y + 4, PAGE_RIGHT - ALL_SOURCE_X, 22, PATCH_CHANNEL_ID(c, PARAM_PRESET), "PRESET", CELL_SOURCE);
 		}
+	} else if (is_dac(values, channel) && *g->source.page == PAGE_EDITOR) {
+		// On the DAC page only TUNE: it alone changes which sample a note plays.
+		add_cell(g, CHANNEL_CELLS[1].x, GRID_ROW1_Y, CHANNEL_CELLS[1].w, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_FINE_TUNE), CHANNEL_CELLS[1].label, CELL_ROW);
 	} else if (!is_dac(values, channel)) {
 		// The Preset is the source at the name line's right end, dragged like any cell.
 		add_cell(g, SOURCE_X, 30, SOURCE_W, 22, PATCH_CHANNEL_ID(channel, PARAM_PRESET), "PRESET", CELL_SOURCE);
@@ -1759,23 +1782,229 @@ static void draw_graph(mdmi_gui *g, const patch_values *values, int channel, int
 	text(g, x0 + 3, GRAPH_Y + GRAPH_H - 10, "C4", C_HINT, 1);
 }
 
+static const dac_set *dac_of(const mdmi_gui *g)
+{
+	return g->source.files->host.view->dac;
+}
+
+static bool engine_booted(const mdmi_gui *g)
+{
+	return mdmi_engine_get_stats(g->source.engine).booted;
+}
+
+static bool is_dac_page(const mdmi_gui *g, const patch_values *values)
+{
+	return *g->source.page == PAGE_EDITOR && is_dac(values, *g->source.channel);
+}
+
+// What a note plays: a file's sample, the ROM's, or nothing.
+static bool note_sample(const mdmi_gui *g, int note, rom_sample *sample, const char **name, bool *file)
+{
+	const dac_sample *own = dac_of(g)->notes[note];
+	*file = own != NULL;
+	if (own) {
+		*sample = own->sample;
+		*name = own->name;
+		return true;
+	}
+	size_t size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+	*name = ROM_SAMPLE_NAMES[note];
+	return rom_image_sample(rom, size, note, sample);
+}
+
+static void rate_text(int rate, char *out, size_t size)
+{
+	static const char *const RATES[ROM_SAMPLE_RATES] = {"32K", "22K", "16K", "13.4K", "11K", "8K"};
+	snprintf(out, size, "%s", RATES[rate]);
+}
+
+static int dac_note_at(const mdmi_gui *g, int x, int y)
+{
+	if (x < BANK_X || x >= BANK_RIGHT || y < DAC_Y || y >= DAC_Y + DAC_SCROLL_H) {
+		return -1;
+	}
+	return g->dac_top + (y - DAC_Y) / DAC_ROW_H;
+}
+
+static void scroll_dac(mdmi_gui *g, int top)
+{
+	g->dac_top = top < 0 ? 0 : top > DAC_TOP_MAX ? DAC_TOP_MAX : top;
+}
+
+static bool over_reset(const mdmi_gui *g, int note, int x, int y)
+{
+	const int row_y = DAC_Y + (note - g->dac_top) * DAC_ROW_H;
+	return note >= 0 && dac_of(g)->notes[note] && x >= DAC_RESET_X && x < DAC_RESET_X + DAC_RESET_W && y >= row_y + 2 && y < row_y + 17;
+}
+
+// A file's name without its folder and .wav, cut to the list's room.
+static void sample_label(const char *path, char *out, size_t size, int chars)
+{
+	const char *base = path;
+	for (const char *c = path; *c; c++) {
+		base = *c == '\\' || *c == '/' ? c + 1 : base;
+	}
+	snprintf(out, size, "%s", base);
+	char *dot = strrchr(out, '.');
+	if (dot && !_stricmp(dot, ".wav")) {
+		*dot = 0;
+	}
+	if ((int)strlen(out) > chars) {
+		out[chars] = 0;
+	}
+}
+
+// The DAC page: EDITOR of channel 6 while the DAC is on (stage 12). Every note with what it plays,
+// a WAV dropped on a row takes it, RESET gives it back to the ROM.
+static void draw_dac(mdmi_gui *g, const patch_values *values)
+{
+	char buffer[64];
+	if (!g->dac_was_open) {
+		g->dac_was_open = true;
+		scroll_dac(g, DAC_FIRST_ROM_NOTE);
+	}
+	const dac_set *dac = dac_of(g);
+	const bool booted = engine_booted(g);
+	text(g, NAME_X, 34, "Samples", C_TEXT, 2);
+	// The room left for samples, at the source's place.
+	const uint32_t room = rom_image_room(), used = dac_used(dac);
+	fill(g, DAC_FREE_X, 30, DAC_FREE_W, 22, C_CELL);
+	fill(g, DAC_FREE_X, 30, (int)((uint64_t)(room - used) * DAC_FREE_W / room), 22, C_DAC_DARK);
+	text(g, DAC_FREE_X + 4, 38, "FREE", C_LABEL, 1);
+	snprintf(buffer, sizeof(buffer), "%.1f MB", (room - used) / 1048576.0);
+	text_right(g, DAC_FREE_X + DAC_FREE_W - 4, 34, buffer, (room - used) * 10 < room ? C_AMBER : C_TEXT, 2, 84);
+	fill(g, RAIL_W + 1, 79, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
+	text(g, 250, 84, "NOTE", C_HINT, 1);
+	text(g, 310, 84, "SAMPLE", C_DAC, 1);
+	text_right(g, 520, 84, "LENGTH", C_HINT, 1, 40);
+	text(g, 528, 84, "RATE", C_HINT, 1);
+	text(g, 580, 84, "FILE", C_HINT, 1);
+	const uint32_t held = g->source.notes[PATCH_NUM_FM_CHANNELS - 1];
+	const int playing = GUI_NOTE_HELD(held) ? (int)GUI_NOTE_KEY(held) : -1;
+	const int hover = g->file_over ? -1 : dac_note_at(g, g->mouse_x, g->mouse_y);
+	const bool aimed = g->file_over && g->dac_drop_count > 0;
+	for (int row = 0; row < DAC_ROWS; row++) {
+		const int note = g->dac_top + row, y = DAC_Y + row * DAC_ROW_H;
+		rom_sample sample;
+		const char *name;
+		bool file;
+		const bool has = note_sample(g, note, &sample, &name, &file);
+		const bool target = aimed && note >= g->dac_drop_note && note < g->dac_drop_note + g->dac_drop_count;
+		if (target) {
+			fill(g, BANK_X, y, BANK_RIGHT - BANK_X, DAC_ROW_H - 1, C_AMBER);
+		}
+		if (note == playing) {
+			fill(g, BANK_X, y, 4, DAC_ROW_H - 1, C_PLAYING);
+		}
+		fill(g, BANK_X, y + DAC_ROW_H - 1, BANK_RIGHT - BANK_X, 1, note % 12 == 11 ? C_LINE : C_CELL);
+		snprintf(buffer, sizeof(buffer), "%d", note);
+		text_right(g, 276, y + 3, buffer, target ? C_BG : note == playing ? C_PLAYING : has ? C_LABEL : C_HINT, 2, 30);
+		note_name(note, buffer, sizeof(buffer));
+		text(g, 282, y + 7, buffer, target ? C_BG : has ? C_HINT : C_LINE, 1);
+		if (target) {
+			sample_label(g->file_paths[note - g->dac_drop_note], buffer, sizeof(buffer), 14);
+			text(g, 310, y + 3, buffer, C_BG, 2);
+		} else if (has) {
+			sample_label(name, buffer, sizeof(buffer), 14);
+			text(g, 310, y + 3, buffer, !booted && file ? C_LINE : file ? C_TEXT : C_LABEL, 2);
+			snprintf(buffer, sizeof(buffer), "%.2f S", sample.length / ROM_SAMPLE_HZ[sample.rate]);
+			text_right(g, 520, y + 7, buffer, C_LABEL, 1, 60);
+			rate_text(sample.rate, buffer, sizeof(buffer));
+			text(g, 528, y + 7, buffer, C_LABEL, 1);
+		} else {
+			text(g, 310, y + 7, "---", C_LINE, 1);
+		}
+		if (file && !target) {
+			text(g, 580, y + 7, booted ? "FILE" : "LOADING", booted ? C_DAC : C_AMBER, 1);
+			const bool over = booted && over_reset(g, note, g->mouse_x, g->mouse_y);
+			frame(g, DAC_RESET_X, y + 2, DAC_RESET_W, 15, over ? C_TEXT : C_LINE);
+			text(g, DAC_RESET_X + 15, y + 6, "RESET", over ? C_TEXT : C_LABEL, 1);
+		}
+		if (hover == note) {
+			frame(g, BANK_X, y, BANK_RIGHT - BANK_X, DAC_ROW_H - 1, C_TEXT);
+		}
+	}
+	// The track shows the whole map: notes with a sample, files, the note held, the drop.
+	fill(g, SCROLL_X, DAC_Y, 6, DAC_SCROLL_H, C_CELL);
+	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+		rom_sample sample;
+		const char *name;
+		bool file;
+		if (note_sample(g, note, &sample, &name, &file)) {
+			fill(g, SCROLL_X, DAC_Y + note * DAC_SCROLL_H / ROM_IMAGE_NOTES, 6, 3, C_DAC_DARK);
+		}
+	}
+	const bool over_scroll = g->mouse_x >= SCROLL_X && g->mouse_x < SCROLL_X + 6 && g->mouse_y >= DAC_Y && g->mouse_y < DAC_Y + DAC_SCROLL_H;
+	frame(g, SCROLL_X, DAC_Y + g->dac_top * DAC_SCROLL_H / ROM_IMAGE_NOTES, 6, DAC_SCROLL_H * DAC_ROWS / ROM_IMAGE_NOTES, over_scroll ? C_LABEL : C_LINE);
+	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+		const int y = DAC_Y + note * DAC_SCROLL_H / ROM_IMAGE_NOTES;
+		if (dac->notes[note]) {
+			fill(g, SCROLL_X, y, 3, 2, C_DAC);
+		}
+		if (aimed && note >= g->dac_drop_note && note < g->dac_drop_note + g->dac_drop_count) {
+			fill(g, SCROLL_X, y, 6, 3, C_AMBER);
+		}
+	}
+	if (playing >= 0) {
+		fill(g, SCROLL_X, DAC_Y + playing * DAC_SCROLL_H / ROM_IMAGE_NOTES, 6, 3, C_PLAYING);
+	}
+	// What the ROM does with samples (hardware-rom.md, section 9).
+	fill(g, BANK_X, 400, BANK_RIGHT - BANK_X, 1, C_CELL);
+	const bool tuned = values->channels[PATCH_NUM_FM_CHANNELS - 1][PARAM_FINE_TUNE] != 64;
+	text(g, BANK_X, 406, "ONE SAMPLE AT A TIME. NO VOLUME: VELOCITY AND CC7 DO NOTHING.", C_HINT, 1);
+	text(g, BANK_X, 416, "ALL NOTES OFF AND ALL SOUND OFF DO NOT STOP A PLAYING SAMPLE.", C_HINT, 1);
+	text(g, BANK_X, 426, "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE.", tuned ? C_AMBER : C_HINT, 1);
+	text(g, BANK_X, 436, "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM.", C_HINT, 1);
+	text(g, BANK_X, 446, "THE DAC SWITCH BELOW RESETS THE CHIP: ALL SOUNDING NOTES ARE CUT.", C_HINT, 1);
+}
+
+// What the footer says about the DAC page under the mouse.
+static bool dac_hint(mdmi_gui *g, char *out, size_t size)
+{
+	const patch_values *values = patch_view(g->source.patch);
+	if (!is_dac_page(g, values)) {
+		return false;
+	}
+	const int x = g->mouse_x, y = g->mouse_y;
+	if (x >= DAC_FREE_X && x < DAC_FREE_X + DAC_FREE_W && y >= 30 && y < 52) {
+		const double free = rom_image_room() - dac_used(dac_of(g));
+		snprintf(out, size, "FREE %.2f MB: %.0f S AT 32 KHZ, %.0f S AT 22 KHZ", free / 1048576.0, free / ROM_SAMPLE_HZ[0], free / ROM_SAMPLE_HZ[1]);
+		return true;
+	}
+	const int note = dac_note_at(g, x, y);
+	if (note < 0) {
+		return false;
+	}
+	if (!engine_booted(g)) {
+		snprintf(out, size, "ENGINE RESTARTS WITH THE NEW SAMPLES: NO SOUND UNTIL IT IS LOADED");
+		return true;
+	}
+	rom_sample sample;
+	const char *name;
+	bool file;
+	char key[8], rate[8];
+	note_name(note, key, sizeof(key));
+	if (over_reset(g, note, x, y)) {
+		snprintf(out, size, "RESET %d: BACK TO %s%s. THE ENGINE RESTARTS", note, ROM_SAMPLE_NAMES[note][0] ? "ROM " : "EMPTY", ROM_SAMPLE_NAMES[note]);
+	} else if (!note_sample(g, note, &sample, &name, &file)) {
+		snprintf(out, size, "%d %s EMPTY. DROP A WAV HERE", note, key);
+	} else if (file) {
+		snprintf(out, size, "%d %s %.60s", note, key, name);
+	} else {
+		rate_text(sample.rate, rate, sizeof(rate));
+		snprintf(out, size, "%d %s %s %.2f S %s, ROM. DROP A WAV HERE TO REPLACE IT", note, key, name, sample.length / ROM_SAMPLE_HZ[sample.rate], rate);
+	}
+	return true;
+}
+
 static void draw_page(mdmi_gui *g, const patch_values *values)
 {
 	const int channel = *g->source.channel;
 	char buffer[64];
 	draw_page_top(g, values);
 	if (is_dac(values, channel)) {
-		static const char *const NOTES[] = {
-			"Notes on MIDI channel 6 trigger drum samples.",
-			"One sample at a time. Note off stops it.",
-			"Volume, pan and pitch do nothing on samples.",
-			"The sample page comes in a later stage.",
-			"Turn DAC off below to get FM channel 6 back.",
-		};
-		text(g, PAGE_X, 62, "CH 6 PLAYS SAMPLES (DAC)", C_DAC, 2);
-		for (size_t i = 0; i < sizeof(NOTES) / sizeof(*NOTES); i++) {
-			text(g, PAGE_X, 90 + (int)i * 12, NOTES[i], C_LABEL, 1);
-		}
+		draw_dac(g, values);
 		return;
 	}
 	if (!channel_is_fm(channel)) {
@@ -1974,6 +2203,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
+	} else if (dac_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_AMBER);
 	} else if (envelope_hint(g, buffer, sizeof(buffer))) {
@@ -2697,6 +2928,21 @@ static void on_down(mdmi_gui *g, int x, int y)
 		refresh(g);
 		return;
 	}
+	if (is_dac_page(g, patch_view(g->source.patch))) {
+		const int note = dac_note_at(g, x, y);
+		if (note >= 0 && over_reset(g, note, x, y) && engine_booted(g)) {
+			char message[FILES_MESSAGE];
+			if (files_reset_sample(g->source.files, note, message, sizeof(message))) {
+				say(g, message, C_AMBER, MESSAGE_TICKS);
+			}
+		} else if (x >= SCROLL_X && x < SCROLL_X + 6 && y >= DAC_Y && y < DAC_Y + DAC_SCROLL_H) {
+			scroll_dac(g, (y - DAC_Y) * ROM_IMAGE_NOTES / DAC_SCROLL_H - DAC_ROWS / 2);
+		}
+		if (note >= 0 || (x >= SCROLL_X && y >= DAC_Y && y < DAC_Y + DAC_SCROLL_H)) {
+			refresh(g);
+			return;
+		}
+	}
 	if (*g->source.page == PAGE_BANK) {
 		const int place = bank_place_at(g, x, y);
 		const int selected = *g->source.channel;
@@ -2887,7 +3133,7 @@ static mdmi_gui *gui_of(IDropTarget *self)
 // The files offered, up to a bank of them, and how many are instruments and envelopes.
 static void read_drop(mdmi_gui *g, IDataObject *data)
 {
-	g->file_count = g->file_instruments = g->file_envelopes = 0;
+	g->file_count = g->file_instruments = g->file_envelopes = g->file_samples = 0;
 	g->file_paths[0][0] = g->file_name[0] = g->file_stem[0] = 0;
 	FORMATETC format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
 	STGMEDIUM medium;
@@ -2904,6 +3150,7 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 				to_utf8(path, utf8, sizeof(g->file_paths[0]));
 				g->file_instruments += files_kind(utf8) == FILES_INSTRUMENT;
 				g->file_envelopes += files_kind(utf8) == FILES_ENVELOPE;
+				g->file_samples += files_kind(utf8) == FILES_SAMPLE;
 			}
 		}
 		GlobalUnlock(medium.hGlobal);
@@ -2950,7 +3197,31 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 	g->drop_channel = g->drop_place = -1;
 	g->drop_add = false;
 	g->drop_lit = 0;
+	g->dac_drop_count = 0;
 	const patch_values *values = patch_view(g->source.patch);
+	if (g->file_samples > 0) {
+		// WAV go only to the DAC page's notes, one after another from the row (stage 12).
+		const int note = is_dac_page(g, values) ? dac_note_at(g, x, y) : -1;
+		if (!is_dac_page(g, values)) {
+			hint(g, C_LABEL, "WAV: open CH6 EDITOR with DAC on");
+		} else if (!engine_booted(g)) {
+			hint(g, C_LABEL, "Wait: the engine is loading");
+		} else if (g->file_samples != g->file_count) {
+			hint(g, C_LABEL, "Only WAV files go to notes");
+		} else if (note < 0) {
+			hint(g, C_LABEL, "Drop the WAV on a note");
+		} else {
+			g->dac_drop_note = note;
+			g->dac_drop_count = g->file_samples < ROM_IMAGE_NOTES - note ? g->file_samples : ROM_IMAGE_NOTES - note;
+			if (g->dac_drop_count == 1) {
+				hint(g, C_AMBER, "%s > note %d. The engine restarts", g->file_stem, note);
+			} else {
+				hint(g, C_AMBER, "%d WAV > notes %d-%d%s. The engine restarts", g->dac_drop_count, note, note + g->dac_drop_count - 1, g->file_samples > g->dac_drop_count ? ", the rest won't fit" : "");
+			}
+			return true;
+		}
+		return false;
+	}
 	const int page = *g->source.page;
 	const bool many = g->file_count > 1;
 	// The files go as envelopes when only those are there, or with both kinds when the bank shows
@@ -3068,7 +3339,15 @@ static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data,
 	const bool fits = aim_drop(g, point);
 	*effect = drop_effect(*effect, fits);
 	g->file_over = false;
-	if (fits && g->drop_channel >= 0) {
+	if (fits && g->dac_drop_count > 0) {
+		const char *paths[ROM_IMAGE_NOTES];
+		for (int i = 0; i < g->dac_drop_count; i++) {
+			paths[i] = g->file_paths[i];
+		}
+		char message[FILES_MESSAGE];
+		const int loaded = files_put_samples(g->source.files, paths, g->dac_drop_count, g->dac_drop_note, message, sizeof(message));
+		say(g, message, loaded ? C_AMBER : C_ERROR, loaded ? MESSAGE_TICKS : ERROR_TICKS);
+	} else if (fits && g->drop_channel >= 0) {
 		open_file(g, g->file_paths[0], g->drop_channel);
 	} else if (fits) {
 		const char *paths[PATCH_BANK_SIZE];
@@ -3124,6 +3403,9 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 	ScreenToClient(g->window, &client);
 	if (*g->source.page == PAGE_BANK && client.x / g->scale >= BANK_X) {
 		scroll_bank(g, g->bank_top - delta / WHEEL_DELTA * WHEEL_ROWS);
+		refresh(g);
+	} else if (is_dac_page(g, patch_view(g->source.patch)) && client.x / g->scale >= BANK_X) {
+		scroll_dac(g, g->dac_top - delta / WHEEL_DELTA * WHEEL_ROWS);
 		refresh(g);
 	}
 }

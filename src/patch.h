@@ -311,6 +311,8 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // Stops every note and gives every FM voice back to its own channel.
 void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
+// The ROM booted again (a new image, stage 12): notes are gone, and the receiver gets everything.
+void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // Any thread: how many held notes of a channel don't sound.
 int patch_muted_notes(const mdmi_patch *patch, int channel);
 // Any thread: the channel playing on an FM voice, or -1, and the key it plays there.

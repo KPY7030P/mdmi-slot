@@ -1,5 +1,5 @@
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..3b14f2c 100644
+index 5145b6a..c4c5e3b 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -649,13 +649,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
@@ -54,6 +54,14 @@ index 5145b6a..3b14f2c 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
+@@ -1002,6 +1031,7 @@ static void enable_dac(bool enable)
+ {
+     deviceChannels[5].ops = enable ? &DAC_VTable : &FM_VTable;
+     synth_enable_dac(enable);
++    midi_psg_chip_reset();
+ }
+ 
+ static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
 diff --git a/src/midi.h b/src/midi.h
 index 731aa8c..f85f64f 100644
 --- a/src/midi.h
@@ -68,7 +76,7 @@ index 731aa8c..f85f64f 100644
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..0ef6018 100644
+index 82a5655..7d69893 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
 @@ -48,6 +48,11 @@ typedef struct MidiPsgChannel {
@@ -112,7 +120,29 @@ index 82a5655..0ef6018 100644
      psgChan->envelopeLoopStart = NULL;
  }
  
-@@ -293,6 +309,15 @@ void midi_psg_load_envelope(const u8* eef)
+@@ -209,6 +225,21 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
+     apply_attenuation(psgChan, effective_attenuation(psgChan));
+ }
+ 
++// Changing the Z80 driver resets the PSG (SGDK's PSG_reset): tone 0 and silence on every channel,
++// noise control 0. The shadow now says the same, and a sounding note is written again.
++void midi_psg_chip_reset(void)
++{
++    for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
++        MidiPsgChannel* psgChan = &psgChannels[chan];
++        psgChan->freq = 0;
++        psgChan->attenuation = PSG_ATTENUATION_SILENCE;
++        if (psgChan->noteOn) {
++            apply_tone(psgChan, envelope_tone(psgChan));
++            apply_attenuation(psgChan, effective_attenuation(psgChan));
++        }
++    }
++}
++
+ void midi_psg_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity)
+ {
+     if (pitch < MIN_MIDI_KEY) {
+@@ -293,6 +324,15 @@ void midi_psg_load_envelope(const u8* eef)
      userDefinedEnvelopePtr = userDefinedEnvelope;
  }
  
@@ -129,7 +159,7 @@ index 82a5655..0ef6018 100644
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
 diff --git a/src/midi_psg.h b/src/midi_psg.h
-index e5bb02e..2a91b72 100644
+index e5bb02e..b5c5749 100644
 --- a/src/midi_psg.h
 +++ b/src/midi_psg.h
 @@ -9,6 +9,8 @@
@@ -141,14 +171,22 @@ index e5bb02e..2a91b72 100644
  
  #define PSG_ATTENUATION_SILENCE 0xF
  #define PSG_ATTENUATION_LOUDEST 0
-@@ -24,4 +26,5 @@ void midi_psg_program(u8 chan, u8 program);
+@@ -16,6 +18,7 @@
+ 
+ void midi_psg_init(const u8** defaultEnvelopes);
+ void midi_psg_reset(void);
++void midi_psg_chip_reset(void);
+ void midi_psg_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity);
+ void midi_psg_note_off(u8 chan, u8 pitch);
+ void midi_psg_all_notes_off(u8 chan);
+@@ -24,4 +27,5 @@ void midi_psg_program(u8 chan, u8 program);
  void midi_psg_pan(u8 chan, u8 pan);
  void midi_psg_tick(u16 delta);
  void midi_psg_load_envelope(const u8* eef);
 +void midi_psg_store_envelope(u8 program, const u8* eef, u16 length);
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..812efd5 100644
+index d2449c4..9f4c868 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -164,6 +202,69 @@ index d2449c4..812efd5 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
+@@ -249,6 +255,7 @@ int main(void)
+ 
+         midi_pcm_test(test_midi_enables_dac),
+         midi_pcm_test(test_midi_disables_dac),
++        midi_pcm_test(test_midi_dac_switch_rewrites_psg),
+ 
+         synth_test(test_synth_init_sets_initial_registers),
+         synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
+diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
+index 9650279..1e5409f 100644
+--- a/tests/unit/test_midi_dac.c
++++ b/tests/unit/test_midi_dac.c
+@@ -1,6 +1,7 @@
+ #include "test_midi_dac.h"
+ #include "test_midi.h"
+ #include "mocks/mock_midi.h"
++#include "mocks/mock_psg.h"
+ #include "snd/sound.h"
+ #include "snd/pcm/snd_pcm.h"
+ 
+@@ -62,3 +63,30 @@ void test_midi_dac_stops_note(UNUSED void** state)
+ 
+     __real_midi_note_off(dacFmChannel, noteKey);
+ }
++
++// Changing the driver resets the PSG behind the ROM: a sounding note is written again, and the
++// same note after the switch is written at all.
++void test_midi_dac_switch_rewrites_psg(UNUSED void** state)
++{
++    const u8 chan = MIN_PSG_CHAN;
++    const u8 psgChan = chan - MIN_PSG_CHAN;
++
++    expect_psg_tone(psgChan, TONE_NTSC_C4);
++    expect_psg_attenuation(psgChan, 0);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++
++    expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_psg_tone(psgChan, TONE_NTSC_C4);
++    expect_psg_attenuation(psgChan, 0);
++    __real_midi_cc(0, 78, 0x7F);
++
++    expect_psg_attenuation(psgChan, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(chan, MIDI_PITCH_C4);
++
++    expect_value(__wrap_synth_enable_dac, enable, false);
++    __real_midi_cc(0, 78, 0);
++
++    expect_psg_tone(psgChan, TONE_NTSC_C4);
++    expect_psg_attenuation(psgChan, 0);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++}
+diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
+index 5e63f7b..7b48ac3 100644
+--- a/tests/unit/test_midi_dac.h
++++ b/tests/unit/test_midi_dac.h
+@@ -3,6 +3,7 @@
+ int test_midi_dac_setup(UNUSED void** state);
+ void test_midi_enables_dac(UNUSED void** state);
+ void test_midi_disables_dac(UNUSED void** state);
++void test_midi_dac_switch_rewrites_psg(UNUSED void** state);
+ void test_midi_dac_plays_note(UNUSED void** state);
+ void test_midi_dac_does_not_play_null_sample(UNUSED void** state);
+ void test_midi_dac_stops_note(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
 index 9ce9691..8a738a6 100644
 --- a/tests/unit/test_midi_sysex.c

@@ -81,6 +81,18 @@
 #define ALL_SOUND_X 290
 #define ALL_SOUND_RIGHT 346
 #define CH2_VOLUME 1201
+// The DAC page (stage 12).
+#define RAIL_CH6_Y 264
+#define COLOR_AMBER 0xEECC66
+#define COLOR_DAC 0xEE8822
+#define COLOR_DAC_DARK 0x442200
+#define DAC_SCROLL_X 702
+#define DAC_LIST_Y 96
+#define DAC_LIST_BOTTOM 396
+#define DAC_FILE_X 580
+#define DAC_RESET_X 650
+// Note 40 is the 15th row when the page opens at note 26.
+#define DAC_NOTE40_Y 376
 #define CH2_PAN 1202
 #define COLOR_FM 0x4422EE
 #define COLOR_MARK 0xEECC66
@@ -304,6 +316,47 @@ static int get_value(clap_id id)
 	double value = -1;
 	params->get_value(plugin, id, &value);
 	return (int)value;
+}
+
+// A project in memory, for the state extension.
+static uint8_t project[1 << 20];
+static size_t project_size, project_read;
+
+static int64_t project_write(const clap_ostream_t *stream, const void *buffer, uint64_t size)
+{
+	(void)stream;
+	if (project_size + size > sizeof(project)) {
+		return -1;
+	}
+	memcpy(project + project_size, buffer, size);
+	project_size += size;
+	return (int64_t)size;
+}
+
+static int64_t project_take(const clap_istream_t *stream, void *buffer, uint64_t size)
+{
+	(void)stream;
+	const size_t left = project_size - project_read;
+	const size_t count = size < left ? size : left;
+	memcpy(buffer, project + project_read, count);
+	project_read += count;
+	return (int64_t)count;
+}
+
+// Waits for the engine to restart: LOADING in amber, then RUNNING again. The time in ms, or -1.
+static long wait_restart(HWND window)
+{
+	const DWORD start = GetTickCount();
+	bool loading = false;
+	while (GetTickCount() - start < BOOT_TIMEOUT_MS) {
+		run_ms(10);
+		capture(window);
+		loading = loading || count_color(0, HEADER_H, COLOR_AMBER) > 0;
+		if (loading && count_color(0, HEADER_H, COLOR_PLAYING) > 0) {
+			return (long)(GetTickCount() - start);
+		}
+	}
+	return -1;
 }
 
 int main(int argc, char **argv)
@@ -844,6 +897,50 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "envelope-short");
 		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
 		CHECK(wide >= 403 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
+
+		// Stage 12: with the DAC on, EDITOR of channel 6 is the DAC page. A project with a sample
+		// restarts the engine, and RESET gives the note back to the ROM.
+		send_midi(0xB0, 78, 127);
+		run_ms(800);
+		click(window, RAIL_X, RAIL_CH6_Y);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "dac");
+		const int mapped = count_color_in(DAC_SCROLL_X, DAC_SCROLL_X + 6, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC_DARK);
+		CHECK(mapped > 60 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "the DAC page maps the ROM's samples (%d px on the track), no file yet", mapped);
+		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
+		clap_ostream_t out_stream = {NULL, project_write};
+		project_size = 0;
+		CHECK(state && state->save(plugin, &out_stream), "the project saves");
+		// A block of samples (D36): note 40, rate 1, 4096 bytes of a quiet ramp, a name.
+		const uint32_t type = 9, bytes = 4096, length = 1 + 1 + 4 + 32 + bytes;
+		memcpy(project + project_size, &type, 4);
+		memcpy(project + project_size + 4, &length, 4);
+		uint8_t *block = project + project_size + 8;
+		memset(block, 0, length);
+		block[0] = 40;
+		block[1] = 1;
+		memcpy(block + 2, &bytes, 4);
+		memcpy(block + 6, "ramp.wav", 8);
+		for (uint32_t i = 0; i < bytes; i++) {
+			block[38 + i] = (uint8_t)(i % 64);
+		}
+		project_size += 8 + length;
+		project_read = 0;
+		clap_istream_t in_stream = {NULL, project_take};
+		CHECK(state->load(plugin, &in_stream), "a project with a sample loads");
+		const long restart_ms = wait_restart(window);
+		capture(window);
+		save_bmp(argv[2], "dac-file");
+		const int file = count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_NOTE40_Y, DAC_NOTE40_Y + 20, COLOR_DAC);
+		CHECK(restart_ms >= 0 && file > 10, "the engine restarts in %ld ms with the sample, note 40 says FILE (%d px)", restart_ms, file);
+		click(window, DAC_RESET_X, DAC_NOTE40_Y + 9);
+		const long reset_ms = wait_restart(window);
+		capture(window);
+		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "RESET gives note 40 the ROM's sample again, restart %ld ms", reset_ms);
+		send_midi(0xB0, 78, 0);
+		run_ms(800);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

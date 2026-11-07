@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: страница DAC, v9</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 40px; }
+  h3 { color: #eee; font-size: 16px; margin: 22px 0 6px; }
+  p, ul { max-width: 1100px; margin: 6px 0; }
+  li { margin: 2px 0; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .done { border: 1px solid #444; background: #161616; padding: 8px 14px; max-width: 1100px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid #383838; padding: 5px 9px; vertical-align: top; }
+  th { color: #eee; text-align: left; background: #1a1a1a; }
+  code { color: #eee; }
+  #zoom { position: fixed; right: 16px; top: 12px; background: #222; color: #eee; border: 1px solid #555; padding: 6px 10px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="zoom">Макеты x2</button>
+<main>
+<h1>MDMI: страница DAC, v9 (этап 12 «Сэмплы DAC»)</h1>
+<p>art-director, 2026-11-07. Окно 720x528, палитра та же 16 цветов, шрифт 5x7, виджеты только существующие:
+строки списка как на BANK, ячейка значения, кнопка-рамка, дорожка прокрутки с метками, подвал. Кода нет.</p>
+<div class="done"><b>Где страница:</b> EDITOR канала 6, когда DAC включён. Новой вкладки нет. Выключен DAC — EDITOR канала 6
+показывает FM, как сейчас. Причина: EDITOR всегда показывает то, что канал играет; рельс уже красит строку 6 оранжевым и пишет
+«Samples»; кнопка вкладок в шапке не меняется (ALL, EDITOR, BANK, ROM).</div>
+
+<h2>1. Обычный вид</h2>
+<canvas id="c1"></canvas>
+<p class="lbl">Ноты 26-40. На 34 и 37 сэмплы из файлов (имя белым, FILE, RESET). Играет нота 38 (салатовая полоска и номер).
+Мышь над строкой 36: белая рамка, в подвале полное описание.</p>
+
+<h2>2. Бросок двух WAV на ноту 36</h2>
+<canvas id="c2"></canvas>
+<p class="lbl">Как на BANK: строки, которые займут файлы, залиты янтарным. В ячейке FREE янтарём показано, сколько места
+съедят файлы. Подвал говорит, что заменится и что ядро перезапустится.</p>
+
+<h2>3. Перезапуск ядра после броска</h2>
+<canvas id="c3"></canvas>
+<p class="lbl">В шапке LOADING (уже есть). В строках, которые меняются, вместо FILE стоит LOADING. Подвал янтарный. Новые броски
+не принимаются, пока ядро не загрузилось: строки тусклые, подвал «WAIT».</p>
+
+<h2>4. Пустые ноты, Tune не в центре, наведение на RESET</h2>
+<canvas id="c4"></canvas>
+<p class="lbl">Ноты 86-100. На 90 сэмпл из файла на пустой ноте. TUNE канала 6 = +3: ячейка показывает это, строка предупреждения
+про изгиб и Tune янтарная. Мышь на RESET строки 90.</p>
+
+<h2>5. Строки в x2</h2>
+<canvas id="cg1"></canvas>
+<p class="lbl">Жёлтый пунктир: колонки строки (242 полоска, 276 правый край номера, 282 нота, 310 имя, 520 правый край длины,
+528 частота, 580 FILE, 636-696 RESET, 698 край строки, 702 дорожка).</p>
+
+<h2>Что выбрать</h2>
+<table>
+<tr><th>№</th><th>Вопрос</th><th>Варианты</th><th>Рекомендую</th></tr>
+<tr><td>1</td><td>Где страница</td><td>EDITOR канала 6 при DAC ON / своя вкладка DAC</td><td>EDITOR канала 6</td></tr>
+<tr><td>2</td><td>Как вернуть ноте сэмпл ROM</td><td>кнопка RESET в строке / правый клик / только UNDO</td><td>RESET в строке; UNDO в шапке отменяет последнюю замену или RESET</td></tr>
+<tr><td>3</td><td>PORTA канала 6 на странице: с Portamento вторая нота сэмпл не запускает (hardware-rom.md, вопрос 3, п. 3)</td><td>не показывать / ячейка PORTA на её месте 590,56 и строка предупреждения</td><td>не показывать в этапе 12, записать в ROADMAP</td></tr>
+</table>
+</main>
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", amber: "#EECC66", err: "#EE2222",
+};
+let g;
+function use(id, w, h) { const cv = typeof id === "string" ? document.getElementById(id) : id; cv.width = w; cv.height = h; g = cv.getContext("2d"); g.imageSmoothingEnabled = false; R(0, 0, w, h, C.bg); return cv; }
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c) { R(x, y, w, 1, c); R(x, y + h - 1, w, 1, c); R(x, y, 1, h, c); R(x + w - 1, y, 1, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) { const bits = parseInt(hex.substr(col * 2, 2), 16); for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z); }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n) : s; }
+function crop(id, fn, x, y, w, h, z) {
+  const off = document.createElement("canvas"); use(off, 720, 528); fn();
+  const cv = document.getElementById(id); cv.width = w * z; cv.height = h * z;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false; cx.drawImage(off, x, y, w, h, 0, 0, w * z, h * z);
+}
+// note_name() of gui.c: C-4 is 60.
+const NOTE = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
+const nn = p => NOTE[p % 12] + (Math.floor(p / 12) - 1);
+
+// ---------- the ROM's map (hardware-rom.md, section 3) ----------
+const ROMMAP = ("26 HighQ .05|27 Slap .66|28 ScratchPush .13|29 ScratchPull .12|30 Sticks .19|31 SquareClick .03|32 MetroClick .01|" +
+  "33 MetroBell .45|34 StdKick .29|35 StdKick .29|36 RimTap 1.45|37 StdSnr1 .48|38 Clap .38|39 StdSnr2 .53|40 LowFlrStudio 1.0|" +
+  "41 HiHatClosed .72|42 FlrStudio .84|43 HiHatFoot .51|44 LowStudio 1.17|45 HiHatHalfOpen 3.17|46 MdStudio 1.01|47 MdHiStudio .95|" +
+  "48 Crsh1 8.53|49 HiStudio 1.01|50 Ride1 2.59|51 ChinaCrash 3.59|52 BellRide 3.29|53 Tambourine .52|54 Splash 2.71|55 CowBell .39|" +
+  "56 Crsh2 5.70|57 VibraSlap 1.52|58 Ride2 2.95|59 BongoRim .33|60 LowBongo .39|61 ClosedSlap .28|62 HighConga .72|63 LowTumba .64|" +
+  "64 HighTimbale 1.49|65 LowTimbale 1.60|66 HighAgogo .29|67 LowAgogo .41|68 Cabasa .19|69 Maracas .12|70 ShortWhistle .20|" +
+  "71 LongWhistle .45|72 GuiroDown .22|73 GuiroUp .51|74 Clave .10|75 HighWoodblock .31|76 LowWoodblock .33|77 QuicaHi 1.57|" +
+  "78 QuicaLow 1.87|79 Triangle 1.64|80 Triangle 1.64|81 SmallShaker .70|82 SleighBells 2.02|83 BellTree 6.47|84 Castanet .07|" +
+  "85 ShortTaikoHit 1.44|86 LongTaikoHit 1.88").split("|");
+function baseMap() {
+  const m = [];
+  for (let n = 0; n < 128; n++) m.push(null);
+  ROMMAP.forEach(e => { const [n, name, s] = e.split(" "); m[+n] = { name, len: +s, rate: "22K", file: false }; });
+  return m;
+}
+
+// ---------- frame: header, rail, globals (v8) ----------
+const RAIL = [
+  { name: "Synth Bass 1", seen: 1, held: 1, note: 36, vel: 110, vol: 112 },
+  { name: "Rhodes", star: 1, seen: 1, held: 0, note: 64, vel: 84, vol: 100 },
+  { name: "Square Lead", seen: 1, held: 1, note: 72, vel: 96, vol: 100 },
+  { name: "strings_warm", seen: 1, held: 1, note: 59, vel: 60, vol: 96 },
+  { name: "Overdrive Guit", seen: 1, held: 0, note: 52, vel: 96, vol: 104 },
+  { dac: 1 },
+  { name: "Envelope 0", psg: 1, seen: 1, held: 1, note: 72, vel: 100, vol: 96 },
+  { name: "Square Lead", psg: 1, seen: 1, held: 1, note: 76, vel: 88, vol: 90 },
+  { name: "tremolo_pad", psg: 1, seen: 1, held: 0, note: 67, vel: 50, vol: 90 },
+  { name: "Envelope 0", psg: 1, seen: 0, vol: 80 },
+];
+const rowY = i => i < 6 ? 44 + i * 40 : 300 + (i - 6) * 40;
+function segBar(x, y, w, h, c, dark) {
+  const n = 16, pitch = Math.floor(w / n), eff = c.seen ? c.vol * c.vel / 127 / 127 : 0;
+  const nv = Math.round(n * c.vol / 127), ne = c.seen ? Math.max(1, Math.round(n * eff)) : 0, lit = c.held ? C.lit : C.hint;
+  for (let k = 0; k < n; k++) R(x + k * pitch, y, pitch - 1, h, k < ne ? lit : k < nv ? dark : C.cell);
+}
+function railRow(i, sel, st) {
+  const c = RAIL[i], y = rowY(i);
+  R(0, y, 232, 39, C.bg); R(0, y + 39, 232, 1, C.cell);
+  if (c.dac) {
+    // draw_row() for the DAC: "Samples", the note, a 16 px mark lit while held.
+    if (sel) R(4, y, 229, 39, C.dacD);
+    R(0, y, 4, 39, C.dac);
+    T(String(i + 1), 10, y + 7, C.text, 3); T("Samples", 54, y + 5, C.text, 2);
+    if (st.play != null) TR(nn(st.play), 226, y + 22, st.held ? C.lit : C.hint, 1);
+    R(54, y + 25, 16, 4, st.held ? C.lit : C.cell);
+    return;
+  }
+  const kind = c.psg ? C.psg : C.fm, dark = c.psg ? C.psgD : C.fmD;
+  if (sel) R(4, y, 229, 39, dark);
+  R(0, y, 4, 39, kind);
+  T(String(i + 1), 10, y + 7, C.text, 3);
+  T(cut(c.name, 13) + (c.star ? "*" : ""), 54, y + 5, C.text, 2);
+  segBar(54, y + 25, 140, 4, c, dark);
+  TR(c.seen ? nn(c.note) : "---", 226, y + 22, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1);
+}
+function frame(st) {
+  R(0, 0, 720, 28, C.bg); R(0, 27, 720, 1, C.line); T("MDMI", 8, 7, C.text, 2);
+  [["ALL", 60, 56], ["EDITOR", 120, 80], ["BANK", 204, 80], ["ROM", 288, 56]].forEach(([l, x, w]) => { const on = l === "EDITOR"; R(x, 2, w, 24, on ? C.text : C.cell); TC(l, x, w, 7, on ? C.bg : C.label, 2); });
+  if (st.loading) T("LOADING", 352, 7, C.amber, 2); else T("RUNNING", 352, 7, C.lit, 2);
+  [["LOAD", 536, 1], ["SAVE", 596, 1], ["UNDO", 656, 1]].forEach(([l, x, en]) => { B(x, 2, 56, 24, en ? C.line : C.cell); TC(l, x, 56, 7, en ? C.label : C.line, 2); });
+  R(0, 28, 232, 16, C.cell); T("YM2612", 8, 32, C.fmL, 1); R(0, 284, 232, 16, C.cell); T("SN76489", 8, 288, C.psg, 1);
+  for (let i = 0; i < 10; i++) railRow(i, i === 5, st);
+  R(232, 28, 1, 432, C.line);
+  R(0, 460, 720, 1, C.line);
+  [["LFO", "ON"], ["LFO RATE", "3.98 HZ"], ["FILTER", "OFF"], ["CH3 SPECIAL", "OFF"], ["DAC", "ON"]].forEach(([l, v], i) => {
+    const x = 8 + i * 118; R(x, 466, 114, 32, C.cell); T(l, x + 4, 470, C.label, 1); T(v, x + 4, 480, l === "DAC" ? C.dac : C.text, 2);
+  });
+}
+function footer(s, c = C.label) { T(s, 8, 512, c, 1); TR("0.12.0", 712, 512, C.hint, 1); }
+
+// A value cell (vc of v8) with the DAC's dark fill.
+function vc(x, y, w, h, label, val, max, o = {}) {
+  const fill = o.fill || C.dacD;
+  R(x, y, w, h, C.cell);
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), h, fill); R(mid, y, 1, h, C.line); }
+  else R(x, y, Math.round(w * val / max), h, fill);
+  if (label) T(label, x + 4, y + Math.floor((h - 7) / 2), C.label, 1);
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + Math.floor((h - 14) / 2), o.ink || C.text, 2);
+}
+
+// ======================= v9: the DAC page =======================
+const SPACE_MB = 1.9;
+const LIST_X = 242, LIST_RIGHT = 698, LIST_Y = 96, ROW = 20, ROWS = 15, TRACK_X = 702, TRACK_H = ROWS * ROW;
+const COL = { stripe: 242, numR: 276, note: 282, name: 310, lenR: 520, rate: 528, file: 580, reset: 636, resetW: 60 };
+const WARN_Y = 406, WARN_PITCH = 10;
+const WARN = [
+  { s: "ONE SAMPLE AT A TIME. NO VOLUME: VELOCITY AND CC7 DO NOTHING." },
+  { s: "ALL NOTES OFF AND ALL SOUND OFF DO NOT STOP A PLAYING SAMPLE." },
+  { s: "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE.", live: "tune" },
+  { s: "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM.", live: "lent" },
+  { s: "THE DAC SWITCH BELOW RESETS THE CHIP: ALL SOUNDING NOTES ARE CUT." },
+];
+
+function pageTop(st) {
+  // Name line: number x3, "Samples" x2, the free space where other pages have their source.
+  T("6", 242, 30, C.text, 3); T("Samples", 288, 34, C.text, 2);
+  const free = SPACE_MB - st.used, x = 592, y = 30, w = 116, h = 22;
+  R(x, y, w, h, C.cell);
+  const fw = Math.round(w * free / SPACE_MB);
+  R(x, y, fw, h, C.dacD);
+  // While WAVs are dragged: what they would take, a 4 px amber strip at the free part's right end.
+  if (st.incoming) { const iw = Math.max(2, Math.round(w * st.incoming / SPACE_MB)); R(x + fw - iw, y + h - 4, iw, 4, C.amber); }
+  const left = free - (st.incoming || 0), low = left < SPACE_MB * 0.1;
+  T("FREE", x + 4, y + 8, C.label, 1);
+  TR((left < 0 ? "-" : "") + Math.abs(left).toFixed(1) + " MB", x + w - 4, y + 4, left < 0 ? C.err : low || st.incoming ? C.amber : C.text, 2);
+  // Channel row: only TUNE, at its place on every page; the other places stay empty on the DAC.
+  vc(422, 56, 96, 20, "TUNE", st.tune, 99, { bip: 1, text: (st.tune > 0 ? "+" : "") + st.tune, ink: st.tune ? C.amber : C.text });
+  R(233, 79, 487, 1, C.cell);
+  // List header.
+  T("NOTE", 250, 84, C.hint, 1); T("SAMPLE", COL.name, 84, C.dac, 1); TR("LENGTH", COL.lenR, 84, C.hint, 1);
+  T("RATE", COL.rate, 84, C.hint, 1); T("FILE", COL.file, 84, C.hint, 1);
+}
+function noteRow(n, row, s, st) {
+  const y = LIST_Y + row * ROW, e = s[n];
+  const target = st.drop && n >= st.drop[0] && n < st.drop[0] + st.drop[1];
+  const dim = st.wait;
+  const held = st.held && st.play === n;
+  const ink = c => target ? C.bg : dim ? C.line : c;
+  if (target) R(LIST_X, y, COL.file - LIST_X - 4, ROW - 1, C.amber);
+  R(LIST_X, y + ROW - 1, LIST_RIGHT - LIST_X, 1, n % 12 === 11 ? C.line : C.cell);
+  if (held && !target) R(COL.stripe, y, 4, ROW - 1, C.lit);
+  TR(String(n), COL.numR, y + 3, ink(held ? C.lit : e ? C.label : C.hint), 2);
+  T(nn(n), COL.note, y + 7, ink(e ? C.hint : C.line), 1);
+  if (target) {
+    const f = st.dropFiles[n - st.drop[0]];
+    T(cut(f.name, 14), COL.name, y + 3, C.bg, 2);
+  } else if (!e) {
+    T("---", COL.name, y + 7, C.line, 1);
+  } else {
+    T(cut(e.name, 14), COL.name, y + 3, ink(e.file ? C.text : C.label), 2);
+    TR(e.len.toFixed(2) + " S", COL.lenR, y + 7, ink(C.label), 1);
+    T(e.rate, COL.rate, y + 7, ink(C.label), 1);
+  }
+  if (st.loadingNotes && st.loadingNotes.includes(n)) T("LOADING", COL.file, y + 7, C.amber, 1);
+  else if (e && e.file && !target) {
+    T("FILE", COL.file, y + 7, ink(C.dac), 1);
+    const over = st.hoverReset === n, bx = COL.reset, by = y + 2;
+    B(bx, by, COL.resetW, 15, dim ? C.cell : over ? C.text : C.line);
+    TC("RESET", bx, COL.resetW, by + 4, dim ? C.line : over ? C.text : C.label, 1);
+  }
+  if (st.hover === n || st.hoverReset === n) B(LIST_X, y, LIST_RIGHT - LIST_X, ROW - 1, C.text);
+}
+function track(s, st) {
+  R(TRACK_X, LIST_Y, 6, TRACK_H, C.cell);
+  const yOf = n => LIST_Y + Math.floor(n * TRACK_H / 128);
+  // Where the map has samples: dark orange under the thumb.
+  for (let n = 0; n < 128; n++) if (s[n]) R(TRACK_X, yOf(n), 6, yOf(n + 1) - yOf(n), C.dacD);
+  R(TRACK_X, yOf(st.top), 6, Math.round(TRACK_H * ROWS / 128), C.line);
+  for (let n = 0; n < 128; n++) if (s[n] && s[n].file) R(TRACK_X, yOf(n), 3, 2, C.dac);
+  if (st.drop) R(TRACK_X, yOf(st.drop[0]), 6, Math.max(3, yOf(st.drop[0] + st.drop[1]) - yOf(st.drop[0])), C.amber);
+  if (st.held) R(TRACK_X, yOf(st.play), 6, 3, C.lit);
+}
+function warnings(st) {
+  R(242, 400, 456, 1, C.cell);
+  WARN.forEach((w, i) => {
+    const live = (w.live === "tune" && st.tune) || (w.live === "lent" && st.lent);
+    T(w.s, 242, WARN_Y + i * WARN_PITCH, live ? C.amber : C.hint, 1);
+  });
+}
+function dacPage(st) {
+  frame(st);
+  R(233, 28, 4, 52, C.dac);
+  const s = baseMap();
+  (st.files || []).forEach(([n, name, len, rate]) => { s[n] = { name, len, rate, file: true }; });
+  pageTop(st);
+  for (let r = 0; r < ROWS; r++) noteRow(st.top + r, r, s, st);
+  track(s, st);
+  warnings(st);
+  footer(st.foot, st.footC);
+}
+
+const FILES = [[34, "808_kick", 0.62, "32K"], [37, "snare_tight", 0.41, "32K"]];
+use("c1", 720, 528);
+dacPage({ top: 26, used: 0.48, tune: 0, files: FILES, play: 38, held: true, hover: 36,
+  foot: "36 C-2 RimTap 1.45 S 22 KHZ, ROM. DROP A WAV HERE TO REPLACE IT" });
+
+use("c2", 720, 528);
+dacPage({ top: 26, used: 0.48, incoming: 0.09, tune: 0, files: FILES, play: 38, held: false,
+  drop: [36, 2], dropFiles: [{ name: "rim_dry" }, { name: "snare_909" }],
+  foot: "2 WAV TO 36-37: REPLACE RimTap, snare_tight. 0.09 MB. ENGINE RESTARTS", footC: C.amber });
+
+use("c3", 720, 528);
+dacPage({ top: 26, used: 0.57, tune: 0, loading: true, wait: true, loadingNotes: [36, 37],
+  files: [[34, "808_kick", 0.62, "32K"], [36, "rim_dry", 0.30, "32K"], [37, "snare_909", 0.35, "22K"]],
+  foot: "ENGINE RESTARTS WITH THE NEW SAMPLES: NO SOUND UNTIL IT IS LOADED", footC: C.amber });
+
+use("c4", 720, 528);
+dacPage({ top: 86, used: 0.53, tune: 3, files: [...FILES, [90, "laser_zap", 0.80, "16K"]], play: 90, held: true, hoverReset: 90,
+  foot: "RESET 90: BACK TO EMPTY. THE ENGINE RESTARTS. UNDO BRINGS laser_zap BACK" });
+
+const Y = "#EEEE22";
+function vdash(x, y0, y1) { for (let y = y0; y < y1; y += 3) R(x, y, 1, 1, Y); }
+crop("cg1", () => {
+  dacPage({ top: 26, used: 0.48, tune: 0, files: FILES, play: 38, held: true, hover: 36, foot: "" });
+  [242, 276, 282, 310, 520, 528, 580, 636, 696, 698, 702].forEach(x => vdash(x, 82, 216));
+}, 236, 80, 476, 140, 2);
+
+let zoomed = false;
+document.getElementById("zoom").onclick = () => {
+  zoomed = !zoomed;
+  document.querySelectorAll("canvas").forEach(cv => { cv.style.width = zoomed ? cv.width * 2 + "px" : ""; });
+  document.getElementById("zoom").textContent = zoomed ? "Макеты x1" : "Макеты x2";
+};
+</script>
+</body>
+</html>

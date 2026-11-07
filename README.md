@@ -9,8 +9,11 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 - `third_party/blastem` is built as `libblastem.dll` with `patches/0001-mdmi-everdrive-bridge.patch`.
 - The ROM is MDMI v1.34 built from `third_party/mdmi` with `patches/0003-mdmi-psg-envelopes.patch` (D28), in
   the ROM author's SGDK image, into `build/rom/mdmi-everdrive.bin`. The same file is meant for the console.
-  Its one addition: SysEx `0A 01 <program> <nibbles>` stores a PSG envelope under a program number.
+  Its additions: SysEx `0A 01 <program> <nibbles>` stores a PSG envelope under a program number, and
+  after switching the DAC the ROM writes its PSG tones and volumes again (D35).
   Unchanged, the tag builds the released `roms/mdmi-everdrive-v1.34.bin` byte for byte.
+- `tools/gen_rom_map.py` reads where the DAC sample table is from the ROM build's `symbol.txt`, so the
+  plugin can patch the image (D36). `src/rom_image.c` patches it, `src/dac.c` turns WAV files into samples.
 - `src/embed.c` bundles that DLL and the ROM into the plugin. Each instance unpacks its own copy to
   `%TEMP%\MDMI-Plugin`, because BlastEm keeps its state in globals.
 - `src/engine.c` runs the emulator on its own MMCSS thread and feeds a ring buffer. MIDI is applied at
@@ -56,7 +59,16 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
-- DAC Enable: MIDI channel 6 plays the ROM's drum samples, chosen by note, with no FM voice of its own.
+- DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own.
+- DAC page (stage 12, D36, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on lists the
+  128 notes with what each plays: the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
+  it), a WAV dropped on it, or nothing. WAV files dropped on a row go to that note and the next ones; a
+  file is turned into the driver's format (mono, 8 bits, the lowest of its six rates that keeps the
+  file's, at most 32 kHz) and kept in the project, up to the image's free room, about 1.9 MB. RESET
+  gives a note the ROM's sample back, UNDO puts back the samples before the last change. Every change
+  restarts the core with a patched image: about 0.3-0.5 s without sound, the header says LOADING, then
+  every channel gets its sound again. TUNE is the page's only cell: off centre, as bend, a note plays
+  its neighbour's sample. The rates are those BlastEm plays, 2-3% below what SGDK names them.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square
   Lead on 81, 90 and 100, Plain elsewhere). On a PSG channel Preset, CC 3 and a clip's Pgm choose from
   it, and the BANK page lists it while a channel 7-10 is selected. An EEF works there as a TFI does on
@@ -127,8 +139,9 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   a click on one sets it as one gesture, any other click closes the choice. In Ch3 Special Mode
   channel 3's number on the page is light FM, as in the rail.
 
-Toggling the DAC resets the YM2612, because the ROM swaps the Z80 driver and the Z80's reset line also clears
-the chip. Sounding FM notes stop, and `src/patch.c` reloads every channel's sound afterwards.
+Toggling the DAC resets the YM2612 and the PSG, because the ROM swaps the Z80 driver: SGDK resets both chips,
+and the Z80's reset line also clears the YM2612. Sounding notes stop, `src/patch.c` reloads every FM
+channel's sound afterwards, and our ROM writes its PSG tones and volumes again (D35).
 
 ### From a MIDI track
 

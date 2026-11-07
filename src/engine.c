@@ -28,6 +28,12 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 // One-pole high-pass that removes the DC offset of the YM2612 DAC.
 #define DC_BLOCK_HZ 5.0
 
+// An image for the next boot, handed from the main thread to the worker.
+typedef struct {
+	size_t size;
+	uint8_t bytes[];
+} rom_image;
+
 typedef struct {
 	uint64_t target;
 	uint8_t length;
@@ -49,6 +55,7 @@ typedef uint32_t (*has_failed_fn)(void);
 typedef void (*set_lowpass_fn)(double);
 typedef uint8_t (*test_ym_read_fn)(uint8_t, uint8_t);
 typedef uint8_t (*test_psg_volume_fn)(uint8_t);
+typedef uint16_t (*test_psg_tone_fn)(uint8_t);
 
 struct mdmi_engine {
 	HANDLE thread;
@@ -64,6 +71,7 @@ struct mdmi_engine {
 	has_failed_fn has_failed;
 	test_ym_read_fn test_ym_read;
 	test_psg_volume_fn test_psg_volume;
+	test_psg_tone_fn test_psg_tone;
 	set_lowpass_fn set_lowpass;
 	void_fn retro_deinit;
 	double core_rate;
@@ -80,6 +88,10 @@ struct mdmi_engine {
 	bool thread_started;
 	double worst_run_ms;
 	double worst_wait_ms;
+	// Set by the main thread, taken by the worker: the core boots this image next (stage 12).
+	rom_image *next_rom;
+	uint32_t boots;
+	double last_boot_ms;
 	const char *boot_stage;
 	DWORD boot_error;
 	uint64_t worst_run_pos;
@@ -92,6 +104,9 @@ struct mdmi_engine {
 	uint32_t failed;
 	uint32_t booted;
 	uint32_t offline;
+	// Tests only: the worker computes no further than the last block render asked for.
+	uint32_t lockstep;
+	uint64_t lockstep_target;
 	uint32_t discard_audio;
 	uint32_t filter_hz;
 	uint32_t applied_filter_hz;
@@ -316,8 +331,19 @@ static bool unpack_files(mdmi_engine *e)
 	// of this process it comes from.
 	snprintf(e->dll_path, sizeof(e->dll_path), "%sengine-%lu-%lu.dll", dir, GetCurrentProcessId(), GetCurrentThreadId());
 	snprintf(e->rom_path, sizeof(e->rom_path), "%srom-%lu-%lu.bin", dir, GetCurrentProcessId(), GetCurrentThreadId());
-	return write_file(e->dll_path, mdmi_blob_engine, (size_t)(mdmi_blob_engine_end - mdmi_blob_engine))
-		&& write_file(e->rom_path, mdmi_blob_rom, (size_t)(mdmi_blob_rom_end - mdmi_blob_rom));
+	return write_file(e->dll_path, mdmi_blob_engine, (size_t)(mdmi_blob_engine_end - mdmi_blob_engine));
+}
+
+// The image handed over last, else the built-in one on the first boot.
+static bool write_rom(mdmi_engine *e)
+{
+	rom_image *image = __atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL);
+	if (!image) {
+		return e->boots == 0 && write_file(e->rom_path, mdmi_blob_rom, (size_t)(mdmi_blob_rom_end - mdmi_blob_rom));
+	}
+	bool ok = write_file(e->rom_path, image->bytes, image->size);
+	free(image);
+	return ok;
 }
 
 #define LOAD(var, type, name) \
@@ -362,7 +388,8 @@ static double now_ms(void)
 static bool load_core(mdmi_engine *e)
 {
 	double t0 = now_ms();
-	if (!unpack_files(e)) {
+	// A restart keeps the DLL file it already has.
+	if (!(e->dll_path[0] || unpack_files(e)) || !write_rom(e)) {
 		e->boot_error = GetLastError();
 		e->boot_stage = "unpack";
 		return false;
@@ -393,6 +420,7 @@ static bool load_core(mdmi_engine *e)
 	LOAD(test_freeze, void_fn, "mdmi_test_freeze")
 	LOAD(test_ym_read, test_ym_read_fn, "mdmi_test_ym_read")
 	LOAD(test_psg_volume, test_psg_volume_fn, "mdmi_test_psg_volume")
+	LOAD(test_psg_tone, test_psg_tone_fn, "mdmi_test_psg_tone")
 	LOAD(deinit, void_fn, "retro_deinit")
 	LOAD(set_lowpass, set_lowpass_fn, "mdmi_set_lowpass")
 	e->retro_run = run;
@@ -400,6 +428,7 @@ static bool load_core(mdmi_engine *e)
 	e->has_failed = has_failed;
 	e->test_ym_read = test_ym_read;
 	e->test_psg_volume = test_psg_volume;
+	e->test_psg_tone = test_psg_tone;
 	e->test_fatal = test_fatal;
 	e->test_freeze = test_freeze;
 	e->retro_deinit = deinit;
@@ -433,8 +462,25 @@ static bool load_core(mdmi_engine *e)
 	if (getenv("MDMI_PLUGIN_STATS")) {
 		fprintf(stderr, "boot unpack=%.0fms loadlibrary=%.0fms load_game=%.0fms frames=%.0fms\n", t1 - t0, t2 - t1, t3 - t2, now_ms() - t3);
 	}
+	// What was queued for the ROM before a restart was meant for the one that went: the plugin
+	// sends everything again once it sees the new boot.
+	if (e->boots) {
+		__atomic_store_n(&e->midi_tail, __atomic_load_n(&e->midi_head, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+	}
+	e->last_boot_ms = now_ms() - t0;
 	__atomic_store_n(&e->booted, 1, __ATOMIC_RELEASE);
+	__atomic_add_fetch(&e->boots, 1, __ATOMIC_ACQ_REL);
 	return true;
+}
+
+// The same core boots another image: its DLL is unloaded, so the next load starts from fresh globals.
+static bool restart_core(mdmi_engine *e)
+{
+	__atomic_store_n(&e->booted, 0, __ATOMIC_RELEASE);
+	e->retro_deinit();
+	FreeLibrary(e->dll);
+	e->dll = NULL;
+	return load_core(e);
 }
 
 static void pump_midi(mdmi_engine *e, uint64_t position)
@@ -482,6 +528,15 @@ static DWORD WINAPI worker_main(LPVOID param)
 			WaitForSingleObject(e->wake, INFINITE);
 			continue;
 		}
+		if (__atomic_load_n(&e->next_rom, __ATOMIC_ACQUIRE)) {
+			if (!restart_core(e)) {
+				__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
+				return 1;
+			}
+			// The new core has the default filter.
+			e->applied_filter_hz = 0;
+			continue;
+		}
 		uint32_t filter_hz = __atomic_load_n(&e->filter_hz, __ATOMIC_ACQUIRE);
 		if (filter_hz && filter_hz != e->applied_filter_hz) {
 			e->set_lowpass(filter_hz);
@@ -490,7 +545,10 @@ static DWORD WINAPI worker_main(LPVOID param)
 		uint64_t write = e->ring_write;
 		pump_midi(e, write);
 		uint64_t read = __atomic_load_n(&e->ring_read, __ATOMIC_ACQUIRE);
-		if (write - read >= e->fill_target) {
+		bool full = __atomic_load_n(&e->lockstep, __ATOMIC_ACQUIRE)
+			? write >= __atomic_load_n(&e->lockstep_target, __ATOMIC_ACQUIRE)
+			: write - read >= e->fill_target;
+		if (full) {
 			double wait_start = now_ms();
 			WaitForSingleObject(e->wake, 1);
 			double wait_ms = now_ms() - wait_start;
@@ -576,6 +634,7 @@ void mdmi_engine_destroy(mdmi_engine *e)
 	if (e->rom_path[0]) {
 		DeleteFileA(e->rom_path);
 	}
+	free(__atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL));
 	if (clean_exit) {
 		if (e->wake) {
 			CloseHandle(e->wake);
@@ -609,6 +668,7 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 	e->latency = e->midi_delay + (uint32_t)(sample_rate * ROM_REACTION_SECONDS);
 
 	e->ring_read = e->ring_write = 0;
+	e->lockstep_target = 0;
 	e->midi_head = e->midi_tail = 0;
 	e->parked = 0;
 	__atomic_store_n(&e->active, 1, __ATOMIC_RELEASE);
@@ -664,6 +724,35 @@ void mdmi_engine_set_offline(mdmi_engine *e, bool offline)
 	__atomic_store_n(&e->offline, offline, __ATOMIC_RELEASE);
 }
 
+uint32_t mdmi_engine_boots(const mdmi_engine *e)
+{
+	return __atomic_load_n(&e->boots, __ATOMIC_ACQUIRE);
+}
+
+const uint8_t *mdmi_engine_builtin_rom(size_t *size)
+{
+	*size = (size_t)(mdmi_blob_rom_end - mdmi_blob_rom);
+	return mdmi_blob_rom;
+}
+
+bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size)
+{
+	rom_image *image = malloc(sizeof(*image) + size);
+	if (!image) {
+		return false;
+	}
+	image->size = size;
+	memcpy(image->bytes, bytes, size);
+	free(__atomic_exchange_n(&e->next_rom, image, __ATOMIC_ACQ_REL));
+	SetEvent(e->wake);
+	return true;
+}
+
+void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep)
+{
+	__atomic_store_n(&e->lockstep, lockstep, __ATOMIC_RELEASE);
+}
+
 uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg)
 {
 	return e->test_ym_read(part, reg);
@@ -672,6 +761,11 @@ uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg)
 uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel)
 {
 	return e->test_psg_volume(channel);
+}
+
+uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel)
+{
+	return e->test_psg_tone(channel);
 }
 
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
@@ -683,6 +777,8 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.booted = __atomic_load_n(&e->booted, __ATOMIC_ACQUIRE) != 0,
 		.worst_run_ms = e->worst_run_ms,
 		.worst_wait_ms = e->worst_wait_ms,
+		.boots = __atomic_load_n(&e->boots, __ATOMIC_ACQUIRE),
+		.last_boot_ms = e->last_boot_ms,
 		.boot_stage = e->boot_stage,
 		.boot_error = e->boot_error,
 		.worst_run_pos = e->worst_run_pos,
@@ -745,6 +841,7 @@ void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset)
 void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t frames)
 {
 	uint64_t read = e->ring_read;
+	__atomic_store_n(&e->lockstep_target, read + frames, __ATOMIC_RELEASE);
 	uint64_t available = __atomic_load_n(&e->ring_write, __ATOMIC_ACQUIRE) - read;
 	SetEvent(e->wake);
 	__atomic_store_n(&e->last_block, frames, __ATOMIC_RELAXED);

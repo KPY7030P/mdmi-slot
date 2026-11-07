@@ -16,6 +16,9 @@ typedef struct {
 	bool booted;
 	double worst_run_ms;
 	double worst_wait_ms;
+	// Boots done so far: a restart with another image adds one (stage 12).
+	uint32_t boots;
+	double last_boot_ms;
 	const char *boot_stage;
 	uint32_t boot_error;
 	uint64_t worst_run_pos;
@@ -52,10 +55,23 @@ void mdmi_engine_set_offline(mdmi_engine *e, bool offline);
 // Any thread. Applied by the emulation thread before its next step.
 void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz);
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e);
+// Any thread. How many times the core has booted.
+uint32_t mdmi_engine_boots(const mdmi_engine *e);
+// The ROM image built into the plugin.
+const uint8_t *mdmi_engine_builtin_rom(size_t *size);
+// Main thread. The core boots this image next, copied: before the first boot instead of the built-in
+// one, after it as a restart on the engine's own thread. Nothing sounds while it boots; stats show the
+// boot and its time.
+bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size);
+// Tests only, before activate: the emulator computes no further than the block being rendered, so
+// after mdmi_engine_render it stands at the first step past the audio, whatever the scheduler did.
+void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep);
 // Tests only: what the running YM2612 holds in a register.
 uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg);
 // The attenuation of a PSG channel, 0-15, for tests.
 uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel);
+// A tone channel's period, or the noise channel's type and rate bits, for tests.
+uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel);
 // Main thread. Frames are only copied while someone is watching.
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);

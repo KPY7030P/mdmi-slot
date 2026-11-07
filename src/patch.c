@@ -1602,6 +1602,27 @@ static bool cc_to_model(int cc, int value, int *global, int *param, int *result)
 //   a value of the model: goes into the model only, and sync sends the difference;
 //   a reset, or SysEx we can't read: goes to the ROM, which we then know nothing about;
 //   anything else plays: goes straight to the ROM.
+// The ROM holds what we can't know: SysEx we can't read, or a reset. After a reset its envelopes are
+// its own again.
+static void resend_everything(mdmi_patch *patch, bool reset, patch_emit_fn emit, void *context)
+{
+	forget_everything(&patch->rom);
+	if (reset) {
+		forget_envelopes(&patch->rom);
+	}
+	// Every voice gets its own channel's whole sound again.
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		patch->voices[voice].sound = (int8_t)voice;
+	}
+	patch_sync(patch, &patch->rom, emit, context);
+}
+
+void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	stop_playing(patch, emit, context);
+	resend_everything(patch, true, emit, context);
+}
+
 bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_emit_fn emit, void *context)
 {
 	int status = bytes[0] & 0xF0;
@@ -1628,15 +1649,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	if (bytes[0] == 0xF0 || bytes[0] == 0xFF) {
 		stop_playing(patch, emit, context);
 		emit(context, bytes, length);
-		forget_everything(&patch->rom);
-		if (bytes[0] == 0xFF) {
-			forget_envelopes(&patch->rom);
-		}
-		// Every voice gets its own channel's whole sound again.
-		for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-			patch->voices[voice].sound = (int8_t)voice;
-		}
-		patch_sync(patch, &patch->rom, emit, context);
+		resend_everything(patch, bytes[0] == 0xFF, emit, context);
 		return false;
 	}
 	if (status == 0xC0 && length >= 2 && is_channel) {

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <clap/clap.h>
 #include <windows.h>
+#include "dac.h"
 #include "engine.h"
 #include "gui.h"
 #include "patch.h"
@@ -50,12 +51,17 @@ typedef struct {
 	uint32_t sync_pending;
 	// After activation the ROM's notes stopped, and lent voices go home.
 	uint32_t notes_off_pending;
+	// The engine's boots the writer has seen: a new one is a restart with another image (stage 12).
+	uint32_t boots_seen;
 	uint32_t dirty_pending;
 	bool knobs_moved;
 	bool active;
 	mdmi_gui *gui;
 	// The window's page and channel and the loops switched off, saved with the project.
 	state_view view;
+	// The project's DAC samples (D36), and the version of them the core was last given.
+	dac_set dac;
+	uint32_t dac_applied;
 	mdmi_files files;
 	// Single producer, the main thread; single consumer, the writer.
 	edit_command edits[EDIT_QUEUE];
@@ -145,6 +151,7 @@ static bool plugin_init(const clap_plugin_t *plugin)
 	self->host_params = self->host->get_extension(self->host, CLAP_EXT_PARAMS);
 	self->host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
 	patch_init(&self->patch);
+	self->view.dac = &self->dac;
 	const files_host files = {&self->patch, &self->view, files_handed, self};
 	files_init(&self->files, &files);
 	apply_filter(self);
@@ -162,6 +169,7 @@ static void plugin_destroy(const clap_plugin_t *plugin)
 	gui_destroy(self->gui);
 	files_free(&self->files);
 	mdmi_engine_destroy(self->engine);
+	dac_clear(&self->dac);
 	free(self);
 }
 
@@ -430,6 +438,18 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 	mdmi_plugin *self = self_of(plugin);
 	mdmi_engine *engine = self->engine;
 	bool state_taken = patch_take_incoming(&self->patch);
+	const uint32_t boots = mdmi_engine_boots(engine);
+	if (boots != self->boots_seen) {
+		// The first boot holds what patch_init expects; a later one is a new ROM that knows nothing.
+		if (self->boots_seen) {
+			emit_target target = {self, 0};
+			patch_rom_booted(&self->patch, emit_to_engine, &target);
+			for (int channel = 0; channel < GUI_NUM_MIDI_CHANNELS; channel++) {
+				release_notes(self, channel);
+			}
+		}
+		self->boots_seen = boots;
+	}
 	if (__atomic_exchange_n(&self->sync_pending, 0, __ATOMIC_ACQ_REL) || state_taken) {
 		apply_filter(self);
 		emit_target target = {self, 0};
@@ -650,9 +670,27 @@ static const clap_plugin_params_t params_ext = {
 	.flush = params_flush,
 };
 
+// Other DAC samples restart the core with an image that has them (D36). Before the first boot
+// that is just the image it boots.
+static void apply_dac(mdmi_plugin *self)
+{
+	if (self->dac.version == self->dac_applied) {
+		return;
+	}
+	size_t size, built;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+	uint8_t *image = dac_image(&self->dac, rom, size, &built);
+	if (image) {
+		self->dac_applied = self->dac.version;
+		mdmi_engine_set_rom(self->engine, image, built);
+		free(image);
+	}
+}
+
 // After a project, a bank or a snapshot went to the model, or a file's voice did.
 static void after_load(mdmi_plugin *self, bool knobs)
 {
+	apply_dac(self);
 	if (self->active) {
 		// The next process call or flush takes it. The host may not process until asked.
 		if (self->host_params) {

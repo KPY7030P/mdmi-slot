@@ -14,7 +14,8 @@
 // The loops switched off in the editor came with D30, also as a block of their own: per PSG
 // channel kept, start, end (255 for the envelope's end) and the envelope's name.
 // The channels' bases came with D31, as a block of their own: the FM voices, then the PSG envelopes.
-enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4, BLOCK_ENVELOPES = 5, BLOCK_PSG = 6, BLOCK_LOOPS = 7, BLOCK_BASES = 8 };
+// The DAC samples came with D36, also as a block of their own, written only when there are any.
+enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4, BLOCK_ENVELOPES = 5, BLOCK_PSG = 6, BLOCK_LOOPS = 7, BLOCK_BASES = 8, BLOCK_DAC = 9 };
 #define LOOP_BYTES (3 + PATCH_NAME)
 #define LOOPS_BYTES (PATCH_NUM_PSG_CHANNELS * LOOP_BYTES)
 static_assert(sizeof(patch_instrument) == PATCH_NAME + PATCH_VOICE_PARAMS * 2, "a bank place has no padding");
@@ -29,7 +30,8 @@ static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
 
 uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 {
-	const size_t most = sizeof(uint32_t) + 8 * BLOCK_HEAD + patch_save_size() + 3 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + PATCH_BASES_BYTES + PLACES_BYTES + ENVELOPES_BYTES;
+	const size_t dac_bytes = view && view->dac ? dac_block_size(view->dac) : 0;
+	const size_t most = sizeof(uint32_t) + 9 * BLOCK_HEAD + patch_save_size() + 3 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + PATCH_BASES_BYTES + PLACES_BYTES + ENVELOPES_BYTES + dac_bytes;
 	uint8_t *buffer = malloc(most);
 	if (!buffer) {
 		return NULL;
@@ -62,6 +64,11 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 		out = put_block_head(out + LOOPS_BYTES, BLOCK_BASES, PATCH_BASES_BYTES);
 		patch_save_bases(values, out);
 		out += PATCH_BASES_BYTES;
+		if (dac_bytes) {
+			out = put_block_head(out, BLOCK_DAC, (uint32_t)dac_bytes);
+			dac_block_write(view->dac, out);
+			out += dac_bytes;
+		}
 	}
 	const patch_bank *bank = patch_bank_view(patch);
 	out = put_block_head(out, BLOCK_BANK, PLACES_BYTES);
@@ -85,8 +92,8 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 	if (version != STATE_VERSION) {
 		return false;
 	}
-	const uint8_t *values = NULL, *seen_view = NULL, *names = NULL, *bank = NULL, *envelopes = NULL, *psg = NULL, *loops = NULL, *bases = NULL;
-	uint32_t values_length = 0, view_length = 0;
+	const uint8_t *values = NULL, *seen_view = NULL, *names = NULL, *bank = NULL, *envelopes = NULL, *psg = NULL, *loops = NULL, *bases = NULL, *samples = NULL;
+	uint32_t values_length = 0, view_length = 0, samples_length = 0;
 	for (size_t at = sizeof(version); at + BLOCK_HEAD <= size;) {
 		uint32_t type, length;
 		memcpy(&type, bytes + at, sizeof(type));
@@ -113,6 +120,9 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 			loops = bytes + at;
 		} else if (type == BLOCK_BASES && length == PATCH_BASES_BYTES) {
 			bases = bytes + at;
+		} else if (type == BLOCK_DAC) {
+			samples = bytes + at;
+			samples_length = length;
 		}
 		// A block of a newer build is skipped.
 		at += length;
@@ -123,9 +133,16 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 	if (values && values_length % 6) {
 		return false;
 	}
+	// A whole state has its samples, or the ROM's. Read before anything changes, so damaged
+	// samples leave the state untouched.
+	dac_set read_samples = {0};
+	if (values && view->dac && samples && !dac_block_read(&read_samples, samples, samples_length)) {
+		return false;
+	}
 	if (bank) {
 		patch_bank *copy = malloc(sizeof(patch_bank));
 		if (!copy) {
+			dac_clear(&read_samples);
 			return false;
 		}
 		patch_bank_rom(copy);
@@ -135,6 +152,9 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 		}
 		patch_load_bank(patch, copy);
 		free(copy);
+	}
+	if (values && view->dac) {
+		dac_take(view->dac, &read_samples);
 	}
 	if (values) {
 		char copied[PATCH_NUM_FM_CHANNELS][PATCH_NAME];

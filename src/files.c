@@ -23,6 +23,7 @@ void files_free(mdmi_files *files)
 	free(files->undo_state);
 	files->undo_state = NULL;
 	files->undo = UNDO_NONE;
+	dac_clear(&files->undo_dac);
 }
 
 static const char *extension_of(const char *path)
@@ -62,6 +63,9 @@ int files_kind(const char *path)
 	}
 	if (!_stricmp(extension, "eef")) {
 		return FILES_ENVELOPE;
+	}
+	if (!_stricmp(extension, "wav")) {
+		return FILES_SAMPLE;
 	}
 	return -1;
 }
@@ -121,6 +125,7 @@ static void channel_envelope(mdmi_patch *patch, int channel, patch_envelope *out
 static void remember(mdmi_files *files, int undo, int target, const patch_instrument *instrument, const patch_envelope *envelope, uint8_t *state, size_t state_size)
 {
 	free(files->undo_state);
+	dac_clear(&files->undo_dac);
 	files->undo = undo;
 	files->undo_target = target;
 	files->undo_state = state;
@@ -445,6 +450,88 @@ bool files_save(mdmi_files *files, const char *path, int kind, int channel, char
 	return written;
 }
 
+// Undo of the samples keeps a whole copy of them as they were.
+static void remember_samples(mdmi_files *files, const char *text)
+{
+	remember(files, UNDO_SAMPLES, 0, NULL, NULL, NULL, 0);
+	const dac_set *dac = files->host.view->dac;
+	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+		files->undo_dac.notes[note] = dac_copy(dac->notes[note]);
+	}
+	snprintf(files->undo_text, sizeof(files->undo_text), "%s", text);
+}
+
+int files_put_samples(mdmi_files *files, const char *const *paths, int count, int first, char *message, size_t size)
+{
+	dac_set *dac = files->host.view->dac;
+	if (count > ROM_IMAGE_NOTES - first) {
+		count = ROM_IMAGE_NOTES - first;
+	}
+	if (!dac || count <= 0) {
+		snprintf(message, size, "No note for the WAV");
+		return 0;
+	}
+	dac_sample *read[ROM_IMAGE_NOTES] = {0};
+	uint32_t used = dac_used(dac);
+	int loaded = 0;
+	for (; loaded < count; loaded++) {
+		const int note = first + loaded;
+		const char *name = base_of(paths[loaded]);
+		size_t length = 0;
+		uint8_t *bytes = files_kind(paths[loaded]) == FILES_SAMPLE ? read_all(paths[loaded], &length) : NULL;
+		const char *error = "not a WAV file";
+		read[loaded] = bytes ? dac_from_wav(bytes, length, name, &error) : NULL;
+		free(bytes);
+		if (!read[loaded]) {
+			snprintf(message, size, "%s: %s", name, error);
+			break;
+		}
+		if (dac->notes[note]) {
+			used -= rom_image_cost(dac->notes[note]->sample.length);
+		}
+		used += rom_image_cost(read[loaded]->sample.length);
+		if (used > rom_image_room()) {
+			snprintf(message, size, "No room: %.2f MB more than the ROM has", (used - rom_image_room()) / 1048576.0);
+			break;
+		}
+	}
+	if (loaded < count) {
+		for (int i = 0; i <= loaded && i < count; i++) {
+			free(read[i]);
+		}
+		return 0;
+	}
+	char text[FILES_MESSAGE];
+	if (count == 1) {
+		snprintf(text, sizeof(text), "note %d back before %.40s", first, read[0]->name);
+		snprintf(message, size, "%.40s > note %d, the engine restarts", read[0]->name, first);
+	} else {
+		snprintf(text, sizeof(text), "notes %d-%d back before %d WAV", first, first + count - 1, count);
+		snprintf(message, size, "%d WAV > notes %d-%d, the engine restarts", count, first, first + count - 1);
+	}
+	remember_samples(files, text);
+	for (int i = 0; i < count; i++) {
+		dac_put(dac, first + i, read[i]);
+	}
+	files->host.handed(files->host.context, false);
+	return count;
+}
+
+bool files_reset_sample(mdmi_files *files, int note, char *message, size_t size)
+{
+	dac_set *dac = files->host.view->dac;
+	if (!dac || note < 0 || note >= ROM_IMAGE_NOTES || !dac->notes[note]) {
+		return false;
+	}
+	char text[FILES_MESSAGE];
+	snprintf(text, sizeof(text), "note %d back to %.40s", note, dac->notes[note]->name);
+	remember_samples(files, text);
+	dac_put(dac, note, NULL);
+	snprintf(message, size, "Note %d plays the ROM's sample again, the engine restarts", note);
+	files->host.handed(files->host.context, false);
+	return true;
+}
+
 bool files_undo(mdmi_files *files, char *message, size_t size)
 {
 	const int undo = files->undo, target = files->undo_target;
@@ -464,6 +551,16 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 	} else if (undo == UNDO_PLACE) {
 		patch_instrument back = files->undo_instrument;
 		put_in_place(files, target, &back);
+	} else if (undo == UNDO_SAMPLES) {
+		// The samples before and now trade places, so a second undo brings the change back.
+		dac_set *dac = files->host.view->dac;
+		for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+			dac_sample *now = dac->notes[note];
+			dac->notes[note] = files->undo_dac.notes[note];
+			files->undo_dac.notes[note] = now;
+		}
+		dac->version++;
+		files->host.handed(files->host.context, false);
 	} else {
 		uint8_t *back = files->undo_state;
 		files->undo_state = NULL;

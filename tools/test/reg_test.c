@@ -7,6 +7,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#define PSAPI_VERSION 2
+#include <windows.h>
+#include <psapi.h>
+#include "dac.h"
 #include "engine.h"
 #include "instrument.h"
 #include "patch.h"
@@ -146,6 +150,16 @@ static void check_globals(const char *what)
 	}
 }
 
+// The engine's warm-up leaves a lower velocity behind, and a channel keeps its last note's.
+static void full_velocity(void)
+{
+	for (int channel = 0; channel < FM_CHANNELS; channel++) {
+		midi((uint8_t)(0x90 | channel), 60, 127);
+		midi((uint8_t)(0x80 | channel), 60, 0);
+	}
+	render(SETTLE_BLOCKS);
+}
+
 static void test_every_preset(void)
 {
 	for (int channel = 0; channel < FM_CHANNELS; channel++) {
@@ -259,6 +273,214 @@ static void test_dac(void)
 	set_global(GLOBAL_CH3_MODE, 0);
 	sync_and_settle();
 	check_voices("every channel keeps its own voice", 0, FM_CHANNELS - 1, -1);
+}
+
+static void check(bool passed, const char *what);
+
+// Switching the DAC swaps the Z80 driver, and SGDK resets the PSG with it: tone 0, silence, noise
+// control 0. The same notes on every PSG channel must sound as before the switch.
+static void psg_notes(bool on)
+{
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		midi((uint8_t)((on ? 0x90 : 0x80) | (PATCH_NUM_FM_CHANNELS + i)), (uint8_t)(64 + i * 3), on ? 127 : 0);
+	}
+	render(SETTLE_BLOCKS);
+}
+
+static void psg_state(uint16_t *tone, uint8_t *volume)
+{
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		tone[i] = mdmi_engine_test_psg_tone(engine, (uint8_t)i);
+		volume[i] = mdmi_engine_test_psg_volume(engine, (uint8_t)i);
+	}
+}
+
+static void check_psg_after_dac(const char *what, int dac, const uint16_t *tone, const uint8_t *volume)
+{
+	uint16_t now_tone[PATCH_NUM_PSG_CHANNELS];
+	uint8_t now_volume[PATCH_NUM_PSG_CHANNELS];
+	set_global(GLOBAL_DAC, dac);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	psg_notes(true);
+	psg_state(now_tone, now_volume);
+	psg_notes(false);
+	int bad = 0;
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		if (tone[i] != now_tone[i] || volume[i] != now_volume[i]) {
+			printf("    channel %d: tone %d, before %d; attenuation %d, before %d\n", PATCH_NUM_FM_CHANNELS + i + 1, now_tone[i], tone[i], now_volume[i], volume[i]);
+			bad++;
+		}
+	}
+	check(bad == 0, what);
+}
+
+static void test_dac_psg(void)
+{
+	uint16_t tone[PATCH_NUM_PSG_CHANNELS];
+	uint8_t volume[PATCH_NUM_PSG_CHANNELS];
+	psg_notes(true);
+	psg_state(tone, volume);
+	psg_notes(false);
+	check_psg_after_dac("DAC on: the same PSG notes sound as before", 1, tone, volume);
+	check_psg_after_dac("DAC off: the same PSG notes sound as before", 0, tone, volume);
+}
+
+// A new image restarts the core (stage 12): the plugin hands everything over again, and every channel
+// sounds as before. The same image twenty times, so a core that doesn't unload cleanly shows.
+#define RESTARTS 20
+
+static size_t private_bytes(void)
+{
+	PROCESS_MEMORY_COUNTERS_EX counters = {.cb = sizeof(counters)};
+	GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&counters, sizeof(counters));
+	return counters.PrivateUsage;
+}
+
+static void test_restart(void)
+{
+	set_on(1, PARAM_OP_BASE + F_TL, 50);
+	set_on(4, PARAM_OP_BASE + 3 * PATCH_OP_PARAMS + F_AR, 9);
+	set_on(2, PARAM_PAN, 0);
+	set_global(GLOBAL_LFO_RATE, 6);
+	sync_and_settle();
+	uint16_t tone[PATCH_NUM_PSG_CHANNELS], now_tone[PATCH_NUM_PSG_CHANNELS];
+	uint8_t volume[PATCH_NUM_PSG_CHANNELS], now_volume[PATCH_NUM_PSG_CHANNELS];
+	psg_notes(true);
+	psg_state(tone, volume);
+	psg_notes(false);
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	size_t memory_before = 0;
+	double slowest = 0, total = 0;
+	int bad = 0;
+	for (int i = 0; i < RESTARTS; i++) {
+		const uint32_t boots = mdmi_engine_boots(engine);
+		mdmi_engine_set_rom(engine, rom, rom_size);
+		// Offline, render waits for the core, so one block spans the whole boot.
+		while (mdmi_engine_boots(engine) == boots) {
+			render(1);
+		}
+		patch_rom_booted(patch, emit, NULL);
+		render(SETTLE_BLOCKS);
+		full_velocity();
+		const mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
+		slowest = stats.last_boot_ms > slowest ? stats.last_boot_ms : slowest;
+		total += stats.last_boot_ms;
+		psg_notes(true);
+		psg_state(now_tone, now_volume);
+		psg_notes(false);
+		int wrong = memcmp(tone, now_tone, sizeof(tone)) || memcmp(volume, now_volume, sizeof(volume));
+		for (int voice = 0; voice < FM_CHANNELS; voice++) {
+			wrong += compare(voice, voice, i ? NULL : "after a restart") != 0;
+		}
+		bad += wrong != 0;
+		if (i == 1) {
+			// The first restarts may still grow caches of the process.
+			memory_before = private_bytes();
+		}
+	}
+	const size_t memory_after = private_bytes();
+	printf("    %d restarts: boot %.0f ms on average, slowest %.0f ms; private memory %+.1f MB over the last %d\n", RESTARTS, total / RESTARTS, slowest,
+		((double)memory_after - (double)memory_before) / 1048576.0, RESTARTS - 2);
+	check(bad == 0, "after every restart the FM voices and PSG notes are as before");
+	check_globals("and the LFO and Ch3 mode");
+	// BlastEm still leaves about 0.5 MB a load behind (ROADMAP); its JIT code was 4 MB more.
+	check(memory_after < memory_before + (RESTARTS - 2) * 1048576, "a restart leaves under 1 MB behind");
+}
+
+// Boots the core with an image and hands the ROM everything again, as the plugin does.
+static void boot_image(const uint8_t *image, size_t size)
+{
+	const uint32_t boots = mdmi_engine_boots(engine);
+	mdmi_engine_set_rom(engine, image, size);
+	while (mdmi_engine_boots(engine) == boots) {
+		render(1);
+	}
+	patch_rom_booted(patch, emit, NULL);
+	render(SETTLE_BLOCKS);
+	full_velocity();
+}
+
+// A ramp, so the DAC register says which byte of the sample plays: the driver adds 0x80.
+static dac_sample *ramp_sample(int rate, uint32_t length)
+{
+	dac_sample *s = calloc(1, sizeof(dac_sample) + length);
+	for (uint32_t i = 0; i < length; i++) {
+		s->bytes[i] = (int8_t)((int)(i % 256) - 128);
+	}
+	snprintf(s->name, sizeof(s->name), "ramp");
+	s->sample = (rom_sample){(uint8_t)rate, length, s->bytes};
+	return s;
+}
+
+// Plays the note on the DAC's channel and follows the ramp in register 0x2A: the bytes must come in
+// order, and how many per second is the rate the driver plays.
+#define RAMP_BLOCK 16
+static double ramp_rate(int key, bool *in_order)
+{
+	midi(0x95, (uint8_t)key, 127);
+	long first_at = -1, last_at = 0, index = 0, last_index = 0;
+	int last = -1;
+	*in_order = true;
+	for (long at = 0; at < RATE / 2; at += RAMP_BLOCK) {
+		mdmi_engine_render(engine, left, right, RAMP_BLOCK);
+		const int value = mdmi_engine_test_ym(engine, 0, 0x2A);
+		if (last < 0) {
+			if (value == 0x80) {
+				continue;
+			}
+			first_at = at;
+		} else {
+			const int step = (value - last + 256) % 256;
+			// The emulator steps 128 of its samples at a time, about 75 bytes at 32 kHz: anything
+			// under half the ramp's period is the next bytes in order.
+			*in_order = *in_order && step < 128;
+			index += step;
+		}
+		last = value;
+		last_index = index;
+		last_at = at;
+	}
+	midi(0x85, (uint8_t)key, 0);
+	render(SETTLE_BLOCKS);
+	*in_order = *in_order && first_at >= 0 && last_index > 0;
+	return last_at > first_at ? last_index * (double)RATE / (double)(last_at - first_at) : 0;
+}
+
+static void test_samples(void)
+{
+	size_t rom_size, image_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	check(rom_image_check(rom, rom_size), "the built-in image has the sample table the plugin was built for");
+	dac_set set = {0};
+	// A note of the ROM's and one it has nothing on.
+	dac_put(&set, 40, ramp_sample(1, 256 * 64));
+	for (int rate = 0; rate < ROM_SAMPLE_RATES; rate++) {
+		dac_put(&set, 100 + rate, ramp_sample(rate, 256 * 128));
+	}
+	uint8_t *image = dac_image(&set, rom, rom_size, &image_size);
+	boot_image(image, image_size);
+	free(image);
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	static const int KEYS[7] = {40, 100, 101, 102, 103, 104, 105}, RATES[7] = {1, 0, 1, 2, 3, 4, 5};
+	for (int i = 0; i < 7; i++) {
+		bool in_order;
+		const double hz = ramp_rate(KEYS[i], &in_order);
+		printf("    note %d: %.0f bytes a second, the driver's rate %.0f\n", KEYS[i], hz, ROM_SAMPLE_HZ[RATES[i]]);
+		check(in_order && hz > ROM_SAMPLE_HZ[RATES[i]] * 0.99 && hz < ROM_SAMPLE_HZ[RATES[i]] * 1.01,
+			i ? "a sample on a note the ROM has none for plays at its rate" : "a sample in place of the ROM's plays its bytes at its rate");
+	}
+	bool in_order;
+	ramp_rate(41, &in_order);
+	check(mdmi_engine_test_ym(engine, 0, 0x2A) == 0x80 || !in_order, "the ROM's own sample on the next note is not the ramp");
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	dac_clear(&set);
+	boot_image(rom, rom_size);
+	check_voices("back on the built-in image every voice is as before", 0, FM_CHANNELS - 1, -1);
 }
 
 static void test_load(void)
@@ -1322,23 +1544,23 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	mdmi_engine_set_offline(engine, true);
+	// Registers are read in the position of the sound, not wherever the emulator ran ahead to.
+	mdmi_engine_test_lockstep(engine, true);
 	if (!mdmi_engine_activate(engine, RATE, BLOCK)) {
 		printf("FAIL: activate\n");
 		return 1;
 	}
 	render(SETTLE_BLOCKS);
-	// The engine's warm-up leaves a lower velocity behind.
-	for (int channel = 0; channel < FM_CHANNELS; channel++) {
-		midi((uint8_t)(0x90 | channel), 60, 127);
-		midi((uint8_t)(0x80 | channel), 60, 0);
-	}
-	render(SETTLE_BLOCKS);
+	full_velocity();
 	check_voices("a booted ROM holds the model's defaults", 0, FM_CHANNELS - 1, -1);
 	check_globals("and its LFO and Ch3 mode");
 	test_every_preset();
 	test_values();
 	test_program_from_clip();
 	test_dac();
+	test_dac_psg();
+	test_restart();
+	test_samples();
 	test_load();
 	test_voice_by_hand();
 	test_reset();

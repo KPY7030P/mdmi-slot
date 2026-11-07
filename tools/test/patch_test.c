@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include "dac.h"
+#include "engine.h"
 #include "files.h"
 #include "patch.h"
 #include "presets_gm.h"
@@ -1040,7 +1042,7 @@ static void test_drawing(void)
 	size_t size;
 	uint8_t *state = state_build(patch, &files_view, &size);
 	patch_init(patch);
-	state_view view;
+	state_view view = {0};
 	bool knobs;
 	CHECK(state && state_read(patch, state, size, &view, &knobs) && patch_take_incoming(patch) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)),
 		"after a project is opened the drawing is there");
@@ -1144,7 +1146,7 @@ static void test_bases(void)
 	uint8_t *state = state_build(patch, &files_view, &size);
 	static mdmi_patch other;
 	patch_init(&other);
-	state_view view;
+	state_view view = {0};
 	bool knobs;
 	CHECK(state && state_read(&other, state, size, &view, &knobs) && patch_take_incoming(&other) && !memcmp(other.model.base, patch->model.base, sizeof(patch->model.base))
 		&& !memcmp(other.model.psg_base, patch->model.psg_base, sizeof(patch->model.psg_base)), "a project keeps the bases");
@@ -1372,6 +1374,159 @@ static void test_fm_envelope(void)
 	CHECK(low[fm_column(0.9)] == 0 && low[fm_column(1.05)] == PATCH_FM_SILENT, "DR 0 holds the top until Note Off, RR 15 closes in 50 ms");
 }
 
+// A WAV of a sine, as 8, 16 or 24-bit PCM or 32-bit float.
+static uint8_t *sine_wav(uint32_t rate, int channels, int bits, bool is_float, double hz, double seconds, double level, size_t *size)
+{
+	const uint32_t frames = (uint32_t)(rate * seconds), frame_bytes = (uint32_t)(channels * bits / 8);
+	*size = 44 + (size_t)frames * frame_bytes;
+	uint8_t *wav = calloc(1, *size);
+	uint32_t u;
+	uint16_t h;
+	memcpy(wav, "RIFF", 4);
+	u = (uint32_t)*size - 8;
+	memcpy(wav + 4, &u, 4);
+	memcpy(wav + 8, "WAVEfmt ", 8);
+	u = 16;
+	memcpy(wav + 16, &u, 4);
+	h = is_float ? 3 : 1;
+	memcpy(wav + 20, &h, 2);
+	h = (uint16_t)channels;
+	memcpy(wav + 22, &h, 2);
+	memcpy(wav + 24, &rate, 4);
+	u = rate * frame_bytes;
+	memcpy(wav + 28, &u, 4);
+	h = (uint16_t)frame_bytes;
+	memcpy(wav + 32, &h, 2);
+	h = (uint16_t)bits;
+	memcpy(wav + 34, &h, 2);
+	memcpy(wav + 36, "data", 4);
+	u = frames * frame_bytes;
+	memcpy(wav + 40, &u, 4);
+	for (uint32_t i = 0; i < frames; i++) {
+		const double v = level * sin(2 * 3.14159265358979 * hz * i / rate);
+		for (int c = 0; c < channels; c++) {
+			uint8_t *at = wav + 44 + i * frame_bytes + c * bits / 8;
+			if (is_float) {
+				const float x = (float)v;
+				memcpy(at, &x, 4);
+			} else if (bits == 8) {
+				at[0] = (uint8_t)lround(128 + v * 127);
+			} else if (bits == 16) {
+				const int16_t x = (int16_t)lround(v * 32767);
+				memcpy(at, &x, 2);
+			} else {
+				const int32_t x = (int32_t)lround(v * 8388607);
+				memcpy(at, &x, 3);
+			}
+		}
+	}
+	return wav;
+}
+
+// The frequency of a converted sine by its rising zero crossings, and its peak.
+static double sine_hz(const dac_sample *s, int *peak)
+{
+	int first = -1, last = 0, crossings = 0;
+	*peak = 0;
+	for (uint32_t i = 1; i < s->sample.length; i++) {
+		*peak = abs(s->bytes[i]) > *peak ? abs(s->bytes[i]) : *peak;
+		if (s->bytes[i - 1] < 0 && s->bytes[i] >= 0) {
+			first = first < 0 ? (int)i : first;
+			last = (int)i;
+			crossings++;
+		}
+	}
+	return crossings > 1 ? (crossings - 1) * ROM_SAMPLE_HZ[s->sample.rate] / (last - first) : 0;
+}
+
+static void test_dac(void)
+{
+	printf("DAC samples\n");
+	static const struct {
+		uint32_t rate;
+		int channels, bits;
+		bool is_float;
+		int index;
+	} WAVS[] = {{44100, 2, 16, false, 0}, {48000, 1, 24, false, 0}, {22050, 1, 8, false, 1}, {16000, 2, 32, true, 2}, {11025, 1, 16, false, 4}, {8000, 1, 16, false, 5}, {96000, 1, 16, false, 0}};
+	for (size_t i = 0; i < sizeof(WAVS) / sizeof(WAVS[0]); i++) {
+		size_t size;
+		uint8_t *wav = sine_wav(WAVS[i].rate, WAVS[i].channels, WAVS[i].bits, WAVS[i].is_float, 440, 0.5, 0.5, &size);
+		const char *error;
+		dac_sample *s = dac_from_wav(wav, size, "sine", &error);
+		int peak = 0;
+		const double hz = s ? sine_hz(s, &peak) : 0;
+		const double seconds = s ? s->sample.length / ROM_SAMPLE_HZ[s->sample.rate] : 0;
+		CHECK(s && s->sample.rate == WAVS[i].index && s->sample.length % ROM_SAMPLE_BLOCK == 0 && fabs(hz / 440 - 1) < 0.005 && peak >= 60 && peak <= 66 && seconds >= 0.5 && seconds < 0.5 + 256 / ROM_SAMPLE_HZ[WAVS[i].index] + 0.001,
+			"WAV %u Hz, %d ch, %d bit%s: driver rate %d, %.1f Hz, peak %d, %.3f s", WAVS[i].rate, WAVS[i].channels, WAVS[i].bits, WAVS[i].is_float ? " float" : "", s ? s->sample.rate : -1, hz, peak, seconds);
+		free(s);
+		free(wav);
+	}
+	const char *error;
+	const uint8_t junk[64] = "RIFF....WAVEjunk";
+	CHECK(!dac_from_wav(junk, sizeof(junk), "junk", &error) && error, "a file without fmt and data is refused: %s", error ? error : "");
+	size_t size;
+	uint8_t *long_wav = sine_wav(8000, 1, 16, false, 100, 300, 0.5, &size);
+	CHECK(!dac_from_wav(long_wav, size, "long", &error) && error, "300 s at 8 kHz doesn't fit the ROM: %s", error ? error : "");
+	free(long_wav);
+
+	size_t rom_size, built;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	dac_set set = {0};
+	uint8_t *wav = sine_wav(22050, 1, 16, false, 440, 0.3, 0.5, &size);
+	dac_put(&set, 38, dac_from_wav(wav, size, "Snare.wav", &error));
+	dac_put(&set, 5, dac_from_wav(wav, size, "Low.wav", &error));
+	free(wav);
+	uint8_t *image = dac_image(&set, rom, rom_size, &built);
+	rom_sample got, before, other;
+	bool same_rest = true;
+	for (int note = 0; image && note < ROM_IMAGE_NOTES; note++) {
+		if (note != 38 && note != 5) {
+			const bool had = rom_image_sample(rom, rom_size, note, &before), has = rom_image_sample(image, built, note, &other);
+			same_rest = same_rest && had == has && (!had || (before.length == other.length && !memcmp(before.bytes, other.bytes, before.length)));
+		}
+	}
+	CHECK(image && rom_image_check(image, built) && rom_image_sample(image, built, 38, &got) && got.rate == 1 && got.length == set.notes[38]->sample.length
+		&& !memcmp(got.bytes, set.notes[38]->bytes, got.length) && rom_image_sample(image, built, 5, &got) && !memcmp(got.bytes, set.notes[5]->bytes, got.length) && same_rest,
+		"the image plays the new samples on notes 38 and 5, every other note as the ROM");
+	CHECK(!memcmp(image, rom, 0x200) && built >= rom_size, "the image keeps the ROM's header");
+	free(image);
+	uint8_t *bad = malloc(rom_size);
+	memcpy(bad, rom, rom_size);
+	memset(bad + 0x200000, 0x55, rom_size - 0x200000);
+	CHECK(!dac_image(&set, bad, rom_size, &built), "an image without the expected table is not patched");
+	free(bad);
+
+	state_view view = {0}, opened = {0};
+	view.dac = &set;
+	dac_set read = {0};
+	opened.dac = &read;
+	mdmi_patch *p = calloc(1, sizeof(*p)), *q = calloc(1, sizeof(*q));
+	patch_init(p);
+	patch_init(q);
+	size_t state_size;
+	uint8_t *state = state_build(p, &view, &state_size);
+	bool knobs;
+	const uint32_t version = read.version;
+	CHECK(state && state_read(q, state, state_size, &opened, &knobs) && dac_same(&set, &read) && read.version != version && !strcmp(read.notes[38]->name, "Snare.wav"),
+		"a project keeps its samples, %zu bytes", state_size);
+	const uint32_t again = read.version;
+	CHECK(state_read(q, state, state_size, &opened, &knobs) && read.version == again, "the same samples again change nothing, so the core doesn't restart");
+	free(state);
+	view.dac = NULL;
+	state = state_build(p, &view, &state_size);
+	CHECK(state && state_read(q, state, state_size, &opened, &knobs) && !read.notes[38] && !read.notes[5] && read.version != again, "a project without samples has the ROM's");
+	free(state);
+	state = state_build(p, NULL, &state_size);
+	dac_put(&read, 7, NULL);
+	const uint32_t bank_version = read.version;
+	CHECK(state && state_read(q, state, state_size, &opened, &knobs) && read.version == bank_version, "a bank leaves the samples alone");
+	free(state);
+	free(p);
+	free(q);
+	dac_clear(&set);
+	dac_clear(&read);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -1395,6 +1550,7 @@ int main(int argc, char **argv)
 	test_bases();
 	test_cursor();
 	test_fm_envelope();
+	test_dac();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

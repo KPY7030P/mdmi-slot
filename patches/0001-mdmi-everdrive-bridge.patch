@@ -25,10 +25,29 @@ index 5fc1254..9e83783 100644
  #else
  	static uint8_t freeze_choice;
 diff --git a/libblastem.c b/libblastem.c
-index 3472c7f..ababb61 100644
+index 3472c7f..ec348cd 100644
 --- a/libblastem.c
 +++ b/libblastem.c
-@@ -533,6 +533,18 @@ void render_audio_created(audio_source *src)
+@@ -8,6 +8,7 @@
+ #include "render.h"
+ #include "io.h"
+ #include "genesis.h"
++#include "mem.h"
+ #include "sms.h"
+ #include "cdimage.h"
+ 
+@@ -118,6 +119,10 @@ RETRO_API void retro_deinit(void)
+ 	if (current_system) {
+ 		retro_unload_game();
+ 	}
++#ifdef _WIN32
++	//MDMI: the plugin unloads this DLL and loads it again for another ROM image (stage 12)
++	free_all_code();
++#endif
+ }
+ 
+ RETRO_API unsigned retro_api_version(void)
+@@ -533,6 +538,18 @@ void render_audio_created(audio_source *src)
  {
  }
  
@@ -47,7 +66,7 @@ index 3472c7f..ababb61 100644
  void render_do_audio_ready(audio_source *src)
  {
  	int16_t *tmp = src->front;
-@@ -545,6 +557,9 @@ void render_do_audio_ready(audio_source *src)
+@@ -545,6 +562,9 @@ void render_do_audio_ready(audio_source *src)
  		int min_remaining_out;
  		mix_and_convert((uint8_t *)buffer, sizeof(buffer), &min_remaining_out);
  		retro_audio_sample_batch(buffer, sizeof(buffer)/(2*sizeof(*buffer)));
@@ -57,7 +76,7 @@ index 3472c7f..ababb61 100644
  	}
  }
  
-@@ -588,3 +603,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
+@@ -588,3 +608,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
  	}
  	return NULL;
  }
@@ -78,10 +97,10 @@ index 3472c7f..ababb61 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..1e86c38
+index 0000000..44e7f00
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,137 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
@@ -188,6 +207,18 @@ index 0000000..1e86c38
 +	return ((genesis_context *)current_system)->psg->volume[channel & 3];
 +}
 +
++//Host API: a tone channel's 10-bit period, or the noise channel's control bits (type and rate), for tests
++RETRO_API uint16_t mdmi_test_psg_tone(uint8_t channel)
++{
++	extern system_header *current_system;
++	psg_context *psg = ((genesis_context *)current_system)->psg;
++	if ((channel & 3) < 3) {
++		return psg->counter_load[channel & 3];
++	}
++	uint16_t rate = psg->noise_use_tone ? 3 : psg->counter_load[3] == 0x10 ? 0 : psg->counter_load[3] == 0x20 ? 1 : 2;
++	return psg->noise_type | rate;
++}
++
 +//Host API: returns the number of bytes accepted
 +RETRO_API size_t mdmi_midi_write(const uint8_t *data, size_t length)
 +{
@@ -228,6 +259,58 @@ index 0000000..0a735ec
 +void mdmi_bridge_fatal(void);
 +
 +#endif //MDMI_BRIDGE_H_
+diff --git a/mem.h b/mem.h
+index 69e4f09..02e69db 100644
+--- a/mem.h
++++ b/mem.h
+@@ -11,6 +11,8 @@
+ #define PAGE_SIZE 4096
+ 
+ void * alloc_code(size_t *size);
++//MDMI: gives back all code memory, for a host that loads the core again
++void free_all_code(void);
+ 
+ #endif //MEM_H_
+ 
+diff --git a/mem_win.c b/mem_win.c
+index 4076afd..4f66e5d 100644
+--- a/mem_win.c
++++ b/mem_win.c
+@@ -6,10 +6,33 @@
+ 
+ #include "mem.h"
+ #include <windows.h>
++#include <stdlib.h>
++
++//MDMI: unloading the DLL leaves VirtualAlloc'd memory behind, so every block is kept for free_all_code
++static void **code_blocks;
++static size_t code_count, code_storage;
+ 
+ void * alloc_code(size_t *size)
+ {
+ 	*size += PAGE_SIZE - (*size & (PAGE_SIZE - 1));
+ 
+-	return VirtualAlloc(NULL, *size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
++	void *block = VirtualAlloc(NULL, *size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
++	if (block && code_count == code_storage) {
++		code_storage = code_storage ? code_storage * 2 : 16;
++		code_blocks = realloc(code_blocks, code_storage * sizeof(void *));
++	}
++	if (block) {
++		code_blocks[code_count++] = block;
++	}
++	return block;
++}
++
++void free_all_code(void)
++{
++	for (size_t i = 0; i < code_count; i++) {
++		VirtualFree(code_blocks[i], 0, MEM_RELEASE);
++	}
++	free(code_blocks);
++	code_blocks = NULL;
++	code_count = code_storage = 0;
+ }
 diff --git a/render_audio.c b/render_audio.c
 index 9f0b28b..899e5c4 100644
 --- a/render_audio.c
