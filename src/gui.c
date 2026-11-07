@@ -2353,7 +2353,8 @@ static void draw_editor(mdmi_gui *g)
 	// Hover last, so nothing covers it. ALL has no hover frames (owner after 0.11.0).
 	const bool all = *g->source.page == PAGE_ALL;
 	int over = g->dragging || g->file_over || all ? -1 : hovered(g);
-	if (over >= 0) {
+	// A shape of the choice of SSG shows the mouse by its grey fill alone (owner after 0.11.0).
+	if (over >= 0 && g->cells[over].look != LOOK_SHAPE) {
 		const cell *c = &g->cells[over];
 		frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 	}

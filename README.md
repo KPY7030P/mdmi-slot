@@ -119,7 +119,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   bright curve and a white frame on the header follow the column under the mouse, else the operator
   last edited; a value from the host moves neither. The graph is the chip's envelope generator stepped for a note C4
   (`patch_fm_envelope`, hardware-specialist's facts from BlastEm): rates double every 2 steps,
-  KS by RS, SL 15 is silence, SL 0 skips DR, SSG works between 0 and 48 dB four times as fast,
+  KS by RS, SL 15 is silence, SL 0 skips DR, TL adds to the envelope and the sum stops at 96 dB (so
+  a slow attack under a high TL is silent at first, as on the chip), SSG works between 0 and 48 dB four times as fast,
   columns too short for a fast SSG show its range. Time runs on a square-root axis to 2 s, Note
   Off at 1 s, where the active curve has its number. Each operator's SSG is a button at its
   header's right end, its shape or a dim SSG: a click opens OFF and the 8 shapes under the header,
