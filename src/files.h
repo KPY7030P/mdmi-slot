@@ -68,7 +68,11 @@ bool files_undo(mdmi_files *files, char *message, size_t size);
 int files_put_samples(mdmi_files *files, const char *const *paths, int count, int first, char *message, size_t size);
 // Prepares a note's sample from its source another way (D38): one undo step, the core restarts.
 bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *message, size_t size);
-// Gives a note the ROM's sample back, or none where the ROM has none.
+// A sample to another note (owner after 0.12.0): swapped with what that note played, or copied
+// there. The ROM's samples go as copies of their bytes. One undo step. 1 if it went.
+int files_move_sample(mdmi_files *files, int from, int to, bool copy, char *message, size_t size);
+// CLEAR: a file goes and the ROM's sample comes back; on a note of the ROM's the sample is removed,
+// and on a removed one it comes back.
 bool files_reset_sample(mdmi_files *files, int note, char *message, size_t size);
 // What undo would put back, or NULL.
 const char *files_undo_text(const mdmi_files *files);

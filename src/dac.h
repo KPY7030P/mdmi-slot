@@ -50,6 +50,8 @@ typedef struct {
 typedef struct {
 	// NULL: the note plays the ROM's sample.
 	dac_sample *notes[ROM_IMAGE_NOTES];
+	// A note of the ROM's taken away: empty, though the ROM has a sample there (owner after 0.12.0).
+	bool removed[ROM_IMAGE_NOTES];
 	// Goes up with every change, so the plugin knows when to build the image again.
 	uint32_t version;
 } dac_set;
@@ -66,6 +68,11 @@ uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit);
 // The gain that brings the kept part's peak just under full scale.
 int dac_normalize_gain(const dac_sample *sample);
 dac_sample *dac_copy(const dac_sample *sample);
+// One of the ROM's samples as a sample of the project, its bytes as they are: so it can go to
+// another note and be prepared there. Its source is the bytes, 16 bits, at the driver's rate.
+dac_sample *dac_from_rom(const rom_sample *rom, const char *name);
+// The note empty although the ROM has a sample there; dac_put gives it a sample or the ROM's back.
+void dac_remove(dac_set *set, int note);
 void dac_free(dac_sample *sample);
 void dac_clear(dac_set *set);
 // Puts a sample on a note, NULL for the ROM's; the set owns it from then on.

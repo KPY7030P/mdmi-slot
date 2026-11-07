@@ -231,6 +231,13 @@ struct mdmi_gui {
 	dac_edit dac_work;
 	// The mouse moved past DRAG_SLOP: before that a press changes nothing, so a double click resets.
 	bool dac_moved;
+	// A sample dragged on the grid (owner after 0.12.0): the note it came from (-1: none), whether
+	// the mouse moved far enough, where it is now, where the press was.
+	int grid_from;
+	bool grid_moved;
+	int grid_target;
+	int grid_press_x;
+	int grid_press_y;
 	// The selected sample's wave, min and max a column, and what they were made from.
 	const void *wave_of;
 	int wave_note;
@@ -524,7 +531,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
 	text(g, 10, y + 7, buffer, INK(special ? C_FM_LIGHT : C_TEXT), 3);
 	if (dac) {
-		text(g, BAR_X, y + 5, "Samples", INK(C_TEXT), 2);
+		text(g, BAR_X, y + 5, "DAC Samples", INK(C_TEXT), 2);
 	} else {
 		snprintf(buffer, sizeof(buffer), "%.*s%s", special ? SPECIAL_NAME_CHARS : 13, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
 		text(g, BAR_X, y + 5, buffer, INK(C_TEXT), 2);
@@ -1827,6 +1834,10 @@ static bool note_sample(const mdmi_gui *g, int note, rom_sample *sample, const c
 {
 	const dac_sample *own = dac_of(g)->notes[note];
 	*file = own != NULL;
+	if (!own && dac_of(g)->removed[note]) {
+		*name = ROM_SAMPLE_NAMES[note];
+		return false;
+	}
 	if (own) {
 		*sample = own->sample;
 		*name = own->name;
@@ -1909,11 +1920,14 @@ static void dac_short(const char *name, char *out, size_t size)
 	snprintf(out, size, "%.5s", shortened);
 }
 
-#define GRID_CELL_X 270
+#define GRID_CELL_X 242
 #define GRID_CELL_Y 96
-#define GRID_STEP_X 36
+#define GRID_STEP_X 38
 #define GRID_STEP_Y 18
-#define GRID_CELL_W 34
+#define GRID_CELL_W 36
+// Sharps darker than naturals, for empty and ROM cells only (owner chose variant B of v12).
+#define C_SHARP_EMPTY 0x161616
+#define C_SHARP_ROM 0x2E1700
 #define GRID_CELL_H 16
 #define WAVE_X 242
 // The trim's strip over the wave, as the PSG loop's: tabs at the kept part's ends (owner after D38).
@@ -1957,7 +1971,7 @@ static bool in_box(int x, int y, int left, int top, int w, int h)
 static void draw_dac_top(mdmi_gui *g)
 {
 	char buffer[32];
-	text(g, NAME_X, 34, "Samples", C_TEXT, 2);
+	text(g, NAME_X, 34, "DAC Samples", C_TEXT, 2);
 	const uint32_t room = rom_image_room(), used = dac_used(dac_of(g));
 	fill(g, DAC_FREE_X, 30, DAC_FREE_W, 22, C_CELL);
 	fill(g, DAC_FREE_X, 30, (int)((uint64_t)(room - used) * DAC_FREE_W / room), 22, C_DAC_DARK);
@@ -2464,6 +2478,11 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 	return true;
 }
 
+static bool is_sharp(int key)
+{
+	return key == 1 || key == 3 || key == 6 || key == 8 || key == 10;
+}
+
 // EDITOR of channel 6 with the DAC on: every note in a grid, the selected one's sample below.
 static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 {
@@ -2475,11 +2494,7 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 	static const char *const KEYS[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 	for (int column = 0; column < 12; column++) {
 		const int width = (int)strlen(KEYS[column]) * 6;
-		text(g, GRID_CELL_X + column * GRID_STEP_X + (GRID_CELL_W - width) / 2, 84, KEYS[column], C_HINT, 1);
-	}
-	for (int row = 0; row < 11; row++) {
-		snprintf(buffer, sizeof(buffer), "%d", row * 12);
-		text_right(g, 264, GRID_CELL_Y + row * GRID_STEP_Y + 4, buffer, row >= 2 && row <= 6 ? C_LABEL : C_HINT, 1, 24);
+		text(g, GRID_CELL_X + column * GRID_STEP_X + (GRID_CELL_W - width) / 2, 84, KEYS[column], is_sharp(column) ? C_LINE : C_HINT, 1);
 	}
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		const int x = GRID_CELL_X + note % 12 * GRID_STEP_X, y = GRID_CELL_Y + note / 12 * GRID_STEP_Y;
@@ -2489,28 +2504,37 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 		const bool has = note_sample(g, note, &sample, &name, &file);
 		uint32_t back, ink;
 		const char *shown = name;
+		const bool sharp = is_sharp(note % 12);
+		const bool moved_here = g->grid_from >= 0 && g->grid_moved && note == g->grid_target && note != g->grid_from;
 		if (drop_aims_at(g, note)) {
 			back = C_AMBER;
 			ink = C_BG;
 			shown = g->file_paths[note - g->dac_drop_note];
+		} else if (moved_here) {
+			// What a drag would put here.
+			back = C_AMBER;
+			ink = C_BG;
+			rom_sample other;
+			bool other_file;
+			note_sample(g, g->grid_from, &other, &shown, &other_file);
 		} else if (!booted && file) {
-			back = C_CELL;
+			back = sharp ? C_SHARP_EMPTY : C_CELL;
 			ink = C_AMBER;
 		} else if (note == playing) {
 			back = C_PLAYING;
 			ink = C_BG;
 		} else if (!has) {
-			back = C_CELL;
-			ink = C_CELL;
+			back = sharp ? C_SHARP_EMPTY : C_CELL;
+			ink = back;
 		} else if (file) {
 			back = C_DAC;
 			ink = C_BG;
 		} else {
-			back = C_DAC_DARK;
+			back = sharp ? C_SHARP_ROM : C_DAC_DARK;
 			ink = C_LABEL;
 		}
 		fill(g, x, y, GRID_CELL_W, GRID_CELL_H, back);
-		if (has || drop_aims_at(g, note)) {
+		if (has || drop_aims_at(g, note) || moved_here) {
 			dac_short(shown, buffer, sizeof(buffer));
 			text(g, x + 3, y + 4, buffer, ink, 1);
 		}
@@ -2554,14 +2578,17 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 		text(g, after, DAC_LINE1_Y, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_LABEL, 1);
 		text(g, 448, DAC_LINE1_Y, !booted && file ? "LOADING" : file ? "FILE" : "ROM", !booted && file ? C_AMBER : file ? C_DAC : C_HINT, 1);
 	}
+	const bool removed = dac_of(g)->removed[note];
 	if (file) {
 		snprintf(buffer, sizeof(buffer), rom_has(note) ? "ROM HAD %s" : "ROM HAD NOTHING", ROM_SAMPLE_NAMES[note]);
+	} else if (removed) {
+		snprintf(buffer, sizeof(buffer), "ROM'S %s REMOVED", ROM_SAMPLE_NAMES[note]);
 	} else {
 		snprintf(buffer, sizeof(buffer), has ? "BUILT INTO THE ROM" : "ROM HAS NOTHING HERE");
 	}
 	text(g, DAC_PANEL_TEXT_X, DAC_LINE2_Y, buffer, C_HINT, 1);
 	dac_button(g, DAC_REPLACE_X, "REPLACE", booted);
-	dac_button(g, DAC_CLEAR_X, "CLEAR", booted && file);
+	dac_button(g, DAC_CLEAR_X, removed && !file ? "RESTORE" : "CLEAR", booted && (file || rom_has(note)));
 	if (editable) {
 		draw_settings(g, own, edit, booted);
 		// One line of warnings: what matters now first.
@@ -2713,6 +2740,15 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 		return false;
 	}
 	const int x = g->mouse_x, y = g->mouse_y;
+	if (grid && g->grid_from >= 0 && g->grid_moved) {
+		const bool copy = GetKeyState(VK_CONTROL) < 0;
+		if (g->grid_target < 0 || g->grid_target == g->grid_from) {
+			snprintf(out, size, "%d: DROP ON A NOTE. OUTSIDE: CANCEL", g->grid_from);
+		} else {
+			snprintf(out, size, copy ? "COPY %d TO %d" : "SWAP %d AND %d. CTRL COPIES", g->grid_from, g->grid_target);
+		}
+		return true;
+	}
 	if (grid && engine_booted(g) && dac_panel_hint(g, out, size)) {
 		return true;
 	}
@@ -2744,15 +2780,19 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 	char key[8];
 	if (replace) {
 		note_name(selected, key, sizeof(key));
-		snprintf(out, size, "REPLACE %d %s FROM A WAV. ENGINE RESTARTS", selected, key);
+		snprintf(out, size, "REPLACE %d %s FROM A WAV", selected, key);
 	} else if (clear && dac_of(g)->notes[selected]) {
-		snprintf(out, size, "CLEAR %d: BACK TO %s. ENGINE RESTARTS", selected, rom_has(selected) ? ROM_SAMPLE_NAMES[selected] : "EMPTY");
+		snprintf(out, size, "CLEAR %d: BACK TO %s", selected, rom_has(selected) && !dac_of(g)->removed[selected] ? ROM_SAMPLE_NAMES[selected] : "EMPTY");
+	} else if (clear && rom_has(selected) && dac_of(g)->removed[selected]) {
+		snprintf(out, size, "RESTORE %d: THE ROM'S %s BACK", selected, ROM_SAMPLE_NAMES[selected]);
+	} else if (clear && rom_has(selected)) {
+		snprintf(out, size, "CLEAR %d: REMOVE THE ROM'S %s", selected, ROM_SAMPLE_NAMES[selected]);
 	} else if (clear) {
-		snprintf(out, size, rom_has(selected) ? "CLEAR: %d IS THE ROM SAMPLE" : "CLEAR: %d IS EMPTY", selected);
+		snprintf(out, size, "CLEAR: %d IS EMPTY", selected);
 	} else if (wave) {
 		note_hint(g, selected, true, out, size);
 	} else if (!grid && over_reset(g, note, x, y)) {
-		snprintf(out, size, "CLEAR %d: BACK TO %s. ENGINE RESTARTS", note, rom_has(note) ? ROM_SAMPLE_NAMES[note] : "EMPTY");
+		snprintf(out, size, "CLEAR %d: BACK TO %s", note, rom_has(note) && !dac_of(g)->removed[note] ? ROM_SAMPLE_NAMES[note] : "EMPTY");
 	} else {
 		note_hint(g, note, grid, out, size);
 	}
@@ -3726,6 +3766,18 @@ static void on_down(mdmi_gui *g, int x, int y)
 		}
 		if (note >= 0) {
 			g->dac_selected = note;
+			// A press on a note that plays something may become a drag to another note.
+			rom_sample sample;
+			const char *name;
+			bool file;
+			if (booted && note_sample(g, note, &sample, &name, &file)) {
+				g->grid_from = note;
+				g->grid_moved = false;
+				g->grid_target = note;
+				g->grid_press_x = x;
+				g->grid_press_y = y;
+				SetCapture(g->window);
+			}
 		} else if (booted && in_box(x, y, DAC_REPLACE_X, DAC_BUTTON_Y, DAC_BUTTON_W, DAC_BUTTON_H)) {
 			replace_sample(g, g->dac_selected);
 		} else if (booted && in_box(x, y, DAC_CLEAR_X, DAC_BUTTON_Y, DAC_BUTTON_W, DAC_BUTTON_H)) {
@@ -3827,6 +3879,12 @@ static void on_move(mdmi_gui *g, int x, int y)
 		refresh(g);
 		return;
 	}
+	if (g->grid_from >= 0) {
+		g->grid_moved = g->grid_moved || abs(x - g->grid_press_x) >= 4 || abs(y - g->grid_press_y) >= 4;
+		g->grid_target = grid_note_at(x, y);
+		refresh(g);
+		return;
+	}
 	if (g->env_drag != ENV_NONE) {
 		envelope_move(g, x, y);
 		return;
@@ -3850,6 +3908,26 @@ static void on_move(mdmi_gui *g, int x, int y)
 
 static void on_up(mdmi_gui *g)
 {
+	if (g->grid_from >= 0) {
+		const int from = g->grid_from, to = g->grid_target;
+		const bool moved = g->grid_moved;
+		g->grid_from = -1;
+		if (GetCapture() == g->window) {
+			ReleaseCapture();
+		}
+		if (moved && to >= 0 && to != from) {
+			char message[FILES_MESSAGE] = "";
+			const bool copy = GetKeyState(VK_CONTROL) < 0;
+			if (files_move_sample(g->source.files, from, to, copy, message, sizeof(message))) {
+				g->dac_selected = to;
+				say(g, message, C_AMBER, MESSAGE_TICKS);
+			} else if (message[0]) {
+				say(g, message, C_ERROR, ERROR_TICKS);
+			}
+		}
+		refresh(g);
+		return;
+	}
 	if (g->dac_drag != DACC_NONE) {
 		const dac_edit edit = g->dac_work;
 		const int note = g->dac_drag_note;
@@ -4049,9 +4127,9 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 			g->dac_drop_note = note;
 			g->dac_drop_count = g->file_samples < ROM_IMAGE_NOTES - note ? g->file_samples : ROM_IMAGE_NOTES - note;
 			if (g->dac_drop_count == 1) {
-				hint(g, C_AMBER, "%s > note %d. The engine restarts", g->file_stem, note);
+				hint(g, C_AMBER, "%s > note %d", g->file_stem, note);
 			} else {
-				hint(g, C_AMBER, "%d WAV > notes %d-%d%s. The engine restarts", g->dac_drop_count, note, note + g->dac_drop_count - 1, g->file_samples > g->dac_drop_count ? ", the rest won't fit" : "");
+				hint(g, C_AMBER, "%d WAV > notes %d-%d%s", g->dac_drop_count, note, note + g->dac_drop_count - 1, g->file_samples > g->dac_drop_count ? ", the rest won't fit" : "");
 			}
 			return true;
 		}
@@ -4357,6 +4435,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->dac_selected = DAC_DEFAULT_NOTE;
 	g->dac_drag = DACC_NONE;
 	g->wave_note = -1;
+	g->grid_from = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;

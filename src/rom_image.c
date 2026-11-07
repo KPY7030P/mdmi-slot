@@ -70,6 +70,13 @@ bool rom_image_sample(const uint8_t *rom, size_t size, int note, rom_sample *sam
 	return true;
 }
 
+void rom_image_zone(uint32_t *table, uint32_t *table_ram, uint32_t *records)
+{
+	*table = ROM_PCM_TABLE;
+	*table_ram = ROM_PCM_TABLE_RAM;
+	*records = RECORDS_AT;
+}
+
 uint32_t rom_image_room(void)
 {
 	return ROM_IMAGE_MAX - DATA_AT;
@@ -80,7 +87,7 @@ uint32_t rom_image_cost(uint32_t length)
 	return (length + ROM_SAMPLE_BLOCK - 1) & ~(ROM_SAMPLE_BLOCK - 1);
 }
 
-uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *const *samples, size_t *built)
+uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *const *samples, const bool *removed, size_t *built)
 {
 	uint32_t end = DATA_AT;
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
@@ -98,10 +105,16 @@ uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *cons
 		return NULL;
 	}
 	memcpy(out, rom, size);
-	uint32_t record = RECORDS_AT, data = DATA_AT;
+	uint32_t data = DATA_AT;
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		const rom_sample *sample = samples[note];
+		// Every note's record has its own place, so the ROM's pointer to a sounding note's record
+		// still means that note after another note changed (D39).
+		const uint32_t record = RECORDS_AT + (uint32_t)note * RECORD_BYTES;
 		if (!sample) {
+			if (removed && removed[note]) {
+				put32(out + ROM_PCM_TABLE + note * 4, 0);
+			}
 			continue;
 		}
 		const uint32_t length = rom_image_cost(sample->length);
@@ -112,7 +125,6 @@ uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *cons
 		out[record + 8] = sample->rate;
 		out[record + 9] = sample->flags;
 		put32(out + ROM_PCM_TABLE + note * 4, record);
-		record += RECORD_BYTES;
 		data += length;
 	}
 	return out;

@@ -6,6 +6,7 @@
 #include "engine.h"
 #include "libretro.h"
 #include "resampler.h"
+#include "rom_image.h"
 
 extern const uint8_t mdmi_blob_engine[], mdmi_blob_engine_end[];
 extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
@@ -52,6 +53,8 @@ typedef void (*get_av_info_fn)(struct retro_system_av_info *);
 typedef size_t (*midi_write_fn)(const uint8_t *, size_t);
 typedef void (*set_audio_slices_fn)(uint8_t);
 typedef uint32_t (*has_failed_fn)(void);
+typedef size_t (*cart_compare_fn)(const uint8_t *, size_t, size_t, size_t);
+typedef void (*write_ram_fn)(size_t, const uint8_t *, size_t);
 typedef void (*set_lowpass_fn)(double);
 typedef uint8_t (*test_ym_read_fn)(uint8_t, uint8_t);
 typedef uint8_t (*test_psg_volume_fn)(uint8_t);
@@ -72,6 +75,9 @@ struct mdmi_engine {
 	test_ym_read_fn test_ym_read;
 	test_psg_volume_fn test_psg_volume;
 	test_psg_tone_fn test_psg_tone;
+	cart_compare_fn cart_differs;
+	cart_compare_fn write_cart;
+	write_ram_fn write_ram;
 	set_lowpass_fn set_lowpass;
 	void_fn retro_deinit;
 	double core_rate;
@@ -92,6 +98,9 @@ struct mdmi_engine {
 	rom_image *next_rom;
 	uint32_t boots;
 	double last_boot_ms;
+	// Images written into the running core instead of a restart (D39).
+	uint32_t patches;
+	double last_patch_ms;
 	const char *boot_stage;
 	DWORD boot_error;
 	uint64_t worst_run_pos;
@@ -421,6 +430,9 @@ static bool load_core(mdmi_engine *e)
 	LOAD(test_ym_read, test_ym_read_fn, "mdmi_test_ym_read")
 	LOAD(test_psg_volume, test_psg_volume_fn, "mdmi_test_psg_volume")
 	LOAD(test_psg_tone, test_psg_tone_fn, "mdmi_test_psg_tone")
+	LOAD(cart_differs, cart_compare_fn, "mdmi_cart_differs")
+	LOAD(write_cart, cart_compare_fn, "mdmi_write_cart")
+	LOAD(write_ram, write_ram_fn, "mdmi_write_ram")
 	LOAD(deinit, void_fn, "retro_deinit")
 	LOAD(set_lowpass, set_lowpass_fn, "mdmi_set_lowpass")
 	e->retro_run = run;
@@ -429,6 +441,9 @@ static bool load_core(mdmi_engine *e)
 	e->test_ym_read = test_ym_read;
 	e->test_psg_volume = test_psg_volume;
 	e->test_psg_tone = test_psg_tone;
+	e->cart_differs = cart_differs;
+	e->write_cart = write_cart;
+	e->write_ram = write_ram;
 	e->test_fatal = test_fatal;
 	e->test_freeze = test_freeze;
 	e->retro_deinit = deinit;
@@ -470,6 +485,28 @@ static bool load_core(mdmi_engine *e)
 	e->last_boot_ms = now_ms() - t0;
 	__atomic_store_n(&e->booted, 1, __ATOMIC_RELEASE);
 	__atomic_add_fetch(&e->boots, 1, __ATOMIC_ACQ_REL);
+	return true;
+}
+
+// An image that differs from the running cartridge only where the samples are goes straight into
+// it: the cartridge's bytes and the table the ROM copied to RAM. The next note plays it, nothing else
+// stops (D39). False if it differs elsewhere, and then the core restarts.
+static bool patch_core(mdmi_engine *e, const rom_image *image)
+{
+	uint32_t table, table_ram, records;
+	rom_image_zone(&table, &table_ram, &records);
+	if (image->size > ROM_IMAGE_MAX || image->size < records) {
+		return false;
+	}
+	const double start = now_ms();
+	if (e->cart_differs(image->bytes, image->size, 0, table) || e->cart_differs(image->bytes, image->size, table + ROM_IMAGE_TABLE_BYTES, records)) {
+		return false;
+	}
+	e->write_cart(image->bytes, image->size, records, ROM_IMAGE_MAX);
+	e->write_cart(image->bytes, image->size, table, table + ROM_IMAGE_TABLE_BYTES);
+	e->write_ram(table_ram, image->bytes + table, ROM_IMAGE_TABLE_BYTES);
+	e->last_patch_ms = now_ms() - start;
+	__atomic_add_fetch(&e->patches, 1, __ATOMIC_ACQ_REL);
 	return true;
 }
 
@@ -527,6 +564,18 @@ static DWORD WINAPI worker_main(LPVOID param)
 			__atomic_store_n(&e->parked, 1, __ATOMIC_RELEASE);
 			WaitForSingleObject(e->wake, INFINITE);
 			continue;
+		}
+		rom_image *image = __atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL);
+		if (image) {
+			if (patch_core(e, image)) {
+				free(image);
+				continue;
+			}
+			// Back for write_rom, unless a newer image came meanwhile.
+			rom_image *none = NULL;
+			if (!__atomic_compare_exchange_n(&e->next_rom, &none, image, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+				free(image);
+			}
 		}
 		if (__atomic_load_n(&e->next_rom, __ATOMIC_ACQUIRE)) {
 			// Booting is CPU-heavy, so it runs outside the Pro Audio class, as the first boot does.
@@ -785,6 +834,8 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.worst_wait_ms = e->worst_wait_ms,
 		.boots = __atomic_load_n(&e->boots, __ATOMIC_ACQUIRE),
 		.last_boot_ms = e->last_boot_ms,
+		.patches = __atomic_load_n(&e->patches, __ATOMIC_ACQUIRE),
+		.last_patch_ms = e->last_patch_ms,
 		.boot_stage = e->boot_stage,
 		.boot_error = e->boot_error,
 		.worst_run_pos = e->worst_run_pos,

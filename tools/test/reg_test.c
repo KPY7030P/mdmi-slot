@@ -362,12 +362,17 @@ static void test_restart(void)
 	psg_notes(false);
 	size_t rom_size;
 	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	// The same image would now go into the running core (D39): every other restart takes one that
+	// differs in a byte of the header's name, so each is a real restart.
+	uint8_t *other = malloc(rom_size);
+	memcpy(other, rom, rom_size);
+	other[0x150] ^= 0x20;
 	size_t memory_before = 0;
 	double slowest = 0, total = 0;
 	int bad = 0;
 	for (int i = 0; i < RESTARTS; i++) {
 		const uint32_t boots = mdmi_engine_boots(engine);
-		mdmi_engine_set_rom(engine, rom, rom_size);
+		mdmi_engine_set_rom(engine, i % 2 ? rom : other, rom_size);
 		// Offline, render waits for the core, so one block spans the whole boot.
 		while (mdmi_engine_boots(engine) == boots) {
 			render(1);
@@ -402,19 +407,25 @@ static void test_restart(void)
 	render(DAC_BLOCKS);
 	// BlastEm still leaves about 0.5 MB a load behind (ROADMAP); its JIT code was 4 MB more.
 	check(memory_after < memory_before + (RESTARTS - 2) * 1048576, "a restart leaves under 1 MB behind");
+	free(other);
 }
 
-// Boots the core with an image and hands the ROM everything again, as the plugin does.
+// Gives the core an image: written into it when only the samples differ (D39), else a restart, and
+// then the ROM gets everything again, as the plugin does.
 static void boot_image(const uint8_t *image, size_t size)
 {
-	const uint32_t boots = mdmi_engine_boots(engine);
+	const mdmi_engine_stats before = mdmi_engine_get_stats(engine);
 	mdmi_engine_set_rom(engine, image, size);
-	while (mdmi_engine_boots(engine) == boots) {
+	mdmi_engine_stats now;
+	do {
 		render(1);
+		now = mdmi_engine_get_stats(engine);
+	} while (now.boots == before.boots && now.patches == before.patches);
+	if (now.boots != before.boots) {
+		patch_rom_booted(patch, emit, NULL);
+		render(SETTLE_BLOCKS);
+		full_velocity();
 	}
-	patch_rom_booted(patch, emit, NULL);
-	render(SETTLE_BLOCKS);
-	full_velocity();
 }
 
 // A ramp, so the DAC register says which byte of the sample plays: the driver adds 0x80.
@@ -493,7 +504,8 @@ static void test_samples(void)
 	ramp_rate(41, &in_order);
 	check(mdmi_engine_test_ym(engine, 0, 0x2A) == 0x80 || !in_order, "the ROM's own sample on the next note is not the ramp");
 	set_global(GLOBAL_DAC, 0);
-	sync_and_settle();
+	// Switching the DAC resets the chip, and the voices come back some 170 ms later.
+	wait_for_voices(FM_CHANNELS - 1);
 	dac_clear(&set);
 	boot_image(rom, rom_size);
 	check_voices("back on the built-in image every voice is as before", 0, FM_CHANNELS - 1, -1);
@@ -629,6 +641,110 @@ static void test_shaping(void)
 	dac_clear(&set);
 	size_t rom_size;
 	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	boot_image(rom, rom_size);
+}
+
+// A square at a driver rate, loud, or silence.
+static dac_sample *square_sample(uint32_t length, int level)
+{
+	dac_sample *s = calloc(1, sizeof(dac_sample));
+	s->bytes = malloc(length);
+	for (uint32_t i = 0; i < length; i++) {
+		s->bytes[i] = (int8_t)(i / 20 % 2 ? level : -level);
+	}
+	snprintf(s->name, sizeof(s->name), "square");
+	s->sample = (rom_sample){1, length, s->bytes, 0};
+	return s;
+}
+
+// Hands the engine the set's image and waits until the core took it. True if it was written into
+// the running core, false if it restarted.
+static bool take_set(const dac_set *set, double *ms)
+{
+	size_t rom_size, image_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	uint8_t *image = dac_image(set, rom, rom_size, &image_size);
+	const mdmi_engine_stats before = mdmi_engine_get_stats(engine);
+	mdmi_engine_set_rom(engine, image, image_size);
+	free(image);
+	mdmi_engine_stats now;
+	do {
+		render(1);
+		now = mdmi_engine_get_stats(engine);
+	} while (now.patches == before.patches && now.boots == before.boots);
+	*ms = now.last_patch_ms;
+	return now.boots == before.boots;
+}
+
+static float note_loudness(int key)
+{
+	midi(0x95, (uint8_t)key, 127);
+	render(RATE / 10 / BLOCK);
+	const float level = loudest(RATE / 20 / BLOCK);
+	midi(0x85, (uint8_t)key, 0);
+	render(RATE / 10 / BLOCK);
+	return level;
+}
+
+// Samples change in the running core (D39): no restart, a held FM note sounds on, the next DAC note
+// plays the new bytes, data near the end of 4 MB plays, the records keep their places.
+static void test_live(void)
+{
+	dac_set set = {0};
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	// A held FM note on channel 1 while the samples change.
+	midi(0x90, 60, 127);
+	render(SETTLE_BLOCKS);
+	const float fm_before = loudest(RATE / 20 / BLOCK);
+	const uint32_t boots = mdmi_engine_boots(engine);
+	dac_put(&set, 50, square_sample(256 * 40, 100));
+	double ms;
+	const bool live = take_set(&set, &ms);
+	const float fm_after = loudest(RATE / 20 / BLOCK);
+	printf("    written into the running core in %.1f ms; FM held note %.3f before, %.3f after\n", ms, fm_before, fm_after);
+	check(live && mdmi_engine_boots(engine) == boots && fm_after > fm_before * 0.5f && fm_before > 0.02f, "a new sample goes into the running core: no restart, a held FM note sounds on");
+	midi(0x80, 60, 0);
+	render(DAC_BLOCKS);
+	const float loud = note_loudness(50);
+	dac_put(&set, 50, square_sample(256 * 40, 0));
+	take_set(&set, &ms);
+	const float quiet = note_loudness(50);
+	printf("    note 50: %.3f with the square, %.3f with silence\n", loud, quiet);
+	check(loud > 0.05f && quiet < 0.01f, "the next DAC note plays the new bytes");
+	// A long sample low, a short loud one high: its data lies near the end of 4 MB.
+	dac_put(&set, 50, NULL);
+	dac_put(&set, 20, square_sample((uint32_t)(rom_image_room() - 256 * 64) & ~255u, 0));
+	dac_put(&set, 100, square_sample(256 * 40, 100));
+	set.notes[100]->sample.flags = ROM_SAMPLE_ONE_SHOT;
+	take_set(&set, &ms);
+	const float last = note_loudness(100);
+	printf("    a sample ending at the last 16 KB of 4 MB: %.3f, written in %.1f ms\n", last, ms);
+	check(last > 0.05f, "a sample near the end of 4 MB plays");
+	// A sample added below a one-shot: its record keeps its place, Note Off still doesn't cut it.
+	dac_put(&set, 10, square_sample(256 * 4, 50));
+	take_set(&set, &ms);
+	midi(0x95, 100, 127);
+	render(RATE / 20 / BLOCK);
+	midi(0x85, 100, 0);
+	render(RATE / 10 / BLOCK);
+	const float on = loudest(RATE / 20 / BLOCK);
+	render(RATE / 2 / BLOCK);
+	printf("    one-shot 100 ms after Note Off: %.3f\n", on);
+	check(on > 0.05f, "with a sample added below, the one-shot above plays on after Note Off");
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	// An image that differs elsewhere still restarts the core.
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	uint8_t *other = malloc(rom_size);
+	memcpy(other, rom, rom_size);
+	other[0x150] ^= 0x20;
+	boot_image(other, rom_size);
+	check(mdmi_engine_boots(engine) == boots + 1, "an image that differs outside the samples restarts the core");
+	free(other);
+	dac_clear(&set);
 	boot_image(rom, rom_size);
 }
 
@@ -1711,6 +1827,7 @@ int main(int argc, char **argv)
 	test_restart();
 	test_samples();
 	test_shaping();
+	test_live();
 	test_load();
 	test_voice_by_hand();
 	test_reset();

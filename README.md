@@ -66,14 +66,17 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   it), a WAV dropped on it, or nothing. WAV files dropped on a row go to that note and the next ones; a
   file is turned into the driver's format (mono, 8 bits, the lowest of its six rates that keeps the
   file's, at most 32 kHz) and kept in the project, up to the image's free room, about 1.9 MB. CLEAR
-  gives a note the ROM's sample back, UNDO puts back the samples before the last change. Every change
-  restarts the core with a patched image: 0.3-0.6 s without sound (gui_test and reg_test), the header says LOADING, then
-  every channel gets its sound again. TUNE is the page's only cell: off centre, as bend, a note plays
+  gives a note the ROM's sample back; on a note of the ROM's it removes the sample and RESTORE brings
+  it back. A sample dragged to another note swaps with it, Ctrl copies; the ROM's go as copies of their
+  bytes. UNDO puts back the samples before the last change. A change goes straight into the running
+  core's cartridge and RAM (D39): no restart, other channels play on; a note sounding at that moment may
+  play stray bytes to its old length. Only the first boot, or an image that differs outside the samples,
+  restarts the core: 0.3-0.6 s without sound, the header says LOADING. TUNE is the page's only cell: off centre, as bend, a note plays
   its neighbour's sample. The rates are those BlastEm plays, 2-3% below what SGDK names them.
 - A WAV's sample is prepared on EDITOR (D38): START and END (the tabs of a strip over the wave, as the PSG loop's), PITCH and
   CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
   last 4 ms) and ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads). Nothing changes while the
-  mouse is down; on mouse up the sample is prepared once and the core restarts. A double click puts a
+  mouse is down; on mouse up the sample is prepared once and goes into the running core. A double click puts a
   value back. The project keeps the file's sound (mono, 16 bits, up to 16 MB in all), the settings and
   the ROM's bytes, so an opened project plays the same bytes and the trim can still go back.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square

@@ -47,6 +47,8 @@ def main():
         "#ifndef MDMI_ROM_MAP_H",
         "#define MDMI_ROM_MAP_H",
         f"#define ROM_PCM_TABLE 0x{data_load + table - RAM:06X}u",
+        # SGDK copies the table to RAM at start: the running ROM reads it there (D39).
+        f"#define ROM_PCM_TABLE_RAM 0x{table - RAM:04X}u",
         f"#define ROM_USED_END 0x{data_load + symbols['_edata'] - RAM:06X}u",
         "static const char *const ROM_SAMPLE_NAMES[128] = {",
     ]

@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: страница DAC, v12</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 40px; }
+  p, ul { max-width: 1100px; margin: 6px 0; }
+  li { margin: 2px 0; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .done { border: 1px solid #444; background: #161616; padding: 8px 14px; max-width: 1100px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid #383838; padding: 5px 9px; vertical-align: top; }
+  th { color: #eee; text-align: left; background: #1a1a1a; }
+  code { color: #eee; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  #zoom { position: fixed; right: 16px; top: 12px; background: #222; color: #eee; border: 1px solid #555; padding: 6px 10px; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<button id="zoom">Макеты x2</button>
+<main>
+<button id="zoom">Макеты x2</button>
+<main>
+<h1>MDMI: страница DAC, v12 (подпись, сетка на всю ширину, окраска столбцов, перетаскивание)</h1>
+<p>art-director, 2026-11-07. Окно 720x528, шрифт 5x7. Панель выбранного сэмпла ниже сетки не меняется (v11 и раздел «После
+просмотра владельцем» в dac-page.md); здесь она нарисована упрощённо.</p>
+<div class="done"><b>Решено без выбора:</b> подпись <code>DAC Samples</code> в шапке страницы и в рельсе; номера рядов
+убраны, сетка 242-696, шаг 38, клетка 36x16, щель 2; перетаскивание по правилам раздела 3. <b>Выбрать:</b> окраска
+столбцов, варианты A, B, C (раздел 2).</div>
+
+<h2>1. Новая раскладка, нынешние цвета</h2>
+<canvas id="c0"></canvas>
+<p class="lbl">Слева от сетки ничего. Шапка столбцов над центром клеток. Имя по-прежнему 5 знаков x1: шестой знак требует
+35 px текста в клетке 36, без полей. Выигрыш в воздухе: между именами соседних клеток 9 px вместо 7.</p>
+
+<h2>2. Окраска столбцов: три варианта рядом</h2>
+<div class="row">
+  <div><div class="lbl"><b>A. Клавиши только в шапке</b>. Новых цветов нет.</div><canvas id="va"></canvas></div>
+  <div><div class="lbl"><b>B. Диезы темнее</b>. Два новых оттенка.</div><canvas id="vb"></canvas></div>
+  <div><div class="lbl"><b>C. Как клавиатура</b>. Пять новых оттенков.</div><canvas id="vc"></canvas></div>
+</div>
+<p class="lbl">Те же ноты во всех трёх: играет 38, выбрана 36, мышь на 42, файлы 34 и 37, ряды 24-36 и пустые 0-11.</p>
+<div class="row">
+  <div><canvas id="za"></canvas></div>
+  <div><canvas id="zb"></canvas></div>
+  <div><canvas id="zc"></canvas></div>
+</div>
+<p class="lbl">x3: шапка, ряды 0-36, столбцы C-D#: пустые, ROM (HighQ, Slap, RTap...), выбранная 36. Верх общего вида в этом макете из v10 (без NOTES/AUDIO IN), он не меняется.</p>
+<table>
+<tr><th></th><th>Шапка</th><th>Пустая</th><th>ROM</th><th>Файл</th><th>Нажата, бросок, выбор</th><th>Чем платим</th></tr>
+<tr><td>A</td><td>натуральные: плашка <code>#444444</code> (C_LINE), буква <code>C_TEXT</code>; диезы: без плашки, буква <code>C_HINT</code></td><td colspan="3">как сейчас</td><td>как сейчас</td><td>в самой сетке столбцы не видны, только под шапкой</td></tr>
+<tr><td>B</td><td>буквы диезов <code>C_LINE</code></td><td>диез <code>#161616</code></td><td>диез <code>#2E1700</code>, имя <code>C_LABEL</code></td><td>как сейчас</td><td>как сейчас</td><td>файлы (главное) столбцов не показывают</td></tr>
+<tr><td>C</td><td>как B</td><td>натур. <code>#2C2C2C</code>, диез <code>#161616</code></td><td>натур. <code>#552B00</code>, диез <code>#2E1700</code></td><td>натур. <code>C_DAC</code>, диез <code>#C06A1C</code></td><td>как сейчас</td><td>файл-диез ближе к ROM; пять оттенков</td></tr>
+</table>
+<p>Почему так: заливка клетки уже говорит, что лежит на ноте. Окраска столбца сдвигает только яркость внутри своего
+состояния, оттенок (серый, тёмно-оранжевый, оранжевый) остаётся. Яркие состояния (нажата <code>C_PLAYING</code>, цель
+<code>C_AMBER</code>) и рамки не окрашиваются никогда: они должны перекрикивать столбец. Ждущая ядра клетка берёт пустую
+заливку своего столбца, имя <code>C_AMBER</code>. Рекомендую <b>B</b>: диезы уходят назад, натуральные остаются как есть,
+файлы не трогаем, ROM и пустая не путаются.</p>
+
+<h2>3. Перетаскивание сэмпла</h2>
+<canvas id="d1"></canvas>
+<p class="lbl">Тянется файл 34 (808_kick) на 50 без Ctrl: перенос. 50 (Ride1, ROM) янтарная с именем того, что ляжет.
+Клетка 34 уже показывает, что останется: StdKick из ROM. Выбор остаётся на 34 до отпускания.</p>
+<canvas id="d2"></canvas>
+<p class="lbl">Сэмпл ROM 36 (RimTap) на 52: всегда копия, 36 не меняется. FREE показывает цену копии янтарём.</p>
+<canvas id="d3"></canvas>
+<p class="lbl">Мышь ушла с сетки: призрак клетки с именем под мышью (рамка <code>C_AMBER</code>), цели нет. Отпустить здесь:
+отмена.</p>
+<canvas id="d4"></canvas>
+<p class="lbl">После отпускания (первый кадр): выбор на 50, обе клетки ждут ядро, одно UNDO вернёт обе.</p>
+</main>
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", amber: "#EECC66", err: "#EE2222",
+};
+let g;
+function use(id, w, h) { const cv = typeof id === "string" ? document.getElementById(id) : id; cv.width = w; cv.height = h; g = cv.getContext("2d"); g.imageSmoothingEnabled = false; R(0, 0, w, h, C.bg); return cv; }
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c, t = 1) { R(x, y, w, t, c); R(x, y + h - t, w, t, c); R(x, y, t, h, c); R(x + w - t, y, t, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) { const bits = parseInt(hex.substr(col * 2, 2), 16); for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z); }
+  }
+}
+function TW(s, z = 2) { return String(s).length * 6 * z; }
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function cut(s, n) { return s.length > n ? s.slice(0, n) : s; }
+function crop(id, fn, x, y, w, h, z) {
+  const off = document.createElement("canvas"); use(off, 720, 528); fn();
+  const cv = document.getElementById(id); cv.width = w * z; cv.height = h * z;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false; cx.drawImage(off, x, y, w, h, 0, 0, w * z, h * z);
+}
+const NOTE = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"];
+const nn = p => NOTE[p % 12] + (Math.floor(p / 12) - 1);
+
+// ---------- the ROM's map ----------
+const ROMMAP = ("26 HighQ .05|27 Slap .66|28 ScratchPush .13|29 ScratchPull .12|30 Sticks .19|31 SquareClick .03|32 MetroClick .01|" +
+  "33 MetroBell .45|34 StdKick .29|35 StdKick .29|36 RimTap 1.45|37 StdSnr1 .48|38 Clap .38|39 StdSnr2 .53|40 LowFlrStudio 1.0|" +
+  "41 HiHatClosed .72|42 FlrStudio .84|43 HiHatFoot .51|44 LowStudio 1.17|45 HiHatHalfOpen 3.17|46 MdStudio 1.01|47 MdHiStudio .95|" +
+  "48 Crsh1 8.53|49 HiStudio 1.01|50 Ride1 2.59|51 ChinaCrash 3.59|52 BellRide 3.29|53 Tambourine .52|54 Splash 2.71|55 CowBell .39|" +
+  "56 Crsh2 5.70|57 VibraSlap 1.52|58 Ride2 2.95|59 BongoRim .33|60 LowBongo .39|61 ClosedSlap .28|62 HighConga .72|63 LowTumba .64|" +
+  "64 HighTimbale 1.49|65 LowTimbale 1.60|66 HighAgogo .29|67 LowAgogo .41|68 Cabasa .19|69 Maracas .12|70 ShortWhistle .20|" +
+  "71 LongWhistle .45|72 GuiroDown .22|73 GuiroUp .51|74 Clave .10|75 HighWoodblock .31|76 LowWoodblock .33|77 QuicaHi 1.57|" +
+  "78 QuicaLow 1.87|79 Triangle 1.64|80 Triangle 1.64|81 SmallShaker .70|82 SleighBells 2.02|83 BellTree 6.47|84 Castanet .07|" +
+  "85 ShortTaikoHit 1.44|86 LongTaikoHit 1.88").split("|");
+function baseMap() {
+  const m = [];
+  for (let n = 0; n < 128; n++) m.push(null);
+  ROMMAP.forEach(e => { const [n, name, s] = e.split(" "); m[+n] = { name, len: +s, rate: "22K", file: false }; });
+  return m;
+}
+function mapWith(files) { const s = baseMap(); (files || []).forEach(([n, name, len, rate]) => { s[n] = { name, len, rate, file: true, rom: s[n] && s[n].name }; }); return s; }
+
+// dac_short(): 5 letters. Words split at _ - space . and where a capital follows a small letter; digits stay with the
+// word before them. Fits whole: joined. Else: first letter of every word but the last, then the last word, cut to 5.
+function short(name) {
+  const words = name.replace(/([a-z])([A-Z])/g, "$1 $2").split(/[_\-\s.]+/).filter(Boolean);
+  const joined = words.join("");
+  if (joined.length <= 5) return joined;
+  return (words.slice(0, -1).map(w => w[0]).join("") + words[words.length - 1]).slice(0, 5);
+}
+
+// ---------- frame: header, rail, globals (v8, v9) ----------
+const RAIL = [
+  { name: "Synth Bass 1", seen: 1, held: 1, note: 36, vel: 110, vol: 112 },
+  { name: "Rhodes", star: 1, seen: 1, held: 0, note: 64, vel: 84, vol: 100 },
+  { name: "Square Lead", seen: 1, held: 1, note: 72, vel: 96, vol: 100 },
+  { name: "strings_warm", seen: 1, held: 1, note: 59, vel: 60, vol: 96 },
+  { name: "Overdrive Guit", seen: 1, held: 0, note: 52, vel: 96, vol: 104 },
+  { dac: 1 },
+  { name: "Envelope 0", psg: 1, seen: 1, held: 1, note: 72, vel: 100, vol: 96 },
+  { name: "Square Lead", psg: 1, seen: 1, held: 1, note: 76, vel: 88, vol: 90 },
+  { name: "tremolo_pad", psg: 1, seen: 1, held: 0, note: 67, vel: 50, vol: 90 },
+  { name: "Envelope 0", psg: 1, seen: 0, vol: 80 },
+];
+const rowY = i => i < 6 ? 44 + i * 40 : 300 + (i - 6) * 40;
+function segBar(x, y, w, h, c, dark) {
+  const n = 16, pitch = Math.floor(w / n), eff = c.seen ? c.vol * c.vel / 127 / 127 : 0;
+  const nv = Math.round(n * c.vol / 127), ne = c.seen ? Math.max(1, Math.round(n * eff)) : 0, lit = c.held ? C.lit : C.hint;
+  for (let k = 0; k < n; k++) R(x + k * pitch, y, pitch - 1, h, k < ne ? lit : k < nv ? dark : C.cell);
+}
+function railRow(i, sel, st) {
+  const c = RAIL[i], y = rowY(i);
+  R(0, y, 232, 39, C.bg); R(0, y + 39, 232, 1, C.cell);
+  if (c.dac) {
+    if (sel) R(4, y, 229, 39, C.dacD);
+    R(0, y, 4, 39, C.dac);
+    T(String(i + 1), 10, y + 7, C.text, 3); T(DAC_NAME, 54, y + 5, C.text, 2);
+    if (st.play != null) TR(nn(st.play), 226, y + 22, st.held ? C.lit : C.hint, 1);
+    R(54, y + 25, 16, 4, st.held ? C.lit : C.cell);
+    return;
+  }
+  const kind = c.psg ? C.psg : C.fm, dark = c.psg ? C.psgD : C.fmD;
+  if (sel) R(4, y, 229, 39, dark);
+  R(0, y, 4, 39, kind);
+  T(String(i + 1), 10, y + 7, C.text, 3);
+  T(cut(c.name, 13) + (c.star ? "*" : ""), 54, y + 5, C.text, 2);
+  segBar(54, y + 25, 140, 4, c, dark);
+  TR(c.seen ? nn(c.note) : "---", 226, y + 22, c.seen ? (c.held ? C.lit : C.hint) : C.line, 1);
+}
+function frame(st) {
+  R(0, 0, 720, 28, C.bg); R(0, 27, 720, 1, C.line); T("MDMI", 8, 7, C.text, 2);
+  const tab = st.tab || "EDITOR";
+  [["ALL", 60, 56], ["EDITOR", 120, 80], ["BANK", 204, 80], ["ROM", 288, 56]].forEach(([l, x, w]) => { const on = l === tab; R(x, 2, w, 24, on ? C.text : C.cell); TC(l, x, w, 7, on ? C.bg : C.label, 2); });
+  if (st.loading) T("LOADING", 352, 7, C.amber, 2); else T("RUNNING", 352, 7, C.lit, 2);
+  [["LOAD", 536, 1], ["SAVE", 596, 1], ["UNDO", 656, 1]].forEach(([l, x, en]) => { B(x, 2, 56, 24, en ? C.line : C.cell); TC(l, x, 56, 7, en ? C.label : C.line, 2); });
+  R(0, 28, 232, 16, C.cell); T("YM2612", 8, 32, C.fmL, 1); R(0, 284, 232, 16, C.cell); T("SN76489", 8, 288, C.psg, 1);
+  for (let i = 0; i < 10; i++) railRow(i, i === 5, st);
+  R(232, 28, 1, 432, C.line);
+  R(0, 460, 720, 1, C.line);
+  [["LFO", "ON"], ["LFO RATE", "3.98 HZ"], ["FILTER", "OFF"], ["CH3 SPECIAL", "OFF"], ["DAC", "ON"]].forEach(([l, v], i) => {
+    const x = 8 + i * 118; R(x, 466, 114, 32, C.cell); T(l, x + 4, 470, C.label, 1); T(v, x + 4, 480, l === "DAC" ? C.dac : C.text, 2);
+  });
+}
+function footer(s, c = C.label) { T(s || "", 8, 512, c, 1); TR("0.12.0", 712, 512, C.hint, 1); }
+function vc(x, y, w, h, label, val, max, o = {}) {
+  const fill = o.fill || C.dacD;
+  R(x, y, w, h, C.cell);
+  if (o.bip) { const mid = x + w / 2, len = Math.round((w / 2) * val / max); R(Math.min(mid, mid + len), y, Math.abs(len), h, fill); R(mid, y, 1, h, C.line); }
+  else R(x, y, Math.round(w * val / max), h, fill);
+  if (label) T(label, x + 4, y + Math.floor((h - 7) / 2), C.label, 1);
+  TR(o.text != null ? o.text : String(val), x + w - 4, y + Math.floor((h - 14) / 2), o.ink || C.text, 2);
+}
+// A frame button like LOAD / SAVE / UNDO.
+function button(label, x, y, w, h, o = {}) {
+  const c = o.dis ? C.cell : o.over ? C.text : C.line;
+  B(x, y, w, h, c); TC(label, x, w, y + Math.floor((h - 14) / 2), o.dis ? C.line : o.over ? C.text : C.label, 2);
+}
+
+// ---------- common top: name line, FREE, TUNE (v9) ----------
+const SPACE_MB = 1.9;
+function pageTop(st) {
+  R(233, 28, 4, 52, C.dac);
+  T("6", 242, 30, C.text, 3); T(DAC_NAME, 288, 34, C.text, 2);
+  const free = SPACE_MB - st.used, x = 592, y = 30, w = 116, h = 22;
+  R(x, y, w, h, C.cell);
+  const fw = Math.round(w * free / SPACE_MB);
+  R(x, y, fw, h, C.dacD);
+  if (st.incoming) { const iw = Math.max(2, Math.round(w * st.incoming / SPACE_MB)); R(x + fw - iw, y + h - 4, iw, 4, C.amber); }
+  const left = free - (st.incoming || 0), low = left < SPACE_MB * 0.1;
+  T("FREE", x + 4, y + 8, C.label, 1);
+  TR((left < 0 ? "-" : "") + Math.abs(left).toFixed(1) + " MB", x + w - 4, y + 4, left < 0 ? C.err : low || st.incoming ? C.amber : C.text, 2);
+  vc(422, 56, 96, 20, "TUNE", st.tune, 99, { bip: 1, text: (st.tune > 0 ? "+" : "") + st.tune, ink: st.tune ? C.amber : C.text });
+  R(233, 79, 487, 1, C.cell);
+}
+// Four lines on both pages; the first two of v9 are one line now.
+const WARN = [
+  { s: "ONE SAMPLE AT A TIME. NO VOLUME. ALL NOTES/SOUND OFF DO NOT STOP IT." },
+  { s: "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE.", live: "tune" },
+  { s: "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM.", live: "lent" },
+  { s: "THE DAC SWITCH BELOW RESETS THE CHIP: ALL SOUNDING NOTES ARE CUT." },
+];
+function warnings(st, lineY, y0) {
+  R(242, lineY, 458, 1, C.cell);
+  WARN.forEach((w, i) => {
+    const live = (w.live === "tune" && st.tune) || (w.live === "lent" && st.lent);
+    T(w.s, 242, y0 + i * 10, live ? C.amber : C.hint, 1);
+  });
+}
+
+
+// ======================= v12 =======================
+const DAC_NAME = "DAC Samples";
+// The grid across the whole page: no row labels.
+const GX = 242, GY = 96, PX = 38, PY = 18, CW = 36, CH = 16;
+const cellX = n => GX + (n % 12) * PX, cellY = n => GY + Math.floor(n / 12) * PY;
+const COLS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const SHARP = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
+// New shades. B: sharps of the two dim states. C: also naturals lighter and the file colour.
+const V = { cellS: "#161616", romS: "#2E1700", cellN: "#2C2C2C", romN: "#552B00", fileS: "#C06A1C" };
+function shade(variant, kind, sharp) {
+  if (variant === "B" && sharp) return { empty: V.cellS, rom: V.romS, file: C.dac }[kind];
+  if (variant === "C") return sharp ? { empty: V.cellS, rom: V.romS, file: V.fileS }[kind] : { empty: V.cellN, rom: V.romN, file: C.dac }[kind];
+  return { empty: C.cell, rom: C.dacD, file: C.dac }[kind];
+}
+function header(variant) {
+  COLS.forEach((c, q) => {
+    const x = GX + q * PX;
+    if (variant === "A") {
+      if (!SHARP[q]) R(x, 82, CW, 11, C.line);
+      TC(c, x, CW, 84, SHARP[q] ? C.hint : C.text, 1);
+    } else TC(c, x, CW, 84, (variant === "B" || variant === "C") && SHARP[q] ? C.line : C.hint, 1);
+  });
+}
+function gridCell(n, s, st) {
+  const x = cellX(n), y = cellY(n), e = s[n], sh = SHARP[n % 12], v = st.variant;
+  const target = st.drop && n >= st.drop[0] && n < st.drop[0] + st.drop[1];
+  const loading = st.loadingNotes && st.loadingNotes.includes(n);
+  const playing = st.held && st.play === n;
+  let fillC, ink, label = e ? short(e.name) : "";
+  if (target) { fillC = C.amber; ink = C.bg; label = short(st.dropFiles[n - st.drop[0]]); }
+  else if (loading) { fillC = shade(v, "empty", sh); ink = C.amber; }
+  else if (playing) { fillC = C.lit; ink = C.bg; }
+  else if (!e) { fillC = shade(v, "empty", sh); ink = C.bg; }
+  else if (e.file) { fillC = shade(v, "file", sh); ink = C.bg; }
+  else { fillC = shade(v, "rom", sh); ink = C.label; }
+  R(x, y, CW, CH, fillC);
+  if (label) T(label, x + 3, y + 4, ink, 1);
+  if (st.sel === n) B(x - 1, y - 1, CW + 2, CH + 2, C.text, 2);
+  else if (st.hover === n) B(x - 1, y - 1, CW + 2, CH + 2, C.label, 1);
+}
+function panelStub(s, st) {
+  const n = st.sel, e = s[n];
+  R(242, 297, 458, 1, C.cell);
+  R(242, 311, 458, 44, C.cell); R(242, 333, 458, 1, C.line);
+  TC("PANEL OF THE SELECTED SAMPLE: AS V11", 242, 458, 330, C.hint, 1);
+  T(nn(n), 242, 358, C.text, 3);
+  T(e ? cut(e.name, 14) : "EMPTY", 320, 358, e ? (e.file ? C.text : C.label) : C.hint, 2);
+  T(String(n), 320, 377, C.text, 1);
+}
+function editorPage(st) {
+  frame(st);
+  const s = st.map || mapWith(st.files);
+  pageTop(st);
+  header(st.variant);
+  for (let n = 0; n < 128; n++) gridCell(n, s, st);
+  panelStub(s, st);
+  if (st.ghost) {
+    const [gx, gy, name] = st.ghost;
+    R(gx, gy, CW, CH, C.bg); B(gx, gy, CW, CH, C.amber); T(short(name), gx + 3, gy + 4, C.amber, 1);
+  }
+  footer(st.foot, st.footC);
+}
+// A map after a move: the source shows what will stay (ROM or empty), the target is the drop.
+function moved(files, from, keep) {
+  const s = mapWith(files);
+  if (!keep) { const rom = baseMap()[from]; s[from] = rom; }
+  return s;
+}
+
+const FILES = [[34, "808_kick", 0.62, "32K"], [37, "snare_tight", 0.41, "32K"]];
+const base = { used: 0.48, tune: 0, files: FILES, play: 38, held: true, sel: 36, hover: 42 };
+use("c0", 720, 528);
+editorPage(Object.assign({}, base, { foot: "42 F#2 FlrStudio 0.84 S 22 KHZ, ROM" }));
+
+["A", "B", "C"].forEach(v => {
+  crop("v" + v.toLowerCase(), () => editorPage(Object.assign({}, base, { variant: v, foot: "" })), 238, 78, 466, 218, 1);
+  crop("z" + v.toLowerCase(), () => editorPage(Object.assign({}, base, { variant: v, foot: "" })), 238, 78, 152, 92, 3);
+});
+
+use("d1", 720, 528);
+editorPage({ used: 0.48, tune: 0, files: FILES, sel: 34, variant: "B", map: moved(FILES, 34, false),
+  drop: [50, 1], dropFiles: ["808_kick"],
+  foot: "MOVE 34 TO 50, CTRL COPIES: 808_kick", footC: C.amber });
+
+use("d2", 720, 528);
+editorPage({ used: 0.48, incoming: 0.03, tune: 0, files: FILES, sel: 36, variant: "B",
+  drop: [52, 1], dropFiles: ["RimTap"],
+  foot: "COPY 36 TO 52, +31.9 KB: RimTap", footC: C.amber });
+
+use("d3", 720, 528);
+editorPage({ used: 0.48, tune: 0, files: FILES, sel: 34, variant: "B", map: moved(FILES, 34, false),
+  ghost: [520, 60, "808_kick"],
+  foot: "MOVE 34: DROP ON A NOTE. OUTSIDE: CANCEL", footC: C.amber });
+
+use("d4", 720, 528);
+editorPage({ used: 0.48, tune: 0, loading: true, variant: "B", sel: 50, loadingNotes: [50],
+  map: (() => { const s = moved(FILES, 34, false); s[50] = { name: "808_kick", len: 0.62, rate: "32K", file: true, rom: "Ride1" }; return s; })(),
+  foot: "ENGINE RESTARTS: NO SOUND UNTIL LOADED", footC: C.amber });
+
+let zoomed = false;
+document.getElementById("zoom").onclick = () => {
+  zoomed = !zoomed;
+  document.querySelectorAll("canvas").forEach(cv => { cv.style.width = zoomed ? cv.width * 2 + "px" : ""; });
+  document.getElementById("zoom").textContent = zoomed ? "Макеты x1" : "Макеты x2";
+};
+</script>
+</body>
+</html>

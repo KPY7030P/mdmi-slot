@@ -19,6 +19,9 @@ typedef struct {
 	// Boots done so far: a restart with another image adds one (stage 12).
 	uint32_t boots;
 	double last_boot_ms;
+	// Images written into the running core instead of a restart (D39).
+	uint32_t patches;
+	double last_patch_ms;
 	const char *boot_stage;
 	uint32_t boot_error;
 	uint64_t worst_run_pos;
@@ -59,9 +62,9 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e);
 uint32_t mdmi_engine_boots(const mdmi_engine *e);
 // The ROM image built into the plugin.
 const uint8_t *mdmi_engine_builtin_rom(size_t *size);
-// Main thread. The core boots this image next, copied: before the first boot instead of the built-in
-// one, after it as a restart on the engine's own thread. Nothing sounds while it boots; stats show the
-// boot and its time.
+// Main thread. The core takes this image next, copied: before the first boot instead of the built-in
+// one; after it written into the running core when only its samples differ (D39), else as a restart
+// on the engine's own thread, silent while it boots. Stats show both and their time.
 bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size);
 // Tests only, before activate: the emulator computes no further than the block being rendered, so
 // after mdmi_engine_render it stands at the step past the audio, whatever the scheduler did. It may

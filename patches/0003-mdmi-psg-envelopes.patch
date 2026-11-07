@@ -1,8 +1,19 @@
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..c4c5e3b 100644
+index 5145b6a..2e3a7eb 100644
 --- a/src/midi.c
 +++ b/src/midi.c
-@@ -649,13 +649,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -492,7 +492,9 @@ void midi_note_off(u8 chan, u8 pitch)
+ 
+     FOREACH_DEV_CHAN_WITH_MIDI(chan, devChan) {
+         if (isChannelPlayingNote(devChan, pitch)) {
+-            if (!handledRetrigger && singleVoice && nextMostRecentPitch != 0) {
++            // A one-shot drum sample isn't struck again by the release of a note played over it (D38).
++            const bool retriggers = devChan->ops != &DAC_VTable || midi_dac_retriggers(nextMostRecentPitch);
++            if (!handledRetrigger && singleVoice && nextMostRecentPitch != 0 && retriggers) {
+                 if (midiChannel->portamento) {
+                     note_priority_push(&midiChannel->notePriority, nextMostRecentPitch);
+                     devChan->glideTargetPitch = nextMostRecentPitch;
+@@ -649,13 +651,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -45,7 +56,7 @@ index 5145b6a..c4c5e3b 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -841,7 +870,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +872,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -54,7 +65,7 @@ index 5145b6a..c4c5e3b 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -1002,6 +1031,7 @@ static void enable_dac(bool enable)
+@@ -1002,6 +1033,7 @@ static void enable_dac(bool enable)
  {
      deviceChannels[5].ops = enable ? &DAC_VTable : &FM_VTable;
      synth_enable_dac(enable);
@@ -76,10 +87,10 @@ index 731aa8c..f85f64f 100644
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
 diff --git a/src/midi_dac.c b/src/midi_dac.c
-index 33ac142..8249995 100644
+index 33ac142..ba2bbf9 100644
 --- a/src/midi_dac.c
 +++ b/src/midi_dac.c
-@@ -1,12 +1,15 @@
+@@ -1,21 +1,33 @@
  #include "midi_dac.h"
  #include "pcm_sample.h"
  
@@ -95,7 +106,15 @@ index 33ac142..8249995 100644
      SND_PCM_startPlay(sample->data, sample->length, sample->rate, SOUND_PAN_CENTER, 0);
  }
  
-@@ -16,6 +19,9 @@ void midi_dac_reset(void)
++bool midi_dac_retriggers(u8 pitch)
++{
++    const PcmSample* sample = percussionPcmSample[pitch];
++    return !sample || !(sample->flags & PCM_ONE_SHOT);
++}
++
+ void midi_dac_reset(void)
+ {
+ }
  
  void midi_dac_note_off(u8 chan, u8 pitch)
  {
@@ -105,6 +124,16 @@ index 33ac142..8249995 100644
      SND_PCM_stopPlay();
  }
  
+diff --git a/src/midi_dac.h b/src/midi_dac.h
+index c37b89a..baea9a2 100644
+--- a/src/midi_dac.h
++++ b/src/midi_dac.h
+@@ -9,3 +9,5 @@ void midi_dac_pan(u8 chan, u8 pan);
+ void midi_dac_program(u8 chan, u8 program);
+ void midi_dac_all_notes_off(u8 chan);
+ void midi_dac_pitch(u8 chan, u8 pitch, s8 cents);
++// Whether a held note may start again when a later one is released: not a one-shot (D38).
++bool midi_dac_retriggers(u8 pitch);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
 index 82a5655..7d69893 100644
 --- a/src/midi_psg.c
@@ -391,7 +420,7 @@ index df535e9..9fb9088 100644
  
  extern const PcmSample* percussionPcmSample[128];
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..0dac5d6 100644
+index d2449c4..ac0a4fc 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -407,15 +436,16 @@ index d2449c4..0dac5d6 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -229,6 +235,7 @@ int main(void)
+@@ -229,6 +235,8 @@ int main(void)
  
          midi_dac_test(test_midi_dac_plays_note),
          midi_dac_test(test_midi_dac_stops_note),
 +        midi_dac_test(test_midi_dac_one_shot_ignores_note_off),
++        midi_dac_test(test_midi_dac_one_shot_not_retriggered),
          midi_dac_test(test_midi_dac_does_not_play_null_sample),
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
-@@ -249,6 +256,7 @@ int main(void)
+@@ -249,6 +257,7 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -424,7 +454,7 @@ index d2449c4..0dac5d6 100644
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..428152b 100644
+index 9650279..3d9f926 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,6 +1,8 @@
@@ -436,7 +466,7 @@ index 9650279..428152b 100644
  #include "snd/sound.h"
  #include "snd/pcm/snd_pcm.h"
  
-@@ -62,3 +64,49 @@ void test_midi_dac_stops_note(UNUSED void** state)
+@@ -62,3 +64,77 @@ void test_midi_dac_stops_note(UNUSED void** state)
  
      __real_midi_note_off(dacFmChannel, noteKey);
  }
@@ -456,6 +486,34 @@ index 9650279..428152b 100644
 +    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
 +    __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
 +    __real_midi_note_off(dacFmChannel, nullNoteKey);
++
++    percussionPcmSample[nullNoteKey] = saved;
++}
++
++// A one-shot held under a shorter note isn't struck again when that note is released (D38).
++void test_midi_dac_one_shot_not_retriggered(UNUSED void** state)
++{
++    static const u8 data[256] = { 0 };
++    static const PcmSample oneShot = { data, sizeof(data), 1, PCM_ONE_SHOT };
++    const PcmSample* saved = percussionPcmSample[nullNoteKey];
++    percussionPcmSample[nullNoteKey] = &oneShot;
++
++    expect_value(__wrap_SND_PCM_startPlay, sample, data);
++    expect_any(__wrap_SND_PCM_startPlay, len);
++    expect_any(__wrap_SND_PCM_startPlay, rate);
++    expect_any(__wrap_SND_PCM_startPlay, pan);
++    expect_any(__wrap_SND_PCM_startPlay, loop);
++    __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
++
++    expect_any(__wrap_SND_PCM_startPlay, sample);
++    expect_any(__wrap_SND_PCM_startPlay, len);
++    expect_any(__wrap_SND_PCM_startPlay, rate);
++    expect_any(__wrap_SND_PCM_startPlay, pan);
++    expect_any(__wrap_SND_PCM_startPlay, loop);
++    __real_midi_note_on(dacFmChannel, noteKey, 100);
++
++    expect_function_call(__wrap_SND_PCM_stopPlay);
++    __real_midi_note_off(dacFmChannel, noteKey);
 +
 +    percussionPcmSample[nullNoteKey] = saved;
 +}
@@ -487,10 +545,10 @@ index 9650279..428152b 100644
 +    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
 +}
 diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
-index 5e63f7b..f9ed7bf 100644
+index 5e63f7b..1d0b816 100644
 --- a/tests/unit/test_midi_dac.h
 +++ b/tests/unit/test_midi_dac.h
-@@ -3,6 +3,8 @@
+@@ -3,6 +3,9 @@
  int test_midi_dac_setup(UNUSED void** state);
  void test_midi_enables_dac(UNUSED void** state);
  void test_midi_disables_dac(UNUSED void** state);
@@ -499,6 +557,7 @@ index 5e63f7b..f9ed7bf 100644
  void test_midi_dac_does_not_play_null_sample(UNUSED void** state);
  void test_midi_dac_stops_note(UNUSED void** state);
 +void test_midi_dac_one_shot_ignores_note_off(UNUSED void** state);
++void test_midi_dac_one_shot_not_retriggered(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
 index 9ce9691..8a738a6 100644
 --- a/tests/unit/test_midi_sysex.c

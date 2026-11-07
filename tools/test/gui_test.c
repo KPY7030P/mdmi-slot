@@ -94,8 +94,9 @@
 #define DAC_RESET_X 650
 // Note 40 is the 15th row when the list opens at note 26.
 #define DAC_NOTE40_Y 376
-// On EDITOR's grid note N is at 270 + N % 12 * 36, 96 + N / 12 * 18, 34x16.
-#define GRID_NOTE40_X 414
+// On EDITOR's grid note N is at 242 + N % 12 * 38, 96 + N / 12 * 18, 36x16.
+#define GRID_NOTE40_X 394
+#define COLOR_SHARP_ROM 0x2E1700
 #define GRID_NOTE40_Y 150
 // The panel's cells under the grid (D38).
 #define DAC_ROW_A_Y 398
@@ -352,20 +353,19 @@ static int64_t project_take(const clap_istream_t *stream, void *buffer, uint64_t
 	return (int64_t)count;
 }
 
-// Waits for the engine to restart: LOADING in amber, then RUNNING again. The time in ms, or -1.
-static long wait_restart(HWND window)
+// A change of samples goes into the running core (D39): for a while the header must never say
+// LOADING. The ms waited, or -1 if it did.
+static long wait_applied(HWND window)
 {
 	const DWORD start = GetTickCount();
-	bool loading = false;
-	while (GetTickCount() - start < BOOT_TIMEOUT_MS) {
+	while (GetTickCount() - start < 400) {
 		run_ms(10);
 		capture(window);
-		loading = loading || count_color(0, HEADER_H, COLOR_AMBER) > 0;
-		if (loading && count_color(0, HEADER_H, COLOR_PLAYING) > 0) {
-			return (long)(GetTickCount() - start);
+		if (count_color(0, HEADER_H, COLOR_AMBER) > 0) {
+			return -1;
 		}
 	}
-	return -1;
+	return (long)(GetTickCount() - start);
 }
 
 int main(int argc, char **argv)
@@ -916,8 +916,8 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "dac");
-		const int mapped = count_color_in(270, 702, 96, 294, COLOR_DAC_DARK);
-		CHECK(mapped > 61 * 400 && count_color_in(270, 702, 96, 294, COLOR_DAC) < 200, "the grid has the ROM's 61 notes (%d px), no file yet", mapped);
+		const int mapped = count_color_in(242, 700, 96, 294, COLOR_DAC_DARK) + count_color_in(242, 700, 96, 294, COLOR_SHARP_ROM);
+		CHECK(mapped > 61 * 450 && count_color_in(242, 700, 96, 294, COLOR_DAC) < 200, "the grid has the ROM's 61 notes (%d px), no file yet", mapped);
 		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
 		clap_ostream_t out_stream = {NULL, project_write};
 		project_size = 0;
@@ -951,11 +951,11 @@ int main(int argc, char **argv)
 		project_read = 0;
 		clap_istream_t in_stream = {NULL, project_take};
 		CHECK(state->load(plugin, &in_stream), "a project with a sample loads");
-		const long restart_ms = wait_restart(window);
+		const long restart_ms = wait_applied(window);
 		capture(window);
 		save_bmp(argv[2], "dac-file");
 		const int cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
-		CHECK(restart_ms >= 0 && cell > 300, "the engine restarts in %ld ms with the sample, note 40's cell is a file's (%d px)", restart_ms, cell);
+		CHECK(restart_ms >= 0 && cell > 300, "a project with a sample goes into the running core, no LOADING (%ld ms), note 40's cell is a file's (%d px)", restart_ms, cell);
 		// The panel prepares a file's sample (D38): a drag on GAIN is one restart, on mouse up.
 		click(window, GRID_NOTE40_X + 17, GRID_NOTE40_Y + 8);
 		run_ms(100);
@@ -968,12 +968,12 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(300, DAC_TRIM_Y + 7));
 		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
 		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
-		const long trim_ms = wait_restart(window);
+		const long trim_ms = wait_applied(window);
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "dac-trim");
 		const int moved = count_color_in(346, 358, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC);
-		CHECK(trim_ms >= 0 && moved >= 8 * 14, "the start's tab dragged to a quarter trims there, one restart %ld ms", trim_ms);
+		CHECK(trim_ms >= 0 && moved >= 8 * 14, "the start's tab dragged to a quarter trims there, no restart (%ld ms)", trim_ms);
 		// As Windows sends a double click: down, up, double click, up. The first click moves nothing.
 		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
 		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
@@ -983,7 +983,7 @@ int main(int argc, char **argv)
 		CHECK(still, "a click on a tab without moving changes nothing, no restart");
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(352, DAC_TRIM_Y + 7));
 		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(352, DAC_TRIM_Y + 7));
-		const long untrim_ms = wait_restart(window);
+		const long untrim_ms = wait_applied(window);
 		capture(window);
 		CHECK(untrim_ms >= 0 && count_color_in(234, 242, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) >= 8 * 14, "a double click on the tab puts the start back");
 		// While the mouse is down nothing is prepared: the header stays RUNNING.
@@ -996,15 +996,15 @@ int main(int argc, char **argv)
 		const bool running = count_color(0, HEADER_H, COLOR_AMBER) == 0 && count_color(0, HEADER_H, COLOR_PLAYING) > 0;
 		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y - 30));
 		CHECK(running, "during the drag the engine keeps running");
-		const long gain_ms = wait_restart(window);
+		const long gain_ms = wait_applied(window);
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "dac-gain");
 		const int gain = count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
-		CHECK(gain_ms >= 0 && gain > 100, "a drag on GAIN prepares the sample once on mouse up, restart %ld ms, the bar shows it (%d px)", gain_ms, gain);
+		CHECK(gain_ms >= 0 && gain > 100, "a drag on GAIN prepares the sample on mouse up, no restart (%ld ms), the bar shows it (%d px)", gain_ms, gain);
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y + 10));
 		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(DAC_GAIN_X + 50, DAC_ROW_B_Y + 10));
-		const long back_ms = wait_restart(window);
+		const long back_ms = wait_applied(window);
 		capture(window);
 		CHECK(back_ms >= 0 && count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0, "a double click puts GAIN back to 0");
 		click(window, BUTTON_BANK_X, BUTTON_Y);
@@ -1014,9 +1014,9 @@ int main(int argc, char **argv)
 		const int file = count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_NOTE40_Y, DAC_NOTE40_Y + 20, COLOR_DAC);
 		CHECK(file > 10, "BANK lists the notes, 40 says FILE (%d px)", file);
 		click(window, DAC_RESET_X, DAC_NOTE40_Y + 9);
-		const long reset_ms = wait_restart(window);
+		const long reset_ms = wait_applied(window);
 		capture(window);
-		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "CLEAR gives note 40 the ROM's sample again, restart %ld ms", reset_ms);
+		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "CLEAR gives note 40 the ROM's sample again, no restart (%ld ms)", reset_ms);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		send_midi(0xB0, 78, 0);
 		run_ms(800);

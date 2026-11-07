@@ -1719,6 +1719,55 @@ static void test_dac_edit(void)
 	free(p);
 }
 
+// Samples between notes (owner after 0.12.0): swapped, copied, the ROM's removed and back.
+static void test_dac_moves(void)
+{
+	printf("DAC samples moved\n");
+	mdmi_patch *p = calloc(1, sizeof(*p));
+	patch_init(p);
+	dac_set set = {0};
+	state_view view = {0};
+	view.dac = &set;
+	const files_host host = {p, &view, count_handed, NULL};
+	mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	size_t size;
+	const char *error;
+	uint8_t *wav = sine_wav(22050, 1, 16, false, 440, 0.2, 0.5, &size);
+	dac_put(&set, 40, dac_from_wav(wav, size, "file.wav", &error));
+	free(wav);
+	// A file onto a ROM note: they swap, the ROM's sample comes along as a copy.
+	CHECK(files_move_sample(&files, 40, 36, false, message, sizeof(message)) && set.notes[36] && !strcmp(set.notes[36]->name, "file.wav")
+		&& set.notes[40] && !strcmp(set.notes[40]->name, "RimTap") && set.notes[40]->sample.rate == 1, "a file swapped with RimTap's note: %s", message);
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	rom_sample rim;
+	rom_image_sample(rom, rom_size, 36, &rim);
+	CHECK(set.notes[40]->sample.length == rim.length && !memcmp(set.notes[40]->bytes, rim.bytes, rim.length), "the ROM's sample keeps its bytes on the other note");
+	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[40] && !strcmp(set.notes[40]->name, "file.wav") && !set.notes[36], "undo puts both back");
+	CHECK(files_move_sample(&files, 40, 90, true, message, sizeof(message)) && set.notes[40] && set.notes[90], "a copy keeps the file where it was");
+	CHECK(files_move_sample(&files, 90, 100, false, message, sizeof(message)) && !set.notes[90] && set.notes[100], "moved to an empty note, the note left is empty");
+	CHECK(files_reset_sample(&files, 36, message, sizeof(message)) && set.removed[36] && !set.notes[36], "CLEAR on a ROM note removes its sample: %s", message);
+	size_t built;
+	uint8_t *image = dac_image(&set, rom, rom_size, &built);
+	rom_sample none;
+	CHECK(image && !rom_image_sample(image, built, 36, &none), "the image has nothing on the removed note");
+	free(image);
+	dac_set read = {0};
+	const size_t block_size = dac_block_size(&set);
+	uint8_t *block = malloc(block_size);
+	dac_block_write(&set, block);
+	CHECK(dac_block_read(&read, block, block_size) && read.removed[36] && dac_same(&set, &read), "the project keeps the removed note");
+	free(block);
+	CHECK(files_reset_sample(&files, 36, message, sizeof(message)) && !set.removed[36] && !set.notes[36], "and on it, RESTORE brings the ROM's back: %s", message);
+	CHECK(!files_move_sample(&files, 95, 96, false, message, sizeof(message)), "an empty note has nothing to move");
+	files_free(&files);
+	dac_clear(&set);
+	dac_clear(&read);
+	free(p);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -1745,6 +1794,7 @@ int main(int argc, char **argv)
 	test_dac();
 	test_dac_files();
 	test_dac_edit();
+	test_dac_moves();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

@@ -2,7 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include "engine.h"
 #include "files.h"
+#include "rom_map.h"
 #include "instrument.h"
 
 #define INSTRUMENT_MAX 64
@@ -466,6 +468,7 @@ static void remember_samples(mdmi_files *files, const char *text)
 	const dac_set *dac = files->host.view->dac;
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		files->undo_dac.notes[note] = dac_copy(dac->notes[note]);
+		files->undo_dac.removed[note] = dac->removed[note];
 	}
 	snprintf(files->undo_text, sizeof(files->undo_text), "%s", text);
 }
@@ -520,10 +523,10 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 	char text[FILES_MESSAGE];
 	if (count == 1) {
 		snprintf(text, sizeof(text), "note %d back before %.40s", first, read[0]->name);
-		snprintf(message, size, "%.40s > note %d, the engine restarts", read[0]->name, first);
+		snprintf(message, size, "%.40s > note %d", read[0]->name, first);
 	} else {
 		snprintf(text, sizeof(text), "notes %d-%d back before %d WAV", first, first + count - 1, count);
-		snprintf(message, size, "%d WAV > notes %d-%d, the engine restarts", count, first, first + count - 1);
+		snprintf(message, size, "%d WAV > notes %d-%d", count, first, first + count - 1);
 	}
 	remember_samples(files, text);
 	for (int i = 0; i < count; i++) {
@@ -555,7 +558,7 @@ bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *
 	snprintf(text, sizeof(text), "note %d before the change", note);
 	remember_samples(files, text);
 	dac_put(dac, note, changed);
-	snprintf(message, size, "Note %d changed, the engine restarts", note);
+	snprintf(message, size, "Note %d changed", note);
 	files->host.handed(files->host.context, false);
 	return true;
 }
@@ -563,16 +566,113 @@ bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *
 bool files_reset_sample(mdmi_files *files, int note, char *message, size_t size)
 {
 	dac_set *dac = files->host.view->dac;
-	if (!dac || note < 0 || note >= ROM_IMAGE_NOTES || !dac->notes[note]) {
+	if (!dac || note < 0 || note >= ROM_IMAGE_NOTES) {
 		return false;
 	}
+	const bool rom_has = ROM_SAMPLE_NAMES[note][0] != 0;
 	char text[FILES_MESSAGE];
-	snprintf(text, sizeof(text), "note %d back to %.40s", note, dac->notes[note]->name);
-	remember_samples(files, text);
-	dac_put(dac, note, NULL);
-	snprintf(message, size, "Note %d plays the ROM's sample again, the engine restarts", note);
+	if (dac->notes[note]) {
+		// A file goes, the ROM's sample or silence comes back.
+		snprintf(text, sizeof(text), "note %d back to %.40s", note, dac->notes[note]->name);
+		remember_samples(files, text);
+		if (dac->removed[note]) {
+			dac_remove(dac, note);
+		} else {
+			dac_put(dac, note, NULL);
+		}
+		snprintf(message, size, rom_has ? "Note %d plays the ROM's %s again" : "Note %d is empty again%s", note, rom_has ? ROM_SAMPLE_NAMES[note] : "");
+	} else if (rom_has && !dac->removed[note]) {
+		snprintf(text, sizeof(text), "note %d back to %s", note, ROM_SAMPLE_NAMES[note]);
+		remember_samples(files, text);
+		dac_remove(dac, note);
+		snprintf(message, size, "Note %d is empty: %s removed", note, ROM_SAMPLE_NAMES[note]);
+	} else if (rom_has) {
+		snprintf(text, sizeof(text), "note %d empty again", note);
+		remember_samples(files, text);
+		dac_put(dac, note, NULL);
+		snprintf(message, size, "Note %d plays the ROM's %s again", note, ROM_SAMPLE_NAMES[note]);
+	} else {
+		return false;
+	}
 	files->host.handed(files->host.context, false);
 	return true;
+}
+
+// What a note plays, as a sample that can go to another note: its file's, a copy of the ROM's, or
+// none. *empty says the note plays nothing.
+static dac_sample *note_content(const dac_set *dac, int note, bool *empty)
+{
+	*empty = false;
+	if (dac->notes[note]) {
+		return dac_copy(dac->notes[note]);
+	}
+	size_t size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+	rom_sample sample;
+	if (dac->removed[note] || !rom_image_sample(rom, size, note, &sample)) {
+		*empty = true;
+		return NULL;
+	}
+	return dac_from_rom(&sample, ROM_SAMPLE_NAMES[note]);
+}
+
+// A note gets what another played, or nothing: then empty, the ROM's sample there removed.
+static void put_content(dac_set *dac, int note, dac_sample *sample)
+{
+	if (sample) {
+		dac_put(dac, note, sample);
+	} else if (ROM_SAMPLE_NAMES[note][0]) {
+		dac_remove(dac, note);
+	} else {
+		dac_put(dac, note, NULL);
+	}
+}
+
+static uint32_t cost_of(const dac_sample *sample)
+{
+	return sample ? rom_image_cost(sample->sample.length) : 0;
+}
+
+static uint32_t source_of(const dac_sample *sample)
+{
+	return sample ? sample->source_frames * (uint32_t)sizeof(int16_t) : 0;
+}
+
+int files_move_sample(mdmi_files *files, int from, int to, bool copy, char *message, size_t size)
+{
+	dac_set *dac = files->host.view->dac;
+	if (!dac || from < 0 || to < 0 || from >= ROM_IMAGE_NOTES || to >= ROM_IMAGE_NOTES || from == to) {
+		return 0;
+	}
+	bool from_empty, to_empty = false;
+	dac_sample *moving = note_content(dac, from, &from_empty);
+	dac_sample *back = copy ? NULL : note_content(dac, to, &to_empty);
+	if (!moving || (!copy && !back && !to_empty)) {
+		dac_free(moving);
+		dac_free(back);
+		return 0;
+	}
+	// Room: the two notes' own samples after, against now. Swapped, the note left gets what the
+	// other played, a copy of the ROM's included; copied, it keeps its own.
+	const dac_sample *from_after = copy ? dac->notes[from] : back;
+	const uint32_t used = dac_used(dac) - cost_of(dac->notes[from]) - cost_of(dac->notes[to]) + cost_of(from_after) + cost_of(moving);
+	const uint32_t sources = dac_sources(dac) - source_of(dac->notes[from]) - source_of(dac->notes[to]) + source_of(from_after) + source_of(moving);
+	if (used > rom_image_room() || sources > DAC_SOURCE_MAX) {
+		dac_free(moving);
+		dac_free(back);
+		snprintf(message, size, "No room in the ROM for that");
+		return 0;
+	}
+	char text[FILES_MESSAGE];
+	snprintf(text, sizeof(text), copy ? "note %d before the copy" : "notes %d and %d before the swap", to, from);
+	remember_samples(files, text);
+	snprintf(message, size, copy ? "%.30s copied from %d to %d" : "%.30s from %d swapped with %d", moving->name, from, to);
+	put_content(dac, to, moving);
+	if (!copy) {
+		put_content(dac, from, back);
+	}
+	files->host.handed(files->host.context, false);
+	return 1;
 }
 
 bool files_undo(mdmi_files *files, char *message, size_t size)
@@ -601,6 +701,9 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 			dac_sample *now = dac->notes[note];
 			dac->notes[note] = files->undo_dac.notes[note];
 			files->undo_dac.notes[note] = now;
+			const bool removed = dac->removed[note];
+			dac->removed[note] = files->undo_dac.removed[note];
+			files->undo_dac.removed[note] = removed;
 		}
 		dac->version++;
 		files->host.handed(files->host.context, false);

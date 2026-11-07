@@ -34,11 +34,17 @@ typedef struct {
 bool rom_image_check(const uint8_t *rom, size_t size);
 // The ROM's own sample on a note, false if the note has none.
 bool rom_image_sample(const uint8_t *rom, size_t size, int note, rom_sample *sample);
+// Where the samples are (D39): the table in the image and in the 68000's RAM (offset from 0xFF0000),
+// 4 bytes a note, and from records on to ROM_IMAGE_MAX the records and data. An image that differs
+// from the running one only there can be written into it.
+#define ROM_IMAGE_TABLE_BYTES (ROM_IMAGE_NOTES * 4)
+void rom_image_zone(uint32_t *table, uint32_t *table_ram, uint32_t *records);
 // The room for new samples and what one takes of it.
 uint32_t rom_image_room(void);
 uint32_t rom_image_cost(uint32_t length);
-// A copy of the image where each note with a sample plays it; NULL notes keep the ROM's. NULL if
-// they don't fit, the image fails rom_image_check, or out of memory. Freed by the caller.
-uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *const *samples, size_t *built);
+// A copy of the image where each note with a sample plays it; NULL notes keep the ROM's, unless
+// removed (may be NULL) says the note is empty. NULL if they don't fit, the image fails
+// rom_image_check, or out of memory. Freed by the caller.
+uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *const *samples, const bool *removed, size_t *built);
 
 #endif

@@ -97,10 +97,10 @@ index 3472c7f..ec348cd 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..44e7f00
+index 0000000..46e1a62
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,176 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
@@ -217,6 +217,45 @@ index 0000000..44e7f00
 +	}
 +	uint16_t rate = psg->noise_use_tone ? 3 : psg->counter_load[3] == 0x10 ? 0 : psg->counter_load[3] == 0x20 ? 1 : 2;
 +	return psg->noise_type | rate;
++}
++
++//Host API: how many bytes of the cartridge in [from, to) differ from an image, zeros past its end.
++//The cartridge is stored byte-swapped: the byte at 68000 address A is at A ^ 1 (MDMI plugin, D39)
++RETRO_API size_t mdmi_cart_differs(const uint8_t *image, size_t size, size_t from, size_t to)
++{
++	extern system_header *current_system;
++	const uint8_t *cart = (const uint8_t *)((genesis_context *)current_system)->cart;
++	size_t differ = 0;
++	for (size_t a = from; a < to; a++) {
++		differ += cart[a ^ 1] != (a < size ? image[a] : 0);
++	}
++	return differ;
++}
++
++//Host API: writes an image's bytes in [from, to) into the running cartridge, zeros past its end, and
++//says how many changed. Data only: code the 68000 has translated would not see it (D39)
++RETRO_API size_t mdmi_write_cart(const uint8_t *image, size_t size, size_t from, size_t to)
++{
++	extern system_header *current_system;
++	uint8_t *cart = (uint8_t *)((genesis_context *)current_system)->cart;
++	size_t changed = 0;
++	for (size_t a = from; a < to; a++) {
++		const uint8_t value = a < size ? image[a] : 0;
++		changed += cart[a ^ 1] != value;
++		cart[a ^ 1] = value;
++	}
++	return changed;
++}
++
++//Host API: writes bytes into the 68000's work RAM at an offset from 0xFF0000, stored as words in
++//host order like the cartridge (D39)
++RETRO_API void mdmi_write_ram(size_t offset, const uint8_t *bytes, size_t length)
++{
++	extern system_header *current_system;
++	uint8_t *ram = (uint8_t *)((genesis_context *)current_system)->work_ram;
++	for (size_t i = 0; i < length; i++) {
++		ram[(offset + i) ^ 1] = bytes[i];
++	}
 +}
 +
 +//Host API: returns the number of bytes accepted

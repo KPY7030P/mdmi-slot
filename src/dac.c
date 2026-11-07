@@ -302,11 +302,38 @@ dac_sample *dac_copy(const dac_sample *sample)
 	return copy;
 }
 
+dac_sample *dac_from_rom(const rom_sample *rom, const char *name)
+{
+	dac_sample *s = calloc(1, sizeof(dac_sample));
+	int16_t *source = malloc(rom->length * sizeof(int16_t));
+	int8_t *bytes = malloc(rom->length);
+	if (!s || !source || !bytes) {
+		free(s);
+		free(source);
+		free(bytes);
+		return NULL;
+	}
+	for (uint32_t i = 0; i < rom->length; i++) {
+		source[i] = (int16_t)(rom->bytes[i] * 256);
+	}
+	memcpy(bytes, rom->bytes, rom->length);
+	snprintf(s->name, sizeof(s->name), "%s", name);
+	s->source = source;
+	s->source_hz = (uint32_t)lround(ROM_SAMPLE_HZ[rom->rate]);
+	s->source_frames = rom->length;
+	// Kept as the ROM had it: its rate, no fade, so the bytes stay the same until it is prepared.
+	s->edit = (dac_edit){.start = 0, .end = rom->length, .rate = (int8_t)rom->rate};
+	s->sample = (rom_sample){rom->rate, rom->length, bytes, 0};
+	s->bytes = bytes;
+	return s;
+}
+
 void dac_clear(dac_set *set)
 {
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		dac_free(set->notes[note]);
 		set->notes[note] = NULL;
+		set->removed[note] = false;
 	}
 }
 
@@ -314,6 +341,15 @@ void dac_put(dac_set *set, int note, dac_sample *sample)
 {
 	dac_free(set->notes[note]);
 	set->notes[note] = sample;
+	set->removed[note] = false;
+	set->version++;
+}
+
+void dac_remove(dac_set *set, int note)
+{
+	dac_free(set->notes[note]);
+	set->notes[note] = NULL;
+	set->removed[note] = true;
 	set->version++;
 }
 
@@ -325,7 +361,9 @@ void dac_take(dac_set *to, dac_set *from)
 	}
 	dac_clear(to);
 	memcpy(to->notes, from->notes, sizeof(to->notes));
+	memcpy(to->removed, from->removed, sizeof(to->removed));
 	memset(from->notes, 0, sizeof(from->notes));
+	memset(from->removed, 0, sizeof(from->removed));
 	to->version++;
 }
 
@@ -360,7 +398,7 @@ bool dac_same(const dac_set *a, const dac_set *b)
 {
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		const dac_sample *x = a->notes[note], *y = b->notes[note];
-		if (!x != !y) {
+		if (!x != !y || a->removed[note] != b->removed[note]) {
 			return false;
 		}
 		if (x && (strcmp(x->name, y->name) || !same_edit(&x->edit, &y->edit) || x->source_hz != y->source_hz || x->source_frames != y->source_frames
@@ -379,7 +417,7 @@ uint8_t *dac_image(const dac_set *set, const uint8_t *rom, size_t size, size_t *
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		samples[note] = set->notes[note] ? &set->notes[note]->sample : NULL;
 	}
-	return rom_image_build(rom, size, samples, built);
+	return rom_image_build(rom, size, samples, set->removed, built);
 }
 
 // One sample's head in the project's block, little endian: name, source rate and frames, the edit
@@ -421,6 +459,8 @@ size_t dac_block_size(const dac_set *set)
 		const dac_sample *s = set->notes[note];
 		if (s) {
 			size += 1 + 2 + HEAD_BYTES + (s->source ? s->source_frames * sizeof(int16_t) : 0) + s->sample.length;
+		} else if (set->removed[note]) {
+			size += 1 + 2 + HEAD_BYTES;
 		}
 	}
 	return size;
@@ -430,6 +470,14 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 {
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		const dac_sample *s = set->notes[note];
+		if (!s && set->removed[note]) {
+			// A removed note of the ROM's: a head of zeros, no source, no bytes.
+			*out++ = (uint8_t)note;
+			put16(&out, HEAD_BYTES);
+			memset(out, 0, HEAD_BYTES);
+			out += HEAD_BYTES;
+			continue;
+		}
 		if (!s) {
 			continue;
 		}
@@ -501,6 +549,11 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		s->clipped = *h++ != 0;
 		const uint32_t bytes = get32(&h);
 		const uint64_t source_bytes = (uint64_t)frames * sizeof(int16_t);
+		if (!bytes && !frames && note < ROM_IMAGE_NOTES) {
+			dac_free(s);
+			dac_remove(set, note);
+			continue;
+		}
 		used += bytes;
 		sources += source_bytes;
 		const bool fine = note < ROM_IMAGE_NOTES && s->sample.rate < ROM_SAMPLE_RATES && bytes && bytes % ROM_SAMPLE_BLOCK == 0
