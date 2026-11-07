@@ -529,7 +529,13 @@ static DWORD WINAPI worker_main(LPVOID param)
 			continue;
 		}
 		if (__atomic_load_n(&e->next_rom, __ATOMIC_ACQUIRE)) {
-			if (!restart_core(e)) {
+			// Booting is CPU-heavy, so it runs outside the Pro Audio class, as the first boot does.
+			if (mmcss) {
+				AvRevertMmThreadCharacteristics(mmcss);
+			}
+			const bool restarted = restart_core(e);
+			mmcss = AvSetMmThreadCharacteristicsA("Pro Audio", &mmcss_task);
+			if (!restarted) {
 				__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
 				return 1;
 			}

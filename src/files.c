@@ -79,24 +79,33 @@ static FILE *open_utf8(const char *path, const wchar_t *mode)
 	return _wfopen(wide, mode);
 }
 
-// The whole file, if it is no larger than the most a state can be. Freed by the caller.
-static uint8_t *read_all(const char *path, size_t *size)
+// The whole file, if it is no larger than most. Freed by the caller.
+static uint8_t *read_up_to(const char *path, size_t most, size_t *size)
 {
 	FILE *file = open_utf8(path, L"rb");
 	if (!file) {
 		return NULL;
 	}
-	uint8_t *bytes = malloc(STATE_READ_MAX + 1);
+	uint8_t *bytes = malloc(most + 1);
 	if (bytes) {
-		*size = fread(bytes, 1, STATE_READ_MAX + 1, file);
+		*size = fread(bytes, 1, most + 1, file);
 	}
 	fclose(file);
-	if (bytes && *size > STATE_READ_MAX) {
+	if (bytes && *size > most) {
 		free(bytes);
 		return NULL;
 	}
 	return bytes;
 }
+
+static uint8_t *read_all(const char *path, size_t *size)
+{
+	return read_up_to(path, STATE_READ_MAX, size);
+}
+
+// A WAV is read whole before it is turned into the driver's format: 96 kHz stereo 32-bit floats for
+// the 236 s the ROM could hold at most at 8 kHz would be 180 MB, so this is a size no sample needs.
+#define WAV_READ_MAX (192u << 20)
 
 static bool write_all(const char *path, const uint8_t *bytes, size_t size)
 {
@@ -478,8 +487,9 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 		const int note = first + loaded;
 		const char *name = base_of(paths[loaded]);
 		size_t length = 0;
-		uint8_t *bytes = files_kind(paths[loaded]) == FILES_SAMPLE ? read_all(paths[loaded], &length) : NULL;
-		const char *error = "not a WAV file";
+		const bool wav = files_kind(paths[loaded]) == FILES_SAMPLE;
+		uint8_t *bytes = wav ? read_up_to(paths[loaded], WAV_READ_MAX, &length) : NULL;
+		const char *error = !wav ? "not a WAV file" : "can't be read, or larger than 192 MB";
 		read[loaded] = bytes ? dac_from_wav(bytes, length, name, &error) : NULL;
 		free(bytes);
 		if (!read[loaded]) {

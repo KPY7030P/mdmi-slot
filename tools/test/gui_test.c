@@ -91,8 +91,11 @@
 #define DAC_LIST_BOTTOM 396
 #define DAC_FILE_X 580
 #define DAC_RESET_X 650
-// Note 40 is the 15th row when the page opens at note 26.
+// Note 40 is the 15th row when the list opens at note 26.
 #define DAC_NOTE40_Y 376
+// On EDITOR's grid note N is at 270 + N % 12 * 36, 96 + N / 12 * 18, 34x16.
+#define GRID_NOTE40_X 414
+#define GRID_NOTE40_Y 150
 #define CH2_PAN 1202
 #define COLOR_FM 0x4422EE
 #define COLOR_MARK 0xEECC66
@@ -898,8 +901,8 @@ int main(int argc, char **argv)
 		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
 		CHECK(wide >= 403 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
 
-		// Stage 12: with the DAC on, EDITOR of channel 6 is the DAC page. A project with a sample
-		// restarts the engine, and RESET gives the note back to the ROM.
+		// Stage 12: with the DAC on, EDITOR of channel 6 is the grid of notes, BANK the list. A project
+		// with a sample restarts the engine, and CLEAR gives the note back to the ROM.
 		send_midi(0xB0, 78, 127);
 		run_ms(800);
 		click(window, RAIL_X, RAIL_CH6_Y);
@@ -907,8 +910,8 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "dac");
-		const int mapped = count_color_in(DAC_SCROLL_X, DAC_SCROLL_X + 6, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC_DARK);
-		CHECK(mapped > 60 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "the DAC page maps the ROM's samples (%d px on the track), no file yet", mapped);
+		const int mapped = count_color_in(270, 702, 96, 294, COLOR_DAC_DARK);
+		CHECK(mapped > 61 * 400 && count_color_in(270, 702, 96, 294, COLOR_DAC) < 200, "the grid has the ROM's 61 notes (%d px), no file yet", mapped);
 		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
 		clap_ostream_t out_stream = {NULL, project_write};
 		project_size = 0;
@@ -933,12 +936,19 @@ int main(int argc, char **argv)
 		const long restart_ms = wait_restart(window);
 		capture(window);
 		save_bmp(argv[2], "dac-file");
+		const int cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
+		CHECK(restart_ms >= 0 && cell > 300, "the engine restarts in %ld ms with the sample, note 40's cell is a file's (%d px)", restart_ms, cell);
+		click(window, BUTTON_BANK_X, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "dac-list");
 		const int file = count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_NOTE40_Y, DAC_NOTE40_Y + 20, COLOR_DAC);
-		CHECK(restart_ms >= 0 && file > 10, "the engine restarts in %ld ms with the sample, note 40 says FILE (%d px)", restart_ms, file);
+		CHECK(file > 10, "BANK lists the notes, 40 says FILE (%d px)", file);
 		click(window, DAC_RESET_X, DAC_NOTE40_Y + 9);
 		const long reset_ms = wait_restart(window);
 		capture(window);
-		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "RESET gives note 40 the ROM's sample again, restart %ld ms", reset_ms);
+		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "CLEAR gives note 40 the ROM's sample again, restart %ld ms", reset_ms);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		send_midi(0xB0, 78, 0);
 		run_ms(800);
 

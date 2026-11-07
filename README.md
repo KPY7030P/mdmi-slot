@@ -60,13 +60,14 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   takes as long as 12 controllers (D24).
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own.
-- DAC page (stage 12, D36, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on lists the
-  128 notes with what each plays: the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
+- DAC pages (stage 12, D36, D37, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on is a
+  grid of the 128 notes and the selected note's wave with REPLACE and CLEAR; BANK lists the same notes.
+  Each note plays the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
   it), a WAV dropped on it, or nothing. WAV files dropped on a row go to that note and the next ones; a
   file is turned into the driver's format (mono, 8 bits, the lowest of its six rates that keeps the
-  file's, at most 32 kHz) and kept in the project, up to the image's free room, about 1.9 MB. RESET
+  file's, at most 32 kHz) and kept in the project, up to the image's free room, about 1.9 MB. CLEAR
   gives a note the ROM's sample back, UNDO puts back the samples before the last change. Every change
-  restarts the core with a patched image: about 0.3-0.5 s without sound, the header says LOADING, then
+  restarts the core with a patched image: 0.3-0.6 s without sound (gui_test and reg_test), the header says LOADING, then
   every channel gets its sound again. TUNE is the page's only cell: off centre, as bend, a note plays
   its neighbour's sample. The rates are those BlastEm plays, 2-3% below what SGDK names them.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square

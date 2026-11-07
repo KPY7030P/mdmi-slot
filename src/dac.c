@@ -209,7 +209,7 @@ bool dac_same(const dac_set *a, const dac_set *b)
 		if (!x != !y) {
 			return false;
 		}
-		if (x && (x->sample.rate != y->sample.rate || x->sample.length != y->sample.length || memcmp(x->bytes, y->bytes, x->sample.length))) {
+		if (x && (x->sample.rate != y->sample.rate || x->sample.length != y->sample.length || strcmp(x->name, y->name) || memcmp(x->bytes, y->bytes, x->sample.length))) {
 			return false;
 		}
 	}

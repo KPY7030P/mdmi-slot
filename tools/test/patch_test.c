@@ -1527,6 +1527,82 @@ static void test_dac(void)
 	dac_clear(&read);
 }
 
+static int samples_handed;
+
+static void count_handed(void *context, bool knobs)
+{
+	(void)context;
+	(void)knobs;
+	samples_handed++;
+}
+
+static void write_wav(const char *path, uint32_t rate, double seconds)
+{
+	size_t size;
+	uint8_t *wav = sine_wav(rate, 1, 16, false, 220, seconds, 0.5, &size);
+	FILE *file = fopen(path, "wb");
+	fwrite(wav, 1, size, file);
+	fclose(file);
+	free(wav);
+}
+
+// What the DAC's pages do with WAV files: several onto notes in a row, all or nothing, CLEAR, UNDO.
+static void test_dac_files(void)
+{
+	printf("DAC samples from files\n");
+	char dir[MAX_PATH], good[MAX_PATH], other[MAX_PATH], bad[MAX_PATH], big1[MAX_PATH], big2[MAX_PATH];
+	GetTempPathA(sizeof(dir), dir);
+	snprintf(good, sizeof(good), "%smdmi-test-kick.wav", dir);
+	snprintf(other, sizeof(other), "%smdmi-test-snare.wav", dir);
+	snprintf(bad, sizeof(bad), "%smdmi-test-bad.wav", dir);
+	snprintf(big1, sizeof(big1), "%smdmi-test-big1.wav", dir);
+	snprintf(big2, sizeof(big2), "%smdmi-test-big2.wav", dir);
+	write_wav(good, 44100, 0.3);
+	write_wav(other, 22050, 0.2);
+	FILE *junk = fopen(bad, "wb");
+	fputs("not a wav at all", junk);
+	fclose(junk);
+	// Two of 130 s at 8 kHz take 2 MB, more than the room.
+	write_wav(big1, 8000, 130);
+	write_wav(big2, 8000, 130);
+
+	mdmi_patch *p = calloc(1, sizeof(*p));
+	patch_init(p);
+	dac_set set = {0};
+	state_view view = {0};
+	view.dac = &set;
+	const files_host host = {p, &view, count_handed, NULL};
+	mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	const char *two[2] = {good, other};
+	samples_handed = 0;
+	int loaded = files_put_samples(&files, two, 2, 30, message, sizeof(message));
+	CHECK(loaded == 2 && set.notes[30] && set.notes[31] && !strcmp(set.notes[31]->name, "mdmi-test-snare.wav") && set.notes[30]->sample.rate == 0 && set.notes[31]->sample.rate == 1 && samples_handed == 1,
+		"two WAV go to notes 30 and 31 in one step: %s", message);
+	const uint32_t version = set.version;
+	const char *with_bad[2] = {good, bad};
+	loaded = files_put_samples(&files, with_bad, 2, 50, message, sizeof(message));
+	CHECK(!loaded && !set.notes[50] && !set.notes[51] && set.version == version, "one unreadable file and none go in: %s", message);
+	const char *big[2] = {big1, big2};
+	loaded = files_put_samples(&files, big, 2, 60, message, sizeof(message));
+	CHECK(!loaded && !set.notes[60] && !set.notes[61] && set.version == version, "files past the ROM's room and none go in: %s", message);
+	CHECK(files_reset_sample(&files, 30, message, sizeof(message)) && !set.notes[30] && set.notes[31], "CLEAR gives note 30 the ROM's sample: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[30] && !strcmp(set.notes[30]->name, "mdmi-test-kick.wav"), "undo brings the file back: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && !set.notes[30] && set.notes[31], "and a second undo clears it again");
+	const char *one[1] = {other};
+	loaded = files_put_samples(&files, one, 1, 127, message, sizeof(message));
+	CHECK(loaded == 1 && set.notes[127] && files_put_samples(&files, two, 2, 127, message, sizeof(message)) == 1, "files past note 127 are left out");
+	files_free(&files);
+	dac_clear(&set);
+	free(p);
+	DeleteFileA(good);
+	DeleteFileA(other);
+	DeleteFileA(bad);
+	DeleteFileA(big1);
+	DeleteFileA(big2);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -1551,6 +1627,7 @@ int main(int argc, char **argv)
 	test_cursor();
 	test_fm_envelope();
 	test_dac();
+	test_dac_files();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

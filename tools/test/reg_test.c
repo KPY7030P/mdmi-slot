@@ -337,8 +337,18 @@ static size_t private_bytes(void)
 	return counters.PrivateUsage;
 }
 
+static void steady(patch_envelope *envelope, uint8_t level, int steps);
+
 static void test_restart(void)
 {
+	// As the DAC page restarts: with the DAC on, and a PSG channel playing an envelope of its own.
+	patch_envelope own;
+	steady(&own, 3, 40);
+	patch_load_envelope(patch, PATCH_NUM_FM_CHANNELS + 1, &own, NULL);
+	patch_take_incoming(patch);
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
 	set_on(1, PARAM_OP_BASE + F_TL, 50);
 	set_on(4, PARAM_OP_BASE + 3 * PATCH_OP_PARAMS + F_AR, 9);
 	set_on(2, PARAM_PAN, 0);
@@ -371,7 +381,8 @@ static void test_restart(void)
 		psg_state(now_tone, now_volume);
 		psg_notes(false);
 		int wrong = memcmp(tone, now_tone, sizeof(tone)) || memcmp(volume, now_volume, sizeof(volume));
-		for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		// The DAC takes voice 6.
+		for (int voice = 0; voice < FM_CHANNELS - 1; voice++) {
 			wrong += compare(voice, voice, i ? NULL : "after a restart") != 0;
 		}
 		bad += wrong != 0;
@@ -383,8 +394,11 @@ static void test_restart(void)
 	const size_t memory_after = private_bytes();
 	printf("    %d restarts: boot %.0f ms on average, slowest %.0f ms; private memory %+.1f MB over the last %d\n", RESTARTS, total / RESTARTS, slowest,
 		((double)memory_after - (double)memory_before) / 1048576.0, RESTARTS - 2);
-	check(bad == 0, "after every restart the FM voices and PSG notes are as before");
-	check_globals("and the LFO and Ch3 mode");
+	check(bad == 0, "with the DAC on, after every restart the FM voices and PSG notes, one with its own envelope, are as before");
+	check_globals("and the LFO, Ch3 mode and DAC");
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	render(DAC_BLOCKS);
 	// BlastEm still leaves about 0.5 MB a load behind (ROADMAP); its JIT code was 4 MB more.
 	check(memory_after < memory_before + (RESTARTS - 2) * 1048576, "a restart leaves under 1 MB behind");
 }

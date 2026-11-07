@@ -273,10 +273,10 @@ index 69e4f09..02e69db 100644
  #endif //MEM_H_
  
 diff --git a/mem_win.c b/mem_win.c
-index 4076afd..4f66e5d 100644
+index 4076afd..d6363b8 100644
 --- a/mem_win.c
 +++ b/mem_win.c
-@@ -6,10 +6,33 @@
+@@ -6,10 +6,37 @@
  
  #include "mem.h"
  #include <windows.h>
@@ -293,10 +293,14 @@ index 4076afd..4f66e5d 100644
 -	return VirtualAlloc(NULL, *size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 +	void *block = VirtualAlloc(NULL, *size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 +	if (block && code_count == code_storage) {
-+		code_storage = code_storage ? code_storage * 2 : 16;
-+		code_blocks = realloc(code_blocks, code_storage * sizeof(void *));
++		void **more = realloc(code_blocks, (code_storage ? code_storage * 2 : 16) * sizeof(void *));
++		if (more) {
++			code_blocks = more;
++			code_storage = code_storage ? code_storage * 2 : 16;
++		}
 +	}
-+	if (block) {
++	//Without room to note it the block stays allocated for good, as before free_all_code existed
++	if (block && code_count < code_storage) {
 +		code_blocks[code_count++] = block;
 +	}
 +	return block;

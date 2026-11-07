@@ -64,7 +64,8 @@ const uint8_t *mdmi_engine_builtin_rom(size_t *size);
 // boot and its time.
 bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size);
 // Tests only, before activate: the emulator computes no further than the block being rendered, so
-// after mdmi_engine_render it stands at the first step past the audio, whatever the scheduler did.
+// after mdmi_engine_render it stands at the step past the audio, whatever the scheduler did. It may
+// still be finishing that step by a few cycles while the test reads it.
 void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep);
 // Tests only: what the running YM2612 holds in a register.
 uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg);
