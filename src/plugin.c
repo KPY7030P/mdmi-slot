@@ -437,6 +437,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 {
 	mdmi_plugin *self = self_of(plugin);
 	mdmi_engine *engine = self->engine;
+	mdmi_engine_set_playing(engine, process->transport && (process->transport->flags & CLAP_TRANSPORT_IS_PLAYING));
 	bool state_taken = patch_take_incoming(&self->patch);
 	const uint32_t boots = mdmi_engine_boots(engine);
 	if (boots != self->boots_seen) {

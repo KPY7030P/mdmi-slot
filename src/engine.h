@@ -55,6 +55,8 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 void mdmi_engine_deactivate(mdmi_engine *e);
 uint32_t mdmi_engine_latency(const mdmi_engine *e);
 void mdmi_engine_set_offline(mdmi_engine *e, bool offline);
+// Audio thread: whether the host's transport plays, for the journal (stage 13).
+void mdmi_engine_set_playing(mdmi_engine *e, bool playing);
 // Any thread. Applied by the emulation thread before its next step.
 void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz);
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e);

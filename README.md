@@ -18,6 +18,12 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
   `%TEMP%\MDMI-Plugin`, because BlastEm keeps its state in globals.
 - `src/engine.c` runs the emulator on its own MMCSS thread and feeds a ring buffer. MIDI is applied at
   a fixed distance ahead of the audio, and that distance is reported to the host as latency.
+  A host with a large device buffer calls several blocks in a row; a block of such a burst waits for the
+  emulator up to half its own length, a block alone up to 1 ms (D14).
+- The engine journal: create an empty file `%TEMP%\mdmi-journal` (PowerShell: `ni $env:TEMP\mdmi-journal`)
+  and every instance activated after that writes `%TEMP%\mdmi-journal-<process>-<n>.csv`, one line a second:
+  blocks and bursts from the host, how full the ring was, waits, shortfalls, notes, and the emulator's runs,
+  time, cycles and core moves. Delete the flag to stop. Tests name a folder in `MDMI_JOURNAL` instead.
 - `src/plugin.c` is the CLAP layer. clap-wrapper builds the VST3 from it.
 
 - `src/patch.c` holds the knobs. It tracks what they show and what the ROM has, and sends the difference as MIDI.

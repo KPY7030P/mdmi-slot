@@ -9,7 +9,6 @@ mkdir -p "$OUT"
 cp "$ROOT/build/cmake/out/CLAP/MDMI Mega Drive.clap" "$ROOT/build/cmake/" && cd "$ROOT/build/cmake" || exit 1
 export MDMI_PLUGIN_STATS=1
 failures=0
-known=0
 
 fail() {
   echo "FAIL: $*"
@@ -74,10 +73,11 @@ run realtime-48k-64 48000 64 realtime 1
 run realtime-two 48000 128 realtime 2
 run offline-four 48000 256 offline 4
 run realtime-eight 48000 64 realtime 8
-export MDMI_TEST_BURST=2; run realtime-burst 44100 256 realtime 2; unset MDMI_TEST_BURST
-# Known, D14 (D35): underruns here are counted apart until the work on D14, at the latest when
-# stage 14 starts. Then this goes back to fail.
-! grep -q "underruns=[1-9]" "$OUT/realtime-burst.log" || { known=$((known + 1)); echo "KNOWN, D14: realtime-burst $(grep -o "underruns=[0-9]*" "$OUT/realtime-burst.log" | sort -u | tr '\n' ' ')"; }
+# Live on a 4096 device buffer with 256 blocks calls 16 blocks in a row (D14); six instances, with the journal.
+rm -rf "$OUT/journal"; mkdir -p "$OUT/journal"
+export MDMI_TEST_BURST=16 MDMI_JOURNAL="$(cygpath -w "$OUT/journal")"; run realtime-burst 44100 256 realtime 6; unset MDMI_TEST_BURST MDMI_JOURNAL
+! grep -q "underruns=[1-9]" "$OUT/realtime-burst.log" || fail "realtime-burst: $(grep -o "underruns=[0-9]*" "$OUT/realtime-burst.log" | tr '\n' ' ')"
+[ "$(cat "$OUT"/journal/mdmi-journal-*.csv 2>/dev/null | grep -c "^[0-9]")" -ge 24 ] || fail "realtime-burst: journal has fewer than 4 lines per instance"
 export MDMI_TEST_REACTIVATE=1; run reactivate 48000 128 realtime 1; unset MDMI_TEST_REACTIVATE
 export MDMI_TEST_CRASH=fatal; run crash-fatal 48000 128 realtime 1 dead
 export MDMI_TEST_CRASH=segv; run crash-segv 48000 128 realtime 1 dead
@@ -130,7 +130,6 @@ unset MDMI_TEST_CRASH
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "gui_test with a dead engine: exit $code"
 
-[ "$known" = 0 ] || echo "$known KNOWN (D14), not counted"
 if [ "$failures" = 0 ]; then
   echo "ALL PASSED"
 else

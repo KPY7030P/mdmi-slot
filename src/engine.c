@@ -15,14 +15,17 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 #define WARM_UP_CHANNELS 10
 #define WARM_UP_NOTE_FRAMES 3
 #define WARM_UP_SETTLE_FRAMES 60
-#define RING_FRAMES (1 << 15)
+// The ring holds what the worker may write ahead of the reader, sized from the block at activation.
+#define RING_MIN_FRAMES 4096
 #define MIDI_QUEUE_SIZE (1 << 13)
 #define MIDI_CHUNK 7
 #define CORE_BATCH_FRAMES 128
 #define MARGIN_SECONDS 0.005
+// How long a block alone waits for the worker. A block of a burst, which the host renders ahead of its
+// deadline, waits up to half its own length instead, if that is longer (D14).
 #define RENDER_WAIT_MS 1.0
-// Blocks closer together than this count as one burst in the window's diagnostics.
-#define BURST_GAP_MS 1.0
+// A block that starts within this share of its own length after the last one ended is in a burst.
+#define BURST_GAP_SHARE 0.5
 // Measured from note event to first sound: the ROM parsing MIDI and the YM2612 attack.
 #define ROM_REACTION_SECONDS 0.0025
 #define STALE_TEMP_FILE_SECONDS (24 * 3600)
@@ -80,7 +83,6 @@ struct mdmi_engine {
 	write_ram_fn write_ram;
 	set_lowpass_fn set_lowpass;
 	void_fn retro_deinit;
-	double core_rate;
 
 	// Set on the main thread while the worker is parked.
 	double sample_rate;
@@ -109,7 +111,10 @@ struct mdmi_engine {
 
 	uint32_t quit;
 	uint32_t active;
-	uint32_t parked;
+	// Deactivation asks with a new number and waits until the worker, parked, answers with it:
+	// a flag the main thread also wrote could be read back stale while the worker still ran (audit 1.8).
+	uint32_t park_request;
+	uint32_t park_answer;
 	uint32_t failed;
 	uint32_t booted;
 	uint32_t offline;
@@ -126,11 +131,46 @@ struct mdmi_engine {
 	uint32_t worst_short;
 	uint32_t burst;
 	uint32_t longest_burst;
-	double last_render_ms;
+	double last_render_end_ms;
 
 	float *ring[2];
+	uint32_t ring_mask;
 	uint64_t ring_read;
 	uint64_t ring_write;
+
+	// Journal (stage 13): the render thread bumps these, the worker takes them once a second and
+	// writes one line. Off unless asked for, see journal_open.
+	FILE *journal;
+	double journal_start_ms;
+	double journal_next_ms;
+	uint32_t j_blocks;
+	uint32_t j_block_min;
+	uint32_t j_block_max;
+	uint32_t j_burst_max;
+	uint32_t j_gap_max_us;
+	uint32_t j_avail_min;
+	uint32_t j_waits;
+	uint32_t j_wait_us;
+	uint32_t j_wait_max_us;
+	uint32_t j_short_blocks;
+	uint32_t j_short_samples;
+	uint32_t j_burst_short_max;
+	uint32_t j_notes;
+	uint32_t j_playing;
+	// The render thread's running sum of what the current burst lacked.
+	uint32_t burst_short;
+	// The worker's own.
+	uint32_t j_runs;
+	double j_run_ms;
+	double j_run_max_ms;
+	double j_worker_wait_ms;
+	uint64_t j_samples_base;
+	ULONG64 j_cycles_base;
+	uint32_t j_cpu;
+	uint32_t j_cpu_moves;
+	// Runs and their time on the slowest class of cores of a hybrid processor.
+	uint32_t j_slow_runs;
+	double j_slow_run_ms;
 
 	midi_chunk *midi_queue;
 	uint32_t midi_head;
@@ -269,8 +309,8 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 		float out_l[8], out_r[8];
 		int count = resampler_push(e->rs, in[0], in[1], out_l, out_r, 8);
 		for (int n = 0; n < count; n++) {
-			e->ring[0][write % RING_FRAMES] = out_l[n];
-			e->ring[1][write % RING_FRAMES] = out_r[n];
+			e->ring[0][write & e->ring_mask] = out_l[n];
+			e->ring[1][write & e->ring_mask] = out_r[n];
 			write++;
 		}
 	}
@@ -462,9 +502,9 @@ static bool load_core(mdmi_engine *e)
 	if (!load_game(&game)) {
 		return false;
 	}
+	// Not for its numbers: BlastEm sets up its audio output at its own rate in this call.
 	struct retro_system_av_info av;
 	get_av(&av);
-	e->core_rate = av.timing.sample_rate;
 	double t3 = now_ms();
 
 	e->boot_stage = "frames";
@@ -535,6 +575,137 @@ static void pump_midi(mdmi_engine *e, uint64_t position)
 	__atomic_store_n(&e->midi_tail, tail, __ATOMIC_RELEASE);
 }
 
+// Journal counters have one writer each; a lost race between a store and the worker's take loses
+// one sample of a diagnostic, nothing else.
+static void j_max(uint32_t *slot, uint32_t value)
+{
+	if (value > __atomic_load_n(slot, __ATOMIC_RELAXED)) {
+		__atomic_store_n(slot, value, __ATOMIC_RELAXED);
+	}
+}
+
+static void j_min(uint32_t *slot, uint32_t value)
+{
+	if (value < __atomic_load_n(slot, __ATOMIC_RELAXED)) {
+		__atomic_store_n(slot, value, __ATOMIC_RELAXED);
+	}
+}
+
+static uint32_t j_take(uint32_t *slot, uint32_t reset)
+{
+	return __atomic_exchange_n(slot, reset, __ATOMIC_RELAXED);
+}
+
+// Windows 10 has it in kernel32, the image's mingw headers do not declare it.
+WINBASEAPI BOOL WINAPI GetSystemCpuSetInformation(PSYSTEM_CPU_SET_INFORMATION information, ULONG length, PULONG returned, HANDLE process, ULONG flags);
+
+// Logical processors of the lowest efficiency class, on hybrid processors only (E-cores).
+static uint64_t slow_cpus;
+
+static void find_slow_cpus(void)
+{
+	ULONG size = 0;
+	GetSystemCpuSetInformation(NULL, 0, &size, GetCurrentProcess(), 0);
+	uint8_t *buffer = size ? malloc(size) : NULL;
+	if (!buffer || !GetSystemCpuSetInformation((PSYSTEM_CPU_SET_INFORMATION)buffer, size, &size, GetCurrentProcess(), 0)) {
+		free(buffer);
+		return;
+	}
+	uint8_t lowest = 255, highest = 0;
+	for (ULONG at = 0; at < size; at += ((PSYSTEM_CPU_SET_INFORMATION)(buffer + at))->Size) {
+		const PSYSTEM_CPU_SET_INFORMATION set = (PSYSTEM_CPU_SET_INFORMATION)(buffer + at);
+		lowest = set->CpuSet.EfficiencyClass < lowest ? set->CpuSet.EfficiencyClass : lowest;
+		highest = set->CpuSet.EfficiencyClass > highest ? set->CpuSet.EfficiencyClass : highest;
+	}
+	for (ULONG at = 0; lowest != highest && at < size; at += ((PSYSTEM_CPU_SET_INFORMATION)(buffer + at))->Size) {
+		const PSYSTEM_CPU_SET_INFORMATION set = (PSYSTEM_CPU_SET_INFORMATION)(buffer + at);
+		if (set->CpuSet.EfficiencyClass == lowest && set->CpuSet.LogicalProcessorIndex < 64) {
+			slow_cpus |= 1ULL << set->CpuSet.LogicalProcessorIndex;
+		}
+	}
+	free(buffer);
+}
+
+// The journal is on when %TEMP%\mdmi-journal exists, so the owner switches it in Live without a
+// restart of anything but the project; tests name a folder in MDMI_JOURNAL instead.
+static void journal_open(mdmi_engine *e)
+{
+	static LONG journal_count;
+	char dir[MAX_PATH];
+	const char *env = getenv("MDMI_JOURNAL");
+	if (env && env[0]) {
+		snprintf(dir, sizeof(dir), "%s\\", env);
+	} else {
+		char flag[MAX_PATH];
+		if (!GetTempPathA(sizeof(dir), dir)) {
+			return;
+		}
+		snprintf(flag, sizeof(flag), "%smdmi-journal", dir);
+		if (GetFileAttributesA(flag) == INVALID_FILE_ATTRIBUTES) {
+			return;
+		}
+	}
+	char path[MAX_PATH];
+	snprintf(path, sizeof(path), "%smdmi-journal-%lu-%ld.csv", dir, GetCurrentProcessId(), InterlockedIncrement(&journal_count));
+	e->journal = fopen(path, "w");
+	if (e->journal) {
+		find_slow_cpus();
+		fprintf(e->journal, "# slow_cpus=%llx\n", (unsigned long long)slow_cpus);
+		fprintf(e->journal, "t,play,blocks,blk_min,blk_max,burst_max,gap_max_ms,avail_min,rwaits,rwait_ms,rwait_max_ms,short_blk,short_smp,burst_short_max,notes,"
+			"runs,samples,run_ms,run_max_ms,wwait_ms,mcycles,cpu_moves,slow_runs,slow_run_ms,fill,underruns\n");
+	}
+}
+
+static void journal_reset(mdmi_engine *e)
+{
+	e->journal_start_ms = now_ms();
+	e->journal_next_ms = e->journal_start_ms + 1000.0;
+	e->j_block_min = UINT32_MAX;
+	e->j_avail_min = UINT32_MAX;
+	e->j_samples_base = 0;
+}
+
+// The worker's line for the second that just ended.
+static void journal_tick(mdmi_engine *e, uint64_t write)
+{
+	const uint32_t cpu = GetCurrentProcessorNumber();
+	if (cpu != e->j_cpu) {
+		e->j_cpu = cpu;
+		e->j_cpu_moves++;
+	}
+	const double now = now_ms();
+	if (now < e->journal_next_ms) {
+		return;
+	}
+	e->journal_next_ms += 1000.0;
+	if (e->journal_next_ms < now) {
+		e->journal_next_ms = now + 1000.0;
+	}
+	ULONG64 cycles = 0;
+	QueryThreadCycleTime(GetCurrentThread(), &cycles);
+	const uint32_t block_min = j_take(&e->j_block_min, UINT32_MAX);
+	const uint32_t avail_min = j_take(&e->j_avail_min, UINT32_MAX);
+	const uint64_t read = __atomic_load_n(&e->ring_read, __ATOMIC_ACQUIRE);
+	fprintf(e->journal, "%.1f,%u,%u,%u,%u,%u,%.2f,%d,%u,%.2f,%.2f,%u,%u,%u,%u,%u,%llu,%.1f,%.2f,%.1f,%.1f,%u,%u,%.1f,%lld,%u\n",
+		(now - e->journal_start_ms) / 1000.0,
+		__atomic_load_n(&e->j_playing, __ATOMIC_RELAXED),
+		j_take(&e->j_blocks, 0), block_min == UINT32_MAX ? 0 : block_min, j_take(&e->j_block_max, 0), j_take(&e->j_burst_max, 0),
+		j_take(&e->j_gap_max_us, 0) / 1000.0, avail_min == UINT32_MAX ? -1 : (int)avail_min,
+		j_take(&e->j_waits, 0), j_take(&e->j_wait_us, 0) / 1000.0, j_take(&e->j_wait_max_us, 0) / 1000.0,
+		j_take(&e->j_short_blocks, 0), j_take(&e->j_short_samples, 0), j_take(&e->j_burst_short_max, 0), j_take(&e->j_notes, 0),
+		e->j_runs, (unsigned long long)(write - e->j_samples_base), e->j_run_ms, e->j_run_max_ms, e->j_worker_wait_ms,
+		(cycles - e->j_cycles_base) / 1e6, e->j_cpu_moves, e->j_slow_runs, e->j_slow_run_ms, (long long)(write - read),
+		__atomic_load_n(&e->underruns, __ATOMIC_RELAXED));
+	fflush(e->journal);
+	e->j_runs = 0;
+	e->j_run_ms = e->j_run_max_ms = e->j_worker_wait_ms = 0;
+	e->j_samples_base = write;
+	e->j_cycles_base = cycles;
+	e->j_cpu_moves = 0;
+	e->j_slow_runs = 0;
+	e->j_slow_run_ms = 0;
+}
+
 static DWORD WINAPI worker_main(LPVOID param)
 {
 	mdmi_engine *e = param;
@@ -559,11 +730,23 @@ static DWORD WINAPI worker_main(LPVOID param)
 	DWORD mmcss_task = 0;
 	HANDLE mmcss = AvSetMmThreadCharacteristicsA("Pro Audio", &mmcss_task);
 
+	bool parked = true;
 	while (!__atomic_load_n(&e->quit, __ATOMIC_ACQUIRE)) {
-		if (!__atomic_load_n(&e->active, __ATOMIC_ACQUIRE)) {
-			__atomic_store_n(&e->parked, 1, __ATOMIC_RELEASE);
+		if (!__atomic_load_n(&e->active, __ATOMIC_SEQ_CST)) {
+			// The request is taken first and active read again after it: a zero seen then is the one
+			// that request switched off, not an older one the last activation has not replaced yet.
+			const uint32_t request = __atomic_load_n(&e->park_request, __ATOMIC_SEQ_CST);
+			if (__atomic_load_n(&e->active, __ATOMIC_SEQ_CST)) {
+				continue;
+			}
+			__atomic_store_n(&e->park_answer, request, __ATOMIC_SEQ_CST);
+			parked = true;
 			WaitForSingleObject(e->wake, INFINITE);
 			continue;
+		}
+		if (parked) {
+			parked = false;
+			QueryThreadCycleTime(GetCurrentThread(), &e->j_cycles_base);
 		}
 		rom_image *image = __atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL);
 		if (image) {
@@ -584,6 +767,9 @@ static DWORD WINAPI worker_main(LPVOID param)
 			}
 			const bool restarted = restart_core(e);
 			mmcss = AvSetMmThreadCharacteristicsA("Pro Audio", &mmcss_task);
+			if (e->journal) {
+				fprintf(e->journal, "# restart %.0f ms\n", e->last_boot_ms);
+			}
 			if (!restarted) {
 				__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
 				return 1;
@@ -610,6 +796,10 @@ static DWORD WINAPI worker_main(LPVOID param)
 			if (wait_ms > e->worst_wait_ms) {
 				e->worst_wait_ms = wait_ms;
 			}
+			if (e->journal) {
+				e->j_worker_wait_ms += wait_ms;
+				journal_tick(e, write);
+			}
 			continue;
 		}
 		double run_start = now_ms();
@@ -618,6 +808,19 @@ static DWORD WINAPI worker_main(LPVOID param)
 		if (run_ms > e->worst_run_ms) {
 			e->worst_run_ms = run_ms;
 			e->worst_run_pos = write;
+		}
+		if (e->journal) {
+			e->j_runs++;
+			e->j_run_ms += run_ms;
+			if (run_ms > e->j_run_max_ms) {
+				e->j_run_max_ms = run_ms;
+			}
+			const uint32_t cpu = GetCurrentProcessorNumber();
+			if (cpu < 64 && (slow_cpus >> cpu & 1)) {
+				e->j_slow_runs++;
+				e->j_slow_run_ms += run_ms;
+			}
+			journal_tick(e, e->ring_write);
 		}
 		if (e->has_failed()) {
 			__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
@@ -637,14 +840,11 @@ mdmi_engine *mdmi_engine_create(void)
 	if (!e) {
 		return NULL;
 	}
-	e->parked = 1;
 	e->wake = CreateEventA(NULL, FALSE, FALSE, NULL);
 	e->rs = malloc(sizeof(resampler));
-	e->ring[0] = calloc(RING_FRAMES, sizeof(float));
-	e->ring[1] = calloc(RING_FRAMES, sizeof(float));
 	e->midi_queue = calloc(MIDI_QUEUE_SIZE, sizeof(midi_chunk));
 	e->frames = calloc(3, sizeof(mdmi_frame));
-	if (!e->wake || !e->rs || !e->ring[0] || !e->ring[1] || !e->midi_queue || !e->frames) {
+	if (!e->wake || !e->rs || !e->midi_queue || !e->frames) {
 		mdmi_engine_destroy(e);
 		return NULL;
 	}
@@ -691,6 +891,9 @@ void mdmi_engine_destroy(mdmi_engine *e)
 	}
 	free(__atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL));
 	if (clean_exit) {
+		if (e->journal) {
+			fclose(e->journal);
+		}
 		if (e->wake) {
 			CloseHandle(e->wake);
 		}
@@ -708,7 +911,7 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 	if (e->thread_started && worker_dead(e)) {
 		return false;
 	}
-	// The core's rate is constant for an NTSC machine; the worker confirms it while booting.
+	// The core's rate is constant for an NTSC machine.
 	const double core_rate = 53693175.0 / (7 * 6 * 24);
 	e->sample_rate = sample_rate;
 	resampler_init(e->rs, core_rate, sample_rate);
@@ -722,17 +925,40 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 	e->midi_delay = e->fill_target + batch;
 	e->latency = e->midi_delay + (uint32_t)(sample_rate * ROM_REACTION_SECONDS);
 
+	// The worker writes up to one run past the target; twice that leaves the reader its block.
+	uint32_t ring_frames = RING_MIN_FRAMES;
+	while (ring_frames < 2 * (e->fill_target + batch)) {
+		ring_frames *= 2;
+	}
+	if (ring_frames != e->ring_mask + 1 || !e->ring[0]) {
+		for (int ch = 0; ch < 2; ch++) {
+			free(e->ring[ch]);
+			e->ring[ch] = calloc(ring_frames, sizeof(float));
+		}
+		if (!e->ring[0] || !e->ring[1]) {
+			return false;
+		}
+		e->ring_mask = ring_frames - 1;
+	}
+
 	e->ring_read = e->ring_write = 0;
 	e->lockstep_target = 0;
 	e->midi_head = e->midi_tail = 0;
-	e->parked = 0;
-	__atomic_store_n(&e->active, 1, __ATOMIC_RELEASE);
+	if (!e->journal) {
+		journal_open(e);
+	}
+	if (e->journal) {
+		journal_reset(e);
+		fprintf(e->journal, "# activate rate=%.0f max_block=%u fill_target=%u midi_delay=%u latency=%u ring=%u offline=%u\n",
+			sample_rate, max_block, e->fill_target, e->midi_delay, e->latency, ring_frames, __atomic_load_n(&e->offline, __ATOMIC_ACQUIRE));
+		fflush(e->journal);
+	}
+	__atomic_store_n(&e->active, 1, __ATOMIC_SEQ_CST);
 
 	if (!e->thread_started) {
 		e->thread = CreateThread(NULL, 0, worker_main, e, 0, NULL);
 		if (!e->thread) {
 			e->active = 0;
-			e->parked = 1;
 			return false;
 		}
 		e->thread_started = true;
@@ -744,13 +970,13 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 
 void mdmi_engine_deactivate(mdmi_engine *e)
 {
-	__atomic_store_n(&e->active, 0, __ATOMIC_RELEASE);
+	const uint32_t request = __atomic_add_fetch(&e->park_request, 1, __ATOMIC_SEQ_CST);
+	__atomic_store_n(&e->active, 0, __ATOMIC_SEQ_CST);
 	if (!e->thread_started) {
-		e->parked = 1;
 		return;
 	}
 	SetEvent(e->wake);
-	while (!worker_dead(e) && !__atomic_load_n(&e->parked, __ATOMIC_ACQUIRE)) {
+	while (!worker_dead(e) && __atomic_load_n(&e->park_answer, __ATOMIC_ACQUIRE) != request) {
 		Sleep(1);
 	}
 	// The queue restarts on activation, so what the ROM was still due to receive goes in now.
@@ -769,6 +995,11 @@ uint32_t mdmi_engine_latency(const mdmi_engine *e)
 	return e->latency;
 }
 
+void mdmi_engine_set_playing(mdmi_engine *e, bool playing)
+{
+	__atomic_store_n(&e->j_playing, playing, __ATOMIC_RELAXED);
+}
+
 void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz)
 {
 	__atomic_store_n(&e->filter_hz, (uint32_t)cutoff_hz, __ATOMIC_RELEASE);
@@ -776,6 +1007,11 @@ void mdmi_engine_set_filter(mdmi_engine *e, double cutoff_hz)
 
 void mdmi_engine_set_offline(mdmi_engine *e, bool offline)
 {
+	// Whether a host says so when it freezes or exports (audit 5.4) is what the journal is asked for.
+	if (e->journal && __atomic_exchange_n(&e->offline, offline, __ATOMIC_ACQ_REL) != offline) {
+		fprintf(e->journal, "# offline=%u\n", offline);
+		fflush(e->journal);
+	}
 	__atomic_store_n(&e->offline, offline, __ATOMIC_RELEASE);
 }
 
@@ -866,6 +1102,9 @@ const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e)
 
 void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *bytes, size_t length)
 {
+	if (e->journal && length >= 3 && (bytes[0] & 0xF0) == 0x90 && bytes[2]) {
+		__atomic_add_fetch(&e->j_notes, 1, __ATOMIC_RELAXED);
+	}
 	uint64_t target = __atomic_load_n(&e->ring_read, __ATOMIC_RELAXED) + sample_offset + e->midi_delay;
 	uint32_t head = e->midi_head;
 	uint32_t tail = __atomic_load_n(&e->midi_tail, __ATOMIC_ACQUIRE);
@@ -903,20 +1142,44 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 	SetEvent(e->wake);
 	__atomic_store_n(&e->last_block, frames, __ATOMIC_RELAXED);
 	double render_start = now_ms();
-	e->burst = render_start - e->last_render_ms < BURST_GAP_MS ? e->burst + 1 : 1;
-	e->last_render_ms = render_start;
+	const double block_ms = frames * 1000.0 / e->sample_rate;
+	const double gap_ms = render_start - e->last_render_end_ms;
+	e->burst = gap_ms < block_ms * BURST_GAP_SHARE ? e->burst + 1 : 1;
 	if (e->burst > e->longest_burst) {
 		__atomic_store_n(&e->longest_burst, e->burst, __ATOMIC_RELAXED);
+	}
+	const bool journal = e->journal != NULL;
+	if (journal) {
+		__atomic_add_fetch(&e->j_blocks, 1, __ATOMIC_RELAXED);
+		j_min(&e->j_block_min, frames);
+		j_max(&e->j_block_max, frames);
+		j_max(&e->j_burst_max, e->burst);
+		if (read) {
+			j_max(&e->j_gap_max_us, (uint32_t)(gap_ms * 1000.0));
+		}
+		j_min(&e->j_avail_min, (uint32_t)available);
+		if (e->burst == 1) {
+			e->burst_short = 0;
+		}
 	}
 
 	bool offline = __atomic_load_n(&e->offline, __ATOMIC_ACQUIRE) != 0;
 	if (available < frames && (offline || __atomic_load_n(&e->booted, __ATOMIC_ACQUIRE))) {
 		// Offline rendering has no deadline. In real time a host with a large device buffer calls
 		// several blocks in a row, ahead of its deadline, so a short wait beats dropping audio.
-		double give_up = now_ms() + RENDER_WAIT_MS;
+		// A block alone that has to wait means the worker is late, and six instances waiting long in a row
+		// would make the whole host miss its deadline; so only a burst waits longer.
+		const double wait_ms = e->burst > 1 && block_ms * 0.5 > RENDER_WAIT_MS ? block_ms * 0.5 : RENDER_WAIT_MS;
+		double give_up = now_ms() + wait_ms;
 		while (available < frames && !worker_dead(e) && (offline || now_ms() < give_up)) {
 			SwitchToThread();
 			available = __atomic_load_n(&e->ring_write, __ATOMIC_ACQUIRE) - read;
+		}
+		if (journal) {
+			const uint32_t waited_us = (uint32_t)((now_ms() - render_start) * 1000.0);
+			__atomic_add_fetch(&e->j_waits, 1, __ATOMIC_RELAXED);
+			__atomic_add_fetch(&e->j_wait_us, waited_us, __ATOMIC_RELAXED);
+			j_max(&e->j_wait_max_us, waited_us);
 		}
 	}
 
@@ -929,14 +1192,21 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 		if (frames - count > e->worst_short) {
 			__atomic_store_n(&e->worst_short, frames - count, __ATOMIC_RELAXED);
 		}
+		if (journal) {
+			__atomic_add_fetch(&e->j_short_blocks, 1, __ATOMIC_RELAXED);
+			__atomic_add_fetch(&e->j_short_samples, frames - count, __ATOMIC_RELAXED);
+			e->burst_short += frames - count;
+			j_max(&e->j_burst_short_max, e->burst_short);
+		}
 	}
 	for (uint32_t i = 0; i < count; i++) {
-		left[i] = e->ring[0][(read + i) % RING_FRAMES];
-		right[i] = e->ring[1][(read + i) % RING_FRAMES];
+		left[i] = e->ring[0][(read + i) & e->ring_mask];
+		right[i] = e->ring[1][(read + i) & e->ring_mask];
 	}
 	for (uint32_t i = count; i < frames; i++) {
 		left[i] = right[i] = 0;
 	}
 	__atomic_store_n(&e->ring_read, read + count, __ATOMIC_RELEASE);
 	SetEvent(e->wake);
+	e->last_render_end_ms = now_ms();
 }
