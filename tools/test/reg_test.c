@@ -36,10 +36,22 @@ static void emit(void *context, const uint8_t *bytes, size_t length)
 	mdmi_engine_midi(engine, 0, bytes, length);
 }
 
+// The dealer's clock (D41), the way the plugin keeps it: notes that wait start when due.
+static uint64_t clock_samples;
+
+static void tick(int frames)
+{
+	patch_set_now(patch, clock_samples, RATE);
+	patch_due(patch, emit, NULL);
+	mdmi_engine_render(engine, left, right, frames);
+	clock_samples += (uint64_t)frames;
+	patch_set_now(patch, clock_samples, RATE);
+}
+
 static void render(int blocks)
 {
 	for (int i = 0; i < blocks; i++) {
-		mdmi_engine_render(engine, left, right, BLOCK);
+		tick(BLOCK);
 	}
 }
 
@@ -1676,7 +1688,7 @@ static void draw_on(int channel, const patch_envelope *envelope)
 static void render_ms(int ms)
 {
 	for (int i = 0; i < ms * RATE / 1000 / KEY_BLOCK; i++) {
-		mdmi_engine_render(engine, left, right, KEY_BLOCK);
+		tick(KEY_BLOCK);
 	}
 }
 
@@ -1787,6 +1799,275 @@ static void test_drawing(void)
 	render(RESET_BLOCKS);
 }
 
+// Half the swing of the sound between two times after now, in ms, rendered in steps of 1 ms: the
+// chip's output has an offset, so the loudest sample alone never reaches silence.
+static float peak_between(int from_ms, int to_ms)
+{
+	float low = 1, high = -1;
+	const int step = RATE / 1000;
+	for (int ms = 0; ms < to_ms; ms++) {
+		tick(step);
+		for (int i = 0; ms >= from_ms && i < step; i++) {
+			low = left[i] < low ? left[i] : low;
+			high = left[i] > high ? left[i] : high;
+		}
+	}
+	return high > low ? (high - low) / 2 : 0;
+}
+
+// How long a message takes to reach the chip in the sound's time, measured by test_adjacent.
+static int lag_ms;
+
+// The level 6-10 ms into a note that starts now.
+static float note_window(void)
+{
+	return peak_between(lag_ms + 6, lag_ms + 10);
+}
+
+static int waiting_voice(int channel, int key)
+{
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key) {
+			return voice;
+		}
+	}
+	return -1;
+}
+
+// A note right after another, with Retrigger Free and Cut (D41), on the slow attack sound of
+// test_adjacent; alone is a note's level 6-10 ms in after silence.
+static void test_retrigger(int ch, float alone)
+{
+	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_VOICE);
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x80, 60, 0);
+	midi(0x90, 62, 127);
+	const int free_voice = waiting_voice(ch, 62);
+	const float free_level = note_window();
+	const int keyed = mdmi_engine_test_ym(engine, 0, 0x28);
+	midi(0x80, 62, 0);
+	render_ms(500);
+	printf("  retrigger Free: the next note on voice %d, the chip keyed %02X, %.3f 6-10 ms into it\n", free_voice + 1, keyed, free_level);
+	// The level holds the last note's tail on its own voice, which is the point of Free; that the
+	// new one starts from silence is that the chip keys the silent voice the dealer chose.
+	check(free_voice >= 0 && free_voice != ch && keyed == key_on_value(free_voice) && free_level > 2 * alone,
+		"Retrigger Free: a note right after starts on a silent voice, the one the dealer chose, while the last one's tail plays on");
+	// Once silent, the own voice plays the channel's next note again.
+	midi(0x90, 64, 127);
+	peak_between(0, lag_ms + 2);
+	const bool home = waiting_voice(ch, 64) == ch && mdmi_engine_test_ym(engine, 0, 0x28) == key_on_value(ch);
+	midi(0x80, 64, 0);
+	render_ms(500);
+	check(home, "Retrigger Free: the own voice comes back for the next note after silence");
+
+	// Cut on a sound with RR 8, so the fast release while it waits can be seen going back.
+	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_CUT);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		set_on(ch, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RR, 8);
+	}
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x80, 60, 0);
+	midi(0x90, 62, 127);
+	const bool waits = patch->waiting_count[ch] == 1;
+	float level[100];
+	int waited = 0;
+	bool fast = false;
+	int fast_at = -1, key_at = -1;
+	bool keyed_off = false;
+	for (int ms = 0; ms < 100; ms++) {
+		waited = patch->waiting_count[ch] ? ms + 1 : waited;
+		level[ms] = peak_between(0, 1);
+		fast = fast || (read_reg(ch, 0x80, 3) & 0x0F) == 15;
+		fast_at = fast && fast_at < 0 ? ms : fast_at;
+		// The last note's key-off reaches the chip first, then the waiting note's key-on.
+		const uint8_t key = mdmi_engine_test_ym(engine, 0, 0x28);
+		keyed_off = keyed_off || key == (key_on_value(ch) & 0x0F);
+		key_at = key_at < 0 && keyed_off && key == key_on_value(ch) ? ms : key_at;
+	}
+	float cut_level = 0;
+	for (int ms = waited + lag_ms + 6; ms < waited + lag_ms + 10 && ms < 100; ms++) {
+		cut_level = level[ms] > cut_level ? level[ms] : cut_level;
+	}
+	const int back_rr = read_reg(ch, 0x80, 3) & 0x0F;
+	midi(0x80, 62, 0);
+	render(SETTLE_BLOCKS);
+	printf("  retrigger Cut: waits %d, RR 15 meanwhile %d, starts after %d ms with %.3f 6-10 ms into it, RR %d after; on the chip key-on %d ms after RR 15\n", waits, fast, waited, cut_level, back_rr, key_at - fast_at);
+	check(waits && fast && fast_at >= 0 && key_at - fast_at >= 7 && key_at - fast_at <= 9 && cut_level <= 2 * alone && back_rr == 8,
+		"Retrigger Cut: the voice releases fast for 8 ms, then the note starts from silence with its own release");
+
+	// A Note Off before it is due: the note never starts, the release comes back.
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x80, 60, 0);
+	midi(0x90, 62, 127);
+	peak_between(0, 5);
+	midi(0x80, 62, 0);
+	const bool cancelled = !patch->waiting_count[ch] && waiting_voice(ch, 62) < 0;
+	peak_between(0, lag_ms + 20);
+	const bool gave_back = (read_reg(ch, 0x80, 3) & 0x0F) == 8;
+	check(cancelled && gave_back, "Retrigger Cut: a Note Off before the note is due cancels it and gives the release back");
+	render(SETTLE_BLOCKS);
+
+	// The panic while a note waits, and another channel's note meanwhile.
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x80, 60, 0);
+	midi(0x90, 62, 127);
+	midi(0x91, 64, 127);
+	const bool other_started = waiting_voice(1, 64) >= 0 && !patch->voices[waiting_voice(1, 64)].pending;
+	midi(0xB0, 123, 0);
+	const bool panic = !patch->waiting_count[ch];
+	midi(0x81, 64, 0);
+	peak_between(0, lag_ms + 20);
+	const bool panic_back = (read_reg(ch, 0x80, 3) & 0x0F) == 8;
+	render(SETTLE_BLOCKS);
+	check(other_started && panic && panic_back, "Retrigger Cut: another channel's note doesn't wait, CC 123 ends the wait and gives the release back");
+
+	// Played over, the next note lands on a voice still in its release, but not right after: Free
+	// and Cut leave it as Chip does.
+	for (int mode = PATCH_RETRIGGER_VOICE; mode <= PATCH_RETRIGGER_CUT; mode++) {
+		set_global(GLOBAL_RETRIGGER, mode);
+		midi(0x90, 60, 127);
+		render_ms(500);
+		midi(0x90, 62, 127);
+		render_ms(100);
+		midi(0x80, 60, 0);
+		peak_between(0, 20);
+		midi(0x90, 64, 127);
+		const bool as_chip = !patch->waiting_count[ch] && waiting_voice(ch, 64) == ch;
+		midi(0x80, 62, 0);
+		midi(0x80, 64, 0);
+		render_ms(500);
+		check(as_chip, mode == PATCH_RETRIGGER_CUT ? "Retrigger Cut leaves notes played over as they are" : "Retrigger Free leaves notes played over as they are");
+	}
+	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_CUT);
+
+	// After a pause longer than the release nothing waits.
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x80, 60, 0);
+	render_ms(300);
+	midi(0x90, 62, 127);
+	const bool late_waits = patch->waiting_count[ch] != 0;
+	midi(0x80, 62, 0);
+	render(SETTLE_BLOCKS);
+	check(!late_waits, "Retrigger Cut: a note after a pause longer than the release starts at once");
+
+	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_CHIP);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		set_on(ch, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RR, 8);
+	}
+}
+
+// Stage 14: why an FM note right after another (its start where the last one ends) sounds as if it
+// carried on, and one played over the last does not. One sine with a slow attack and RR 8, silent
+// some 40 ms after Note Off; the level 6-10 ms into the second note, counted from when it reaches
+// the chip, says where its attack started from.
+static void test_adjacent(void)
+{
+	const int ch = 0;
+	set_on(ch, PARAM_ALGORITHM, 7);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		const int first = PARAM_OP_BASE + op * PATCH_OP_PARAMS;
+		set_on(ch, first + F_TL, op == 3 ? 0 : 127);
+		set_on(ch, first + F_MUL, 1);
+		set_on(ch, first + F_AR, 10);
+		set_on(ch, first + F_DR, 0);
+		set_on(ch, first + F_SR, 0);
+		set_on(ch, first + F_SL, 0);
+		set_on(ch, first + F_RR, 8);
+		set_on(ch, first + F_SSG, 0);
+	}
+	render(SETTLE_BLOCKS);
+	for (int trial = 0; trial < 6; trial++) {
+		peak_between(0, 1 + trial * 5 % 17);
+		midi(0x90, 60, 127);
+		int ms = 0;
+		while (mdmi_engine_test_ym(engine, 0, 0x28) != key_on_value(0) && ms < 100) {
+			peak_between(0, 1);
+			ms++;
+		}
+		lag_ms = ms > lag_ms ? ms : lag_ms;
+		midi(0x80, 60, 0);
+		render(SETTLE_BLOCKS);
+	}
+	// The silence a note starts from, the floor of the levels below.
+	const float floor_level = peak_between(0, 20);
+	printf("  adjacent: a note reaches the chip %d ms after it is sent, silence is %.3f\n", lag_ms, floor_level);
+	midi(0x90, 60, 127);
+	const float steady = peak_between(400, 500);
+	midi(0x80, 60, 0);
+	render(SETTLE_BLOCKS);
+	midi(0x90, 62, 127);
+	const float alone = note_window();
+	midi(0x80, 62, 0);
+	render(SETTLE_BLOCKS);
+	printf("  adjacent: steady %.3f, alone %.3f 6-10 ms into it\n", steady, alone);
+
+	static const int gaps[] = {0, 1, 2, 10, 20, 40, 80};
+	float right_after[7];
+	for (int g = 0; g < 7; g++) {
+		midi(0x90, 60, 127);
+		render_ms(500);
+		midi(0x80, 60, 0);
+		peak_between(0, gaps[g]);
+		midi(0x90, 62, 127);
+		right_after[g] = note_window();
+		midi(0x80, 62, 0);
+		render(SETTLE_BLOCKS);
+		printf("  adjacent: same voice after %2d ms, %.3f 6-10 ms into it\n", gaps[g], right_after[g]);
+	}
+	// Played over: the new note is dealt another voice, which is silent, while the last one holds.
+	int first_voice = -1, over_voice = -1;
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x90, 62, 127);
+	render_ms(50);
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		if (patch->voices[voice].channel == ch) {
+			first_voice = patch->voices[voice].key == 60 ? voice : first_voice;
+			over_voice = patch->voices[voice].key == 62 ? voice : over_voice;
+		}
+	}
+	midi(0x80, 60, 0);
+	midi(0x80, 62, 0);
+	render(SETTLE_BLOCKS);
+	printf("  adjacent: played over, first note on voice %d, the next on voice %d\n", first_voice + 1, over_voice + 1);
+	check(alone < steady / 4, "a note alone starts from silence");
+	check(first_voice >= 0 && over_voice >= 0 && first_voice != over_voice, "a note played over gets another voice");
+	check(right_after[0] > steady / 2 && right_after[6] <= 2 * alone, "a note right after on the same voice starts its attack from the level the last one left, after a pause from silence (the chip)");
+
+	test_retrigger(ch, alone);
+
+	// How long the pause must be for the next note to start from silence, by RR: the shortest pause
+	// after which its level 6-10 ms in is at most twice that of a note alone. patch.c's RELEASE_MS.
+	static const int pauses[] = {4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096};
+	const int pause_count = (int)(sizeof(pauses) / sizeof(*pauses));
+	bool counted_ok = true;
+	for (int rr = 15; rr >= 2; rr--) {
+		for (int op = 0; op < PATCH_OPS; op++) {
+			set_on(ch, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RR, rr);
+		}
+		int needed = -1;
+		for (int p = 0; p < pause_count && needed < 0; p++) {
+			midi(0x90, 60, 127);
+			render_ms(500);
+			midi(0x80, 60, 0);
+			peak_between(0, pauses[p]);
+			midi(0x90, 62, 127);
+			needed = note_window() <= 2 * alone ? pauses[p] : -1;
+			midi(0x80, 62, 0);
+			render(SETTLE_BLOCKS);
+		}
+		printf("  adjacent: RR %2d needs a pause of %d ms, the dealer counts %d\n", rr, needed, patch_release_ms(rr));
+		counted_ok = counted_ok && needed > 0 && needed <= patch_release_ms(rr) * 3 / 2;
+	}
+	check(counted_ok, "the dealer's release times (RELEASE_MS) hold for the chip, within one step of the pauses");
+	set_on(ch, PARAM_PRESET, 0);
+}
+
 static void test_reset(void)
 {
 	const uint8_t reset = 0xFF;
@@ -1841,6 +2122,8 @@ int main(int argc, char **argv)
 	test_envelopes();
 	test_reset();
 	test_drawing();
+	test_reset();
+	test_adjacent();
 	test_reset();
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {

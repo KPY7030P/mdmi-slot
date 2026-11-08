@@ -789,7 +789,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		const char *label;
 	} GLOBAL_CELLS[] = {
 		{GLOBAL_LFO_ON, "LFO"}, {GLOBAL_LFO_RATE, "LFO RATE"},
-		{GLOBAL_FILTER, "FILTER"}, {GLOBAL_CH3_MODE, "CH3 SPECIAL"}, {GLOBAL_DAC, "DAC"},
+		{GLOBAL_FILTER, "FILTER"}, {GLOBAL_CH3_MODE, "CH3 SPECIAL"}, {GLOBAL_DAC, "DAC"}, {GLOBAL_RETRIGGER, "RETRIGGER"},
 	};
 	g->cell_count = 0;
 	const int channel = *g->source.channel;

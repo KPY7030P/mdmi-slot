@@ -40,9 +40,16 @@ def main():
     print(f"rate={rate} latency={latency} ({latency / rate * 1000:.1f}ms) peak={np.abs(samples).max():.3f} dc={mono.mean():+.5f}")
 
     failed = False
-    for status, note, at in re.findall(r"EVENT (\w+) (\d+) sample=(\d+)", text):
-        at, note = int(at), int(note)
-        if status[0] == "9":
+    events = [(s, int(n), int(a)) for s, n, a in re.findall(r"EVENT (\w+) (\d+) sample=(\d+)", text)]
+    for status, note, at in events:
+        if status[0] == "9" and ("80", note, at) in events:
+            # A note of no length: by 250 ms its release is over, a hung note would still sound.
+            tail = np.abs(mono[at + rate // 4 : at + rate * 3 // 10]).max()
+            print(f"note {note}: no length, level 250 ms later {tail:.4f}")
+            if tail > THRESHOLD:
+                print(f"note {note}: HANGS")
+                failed = True
+        elif status[0] == "9":
             segment = mono[at : at + rate // 2]
             hits = np.nonzero(np.abs(segment) > THRESHOLD)[0]
             if not len(hits):

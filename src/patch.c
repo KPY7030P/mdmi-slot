@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "patch.h"
 #include "presets_gm.h"
@@ -34,6 +35,8 @@
 #define CC_STORE_PROGRAM 87
 #define YM_REG_SUSTAIN_RATE 0x70
 #define SYSEX_REMAP 0x00
+// The MIDI channel of a voice that takes no notes (the ROM's UNASSIGNED_MIDI_CHANNEL).
+#define UNASSIGNED_CHANNEL 0x7F
 #define SYSEX_DYNAMIC 0x03
 #define CC_ALL_NOTES_OFF 123
 #define CC_ALL_SOUND_OFF 120
@@ -153,6 +156,7 @@ void patch_global_init(void)
 	define(&globals[GLOBAL_LFO_RATE], "LFO Rate", 7, 0, true);
 	define(&globals[GLOBAL_CH3_MODE], "Ch3 Special Mode", 1, 0, true);
 	define(&globals[GLOBAL_DAC], "DAC Enable", 1, 0, true);
+	define(&globals[GLOBAL_RETRIGGER], "Retrigger", PATCH_RETRIGGER_CUT, PATCH_RETRIGGER_CHIP, true);
 
 	define(&channel_params[PARAM_PRESET], "Preset", PRESETS - 1, 0, true);
 	define(&channel_params[PARAM_VOLUME], "Volume", 127, 127, true);
@@ -175,7 +179,7 @@ void patch_global_init(void)
 	}
 
 	uint32_t position = 0;
-	for (int g = GLOBAL_RETIRED + 1; g < PATCH_NUM_GLOBALS; g++) {
+	for (int g = GLOBAL_RETIRED + 1; g <= GLOBAL_DAC; g++) {
 		panel_order[position++] = (uint32_t)g;
 	}
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
@@ -185,6 +189,8 @@ void patch_global_init(void)
 			}
 		}
 	}
+	// Last, so the knobs before it keep their places in a host's list.
+	panel_order[position++] = GLOBAL_RETRIGGER;
 }
 
 bool patch_channel_has(int channel, int param)
@@ -759,6 +765,9 @@ static void format_global(int global, int value, char *text, size_t size)
 	case GLOBAL_LFO_RATE:
 		snprintf(text, size, "%s", LFO_RATES[value & 7]);
 		break;
+	case GLOBAL_RETRIGGER:
+		snprintf(text, size, "%s", value == PATCH_RETRIGGER_VOICE ? "Free" : value == PATCH_RETRIGGER_CUT ? "Cut" : "Chip");
+		break;
 	default:
 		snprintf(text, size, "%s", value ? "On" : "Off");
 		break;
@@ -804,6 +813,66 @@ void patch_format(const patch_bank *bank, uint32_t id, int value, char *text, si
 		}
 		break;
 	}
+}
+
+static int clamp(const patch_param_info *info, int value);
+
+// The first number in a label, sign included, if it has one.
+static bool label_number(const char *text, double *number)
+{
+	for (const char *p = text; *p; p++) {
+		if ((*p >= '0' && *p <= '9') || ((*p == '+' || *p == '-') && p[1] >= '0' && p[1] <= '9')) {
+			*number = strtod(p, NULL);
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool same_label(const char *a, const char *b)
+{
+	while (*a == ' ') {
+		a++;
+	}
+	size_t length = strlen(a);
+	while (length && a[length - 1] == ' ') {
+		length--;
+	}
+	return strlen(b) == length && !_strnicmp(a, b, length);
+}
+
+// The inverse of patch_format: a label it writes reads back as its value; a number alone means the
+// label with the nearest number ("80" is preset 80, "+3" is +3 ct), or the value if no label has one.
+bool patch_parse(const patch_bank *bank, uint32_t id, const char *text, int *value)
+{
+	const patch_param_info *info = patch_param(id);
+	if (!info) {
+		return false;
+	}
+	char label[64];
+	for (int v = 0; v <= info->max; v++) {
+		patch_format(bank, id, v, label, sizeof(label));
+		if (same_label(text, label)) {
+			*value = v;
+			return true;
+		}
+	}
+	double typed;
+	if (!label_number(text, &typed)) {
+		return false;
+	}
+	int best = -1;
+	double best_distance = 0;
+	for (int v = 0; v <= info->max; v++) {
+		double number;
+		patch_format(bank, id, v, label, sizeof(label));
+		if (label_number(label, &number) && (best < 0 || fabs(number - typed) < best_distance)) {
+			best = v;
+			best_distance = fabs(number - typed);
+		}
+	}
+	*value = best >= 0 ? best : clamp(info, (int)lround(typed));
+	return true;
 }
 
 static int clamp(const patch_param_info *info, int value)
@@ -1232,8 +1301,17 @@ static void remap(patch_receiver *receiver, int channel, int voice, patch_emit_f
 
 // A voice whose note ended goes home at once with nothing but its mapping: the tail plays on in the
 // sound it has, and its own channel's next note brings that channel's sound back.
+static void stop_waiting(mdmi_patch *patch, int channel, int key);
+
 static void free_voice(mdmi_patch *patch, int voice, patch_emit_fn emit, void *context)
 {
+	if (patch->voices[voice].channel >= 0) {
+		if (patch->voices[voice].pending && patch->voices[voice].channel < PATCH_NUM_FM_CHANNELS) {
+			stop_waiting(patch, patch->voices[voice].channel, patch->voices[voice].key);
+		}
+		patch->released_at[voice] = patch->now;
+		patch->released[voice] = true;
+	}
 	patch->voices[voice].channel = -1;
 	patch->voices[voice].pending = false;
 	remap(&patch->rom, voice, voice, emit, context);
@@ -1274,21 +1352,115 @@ static int lending_cost(const mdmi_patch *patch, int voice, int channel)
 	return cost;
 }
 
-// The free voice that costs least to turn into a channel's sound, or -1 if none is free.
-static int cheapest_voice(const mdmi_patch *patch, int channel)
+// Retrigger (D41). How long after its Note Off a voice still sounds, by the lowest RR of the
+// operators that sound, in ms: after this a note on it starts its attack from silence. Measured by
+// reg_test's test_adjacent from full level; RR 1 is RR 2's doubled, RR 0 never falls silent. Cut
+// waits for RR 15 from full level: 1023 steps of 8 every 56 us.
+static const uint16_t RELEASE_MS[16] = {65535, 6144, 3072, 1280, 640, 320, 160, 80, 40, 20, 10, 4, 4, 4, 4, 4};
+
+int patch_release_ms(int rr)
+{
+	return RELEASE_MS[rr & 15];
+}
+#define CUT_MS 8
+// The operators an algorithm hears, one bit each: Op1 is 8, Op4 is 1.
+static const uint8_t CARRIERS[8] = {1, 1, 1, 1, 5, 7, 7, 15};
+#define RR_FIELD 8
+
+static bool voice_sounds(const mdmi_patch *patch, int voice)
+{
+	if (!patch->released[voice] || !patch->rate) {
+		return false;
+	}
+	const int16_t *held = patch->rom.voices[voice];
+	if (held[PARAM_ALGORITHM] < 0 || held[PARAM_ALGORITHM] > 7) {
+		return false;
+	}
+	int rr = 15;
+	for (int op = 0; op < PATCH_OPS; op++) {
+		const int value = held[PARAM_OP_BASE + op * PATCH_OP_PARAMS + RR_FIELD];
+		if (CARRIERS[held[PARAM_ALGORITHM]] >> (3 - op) & 1 && value >= 0 && value < rr) {
+			rr = value;
+		}
+	}
+	return patch->now - patch->released_at[voice] < (uint64_t)RELEASE_MS[rr] * patch->rate / 1000;
+}
+
+static int retrigger(const mdmi_patch *patch)
+{
+	return patch->model.globals[GLOBAL_RETRIGGER];
+}
+
+// A note right after: the voice's last note ended in this very moment and it still sounds. Only
+// then Retrigger acts; a note played over another is left as it is (D41).
+static bool right_after(const mdmi_patch *patch, int voice)
+{
+	return patch->released[voice] && patch->released_at[voice] == patch->now && voice_sounds(patch, voice);
+}
+
+// The free voice that costs least to turn into a channel's sound, or -1 if none is free. For a
+// note Retrigger Free moved off its own voice, a silent one first, else the one released longest ago.
+static int cheapest_voice(const mdmi_patch *patch, int channel, bool silent_first)
 {
 	int best = -1, best_cost = 0;
+	bool best_sounds = false;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		if (patch->voices[voice].channel >= 0 || plays_alone(patch, voice)) {
 			continue;
 		}
 		int cost = lending_cost(patch, voice, channel);
-		if (best < 0 || cost < best_cost) {
+		bool sounds = silent_first && voice_sounds(patch, voice);
+		bool better = best < 0 || (best_sounds && !sounds) || (sounds == best_sounds && (sounds ? patch->released_at[voice] < patch->released_at[best] : cost < best_cost));
+		if (better) {
 			best = voice;
 			best_cost = cost;
+			best_sounds = sounds;
 		}
 	}
 	return best;
+}
+
+// Retrigger Voice: a free voice other than this one that is silent.
+static bool other_silent_voice(const mdmi_patch *patch, int except)
+{
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		if (voice != except && patch->voices[voice].channel < 0 && !plays_alone(patch, voice) && !voice_sounds(patch, voice)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void patch_set_now(mdmi_patch *patch, uint64_t sample, uint32_t rate)
+{
+	patch->now = sample;
+	patch->rate = rate;
+}
+
+bool patch_next_due(const mdmi_patch *patch, uint64_t *sample)
+{
+	bool any = false;
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		if (patch->waiting_count[channel] && (!any || patch->wait_until[channel] < *sample)) {
+			*sample = patch->wait_until[channel];
+			any = true;
+		}
+	}
+	return any;
+}
+
+// A waiting note that ends, or loses its voice, before it is due never starts.
+static void stop_waiting(mdmi_patch *patch, int channel, int key)
+{
+	uint8_t *count = &patch->waiting_count[channel];
+	for (int i = 0; i < *count; i++) {
+		if (patch->waiting[channel][i].key == key) {
+			memmove(&patch->waiting[channel][i], &patch->waiting[channel][i + 1], (size_t)(*count - i - 1) * sizeof(patch_note));
+			(*count)--;
+			patch->resync = patch->resync || *count == 0;
+			return;
+		}
+	}
 }
 
 static void take_voice(mdmi_patch *patch, int voice, const patch_note *note, bool pending, patch_emit_fn emit, void *context)
@@ -1340,6 +1512,16 @@ static void revive(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	patch_flush(patch, emit, context);
 }
 
+// A channel's last waiting note ended or was stopped before it started (Retrigger Cut): the
+// channel's voices get their own release back.
+static void give_release_back(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	if (patch->resync) {
+		patch->resync = false;
+		patch_sync(patch, &patch->rom, emit, context);
+	}
+}
+
 static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit, void *context)
 {
 	if (is_muted(patch, channel, key)) {
@@ -1349,18 +1531,19 @@ static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit
 	emit_note(emit, context, 0x80, channel, key, 0);
 	// A note dealt its own voice, also when the channel came to play alone since. The channel's
 	// own voice, while it plays alone, is free only once none of its keys is held.
-	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+	bool freed = false;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS && !freed; voice++) {
 		if (patch->voices[voice].channel == channel && patch->voices[voice].key == key && !(voice == channel && patch->held[channel])) {
 			free_voice(patch, voice, emit, context);
 			revive(patch, emit, context);
-			publish_voices(patch);
-			return;
+			freed = true;
 		}
 	}
-	if (patch->held[channel] && --patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
+	if (!freed && patch->held[channel] && --patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
 		patch->voices[channel].channel = -1;
 		revive(patch, emit, context);
 	}
+	give_release_back(patch, emit, context);
 	publish_voices(patch);
 }
 
@@ -1409,6 +1592,32 @@ void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			emit_cc(emit, context, channel, CC_ALL_NOTES_OFF, 0);
 		}
 	}
+	give_release_back(patch, emit, context);
+}
+
+// Sends a dealt note's Note On. The ROM gives a note the free voice of its channel with the lowest
+// number, so the dealer's keys follow that. A voice taken off every channel (Retrigger Free) is
+// none of them.
+static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, patch_emit_fn emit, void *context)
+{
+	if (!alone) {
+		int waiting = -1, first = -1;
+		for (int voice = PATCH_NUM_FM_CHANNELS - 1; voice >= 0; voice--) {
+			const patch_voice *v = &patch->voices[voice];
+			if (v->channel == note->channel && v->pending) {
+				first = voice;
+				waiting = v->key == note->key ? voice : waiting;
+			}
+		}
+		if (waiting < 0) {
+			// No voice waits for it.
+			return;
+		}
+		patch->voices[waiting].key = patch->voices[first].key;
+		patch->voices[first].key = note->key;
+		patch->voices[first].pending = false;
+	}
+	emit_note(emit, context, 0x90, note->channel, note->key, note->velocity);
 }
 
 // The moment is complete. First every note takes its channel's own voice if that voice is free or
@@ -1421,12 +1630,24 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	if (patch->pending_count == 0) {
 		return;
 	}
-	enum { WAITS, MOVED, OWN, ALONE, MUTED };
+	enum { WAITS, MOVED, OWN, ALONE, MUTED, FREED };
 	uint8_t dealt[PATCH_PENDING_NOTES];
+	int8_t voice_of[PATCH_PENDING_NOTES];
 	memset(dealt, WAITS, sizeof(dealt));
+	const int mode = retrigger(patch);
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const patch_note *note = &patch->pending[i];
+		voice_of[i] = (int8_t)note->channel;
 		if (dealt[i] == MOVED) {
+			continue;
+		}
+		const int own = note->channel;
+		if (mode == PATCH_RETRIGGER_VOICE && !plays_alone(patch, own) && patch->voices[own].channel < 0 && right_after(patch, own) && other_silent_voice(patch, own)) {
+			// Retrigger Free: the own voice's last note just ended, so the note borrows a silent one (D41). The
+			// ROM gives a note its channel's free voice with the lowest number, so the sounding one
+			// answers to no channel until a note takes it again; its tail plays on.
+			remap(&patch->rom, UNASSIGNED_CHANNEL, own, emit, context);
+			dealt[i] = FREED;
 			continue;
 		}
 		if (plays_alone(patch, note->channel)) {
@@ -1458,45 +1679,72 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	for (int moved = 1; moved >= 0; moved--) {
 		for (uint32_t i = 0; i < patch->pending_count; i++) {
 			const patch_note *note = &patch->pending[i];
-			if (dealt[i] != (moved ? MOVED : WAITS)) {
+			if (moved ? dealt[i] != MOVED : dealt[i] != WAITS && dealt[i] != FREED) {
 				continue;
 			}
-			int voice = cheapest_voice(patch, note->channel);
+			int voice = cheapest_voice(patch, note->channel, dealt[i] == FREED);
 			if (voice < 0) {
 				mute(patch, note->channel, note->key, note->velocity);
 				dealt[i] = MUTED;
 			} else {
 				take_voice(patch, voice, note, true, emit, context);
+				voice_of[i] = (int8_t)voice;
 			}
+		}
+	}
+	// Retrigger Cut: a note dealt a voice whose note ended in this moment waits, and with it every note its channel
+	// plays until then, so the ROM's choice of voices stays the dealer's. Meanwhile the channel's
+	// voices release fast (D41).
+	bool waits[PATCH_NUM_FM_CHANNELS];
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		waits[channel] = patch->waiting_count[channel] > 0;
+	}
+	for (uint32_t i = 0; i < patch->pending_count; i++) {
+		const int channel = patch->pending[i].channel;
+		if (dealt[i] != MUTED && dealt[i] != ALONE && !waits[channel] && mode == PATCH_RETRIGGER_CUT && right_after(patch, voice_of[i])) {
+			waits[channel] = true;
+			patch->wait_until[channel] = patch->now + (uint64_t)CUT_MS * patch->rate / 1000;
+		}
+	}
+	for (uint32_t i = 0; i < patch->pending_count; i++) {
+		const int channel = patch->pending[i].channel;
+		if (dealt[i] != MUTED && dealt[i] != ALONE && waits[channel] && patch->waiting_count[channel] < PATCH_NUM_FM_CHANNELS) {
+			patch->waiting[channel][patch->waiting_count[channel]++] = patch->pending[i];
 		}
 	}
 	patch_sync(patch, &patch->rom, emit, context);
+	patch->resync = false;
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const patch_note *note = &patch->pending[i];
-		if (dealt[i] == MUTED) {
+		if (dealt[i] == MUTED || (dealt[i] != ALONE && patch->waiting_count[note->channel])) {
 			continue;
 		}
-		if (dealt[i] != ALONE) {
-			// The ROM gives a note the free voice of its channel with the lowest number.
-			int waiting = -1, first = -1;
-			for (int voice = PATCH_NUM_FM_CHANNELS - 1; voice >= 0; voice--) {
-				const patch_voice *v = &patch->voices[voice];
-				if (v->channel == note->channel && v->pending) {
-					first = voice;
-					waiting = v->key == note->key ? voice : waiting;
-				}
-			}
-			if (waiting < 0) {
-				// No voice waits for it.
-				continue;
-			}
-			patch->voices[waiting].key = patch->voices[first].key;
-			patch->voices[first].key = note->key;
-			patch->voices[first].pending = false;
-		}
-		emit_note(emit, context, 0x90, note->channel, note->key, note->velocity);
+		start_note(patch, note, dealt[i] == ALONE, emit, context);
 	}
 	patch->pending_count = 0;
+	publish_voices(patch);
+}
+
+void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context)
+{
+	patch_note due[PATCH_NUM_FM_CHANNELS * PATCH_NUM_FM_CHANNELS];
+	int count = 0;
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		if (patch->waiting_count[channel] && patch->wait_until[channel] <= patch->now) {
+			memcpy(&due[count], patch->waiting[channel], patch->waiting_count[channel] * sizeof(patch_note));
+			count += patch->waiting_count[channel];
+			patch->waiting_count[channel] = 0;
+		}
+	}
+	if (!count) {
+		return;
+	}
+	// The voices get their own release back, then the notes start.
+	patch_sync(patch, &patch->rom, emit, context);
+	patch->resync = false;
+	for (int i = 0; i < count; i++) {
+		start_note(patch, &due[i], false, emit, context);
+	}
 	publish_voices(patch);
 }
 
@@ -1537,6 +1785,14 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		if (channel >= PATCH_NUM_FM_CHANNELS) {
 			sync_envelope(&patch->model, receiver, channel, emit, context);
 			rom[PARAM_PRESET] = model[PARAM_PRESET];
+		} else if (patch->waiting_count[channel]) {
+			// Retrigger Cut: the fastest release while the channel's notes wait (D41).
+			int16_t cut[PATCH_NUM_CHANNEL_PARAMS];
+			memcpy(cut, model, sizeof(cut));
+			for (int op = 0; op < PATCH_OPS; op++) {
+				cut[PARAM_OP_BASE + op * PATCH_OP_PARAMS + RR_FIELD] = 15;
+			}
+			sync_voice(patch, cut, receiver, channel, emit, context);
 		} else {
 			sync_voice(patch, model, receiver, channel, emit, context);
 		}
@@ -1709,6 +1965,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 				// The ROM stops the notes of every voice the channel has, so the lent ones go home.
 				release_channel(patch, channel, emit, context);
 				revive(patch, emit, context);
+				give_release_back(patch, emit, context);
 			}
 		}
 	} else {

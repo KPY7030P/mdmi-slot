@@ -252,7 +252,8 @@ int main(int argc, char **argv)
 	}
 
 	struct NoteScript { double seconds; bool on; int16 pitch; };
-	const NoteScript notes[] = {{3.0, true, 60}, {3.5, false, 60}, {4.0, true, 64}, {4.5, false, 64}};
+	// The last is a note of no length with its end first, as clap_host plays it: it must not hang.
+	const NoteScript notes[] = {{3.0, true, 60}, {3.5, false, 60}, {4.0, true, 64}, {4.5, false, 64}, {4.7, false, 67}, {4.7, true, 67}};
 	const double cc_seconds = 3.8;
 	const uint32_t total = rate * SECONDS;
 	std::vector<float> left(total + block), right(total + block);

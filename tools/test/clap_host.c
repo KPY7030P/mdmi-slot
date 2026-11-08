@@ -26,6 +26,9 @@ static const script_event script[] = {
 	{3.500, {0x80, 60, 0}},
 	{4.000, {0x90, 64, 127}},
 	{4.500, {0x80, 64, 0}},
+	// A note of no length with its end first: it must not go on sounding.
+	{4.700, {0x80, 67, 0}},
+	{4.700, {0x90, 67, 127}},
 	{5.000, {0x96, 72, 127}},
 	{5.500, {0x86, 72, 0}},
 };

@@ -27,8 +27,11 @@ enum {
 	GLOBAL_LFO_RATE,
 	GLOBAL_CH3_MODE,
 	GLOBAL_DAC,
+	// What an FM note right after another on the same voice does (D41): the plugin's, not the ROM's.
+	GLOBAL_RETRIGGER,
 	PATCH_NUM_GLOBALS,
 };
+enum { PATCH_RETRIGGER_CHIP, PATCH_RETRIGGER_VOICE, PATCH_RETRIGGER_CUT };
 
 // What a MIDI channel has. PSG channels have the first ones except Pan; the rest are the FM voice.
 enum {
@@ -193,6 +196,16 @@ typedef struct {
 	uint8_t playing_velocity[PATCH_NUM_FM_CHANNELS];
 	patch_note pending[PATCH_PENDING_NOTES];
 	uint32_t pending_count;
+	// The writer's clock in samples, for Retrigger (D41): when each voice's last note ended, and the
+	// notes of a channel that wait for its voice to fall silent, until wait_until.
+	uint64_t now;
+	uint32_t rate;
+	uint64_t released_at[PATCH_NUM_FM_CHANNELS];
+	bool released[PATCH_NUM_FM_CHANNELS];
+	uint64_t wait_until[PATCH_NUM_FM_CHANNELS];
+	patch_note waiting[PATCH_NUM_FM_CHANNELS][PATCH_NUM_FM_CHANNELS];
+	uint8_t waiting_count[PATCH_NUM_FM_CHANNELS];
+	bool resync;
 	// The RPN each MIDI channel last selected, to recognize a pitch bend range coming from a clip.
 	uint8_t rpn_msb[16];
 	uint8_t rpn_lsb[16];
@@ -273,6 +286,8 @@ const patch_bank *patch_bank_view(const mdmi_patch *patch);
 int patch_get(mdmi_patch *patch, uint32_t id);
 void patch_format_preset(const patch_bank *bank, int channel, int value, char *text, size_t size);
 void patch_format(const patch_bank *bank, uint32_t id, int value, char *text, size_t size);
+// What a typed label means, the inverse of patch_format. False if the text is no label or number.
+bool patch_parse(const patch_bank *bank, uint32_t id, const char *text, int *value);
 double patch_filter_hz(int value);
 // Saved values are pairs of id and value, so knobs can be added without breaking projects.
 size_t patch_save_size(void);
@@ -309,7 +324,16 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_emit_fn emit, void *context);
 // The moment is complete: sends the waiting notes.
 void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context);
-// Stops every note and gives every FM voice back to its own channel.
+// The writer's clock, before each moment: the sample it is at and the rate.
+void patch_set_now(mdmi_patch *patch, uint64_t sample, uint32_t rate);
+// Retrigger Cut (D41): the earliest sample a channel's waiting notes are due at, false if none wait.
+bool patch_next_due(const mdmi_patch *patch, uint64_t *sample);
+// Starts the waiting notes that are due by now.
+void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context);
+// How long an FM voice sounds after Note Off by its RR, in ms, as the dealer counts it (D41).
+int patch_release_ms(int rr);
+// Stops every note and gives every FM voice that plays back to its own channel; one Retrigger Free
+// took off every channel stays off until a note takes it (D41).
 void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // The ROM booted again (a new image, stage 12): notes are gone, and the receiver gets everything.
 void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context);

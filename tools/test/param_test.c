@@ -14,7 +14,7 @@
 #define BLOCK 256
 #define MAX_EVENTS 512
 #define FFT_SIZE 16384
-#define NUM_PARAMS 359
+#define NUM_PARAMS 360
 
 // Ids by D3: a global's id is its index, a channel's knob 1000 + channel number * 100 + param.
 // Id 0 held Polyphony until D20 and stays unused.
@@ -303,7 +303,7 @@ static void test_listing(void)
 	printf("listing\n");
 	instance *in = create_instance();
 	uint32_t count = in->params->count(in->plugin);
-	CHECK(count == NUM_PARAMS, "%u parameters: 5 global, 55 on each FM channel, 6 on each PSG channel", count);
+	CHECK(count == NUM_PARAMS, "%u parameters: 6 global, 55 on each FM channel, 6 on each PSG channel", count);
 	static bool seen[MAX_ID];
 	bool ids_valid = true;
 	for (uint32_t i = 0; i < count; i++) {
@@ -331,6 +331,42 @@ static void test_listing(void)
 	CHECK(!strcmp(ssg, "Env 1"), "SSG 8 reads %s", ssg);
 	in->params->value_to_text(in->plugin, P_OP + OP_SSG, 15, ssg, sizeof(ssg));
 	CHECK(!strcmp(ssg, "Env 8"), "SSG 15 reads %s", ssg);
+	destroy_instance(in);
+}
+
+// Typing in Live (audit 1.15): every label a knob shows reads back as itself, a number as the label
+// with that number.
+static void test_text(void)
+{
+	printf("text\n");
+	instance *in = create_instance();
+	uint32_t count = in->params->count(in->plugin);
+	int wrong = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		clap_param_info_t info;
+		in->params->get_info(in->plugin, i, &info);
+		for (int v = 0; v <= (int)info.max_value; v++) {
+			char text[64], again[64] = "";
+			double back = -1;
+			in->params->value_to_text(in->plugin, info.id, v, text, sizeof(text));
+			if (in->params->text_to_value(in->plugin, info.id, text, &back)) {
+				in->params->value_to_text(in->plugin, info.id, back, again, sizeof(again));
+			}
+			if (strcmp(text, again)) {
+				if (wrong++ < 3) {
+					printf("    %s: \"%s\" reads back as \"%s\"\n", info.name, text, again);
+				}
+			}
+		}
+	}
+	CHECK(!wrong, "every label of every knob reads back as itself, %d do not", wrong);
+	double value = -1;
+	CHECK(in->params->text_to_value(in->plugin, ID(0, Q_PRESET), "80", &value) && value == 79, "\"80\" on Preset sets preset 80 (value %.0f)", value);
+	CHECK(in->params->text_to_value(in->plugin, P_FINE, "+3 ct", &value) && value == 67, "\"+3 ct\" on Fine Tune sets +3 (value %.0f)", value);
+	CHECK(in->params->text_to_value(in->plugin, P_FINE, "-3", &value) && value == 61, "\"-3\" on Fine Tune sets -3 (value %.0f)", value);
+	CHECK(in->params->text_to_value(in->plugin, P_OP, "80", &value) && value == 80, "\"80\" on Op1 TL sets 80 (value %.0f)", value);
+	CHECK(in->params->text_to_value(in->plugin, ID(0, Q_PAN), "left", &value) && value == 0, "\"left\" on Pan sets Left (value %.0f)", value);
+	CHECK(!in->params->text_to_value(in->plugin, P_OP, "loud", &value), "a word that is no label is refused");
 	destroy_instance(in);
 }
 
@@ -909,6 +945,7 @@ int main(int argc, char **argv)
 	plugin_id = factory->get_plugin_descriptor(factory, 0)->id;
 
 	test_listing();
+	test_text();
 	test_preset_table();
 	test_knob_effects();
 	test_channels();

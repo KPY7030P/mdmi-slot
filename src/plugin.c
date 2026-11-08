@@ -69,6 +69,10 @@ typedef struct {
 	uint32_t edits_read;
 	uint32_t notes[GUI_NUM_MIDI_CHANNELS];
 	uint8_t held[GUI_NUM_MIDI_CHANNELS];
+	// The sample rate of the activation, for the dealer's clock (D41).
+	uint32_t rate;
+	// Which keys of each channel are down, one bit a key: the audio thread's only.
+	uint8_t keys_down[GUI_NUM_MIDI_CHANNELS][16];
 	// Written by the writer only.
 	gui_psg_times psg_times;
 	// Set by the audio thread, cleared by the window (D33).
@@ -178,6 +182,7 @@ static bool plugin_activate(const clap_plugin_t *plugin, double sample_rate, uin
 	(void)min_frames;
 	mdmi_plugin *self = self_of(plugin);
 	self->active = true;
+	self->rate = (uint32_t)(sample_rate + 0.5);
 	__atomic_store_n(&self->sync_pending, 1, __ATOMIC_RELEASE);
 	__atomic_store_n(&self->notes_off_pending, 1, __ATOMIC_RELEASE);
 	for (int channel = 0; channel < GUI_NUM_MIDI_CHANNELS; channel++) {
@@ -217,6 +222,8 @@ static void plugin_reset(const clap_plugin_t *plugin)
 static void track_note(mdmi_plugin *self, int channel, int key, int velocity, bool on)
 {
 	uint32_t note = __atomic_load_n(&self->notes[channel], __ATOMIC_RELAXED);
+	const uint8_t bit = (uint8_t)(1u << (key & 7));
+	self->keys_down[channel][key >> 3] = on ? self->keys_down[channel][key >> 3] | bit : self->keys_down[channel][key >> 3] & ~bit;
 	if (on) {
 		if (self->held[channel] < 255) {
 			self->held[channel]++;
@@ -235,6 +242,7 @@ static void release_notes(mdmi_plugin *self, int channel)
 {
 	uint32_t note = __atomic_load_n(&self->notes[channel], __ATOMIC_RELAXED);
 	self->held[channel] = 0;
+	memset(self->keys_down[channel], 0, sizeof(self->keys_down[channel]));
 	if (GUI_NOTE_SEEN(note)) {
 		__atomic_store_n(&self->notes[channel], GUI_NOTE_PACK(GUI_NOTE_KEY(note), GUI_NOTE_VELOCITY(note), 0), __ATOMIC_RELEASE);
 	}
@@ -433,12 +441,52 @@ static bool is_note(const clap_event_header_t *header)
 	return status == 0x90 || status == 0x80;
 }
 
+// A Note Off for a key that isn't down: a note that starts and ends in one moment can come with its
+// end first, and would then never end.
+static bool ends_key_not_down(const mdmi_plugin *self, const clap_event_header_t *header)
+{
+	int channel, key;
+	if (header->type == CLAP_EVENT_NOTE_OFF) {
+		const clap_event_note_t *note = (const clap_event_note_t *)header;
+		channel = note->channel;
+		key = note->key;
+	} else if (header->type == CLAP_EVENT_MIDI) {
+		const uint8_t *data = ((const clap_event_midi_t *)header)->data;
+		if ((data[0] & 0xF0) != 0x80 && !((data[0] & 0xF0) == 0x90 && data[2] == 0)) {
+			return false;
+		}
+		channel = data[0] & 0x0F;
+		key = data[1] & 0x7F;
+	} else {
+		return false;
+	}
+	if (channel < 0 || channel >= GUI_NUM_MIDI_CHANNELS || key < 0 || key > 127) {
+		return false;
+	}
+	return !(self->keys_down[channel][key >> 3] & (1u << (key & 7)));
+}
+
+// Retrigger Cut (D41): notes that waited for their voice to fall silent start at their own sample,
+// up to and including until in this block.
+static void start_due(mdmi_plugin *self, uint64_t clock, uint32_t until)
+{
+	uint64_t at;
+	while (patch_next_due(&self->patch, &at) && at <= clock + until) {
+		const uint32_t offset = at > clock ? (uint32_t)(at - clock) : 0;
+		patch_set_now(&self->patch, clock + offset, self->rate);
+		emit_target target = {self, offset};
+		patch_due(&self->patch, emit_to_engine, &target);
+	}
+}
+
 static clap_process_status plugin_process(const clap_plugin_t *plugin, const clap_process_t *process)
 {
 	mdmi_plugin *self = self_of(plugin);
 	mdmi_engine *engine = self->engine;
 	mdmi_engine_set_playing(engine, process->transport && (process->transport->flags & CLAP_TRANSPORT_IS_PLAYING));
 	bool state_taken = patch_take_incoming(&self->patch);
+	const uint64_t clock = self->psg_times.clock;
+	patch_set_now(&self->patch, clock, self->rate);
 	const uint32_t boots = mdmi_engine_boots(engine);
 	if (boots != self->boots_seen) {
 		// The first boot holds what patch_init expects; a later one is a new ROM that knows nothing.
@@ -462,8 +510,9 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 	take_edits(self, process->out_events, true);
 	// The VST3 wrapper puts notes before knobs and controllers of the same moment. A preset point
 	// exactly on a note's start is meant for that note, so at each moment notes come last, in their
-	// own order: a note that ends where it starts must not end first. Then the moment's notes go
-	// out together, with their voices changed in one batch (D21).
+	// own order: a note that ends where it starts must not end first, so an end of a key that isn't
+	// down waits for the moment's starts. Then the moment's notes go out together, with their voices
+	// changed in one batch (D21).
 	const clap_input_events_t *in = process->in_events;
 	const uint32_t event_count = in->size(in);
 	for (uint32_t first = 0; first < event_count;) {
@@ -472,17 +521,32 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		while (end < event_count && in->get(in, end)->time == time) {
 			end++;
 		}
+		start_due(self, clock, time);
+		patch_set_now(&self->patch, clock + time, self->rate);
+		uint32_t later[128];
+		uint32_t later_count = 0;
 		for (int pass = 0; pass < 2; pass++) {
 			for (uint32_t i = first; i < end; i++) {
 				const clap_event_header_t *header = in->get(in, i);
-				if (is_note(header) == (pass == 1)) {
+				if (is_note(header) != (pass == 1)) {
+					continue;
+				}
+				if (pass == 1 && later_count < 128 && ends_key_not_down(self, header)) {
+					later[later_count++] = i;
+				} else {
 					handle_event(self, header);
 				}
 			}
 		}
+		for (uint32_t i = 0; i < later_count; i++) {
+			handle_event(self, in->get(in, later[i]));
+		}
 		emit_target target = {self, time};
 		patch_flush(&self->patch, emit_to_engine, &target);
 		first = end;
+	}
+	if (process->frames_count) {
+		start_due(self, clock, process->frames_count - 1);
 	}
 	patch_publish(&self->patch);
 	if (self->knobs_moved) {
@@ -630,10 +694,8 @@ static bool params_value_to_text(const clap_plugin_t *plugin, clap_id id, double
 
 static bool params_text_to_value(const clap_plugin_t *plugin, clap_id id, const char *text, double *value)
 {
-	(void)plugin;
-	char *end;
-	double parsed = strtod(text, &end);
-	if (!patch_param(id) || end == text) {
+	int parsed;
+	if (!patch_parse(patch_bank_view(&self_of(plugin)->patch), id, text, &parsed)) {
 		return false;
 	}
 	*value = parsed;
