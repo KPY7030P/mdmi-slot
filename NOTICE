@@ -1,0 +1,31 @@
+MDMI Mega Drive
+https://github.com/KPY7030P/mdmi-plugin
+
+An unofficial plugin built on the Mega Drive MIDI Interface by Robert Hargreaves
+and the BlastEm emulator by Michael Pavone. It is not made or endorsed by them.
+
+The plugin's own code: Copyright (C) 2026 KPY7030P (Trojan_247). It is free
+software under the GNU General Public License as published by the Free
+Software Foundation, version 3 or (at your option) any later version; see
+LICENSE. The plugin as distributed includes the MDMI ROM (GPL-3.0) and is
+therefore under GPL-3.0.
+
+Modified third-party code (GPL-3.0, section 5a). The changes are dated by the
+repository's history and kept as patches against the pinned upstream commits
+in tools/deps.lock:
+
+- BlastEm, fork https://github.com/ulalume/blastem at commit 5702187, modified
+  by patches/0001-mdmi-everdrive-bridge.patch: MIDI and audio pass between the
+  plugin and the emulated cartridge, and the JIT memory is freed on unload.
+- Mega Drive MIDI Interface v1.34 (commit 6cfe921), modified by
+  patches/0003-mdmi-psg-envelopes.patch: PSG envelopes stored by SysEx, PSG
+  restored after DAC switches, note stack and DAC notes, one-shot samples. Its screen
+  shows the build as "v1.34p".
+- clap-wrapper v0.17.0 (commit 806bba0, MIT), modified by
+  patches/0002-clap-wrapper.patch.
+
+The licences and copyright notices of every included component are in
+THIRD_PARTY_NOTICES.txt.
+
+Sega and Mega Drive are trademarks of Sega Corporation. VST is a registered
+trademark of Steinberg Media Technologies GmbH.

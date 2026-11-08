@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the ROM, the engine DLL and the plugin in Docker. Refuses to build if third_party/ or roms/
 # differ from what the repository records. build/label.txt exists only after a build that succeeded.
+# Only fetch_deps.sh and the Docker images use the network; the builds run with none (D42).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WIN_ROOT="$(cygpath -m "$ROOT")"
@@ -12,11 +13,11 @@ LABEL="$(git -C "$WIN_ROOT" describe --tags --always --dirty 2>/dev/null || echo
 docker build -q -t mdmi-rom-build "$WIN_ROOT/tools/docker/rom"
 mkdir -p "$ROOT/build/rom"
 rm -f "$ROOT/build/rom/mdmi-everdrive.bin"
-docker run --rm -v "$WIN_ROOT/third_party/mdmi:/app" -w /app -e BUILD=v1.34p mdmi-rom-build make release > "$ROOT/build/rom/build.log" 2>&1 || { grep -E "error|Error" "$ROOT/build/rom/build.log"; exit 1; }
+docker run --rm --network none -v "$WIN_ROOT/third_party/mdmi:/app" -w /app -e BUILD=v1.34p mdmi-rom-build make release > "$ROOT/build/rom/build.log" 2>&1 || { grep -E "error|Error" "$ROOT/build/rom/build.log"; exit 1; }
 cp "$ROOT/third_party/mdmi/out/rom.bin" "$ROOT/build/rom/mdmi-everdrive.bin"
 
 docker build -q -t mdmi-plugin-build "$WIN_ROOT/tools/docker"
-docker run --rm -v "$WIN_ROOT:/src" -w /src -e LABEL="$LABEL" mdmi-plugin-build sh -c '
+docker run --rm --network none -v "$WIN_ROOT:/src" -w /src -e LABEL="$LABEL" mdmi-plugin-build sh -c '
   set -e
   mkdir -p build/engine
   # Where the plugin patches the ROM image (D36): every change of the ROM moves it.

@@ -1,0 +1,602 @@
+THIRD-PARTY NOTICES for MDMI Mega Drive
+==============================================================================
+
+MDMI Mega Drive is distributed under the GNU General Public License version 3
+(see LICENSE). The plugin files (MDMI Mega Drive.vst3, MDMI Mega Drive.clap)
+contain the components below. Their source, with our changes, is in the source
+release and in the repository: https://github.com/KPY7030P/mdmi-plugin
+
+Each component is listed with its licence and copyright notice. Full licence
+texts follow in the appendices; the GNU GPL version 3 is in LICENSE.
+
+==============================================================================
+1. INSIDE THE EMULATOR (libblastem.dll, embedded in the plugin)
+==============================================================================
+
+BlastEm
+  https://www.retrodev.com/blastem/ , fork https://github.com/ulalume/blastem
+  Copyright 2012-2026 Michael Pavone and contributors (the files say, for
+  example, "Copyright 2013 Michael Pavone").
+  Licence: GNU General Public License version 3 or later (LICENSE).
+  Includes chd.c, cdimage.c and flac.c, which are BlastEm's own code.
+  Modified by this project: patches/0001-mdmi-everdrive-bridge.patch (NOTICE).
+
+Changes of the ulalume fork of BlastEm
+  The modifications and new files authored by ulalume are dedicated to the
+  public domain under The Unlicense (Appendix F). The fork as a whole is
+  distributed under GPLv3.
+
+zlib 1.3.1
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+  Licence: zlib (Appendix C).
+
+Zstandard (decompressor, with xxHash)
+  Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+  xxHash: Copyright (c) Yann Collet - Meta Platforms, Inc
+  Licence: BSD-3-Clause, chosen from its BSD-3-Clause OR GPL-2.0 dual licence
+  (Appendix B).
+
+LZMA SDK
+  Igor Pavlov. Public domain.
+
+libretro.h (libretro API header)
+  Copyright (C) 2010-2024 The RetroArch team
+  Licence: MIT (Appendix A).
+
+VCR OSD Mono (bitmap font data in BlastEm's osd_font.c)
+  By Riciery Leal, https://www.dafont.com/vcr-osd-mono.font , published there
+  as "100% Free". No further terms are stated.
+
+==============================================================================
+2. INSIDE THE MDMI ROM (embedded in the plugin)
+==============================================================================
+
+Mega Drive MIDI Interface (MDMI) v1.34
+  https://github.com/rhargreaves/mega-drive-midi-interface
+  Copyright (C) 2018-2026 Robert Hargreaves and contributors (the ROM header
+  says "(C)ROB H. GPLv3").
+  Licence: GNU General Public License version 3 (LICENSE).
+  Modified by this project: patches/0003-mdmi-psg-envelopes.patch (NOTICE).
+
+MDPlayer pixel font and colour scheme
+  From MDPlayer by kuma4649, https://github.com/kuma4649/MDPlayer
+  Licence: GNU General Public License version 3 (LICENSE).
+
+XG FM instrument bank (xg.wopn) from libOPNMIDI
+  https://github.com/Wohlstand/libOPNMIDI , used by MDMI's presets and by this
+  plugin's src/presets_gm.h, which is generated from them.
+  Copyright (c) 2018-2026 Vitaliy Novichkov
+  Licence: MIT (Appendix A).
+
+PCM drum samples (mega-drive-pcm-samples v1)
+  https://github.com/rhargreaves/mega-drive-pcm-samples , by Robert
+  Hargreaves, licence MIT (Appendix A; its licence file names no holder).
+  Made from the Fluid (R3) SoundFont:
+  Copyright (c) 2000-2002, 2008, 2013 Frank Wen <getfrank@gmail.com>
+  Licence: MIT (Appendix A).
+
+SGDK 2.00
+  https://github.com/Stephane-D/SGDK
+  Copyright (c) 2019 Stephane Dallongeville
+  Licence: MIT (Appendix A).
+  Parts of SGDK linked into the ROM under their own terms:
+  - MegaWiFi, LSD and 16c550 drivers by Jesus Alonso (doragasu), under the
+    Mozilla Public License (Appendix G). Their source is part of SGDK.
+  - ldiv, lmul, lrem: Copyright (c) 1988 by Sozobon, Limited. Author: Johann
+    Ruegg. Terms in Appendix H.
+
+==============================================================================
+3. THE PLUGIN WRAPPER
+==============================================================================
+
+CLAP
+  https://github.com/free-audio/clap
+  Copyright (c) 2021 Alexandre BIQUE
+  Licence: MIT (Appendix A).
+
+clap-wrapper
+  https://github.com/free-audio/clap-wrapper
+  Copyright (c) 2022 defiantnerd (Timo Kaluza)
+  Licence: MIT (Appendix A).
+  Modified by this project: patches/0002-clap-wrapper.patch.
+  Includes {fmt}, Copyright (c) 2012 - present, Victor Zverovich, MIT with an
+  exception for object code.
+
+VST 3 SDK 3.8
+  https://github.com/steinbergmedia/vst3sdk
+  Copyright (c) 2025, Steinberg Media Technologies GmbH
+  Licence: MIT (Appendix A).
+
+5x7 window font (src/font5x7.h)
+  The glyphs of glcdfont.c from the Adafruit GFX Library,
+  https://github.com/adafruit/Adafruit-GFX-Library
+  Copyright (c) 2012 Adafruit Industries. All rights reserved.
+  Licence: BSD (Appendix D).
+
+==============================================================================
+4. COMPILER RUNTIME (linked statically by MinGW-w64)
+==============================================================================
+
+MinGW-w64 runtime
+  Copyright (c) 2009, 2010, 2011, 2012, 2013 by the mingw-w64 project, and the
+  other holders listed in Appendix E.
+
+winpthreads
+  Copyright (c) 2011 mingw-w64 project
+  Licence: MIT (Appendix A). Parts: (C) 2010 Lockless Inc., BSD (Appendix B).
+
+libgcc and libstdc++
+  GNU General Public License version 3 with the GCC Runtime Library Exception
+  3.1; no notice is required for the compiled program.
+
+==============================================================================
+APPENDIX A. MIT LICENSE
+==============================================================================
+
+The following text applies to each component above that names the MIT
+licence, with that component's copyright notice:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+==============================================================================
+APPENDIX B. BSD-3-CLAUSE LICENSES
+==============================================================================
+
+Zstandard:
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+------------------------------------------------------------------------------
+
+winpthreads, the parts derived from Lockless Inc.:
+
+/*
+ * Parts of this library are derived by:
+ *
+ * Posix Threads library for Microsoft Windows
+ *
+ * Use at own risk, there is no implied warranty to this code.
+ * It uses undocumented features of Microsoft Windows that can change
+ * at any time in the future.
+ *
+ * (C) 2010 Lockless Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification,
+ * are permitted provided that the following conditions are met:
+ *
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *  * Neither the name of Lockless Inc. nor the names of its contributors may be
+ *    used to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AN
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+==============================================================================
+APPENDIX C. ZLIB LICENSE
+==============================================================================
+
+Copyright notice:
+
+ (C) 1995-2022 Jean-loup Gailly and Mark Adler
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu
+
+==============================================================================
+APPENDIX D. ADAFRUIT GFX LIBRARY LICENSE (BSD)
+==============================================================================
+
+Software License Agreement (BSD License)
+
+Copyright (c) 2012 Adafruit Industries.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+==============================================================================
+APPENDIX E. MINGW-W64 RUNTIME LICENSES
+==============================================================================
+
+MinGW-w64 runtime licensing
+***************************
+
+This program or library was built using MinGW-w64 and statically
+linked against the MinGW-w64 runtime. Some parts of the runtime
+are under licenses which require that the copyright and license
+notices are included when distributing the code in binary form.
+These notices are listed below.
+
+
+========================
+Overall copyright notice
+========================
+
+Copyright (c) 2009, 2010, 2011, 2012, 2013 by the mingw-w64 project
+
+This license has been certified as open source. It has also been designated
+as GPL compatible by the Free Software Foundation (FSF).
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+   1. Redistributions in source code must retain the accompanying copyright
+      notice, this list of conditions, and the following disclaimer.
+   2. Redistributions in binary form must reproduce the accompanying
+      copyright notice, this list of conditions, and the following disclaimer
+      in the documentation and/or other materials provided with the
+      distribution.
+   3. Names of the copyright holders must not be used to endorse or promote
+      products derived from this software without prior written permission
+      from the copyright holders.
+   4. The right to distribute this software or to use it for any purpose does
+      not give you the right to use Servicemarks (sm) or Trademarks (tm) of
+      the copyright holders.  Use of them is covered by separate agreement
+      with the copyright holders.
+   5. If any files are modified, you must cause the modified files to carry
+      prominent notices stating that you changed the files and the date of
+      any change.
+
+Disclaimer
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY EXPRESSED
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+======================================== 
+getopt, getopt_long, and getop_long_only
+======================================== 
+
+Copyright (c) 2002 Todd C. Miller <Todd.Miller@courtesan.com> 
+ 
+Permission to use, copy, modify, and distribute this software for any 
+purpose with or without fee is hereby granted, provided that the above 
+copyright notice and this permission notice appear in all copies. 
+ 	 
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Sponsored in part by the Defense Advanced Research Projects
+Agency (DARPA) and Air Force Research Laboratory, Air Force
+Materiel Command, USAF, under agreement number F39502-99-1-0512.
+
+        *       *       *       *       *       *       * 
+
+Copyright (c) 2000 The NetBSD Foundation, Inc.
+All rights reserved.
+
+This code is derived from software contributed to The NetBSD Foundation
+by Dieter Baron and Thomas Klausner.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+
+===============================================================
+gdtoa: Converting between IEEE floating point numbers and ASCII
+===============================================================
+
+The author of this software is David M. Gay.
+
+Copyright (C) 1997, 1998, 1999, 2000, 2001 by Lucent Technologies
+All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and
+its documentation for any purpose and without fee is hereby
+granted, provided that the above copyright notice appear in all
+copies and that both that the copyright notice and this
+permission notice and warranty disclaimer appear in supporting
+documentation, and that the name of Lucent or any of its entities
+not be used in advertising or publicity pertaining to
+distribution of the software without specific, written prior
+permission.
+
+LUCENT DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+IN NO EVENT SHALL LUCENT OR ANY OF ITS ENTITIES BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+        *       *       *       *       *       *       *
+
+The author of this software is David M. Gay.
+
+Copyright (C) 2005 by David M. Gay
+All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appear in all copies and that
+both that the copyright notice and this permission notice and warranty
+disclaimer appear in supporting documentation, and that the name of
+the author or any of his current or former employers not be used in
+advertising or publicity pertaining to distribution of the software
+without specific, written prior permission.
+
+THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.  IN
+NO EVENT SHALL THE AUTHOR OR ANY OF HIS CURRENT OR FORMER EMPLOYERS BE
+LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY
+DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+SOFTWARE.
+
+        *       *       *       *       *       *       *
+
+The author of this software is David M. Gay.
+
+Copyright (C) 2004 by David M. Gay.
+All Rights Reserved
+Based on material in the rest of /netlib/fp/gdota.tar.gz,
+which is copyright (C) 1998, 2000 by Lucent Technologies.
+
+Permission to use, copy, modify, and distribute this software and
+its documentation for any purpose and without fee is hereby
+granted, provided that the above copyright notice appear in all
+copies and that both that the copyright notice and this
+permission notice and warranty disclaimer appear in supporting
+documentation, and that the name of Lucent or any of its entities
+not be used in advertising or publicity pertaining to
+distribution of the software without specific, written prior
+permission.
+
+LUCENT DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+IN NO EVENT SHALL LUCENT OR ANY OF ITS ENTITIES BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+
+=========================
+Parts of the math library
+=========================
+
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunSoft, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+
+        *       *       *       *       *       *       *
+
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunPro, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+
+        *       *       *       *       *       *       *
+
+FIXME: Cephes math lib
+Copyright (C) 1984-1998 Stephen L. Moshier
+
+It sounds vague, but as to be found at
+<http://lists.debian.org/debian-legal/2004/12/msg00295.html>, it gives an
+impression that the author could be willing to give an explicit
+permission to distribute those files e.g. under a BSD style license. So
+probably there is no problem here, although it could be good to get a
+permission from the author and then add a license into the Cephes files
+in MinGW runtime. At least on follow-up it is marked that debian sees the
+version a-like BSD one. As MinGW.org (where those cephes parts are coming
+from) distributes them now over 6 years, it should be fine.
+
+===================================
+Headers and IDLs imported from Wine
+===================================
+
+Some header and IDL files were imported from the Wine project. These files
+are prominent maked in source. Their copyright belongs to contributors and
+they are distributed under LGPL license.
+
+Disclaimer
+
+This library is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 2.1 of the License, or (at your option) any later version.
+
+This library is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+Lesser General Public License for more details.
+
+==============================================================================
+APPENDIX F. THE UNLICENSE (ulalume fork of BlastEm, COPYING.fork)
+==============================================================================
+
+Public-domain dedication for this fork's changes
+================================================
+
+The modifications and new files in this fork authored by ulalume
+<ulalume.dev@gmail.com> — i.e. everything that differs from upstream BlastEm and
+was written by ulalume — are dedicated to the public domain under The Unlicense
+(full text below).
+
+Not covered by this dedication:
+
+  * BlastEm itself, which remains licensed under GPLv3-or-later (see COPYING).
+    The fork as a whole is therefore distributed under GPLv3.
+
+  * The bundled Inter typeface (nuklear_ui/Inter-Medium.ttf), under the SIL Open
+    Font License (see nuklear_ui/Inter-LICENSE.txt).
+
+--------------------------------------------------------------------------------
+The Unlicense
+
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <https://unlicense.org/>
+
+==============================================================================
+APPENDIX G. MOZILLA PUBLIC LICENSE
+==============================================================================
+
+The MegaWiFi, LSD and 16c550 drivers of SGDK are provided "under the
+Mozilla Public License (MPL)" (SGDK src/ext/mw/README.md), version 2.0 as
+published at https://mozilla.org/MPL/2.0/ . Their source form is available in
+SGDK: https://github.com/Stephane-D/SGDK/tree/v2.00/src/ext/mw
+
+==============================================================================
+APPENDIX H. SOZOBON TERMS (SGDK src/boot/sega.s)
+==============================================================================
+
+Copyright (c) 1988 by Sozobon, Limited.  Author: Johann Ruegg
+
+Permission is granted to anyone to use this software for any purpose
+on any computer system, and to redistribute it freely, with the
+following restrictions:
+1) No charge may be made other than reasonable charges for reproduction.
+2) Modified versions must be clearly marked as such.
+3) The authors are not responsible for any harmful consequences
+   of using this software, even if they result from defects in it.

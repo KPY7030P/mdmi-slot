@@ -2,7 +2,6 @@
 # The Docker base image is pinned in tools/docker/Dockerfile; apt packages are not. Last built with mingw 13.2.0-6ubuntu1+26.1.
 BLASTEM_URL=https://github.com/ulalume/blastem.git
 BLASTEM_COMMIT=5702187402276e7f0aea2ad4e6784ffb187c8c10
-BLASTEM_ARCHIVE=vendor/blastem-5702187.tar.gz
 CLAP_URL=https://github.com/free-audio/clap.git
 CLAP_COMMIT=a47f6badb49d948fd009998f28309cdab78979c9
 CLAP_WRAPPER_URL=https://github.com/free-audio/clap-wrapper.git
@@ -15,3 +14,8 @@ VST3SDK_COMMIT=9fad9770f2ae8542ab1a548a68c1ad1ac690abe0
 MDMI_URL=https://github.com/rhargreaves/mega-drive-midi-interface.git
 MDMI_COMMIT=6cfe921bad1e62f78c5083ff8d8532f637b987e4
 ROM_SHA256=cd4dc4f009b5bda80167e92d4def35b5dbae152684e4ec78c71fd644bb97cfce
+# The samples mdmi's Makefile would download into res/samples; fetch_deps.sh puts them there first, so
+# the build itself runs without network.
+SAMPLES_URL=https://github.com/rhargreaves/mega-drive-pcm-samples/releases/download/v1/samples.zip
+SAMPLES_SHA256=b0321221efa9c1de835d72d145d0ce6d4444a4e8946b3007b910119fd69ca4f3
+SAMPLES_ARCHIVE=vendor/mega-drive-pcm-samples-v1.zip

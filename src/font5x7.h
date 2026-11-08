@@ -1,4 +1,6 @@
 // 5x7 bitmap font for ASCII 32-126. One byte per column, bit 0 at the top.
+// The glyphs are those of glcdfont.c from the Adafruit GFX Library, Copyright (c) 2012 Adafruit
+// Industries, BSD license; the full notice is in THIRD_PARTY_NOTICES.txt.
 static const unsigned char FONT_5X7[95][5] = {
 	{0x00, 0x00, 0x00, 0x00, 0x00},
 	{0x00, 0x00, 0x5F, 0x00, 0x00},

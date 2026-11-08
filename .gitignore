@@ -1,5 +1,8 @@
 build/
 dist/
 third_party/
-.claude/settings.local.json
 ALS_tsts/
+/refs/
+# Kept locally, not published (D42).
+/CLAUDE.md
+/.claude/

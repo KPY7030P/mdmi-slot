@@ -1,9 +1,9 @@
 #!/bin/sh
 # Copies the built plugins to the install folder, verifies the copies and records the build there.
 #
-#   install.sh [folder]
+#   install.sh folder
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET="${1:-D:/ALL/VST/CHIPTUNE/MDMI}"
+TARGET="${1:?usage: install.sh folder}"
 OUT="$ROOT/build/cmake/out"
 LABEL="$(cat "$ROOT/build/label.txt")" || exit 1
 failed=0

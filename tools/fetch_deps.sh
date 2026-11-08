@@ -23,51 +23,63 @@ check_existing() {
 	fi
 }
 
+# A dependency comes from vendor/<name>-<commit, 7 digits>.tar.gz when that archive exists (the source
+# release holds one for each, D42), else from a clone. The archive is the commit's tree without .git,
+# submodules included.
 fetch() {
-	dir="third_party/$1"; url="$2"; commit="$3"; patch="$4"
+	name="$1"; url="$2"; commit="$3"; patch="$4"
+	dir="third_party/$name"
+	archive="vendor/$name-$(echo "$commit" | cut -c1-7).tar.gz"
 	if [ -e "$dir" ]; then
 		check_existing "$dir" "$commit" "$patch"
 		return
 	fi
-	echo "$dir: cloning $url"
-	# Only a complete clone gets the final name, so an interrupted one can't pass as existing.
+	# Only a complete copy gets the final name, so an interrupted one can't pass as existing.
 	tmp="$dir.tmp"
 	rm -rf "$tmp"
-	git clone -q -c core.autocrlf=false "$url" "$tmp"
-	git -C "$tmp" checkout -q "$commit"
-	git -C "$tmp" -c core.autocrlf=false submodule --quiet update --init --recursive
+	if [ -f "$archive" ]; then
+		echo "$dir: unpacking $archive"
+		mkdir -p "$tmp"
+		# BlastEm's android/ holds symlinks Windows refuses, and the plugin does not use it.
+		tar -xzf "$archive" -C "$tmp" --exclude=android
+		git -C "$tmp" init -q
+		git -C "$tmp" config core.autocrlf false
+		git -C "$tmp" add -A
+		git -C "$tmp" -c user.name=fetch_deps -c user.email=fetch_deps@localhost commit -q -m "$archive"
+		touch "$tmp/.vendored"
+	else
+		echo "$dir: cloning $url"
+		git clone -q -c core.autocrlf=false "$url" "$tmp"
+		git -C "$tmp" checkout -q "$commit"
+		git -C "$tmp" -c core.autocrlf=false submodule --quiet update --init --recursive
+	fi
 	[ -z "$patch" ] || git -C "$tmp" apply --index "$ROOT/$patch"
 	mv "$tmp" "$dir"
 }
 
-# BlastEm comes from a personal fork, so a copy of its source is kept in vendor/.
-fetch_blastem() {
-	dir=third_party/blastem
-	patch=patches/0001-mdmi-everdrive-bridge.patch
-	if [ -e "$dir" ] || git ls-remote -q "$BLASTEM_URL" > /dev/null 2>&1; then
-		fetch blastem "$BLASTEM_URL" "$BLASTEM_COMMIT" "$patch"
-		return
-	fi
-	echo "$dir: $BLASTEM_URL is unreachable, using $BLASTEM_ARCHIVE"
-	tmp="$dir.tmp"
-	rm -rf "$tmp"
-	mkdir -p "$tmp"
-	# android/ holds symlinks Windows refuses, and the plugin does not use it.
-	tar -xzf "$BLASTEM_ARCHIVE" -C "$tmp" --exclude=android
-	git -C "$tmp" init -q
-	git -C "$tmp" config core.autocrlf false
-	git -C "$tmp" add -A
-	git -C "$tmp" commit -q -m "$BLASTEM_ARCHIVE"
-	touch "$tmp/.vendored"
-	git -C "$tmp" apply --index "$ROOT/$patch"
-	mv "$tmp" "$dir"
-}
-
-fetch_blastem
+# BlastEm comes from a personal fork, so the repository keeps its archive in vendor/.
+fetch blastem "$BLASTEM_URL" "$BLASTEM_COMMIT" patches/0001-mdmi-everdrive-bridge.patch
 fetch clap "$CLAP_URL" "$CLAP_COMMIT"
 fetch clap-wrapper "$CLAP_WRAPPER_URL" "$CLAP_WRAPPER_COMMIT" patches/0002-clap-wrapper.patch
 fetch vst3sdk "$VST3SDK_URL" "$VST3SDK_COMMIT"
 fetch mdmi "$MDMI_URL" "$MDMI_COMMIT" patches/0003-mdmi-psg-envelopes.patch
+
+# The ROM's samples, from SAMPLES_ARCHIVE when it exists (the source release), else downloaded.
+fetch_samples() {
+	dir=third_party/mdmi/res/samples
+	[ -e "$dir" ] && return
+	zip="$SAMPLES_ARCHIVE"
+	if [ ! -f "$zip" ]; then
+		zip=third_party/samples.zip
+		echo "$dir: downloading $SAMPLES_URL"
+		curl -fsSL -o "$zip" "$SAMPLES_URL"
+	fi
+	echo "$SAMPLES_SHA256 *$zip" | sha256sum -c --quiet - || die "$zip does not match deps.lock"
+	rm -rf "$dir.tmp"
+	unzip -q "$zip" -d "$dir.tmp"
+	mv "$dir.tmp" "$dir"
+}
+fetch_samples
 
 echo "$ROM_SHA256 *roms/mdmi-everdrive-v1.34.bin" | sha256sum -c --quiet - || die "roms/ does not match deps.lock"
 echo "All dependencies match tools/deps.lock"
