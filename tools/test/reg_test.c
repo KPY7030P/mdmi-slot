@@ -1945,16 +1945,20 @@ static void test_retrigger(int ch, float alone)
 		midi(0x90, 60, 127);
 		render_ms(300);
 		midi(0x80, 60, 0);
+		// Not played over, in the last one's release: Cut waits on the channel's one voice, Free can't
+		// move it anywhere.
 		midi(0x90, 62, 127);
-		const bool glides = !patch->waiting_count[ch] && waiting_voice(ch, 62) == ch;
+		const bool fresh = waiting_voice(ch, 62) == ch && (mode == PATCH_RETRIGGER_CUT ? patch->waiting_count[ch] == 1 : !patch->waiting_count[ch]);
+		peak_between(0, 20);
+		// Played over: it glides, nothing waits.
 		midi(0x90, 64, 127);
-		const bool glides_over = !patch->waiting_count[ch] && waiting_voice(ch, 64) == ch;
+		const bool glides = !patch->waiting_count[ch] && waiting_voice(ch, 64) == ch;
 		midi(0x80, 62, 0);
 		midi(0x80, 64, 0);
 		render_ms(500);
 		set_on(ch, PARAM_PORTA_ON, 0);
 		render(SETTLE_BLOCKS);
-		check(glides && glides_over, mode == PATCH_RETRIGGER_CUT ? "Retrigger Cut leaves Porta On as it is" : "Retrigger Free leaves Porta On as it is");
+		check(fresh && glides, mode == PATCH_RETRIGGER_CUT ? "Retrigger Cut with Porta On: a note after the last one's end waits for silence, one played over glides" : "Retrigger Free leaves Porta On as it is");
 	}
 	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_CUT);
 

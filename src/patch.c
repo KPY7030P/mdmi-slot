@@ -1386,6 +1386,11 @@ static bool voice_sounds(const mdmi_patch *patch, int voice)
 	return patch->now - patch->released_at[voice] < (uint64_t)RELEASE_MS[rr] * patch->rate / 1000;
 }
 
+static bool is_dac_voice(const mdmi_patch *patch, int channel)
+{
+	return channel == PATCH_NUM_FM_CHANNELS - 1 && patch->model.globals[GLOBAL_DAC];
+}
+
 static int retrigger(const mdmi_patch *patch)
 {
 	return patch->model.globals[GLOBAL_RETRIGGER];
@@ -1523,6 +1528,7 @@ static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit
 		return;
 	}
 	emit_note(emit, context, 0x80, channel, key, 0);
+	stop_waiting(patch, channel, key);
 	// A note dealt its own voice, also when the channel came to play alone since. The channel's
 	// own voice, while it plays alone, is free only once none of its keys is held.
 	bool freed = false;
@@ -1535,6 +1541,8 @@ static void note_off(mdmi_patch *patch, int channel, int key, patch_emit_fn emit
 	}
 	if (!freed && patch->held[channel] && --patch->held[channel] == 0 && patch->voices[channel].channel == channel) {
 		patch->voices[channel].channel = -1;
+		patch->released_at[channel] = patch->now;
+		patch->released[channel] = true;
 		revive(patch, emit, context);
 	}
 	give_release_back(patch, emit, context);
@@ -1627,6 +1635,8 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	enum { WAITS, MOVED, OWN, ALONE, MUTED, FREED };
 	uint8_t dealt[PATCH_PENDING_NOTES];
 	int8_t voice_of[PATCH_PENDING_NOTES];
+	// A note of a channel that plays alone while none of its keys is held: not played over, so no glide.
+	bool fresh[PATCH_PENDING_NOTES] = {false};
 	memset(dealt, WAITS, sizeof(dealt));
 	const int mode = retrigger(patch);
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
@@ -1649,6 +1659,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 				cut_voice(patch, note->channel, emit, context);
 			}
 			take_voice(patch, note->channel, note, false, emit, context);
+			fresh[i] = patch->held[note->channel] == 0;
 			if (patch->held[note->channel] < 255) {
 				patch->held[note->channel]++;
 			}
@@ -1688,21 +1699,23 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	}
 	// Retrigger Cut: a note dealt a voice whose release still sounds waits, and with it every note its channel
 	// plays until then, so the ROM's choice of voices stays the dealer's. Meanwhile the channel's
-	// voices release fast (D41).
+	// voices release fast (D41). On a channel that plays alone only a note that isn't played over:
+	// one played over glides. The DAC's voice plays samples, not an envelope.
 	bool waits[PATCH_NUM_FM_CHANNELS];
 	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
 		waits[channel] = patch->waiting_count[channel] > 0;
 	}
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const int channel = patch->pending[i].channel;
-		if (dealt[i] != MUTED && dealt[i] != ALONE && !waits[channel] && mode == PATCH_RETRIGGER_CUT && voice_sounds(patch, voice_of[i])) {
+		const bool may_wait = dealt[i] != MUTED && (dealt[i] != ALONE || (fresh[i] && !is_dac_voice(patch, channel)));
+		if (may_wait && !waits[channel] && mode == PATCH_RETRIGGER_CUT && voice_sounds(patch, voice_of[i])) {
 			waits[channel] = true;
 			patch->wait_until[channel] = patch->now + (uint64_t)CUT_MS * patch->rate / 1000;
 		}
 	}
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const int channel = patch->pending[i].channel;
-		if (dealt[i] != MUTED && dealt[i] != ALONE && waits[channel] && patch->waiting_count[channel] < PATCH_NUM_FM_CHANNELS) {
+		if (dealt[i] != MUTED && waits[channel] && patch->waiting_count[channel] < PATCH_NUM_FM_CHANNELS) {
 			patch->waiting[channel][patch->waiting_count[channel]++] = patch->pending[i];
 		}
 	}
@@ -1710,7 +1723,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	patch->resync = false;
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const patch_note *note = &patch->pending[i];
-		if (dealt[i] == MUTED || (dealt[i] != ALONE && patch->waiting_count[note->channel])) {
+		if (dealt[i] == MUTED || patch->waiting_count[note->channel]) {
 			continue;
 		}
 		start_note(patch, note, dealt[i] == ALONE, emit, context);
@@ -1737,7 +1750,7 @@ void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	patch_sync(patch, &patch->rom, emit, context);
 	patch->resync = false;
 	for (int i = 0; i < count; i++) {
-		start_note(patch, &due[i], false, emit, context);
+		start_note(patch, &due[i], plays_alone(patch, due[i].channel), emit, context);
 	}
 	publish_voices(patch);
 }
