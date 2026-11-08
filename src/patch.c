@@ -1364,7 +1364,7 @@ int patch_release_ms(int rr)
 }
 #define CUT_MS 8
 // The operators an algorithm hears, one bit each: Op1 is 8, Op4 is 1.
-static const uint8_t CARRIERS[8] = {1, 1, 1, 1, 5, 7, 7, 15};
+#define TL_FIELD 0
 #define RR_FIELD 8
 
 static bool voice_sounds(const mdmi_patch *patch, int voice)
@@ -1373,13 +1373,13 @@ static bool voice_sounds(const mdmi_patch *patch, int voice)
 		return false;
 	}
 	const int16_t *held = patch->rom.voices[voice];
-	if (held[PARAM_ALGORITHM] < 0 || held[PARAM_ALGORITHM] > 7) {
-		return false;
-	}
+	// Every operator that is heard, modulators too: a modulator's envelope still releasing makes the
+	// next attack start mid-way in timbre even when the carriers are silent (owner, stage 14).
 	int rr = 15;
 	for (int op = 0; op < PATCH_OPS; op++) {
-		const int value = held[PARAM_OP_BASE + op * PATCH_OP_PARAMS + RR_FIELD];
-		if (CARRIERS[held[PARAM_ALGORITHM]] >> (3 - op) & 1 && value >= 0 && value < rr) {
+		const int16_t *fields = &held[PARAM_OP_BASE + op * PATCH_OP_PARAMS];
+		const int value = fields[RR_FIELD];
+		if (fields[TL_FIELD] >= 0 && fields[TL_FIELD] < 127 && value >= 0 && value < rr) {
 			rr = value;
 		}
 	}

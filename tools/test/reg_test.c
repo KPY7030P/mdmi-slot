@@ -1973,6 +1973,25 @@ static void test_retrigger(int ch, float alone)
 	render(SETTLE_BLOCKS);
 	check(!late_waits, "Retrigger Cut: a note after a pause longer than the release starts at once");
 
+	// A modulator still releasing shapes the next attack's timbre though the carrier is silent (the
+	// owner's Overdrive Guitar: OP3 AR 4 RR 3, carrier RR 5): the note waits all the same.
+	const int op3 = PARAM_OP_BASE + 2 * PATCH_OP_PARAMS;
+	set_on(ch, PARAM_ALGORITHM, 0);
+	set_on(ch, op3 + F_TL, 20);
+	set_on(ch, op3 + F_RR, 3);
+	set_on(ch, PARAM_OP_BASE + 3 * PATCH_OP_PARAMS + F_RR, 15);
+	midi(0x90, 60, 127);
+	render_ms(500);
+	midi(0x80, 60, 0);
+	render_ms(100);
+	midi(0x90, 62, 127);
+	const bool modulator_waits = patch->waiting_count[ch] == 1;
+	midi(0x80, 62, 0);
+	render_ms(2000);
+	set_on(ch, PARAM_ALGORITHM, 7);
+	set_on(ch, op3 + F_TL, 127);
+	check(modulator_waits, "Retrigger Cut: a note waits while a modulator still releases, its carrier silent");
+
 	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_CHIP);
 	for (int op = 0; op < PATCH_OPS; op++) {
 		set_on(ch, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RR, 8);
