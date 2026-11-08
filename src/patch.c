@@ -1391,15 +1391,9 @@ static int retrigger(const mdmi_patch *patch)
 	return patch->model.globals[GLOBAL_RETRIGGER];
 }
 
-// A note right after: the voice's last note ended in this very moment and it still sounds. Only
-// then Retrigger acts; a note played over another is left as it is (D41).
-static bool right_after(const mdmi_patch *patch, int voice)
-{
-	return patch->released[voice] && patch->released_at[voice] == patch->now && voice_sounds(patch, voice);
-}
 
-// The free voice that costs least to turn into a channel's sound, or -1 if none is free. For a
-// note Retrigger Free moved off its own voice, a silent one first, else the one released longest ago.
+// The free voice that costs least to turn into a channel's sound, or -1 if none is free. With
+// Retrigger Free a silent one first, else the one released longest ago, so every note has its attack.
 static int cheapest_voice(const mdmi_patch *patch, int channel, bool silent_first)
 {
 	int best = -1, best_cost = 0;
@@ -1642,8 +1636,8 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			continue;
 		}
 		const int own = note->channel;
-		if (mode == PATCH_RETRIGGER_VOICE && !plays_alone(patch, own) && patch->voices[own].channel < 0 && right_after(patch, own) && other_silent_voice(patch, own)) {
-			// Retrigger Free: the own voice's last note just ended, so the note borrows a silent one (D41). The
+		if (mode == PATCH_RETRIGGER_VOICE && !plays_alone(patch, own) && patch->voices[own].channel < 0 && voice_sounds(patch, own) && other_silent_voice(patch, own)) {
+			// Retrigger Free: the own voice's release still sounds, so the note borrows a silent one (D41). The
 			// ROM gives a note its channel's free voice with the lowest number, so the sounding one
 			// answers to no channel until a note takes it again; its tail plays on.
 			remap(&patch->rom, UNASSIGNED_CHANNEL, own, emit, context);
@@ -1682,7 +1676,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			if (moved ? dealt[i] != MOVED : dealt[i] != WAITS && dealt[i] != FREED) {
 				continue;
 			}
-			int voice = cheapest_voice(patch, note->channel, dealt[i] == FREED);
+			int voice = cheapest_voice(patch, note->channel, mode == PATCH_RETRIGGER_VOICE);
 			if (voice < 0) {
 				mute(patch, note->channel, note->key, note->velocity);
 				dealt[i] = MUTED;
@@ -1692,7 +1686,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			}
 		}
 	}
-	// Retrigger Cut: a note dealt a voice whose note ended in this moment waits, and with it every note its channel
+	// Retrigger Cut: a note dealt a voice whose release still sounds waits, and with it every note its channel
 	// plays until then, so the ROM's choice of voices stays the dealer's. Meanwhile the channel's
 	// voices release fast (D41).
 	bool waits[PATCH_NUM_FM_CHANNELS];
@@ -1701,7 +1695,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	}
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const int channel = patch->pending[i].channel;
-		if (dealt[i] != MUTED && dealt[i] != ALONE && !waits[channel] && mode == PATCH_RETRIGGER_CUT && right_after(patch, voice_of[i])) {
+		if (dealt[i] != MUTED && dealt[i] != ALONE && !waits[channel] && mode == PATCH_RETRIGGER_CUT && voice_sounds(patch, voice_of[i])) {
 			waits[channel] = true;
 			patch->wait_until[channel] = patch->now + (uint64_t)CUT_MS * patch->rate / 1000;
 		}

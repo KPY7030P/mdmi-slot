@@ -1925,22 +1925,36 @@ static void test_retrigger(int ch, float alone)
 	render(SETTLE_BLOCKS);
 	check(other_started && panic && panic_back, "Retrigger Cut: another channel's note doesn't wait, CC 123 ends the wait and gives the release back");
 
-	// Played over, the next note lands on a voice still in its release, but not right after: Free
-	// and Cut leave it as Chip does.
+	// Notes with a pause shorter than the release (the owner's clip, 2026-11-08): each one has its
+	// attack. Free takes a silent voice, Cut waits; with Porta On the channel glides on its own voice,
+	// as in Chip.
 	for (int mode = PATCH_RETRIGGER_VOICE; mode <= PATCH_RETRIGGER_CUT; mode++) {
 		set_global(GLOBAL_RETRIGGER, mode);
 		midi(0x90, 60, 127);
 		render_ms(500);
-		midi(0x90, 62, 127);
-		render_ms(100);
 		midi(0x80, 60, 0);
 		peak_between(0, 20);
+		midi(0x90, 62, 127);
+		const bool acts = mode == PATCH_RETRIGGER_CUT ? patch->waiting_count[ch] == 1 : waiting_voice(ch, 62) != ch;
+		peak_between(0, 20);
+		midi(0x80, 62, 0);
+		render_ms(500);
+		check(acts, mode == PATCH_RETRIGGER_CUT ? "Retrigger Cut: a note 20 ms after the last, still in its release, waits for silence" : "Retrigger Free: a note 20 ms after the last, still in its release, takes a silent voice");
+
+		set_on(ch, PARAM_PORTA_ON, 1);
+		midi(0x90, 60, 127);
+		render_ms(300);
+		midi(0x80, 60, 0);
+		midi(0x90, 62, 127);
+		const bool glides = !patch->waiting_count[ch] && waiting_voice(ch, 62) == ch;
 		midi(0x90, 64, 127);
-		const bool as_chip = !patch->waiting_count[ch] && waiting_voice(ch, 64) == ch;
+		const bool glides_over = !patch->waiting_count[ch] && waiting_voice(ch, 64) == ch;
 		midi(0x80, 62, 0);
 		midi(0x80, 64, 0);
 		render_ms(500);
-		check(as_chip, mode == PATCH_RETRIGGER_CUT ? "Retrigger Cut leaves notes played over as they are" : "Retrigger Free leaves notes played over as they are");
+		set_on(ch, PARAM_PORTA_ON, 0);
+		render(SETTLE_BLOCKS);
+		check(glides && glides_over, mode == PATCH_RETRIGGER_CUT ? "Retrigger Cut leaves Porta On as it is" : "Retrigger Free leaves Porta On as it is");
 	}
 	set_global(GLOBAL_RETRIGGER, PATCH_RETRIGGER_CUT);
 
