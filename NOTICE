@@ -10,19 +10,20 @@ Software Foundation, version 3 or (at your option) any later version; see
 LICENSE. The plugin as distributed includes the MDMI ROM (GPL-3.0) and is
 therefore under GPL-3.0.
 
-Modified third-party code (GPL-3.0, section 5a). The changes are dated by the
-repository's history and kept as patches against the pinned upstream commits
-in tools/deps.lock:
+Modified third-party code (GPL-3.0, section 5a). The changes are kept as
+patches against the pinned upstream commits in tools/deps.lock:
 
 - BlastEm, fork https://github.com/ulalume/blastem at commit 5702187, modified
-  by patches/0001-mdmi-everdrive-bridge.patch: MIDI and audio pass between the
-  plugin and the emulated cartridge, and the JIT memory is freed on unload.
+  by patches/0001-mdmi-everdrive-bridge.patch, changed 2026-11-02 to 2026-11-07:
+  MIDI and audio pass between the plugin and the emulated cartridge, and the
+  JIT memory is freed on unload.
 - Mega Drive MIDI Interface v1.34 (commit 6cfe921), modified by
-  patches/0003-mdmi-psg-envelopes.patch: PSG envelopes stored by SysEx, PSG
-  restored after DAC switches, note stack and DAC notes, one-shot samples. Its screen
-  shows the build as "v1.34p".
+  patches/0003-mdmi-psg-envelopes.patch, changed 2026-11-04 to 2026-11-08:
+  PSG envelopes stored by SysEx, PSG restored after DAC switches, note stack
+  and DAC notes, one-shot samples. tools/build_plugin.sh builds it with the
+  name "v1.34p", which its screen shows.
 - clap-wrapper v0.17.0 (commit 806bba0, MIT), modified by
-  patches/0002-clap-wrapper.patch.
+  patches/0002-clap-wrapper.patch, changed 2026-11-04.
 
 The licences and copyright notices of every included component are in
 THIRD_PARTY_NOTICES.txt.

@@ -27,7 +27,8 @@ Changes of the ulalume fork of BlastEm
   distributed under GPLv3.
 
 zlib 1.3.1
-  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler (zlib.h; its LICENSE
+  file says 1995-2022)
   Licence: zlib (Appendix C).
 
 Zstandard (decompressor, with xxHash)
@@ -79,6 +80,9 @@ SGDK 2.00
   https://github.com/Stephane-D/SGDK
   Copyright (c) 2019 Stephane Dallongeville
   Licence: MIT (Appendix A).
+  The ROM is linked with SGDK as shipped in the Docker image
+  ghcr.io/rhargreaves/docker-sgdk:v2.00-mw-bs@sha256:82d2928c4754e95cc6fc395cb451af1229637ed881fc04c1d5d84aa978ded629
+  (tools/docker/rom/Dockerfile); its source is in the image under /sgdk.
   Parts of SGDK linked into the ROM under their own terms:
   - MegaWiFi, LSD and 16c550 drivers by Jesus Alonso (doragasu), under the
     Mozilla Public License (Appendix G). Their source is part of SGDK.
@@ -583,9 +587,10 @@ APPENDIX G. MOZILLA PUBLIC LICENSE
 ==============================================================================
 
 The MegaWiFi, LSD and 16c550 drivers of SGDK are provided "under the
-Mozilla Public License (MPL)" (SGDK src/ext/mw/README.md), version 2.0 as
-published at https://mozilla.org/MPL/2.0/ . Their source form is available in
-SGDK: https://github.com/Stephane-D/SGDK/tree/v2.00/src/ext/mw
+Mozilla Public License (MPL)" (SGDK src/ext/mw/README.md); no version is
+stated. The text of MPL 2.0 is at https://mozilla.org/MPL/2.0/ . Their source
+form is in the Docker image above under /sgdk/src/ext/mw and in SGDK:
+https://github.com/Stephane-D/SGDK/tree/v2.00/src/ext/mw
 
 ==============================================================================
 APPENDIX H. SOZOBON TERMS (SGDK src/boot/sega.s)

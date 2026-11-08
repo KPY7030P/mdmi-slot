@@ -69,9 +69,19 @@ def win64_zip():
         (os.path.join(CLONE, 'THIRD_PARTY_NOTICES.txt'), 'THIRD_PARTY_NOTICES.txt'),
         (os.path.join(CLONE, 'README.md'), 'README.txt'),
     ]
+    with open(os.path.join(CLONE, 'README.md'), encoding='utf-8') as f:
+        readme = f.read()
+    readme = ('This is README.md of https://github.com/KPY7030P/mdmi-plugin ; its links point into the
+'
+              'repository. LICENSE and NOTICE are here as LICENSE.txt and NOTICE.txt.
+
+' + readme)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-        for source, name in files:
+        for source, name in files[:-1]:
             z.write(source, NAME + '/' + name)
+        z.writestr(NAME + '/README.txt', readme.replace('
+', '
+').encode('utf-8'))
     return path
 
 

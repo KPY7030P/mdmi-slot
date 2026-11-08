@@ -1,6 +1,6 @@
 # MDMI Mega Drive
 
-A VST3 and CLAP instrument for Windows that turns an emulated Sega Mega Drive into a synthesizer. Inside the
+A VST®3 and CLAP instrument for Windows that turns an emulated Sega Mega Drive into a synthesizer. Inside the
 plugin, the [BlastEm](https://www.retrodev.com/blastem/) emulator runs the
 [Mega Drive MIDI Interface](https://github.com/rhargreaves/mega-drive-midi-interface) (MDMI) ROM, so what you
 hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI clips.
@@ -15,7 +15,8 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - A window with the ROM's live screen, a page per channel, the FM operators' envelopes as a graph, a PSG
   envelope editor, a bank of 128 FM voices and 128 PSG envelopes.
 - Every knob of every channel can be automated, so lanes for several channels run at once.
-- Chords on any FM channel, played on the voices of silent channels.
+- Chords on FM channels, played on the voices of silent channels (not with Porta On, Ch3 Special Mode or
+  the DAC).
 - Instrument files: TFI, VGI and TYI for FM, EEF for PSG. Drop them from Explorer on a channel or a bank place.
 - DAC samples on channel 6: drop WAV files on notes, trim, tune and shape them.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
@@ -24,8 +25,8 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 ## Requirements
 
 - Windows, 64-bit. Tested on Windows 11.
-- A VST3 host. Tested in Ableton Live. The CLAP version is built and tested in a test host
-  only; Live does not load CLAP.
+- A VST3 host. Tested in Ableton Live. The CLAP version is tested in a test host only: the
+  version of Live it was made with does not load CLAP plugins.
 
 ## Installing
 
@@ -50,18 +51,19 @@ To update, replace the files while the host is closed: Live locks the VST3 while
    has hundreds of knobs, too many for Live to list by itself.
 5. The project saves everything: knob values, the bank, dropped files, samples.
 
-[docs/GUIDE.md](docs/GUIDE.md) describes every page, knob and MIDI controller (in English; the other notes in
-`docs/` are in Russian).
+[docs/GUIDE.md](docs/GUIDE.md) in the repository describes the pages, knobs and MIDI controllers in detail (in
+English; the other notes in `docs/` are in Russian).
 
 ## Known issues
 
 - **Closing or removing the plugin while it is still loading** can, in rare cases, leave a thread running and
   crash or hang the host. A crash inside the emulator can also hang the host instead of only silencing the
-  plugin. Neither has been seen in use.
+  plugin. A failed engine leaves its DLL in `%TEMP%`.
 - **Unsigned DLL in `%TEMP%`.** Each instance unpacks the emulator, an unsigned DLL, to `%TEMP%\MDMI-Plugin`.
   Some antivirus programs scan or block it; the first load can then take several seconds.
 - **Audio dropouts with ASIO drivers** have not been checked yet: the dropout handling of 0.13 is tested in a
-  test host, not yet with ASIO in Live.
+  test host, not yet with ASIO in Live. Long sessions, many instances, freezing and export are not fully
+  checked in Live either.
 - **Arrow keys** in the window work only in the VST3 version, not in CLAP hosts.
 - **File names that are not in Latin letters** (for example Cyrillic) show as blanks in the window.
 - **Windows only.** There are no Mac or Linux builds.
@@ -84,7 +86,8 @@ images. [docs/GUIDE.md](docs/GUIDE.md) explains how the code works.
 
 The plugin's own code is licensed under the GNU General Public License, version 3 or later ([LICENSE](LICENSE)).
 The plugin as distributed contains BlastEm (GPL-3.0-or-later) and the MDMI ROM (GPL-3.0), so the binaries are
-under GPL-3.0. BlastEm and MDMI v1.34 are modified; the changes are in `patches/`, see [NOTICE](NOTICE).
+under GPL-3.0. BlastEm, MDMI v1.34 and clap-wrapper are modified; the changes are in `patches/`, see
+[NOTICE](NOTICE).
 The licences and copyright notices of all included components are in
 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
 
