@@ -1991,8 +1991,12 @@ static void test_retrigger(int ch, float alone)
 	midi(0x80, 62, 0);
 	render(SETTLE_BLOCKS);
 	printf("  retrigger Cut: waits %d, RR 15 meanwhile %d, starts after %d ms with %.3f 6-10 ms into it, RR %d after; on the chip key-on %d ms after RR 15\n", waits, fast, waited, cut_level, back_rr, key_at - fast_at);
-	check(waits && fast && fast_at >= 0 && key_at - fast_at >= 7 && key_at - fast_at <= 9 && cut_level <= 2 * alone && back_rr == 8,
-		"Retrigger Cut: the voice releases fast for 8 ms, then the note starts from silence with its own release");
+	// The plugin's wait is held to 8 ms +-1 (D41); `waited` counts the last waiting millisecond + 1, so
+	// 8 ms reads 9. On the chip the gap from RR 15 to key-on also carries the ROM main loop's jitter (its
+	// frame handlers delay the FIFO reads), which the plugin doesn't control: only order and a gross bound.
+	check(waits && fast && fast_at >= 0 && waited >= 8 && waited <= 10 && key_at > fast_at && key_at - fast_at >= 7 && key_at - fast_at <= 12
+			&& cut_level <= 2 * alone && back_rr == 8,
+		"Retrigger Cut: the plugin holds the note 8 ms while the voice releases fast; on the chip the key-on follows the fast release (ROM loop jitter allowed) and starts from silence with its own release");
 
 	// A Note Off before it is due: the note never starts, the release comes back.
 	midi(0x90, 60, 127);
