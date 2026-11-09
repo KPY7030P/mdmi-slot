@@ -1,8 +1,21 @@
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..7e15ce7 100644
+index 5145b6a..6296e96 100644
 --- a/src/midi.c
 +++ b/src/midi.c
-@@ -492,7 +492,9 @@ void midi_note_off(u8 chan, u8 pitch)
+@@ -403,6 +403,12 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+ 
+ static PitchCents effectivePitchCents(DeviceChannel* devChan)
+ {
++    // MDMI plugin fork, stage 16 (D45): at rate KIT the key picks the drum, so bend and fine tune
++    // must not move it to the next one.
++    if (devChan->ops == &PSG_VTable && midi_psg_plays_key(devChan->num)) {
++        PitchCents key = { .pitch = devChan->pitch, .cents = 0 };
++        return key;
++    }
+     MidiChannel* midiChannel = &midiChannels[devChan->midiChannel];
+     PitchCents pc
+         = pc_bend(devChan->pitch, devChan->cents, devChan->pitchBend, midiChannel->pitchBendRange);
+@@ -492,7 +498,9 @@ void midi_note_off(u8 chan, u8 pitch)
  
      FOREACH_DEV_CHAN_WITH_MIDI(chan, devChan) {
          if (isChannelPlayingNote(devChan, pitch)) {
@@ -13,7 +26,7 @@ index 5145b6a..7e15ce7 100644
                  if (midiChannel->portamento) {
                      note_priority_push(&midiChannel->notePriority, nextMostRecentPitch);
                      devChan->glideTargetPitch = nextMostRecentPitch;
-@@ -606,9 +608,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +614,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -26,7 +39,7 @@ index 5145b6a..7e15ce7 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +654,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +660,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -69,7 +82,7 @@ index 5145b6a..7e15ce7 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -841,7 +875,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +881,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -78,7 +91,7 @@ index 5145b6a..7e15ce7 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -1002,6 +1036,7 @@ static void enable_dac(bool enable)
+@@ -1002,6 +1042,7 @@ static void enable_dac(bool enable)
  {
      deviceChannels[5].ops = enable ? &DAC_VTable : &FM_VTable;
      synth_enable_dac(enable);
@@ -86,7 +99,7 @@ index 5145b6a..7e15ce7 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1252,6 +1287,14 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1252,6 +1293,14 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_RESET_ALL_CONTROLLERS:
          resetAllControllers(ch);
          break;
@@ -186,7 +199,7 @@ index c37b89a..baea9a2 100644
 +// Whether a held note may start again when a later one is released: not a one-shot (D38).
 +bool midi_dac_retriggers(u8 pitch);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..cd89155 100644
+index 82a5655..673d14d 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
 @@ -11,6 +11,28 @@
@@ -418,7 +431,7 @@ index 82a5655..cd89155 100644
  static u16 tone_for_midi_key(u8 midiKey)
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
-@@ -310,6 +448,47 @@ static MidiPsgChannel* psg_channel(u8 chan)
+@@ -310,6 +448,53 @@ static MidiPsgChannel* psg_channel(u8 chan)
      return &psgChannels[chan];
  }
  
@@ -458,6 +471,12 @@ index 82a5655..cd89155 100644
 +    set_noise(white ? PSG_NOISE_TYPE_WHITE : PSG_NOISE_TYPE_PERIODIC, noiseRate);
 +}
 +
++// True while a channel's notes pick a drum by their key, whatever bend and fine tune say.
++bool midi_psg_plays_key(u8 chan)
++{
++    return chan == NOISE_CHAN && noiseRate == NOISE_RATE_KIT;
++}
++
 +void midi_psg_noise_rate(u8 rate)
 +{
 +    set_noise(noiseType, rate > NOISE_RATE_KIT ? NOISE_RATE_KIT : rate);
@@ -467,7 +486,7 @@ index 82a5655..cd89155 100644
  {
      MidiPsgChannel* psgChan = psg_channel(chan);
 diff --git a/src/midi_psg.h b/src/midi_psg.h
-index e5bb02e..e36be54 100644
+index e5bb02e..dcd7bc6 100644
 --- a/src/midi_psg.h
 +++ b/src/midi_psg.h
 @@ -9,6 +9,8 @@
@@ -487,7 +506,7 @@ index e5bb02e..e36be54 100644
  void midi_psg_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity);
  void midi_psg_note_off(u8 chan, u8 pitch);
  void midi_psg_all_notes_off(u8 chan);
-@@ -24,4 +27,7 @@ void midi_psg_program(u8 chan, u8 program);
+@@ -24,4 +27,8 @@ void midi_psg_program(u8 chan, u8 program);
  void midi_psg_pan(u8 chan, u8 pan);
  void midi_psg_tick(u16 delta);
  void midi_psg_load_envelope(const u8* eef);
@@ -495,6 +514,7 @@ index e5bb02e..e36be54 100644
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents);
 +void midi_psg_noise_type(u8 white);
 +void midi_psg_noise_rate(u8 rate);
++bool midi_psg_plays_key(u8 chan);
 diff --git a/src/pcm_sample.c b/src/pcm_sample.c
 index 46e6069..3fa0ada 100644
 --- a/src/pcm_sample.c
@@ -735,7 +755,7 @@ index d9cce30..1f46f85 100644
  
      stub_usb_receive_note_on(MIDI_CHANNEL_6, MIDI_PITCH_C4, MIDI_VOLUME_MAX);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..825e97c 100644
+index d2449c4..d453a02 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -751,7 +771,7 @@ index d2449c4..825e97c 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +232,24 @@ int main(void)
+@@ -226,10 +232,25 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -764,6 +784,7 @@ index d2449c4..825e97c 100644
 +        midi_test(test_midi_psg_noise_envelope_pitch_goes_through_tone3),
 +        midi_test(test_midi_psg_noise_kit_repeats_every_octave),
 +        midi_test(test_midi_psg_noise_switched_to_kit_while_sounding),
++        midi_test(test_midi_psg_noise_kit_ignores_bend_and_fine_tune),
  
          midi_dac_test(test_midi_dac_plays_note),
          midi_dac_test(test_midi_dac_stops_note),
@@ -776,7 +797,7 @@ index d2449c4..825e97c 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +269,8 @@ int main(void)
+@@ -249,6 +270,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -1044,7 +1065,7 @@ index 13ce5a1..0fdb43c 100644
          u8 psgChan = chan - MIN_PSG_CHAN;
          __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..f16ce37 100644
+index affbb29..4bbb972 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
 @@ -3,13 +3,19 @@
@@ -1131,7 +1152,7 @@ index affbb29..f16ce37 100644
  
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          __real_midi_program(chan, 1);
-@@ -428,4 +434,202 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +434,220 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -1336,11 +1357,29 @@ index affbb29..f16ce37 100644
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
 +    __real_midi_cc(0, 78, 0x7F);
 +}
++
++// At KIT bend and fine tune leave the key alone: the kick stays the kick.
++void test_midi_psg_noise_kit_ignores_bend_and_fine_tune(UNUSED void** state)
++{
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 96);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 127);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_FINE_TUNE, 60);
++    __real_midi_pitch_bend(NOISE_MIDI_CHAN, 0);
++
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    expect_psg_tone(PSG_CH3, 95);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, 36, MAX_MIDI_VOLUME);
++
++    __real_midi_pitch_bend(NOISE_MIDI_CHAN, 0x3FFF);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_FINE_TUNE, 127);
++}
 diff --git a/tests/unit/test_midi_psg.h b/tests/unit/test_midi_psg.h
-index bfb01a6..c40a793 100644
+index bfb01a6..a164deb 100644
 --- a/tests/unit/test_midi_psg.h
 +++ b/tests/unit/test_midi_psg.h
-@@ -26,4 +26,13 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
+@@ -26,4 +26,14 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_lower_limit_psg_envelope(UNUSED void** state);
  void test_midi_loads_psg_envelope(UNUSED void** state);
@@ -1356,6 +1395,7 @@ index bfb01a6..c40a793 100644
 +void test_midi_psg_noise_envelope_pitch_goes_through_tone3(UNUSED void** state);
 +void test_midi_psg_noise_kit_repeats_every_octave(UNUSED void** state);
 +void test_midi_psg_noise_switched_to_kit_while_sounding(UNUSED void** state);
++void test_midi_psg_noise_kit_ignores_bend_and_fine_tune(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
 index 9ce9691..5791105 100644
 --- a/tests/unit/test_midi_sysex.c
