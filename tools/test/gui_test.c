@@ -907,6 +907,25 @@ int main(int argc, char **argv)
 		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
 		CHECK(wide >= 403 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
 
+		// Stage 16 (D45): channel 10's page has the noise's TYPE and RATE; TONE 3 takes channel 9.
+		click(window, RAIL_X, RAIL_CH8_Y + 80);
+		run_ms(100);
+		click(window, 672, 92);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "noise");
+		CHECK(get_value(8) == 3 && count_color_in(637, 707, 83, 101, COLOR_PSG) > 500, "TONE 3 on channel 10's page sets Noise Rate and lights in PSG's colour");
+		click(window, RAIL_X, RAIL_CH8_Y + 40);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "noise-taken");
+		CHECK(count_color_in(332, 662, 442, 449, COLOR_AMBER) > 100, "channel 9's page says in amber that the noise takes it");
+		click(window, RAIL_X, RAIL_CH8_Y + 80);
+		run_ms(100);
+		click(window, 533, 92);
+		run_ms(200);
+		CHECK(get_value(8) == 0, "HIGH puts the rate back");
+
 		// Stage 12: with the DAC on, EDITOR of channel 6 is the grid of notes, BANK the list. A project
 		// with a sample restarts the engine, and CLEAR gives the note back to the ROM.
 		send_midi(0xB0, 78, 127);

@@ -230,6 +230,55 @@ static void test_modes(void)
 	CHECK(sent_bytes == 0, "CC84 stops here: it would let any note take any voice");
 }
 
+// Stage 16 (D45): the noise's two knobs go as CC 12 and 13 on MIDI 10 and again after a reset.
+static bool sent_cc(uint8_t status, uint8_t cc, uint8_t value)
+{
+	for (size_t i = 0; i + 2 < sent_bytes; i++) {
+		if (sent[i] == status && sent[i + 1] == cc && sent[i + 2] == value) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void test_noise(void)
+{
+	printf("PSG noise\n");
+	static mdmi_patch patch, other;
+	patch_init(&patch);
+	clear();
+	sync(&patch);
+	CHECK(sent_bytes == 0, "White and High are what the ROM starts with");
+	char text[16];
+	patch_format(&patch.bank, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3, text, sizeof(text));
+	CHECK(!strcmp(text, "Tone 3"), "the rate reads %s", text);
+	clear();
+	set(&patch, GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
+	set(&patch, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3);
+	CHECK(sent_bytes == 6 && sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 96), "type and rate go as CC 12 and 13 on MIDI 10");
+	clear();
+	set(&patch, GLOBAL_DAC, 1);
+	CHECK(!sent_cc(0xB9, 12, 0) && !sent_cc(0xB9, 13, 96), "a driver swap sends neither: the ROM writes the mode again");
+	clear();
+	const uint8_t reset = 0xFF;
+	patch_midi(&patch, &reset, 1, record, NULL);
+	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 96), "after a reset both go again");
+	clear();
+	midi(&patch, 0xB9, 13, 40);
+	CHECK(patch.model.globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_MID && sent_cc(0xB9, 13, 32), "CC 13 from a clip on MIDI 10 moves the knob");
+	clear();
+	midi(&patch, 0xB8, 12, 127);
+	CHECK(patch.model.globals[GLOBAL_NOISE_TYPE] == PATCH_NOISE_PERIODIC, "CC 12 on another channel doesn't");
+	patch_publish(&patch);
+	static uint8_t state[PATCH_NUM_IDS * 6];
+	patch_save(patch_view(&patch), state);
+	patch_init(&other);
+	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL) && patch_take_incoming(&other), "a saved state loads");
+	clear();
+	patch_rom_booted(&other, record, NULL);
+	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 32), "a loaded project sends its noise to a booted ROM");
+}
+
 static void test_incoming(void)
 {
 	printf("Messages from the host\n");
@@ -1787,6 +1836,7 @@ int main(int argc, char **argv)
 	test_shadowed_presets();
 	test_sustain_rate();
 	test_modes();
+	test_noise();
 	test_incoming();
 	test_load();
 	test_dealer();

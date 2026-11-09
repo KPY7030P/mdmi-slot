@@ -34,11 +34,11 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 ## Knobs
 
 Every MIDI channel is an instrument of its own: its knobs always mean that channel, so lanes for several channels
-can run at once. There are 359 of them, too many for Live to fill its panel by itself: use Configure and touch a
+can run at once. There are 361 of them, too many for Live to fill its panel by itself: use Configure and touch a
 cell in the window. Choosing a channel in the window only changes the view, no knob or lane.
 
 - Global: Filter (3392 Hz matches the original console, top is off), LFO On, LFO Rate,
-  Ch3 Special Mode, DAC Enable
+  Ch3 Special Mode, DAC Enable, Retrigger, Noise Type, Noise Rate
 - Every channel: Preset, Volume, Fine Tune, Bend Range, Porta On, Porta Time
 - FM channels 1-6 also: Pan, Algorithm, Feedback, AMS, FMS, and for each of 4 operators TL, MUL, DT, RS, AR, DR,
   SR, SL, RR, AM, SSG
@@ -66,6 +66,14 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   the rest.
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
+- PSG noise (stage 16, D45): Noise Type (White, Periodic) and Noise Rate (High, Mid, Low: the chip's clock
+  / 512, 1024, 2048; Tone 3) are the console's, one noise register, and go as CC 12 and 13 on MIDI 10. Our
+  ROM writes the mode as the one byte `E0|mode`, never followed by a data byte, on every note of channel 10,
+  on a change and after a driver swap; a note doesn't choose it any more. On Tone 3, note k writes the tone of
+  key k + 48 into the PSG's channel 3: periodic noise loops over 16 bits, so it sounds at note k, notes 0-79.
+  Channel 9 is silent meanwhile: the ROM cuts its note and takes none of its events. At a fixed rate every
+  key plays the noise, 0-44 too (before 0.16 they were dropped), and the envelope's pitch shift does nothing.
+  Not checked on a console.
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
 - DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own.
 - DAC pages (stage 12, D36, D37, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on is a
@@ -184,6 +192,7 @@ clip envelope or Live's CC Control. Values are 0-127 and scaled to the knob's ra
 | 51-54, 55-58, 59-62 | SR, SL, RR. SR above 15 only by knob, CC reaches 0-15 | 1-6 |
 | 70-73, 90-93 | AM, SSG | 1-6 |
 | 74, 1, 80, 78 | LFO On, LFO Rate, Ch3 Special Mode, DAC Enable | any |
+| 12, 13 | Noise Type (0-63 Periodic, 64-127 White), Noise Rate (value / 32) | 10 |
 
 Notes, pitch bend and other controllers pass to the ROM. CC 121 is turned into what the standard means by it, centre
 bend and pedal up, because the ROM would also reset the channel's program and voices. CC 87 and CC 84 are dropped: one would make a program number mean another sound for good, the other lets the ROM give any note any voice, past the plugin.

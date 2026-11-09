@@ -484,6 +484,18 @@ static bool is_special(const patch_values *values, int channel)
 	return channel == 2 && values->globals[GLOBAL_CH3_MODE];
 }
 
+// Stage 16 (D45): the noise runs on channel 9's tone, so channel 9 makes no sound of its own.
+static bool noise_takes(const patch_values *values, int channel)
+{
+	return channel == PATCH_NUM_CHANNELS - 2 && values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_TONE3;
+}
+
+// On channel 10 the envelope's pitch shift moves the noise's pitch only on Tone 3.
+static bool noise_without_pitch(const patch_values *values, int channel)
+{
+	return channel == PATCH_NUM_CHANNELS - 1 && values->globals[GLOBAL_NOISE_RATE] != PATCH_NOISE_RATE_TONE3;
+}
+
 // The rail's level bar (stage 9): 16 segments, the channel's volume (CC7) in its dark colour, and
 // the part a note gets, CC7 x velocity / 127, green while it is held and grey after. That is only
 // what the plugin sent: the ROM has no velocity curve of its own (D29).
@@ -534,12 +546,13 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 
 	char buffer[64];
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
-	text(g, 10, y + 7, buffer, INK(special ? C_FM_LIGHT : C_TEXT), 3);
+	const bool taken = noise_takes(values, channel);
+	text(g, 10, y + 7, buffer, INK(special ? C_FM_LIGHT : taken ? C_LINE : C_TEXT), 3);
 	if (dac) {
 		text(g, BAR_X, y + 5, "DAC Samples", INK(C_TEXT), 2);
 	} else {
 		snprintf(buffer, sizeof(buffer), "%.*s%s", special ? SPECIAL_NAME_CHARS : 13, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
-		text(g, BAR_X, y + 5, buffer, INK(C_TEXT), 2);
+		text(g, BAR_X, y + 5, buffer, INK(taken ? C_HINT : C_TEXT), 2);
 	}
 #undef INK
 	if (g->file_over && !target && !dim) {
@@ -562,6 +575,17 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	const uint32_t note = __atomic_load_n(&g->source.notes[channel], __ATOMIC_ACQUIRE);
 	const bool seen = GUI_NOTE_SEEN(note);
 	const int held = seen ? (int)GUI_NOTE_HELD(note) : 0;
+	if (taken) {
+		// No bar: the channel makes no sound. Its held notes are cut, as notes without a voice.
+		left -= 13 * 6;
+		text(g, left, line, "TAKEN BY CH10", C_LABEL, 1);
+		if (held > 0) {
+			snprintf(buffer, sizeof(buffer), "%d CUT", held);
+			left -= 6 + (int)strlen(buffer) * 6;
+			text(g, left, line, buffer, C_ERROR, 1);
+		}
+		return;
+	}
 	if (special) {
 		// A column at the right where other rows have their note: the lead (operator 4, channel 3
 		// itself) on top and green, operators 1-3 (MIDI 11-13) below it, dimmer. The bar stays as
@@ -769,6 +793,22 @@ static int active_op(const mdmi_gui *g)
 
 static int feedback_x(int algorithm);
 
+// Channel 10's noise (stage 16, D45): TYPE and RATE as fields, each followed by its choices, in the
+// empty band between the channel's cells and the envelope's loop strip.
+#define NOISE_ROW_Y 82
+static const struct {
+	uint32_t global;
+	const char *label;
+	int value, x, w;
+} NOISE_CHOICES[] = {
+	{GLOBAL_NOISE_TYPE, "PERIODIC", PATCH_NOISE_PERIODIC, 276, 96},
+	{GLOBAL_NOISE_TYPE, "WHITE", PATCH_NOISE_WHITE, 374, 96},
+	{GLOBAL_NOISE_RATE, "HIGH", PATCH_NOISE_RATE_HIGH, 508, 50},
+	{GLOBAL_NOISE_RATE, "MID", PATCH_NOISE_RATE_MID, 560, 36},
+	{GLOBAL_NOISE_RATE, "LOW", PATCH_NOISE_RATE_LOW, 598, 36},
+	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 636, 72},
+};
+
 // The cells of the open page and the global knobs, so drawing and the mouse agree.
 static void layout(mdmi_gui *g, const patch_values *values)
 {
@@ -833,6 +873,11 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		if (patch_channel_has(channel, PARAM_PAN)) {
 			for (int pan = 0; pan < 3; pan++) {
 				add_choice(g, GRID_X[1] + pan * 20, GRID_ROW1_Y, 19, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_PAN), PANS[pan], pan, LOOK_BAR);
+			}
+		}
+		if (channel == PATCH_NUM_CHANNELS - 1) {
+			for (size_t i = 0; i < sizeof(NOISE_CHOICES) / sizeof(*NOISE_CHOICES); i++) {
+				add_choice(g, NOISE_CHOICES[i].x, NOISE_ROW_Y, NOISE_CHOICES[i].w, CELL_H, NOISE_CHOICES[i].global, NOISE_CHOICES[i].label, NOISE_CHOICES[i].value, LOOK_BAR);
 			}
 		}
 		if (channel_is_fm(channel)) {
@@ -945,10 +990,12 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			// The algorithm lit in FM's colour, the pan in white as a switch. A label too wide for the
 			// big font takes the small one.
 			const bool pan = param == PARAM_PAN;
+			// The noise's mode is the PSG's own choice, lit in its colour (stage 16).
+			const bool psg = c->id == GLOBAL_NOISE_TYPE || c->id == GLOBAL_NOISE_RATE;
 			const int scale = (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
 			const int width = (int)strlen(c->label) * 6 * scale - scale;
-			fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : C_FM) : C_CELL);
-			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, on ? (pan ? C_BG : C_TEXT) : C_LABEL, scale);
+			fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : psg ? C_PSG : C_FM) : C_CELL);
+			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, on ? (pan || psg ? C_BG : C_TEXT) : C_LABEL, scale);
 		}
 		if (changed && c->choice == base) {
 			fill(g, c->x, c->y + c->h - 2, c->w, 2, C_AMBER);
@@ -1179,7 +1226,7 @@ static void draw_page_top(mdmi_gui *g, const patch_values *values)
 	fill(g, RAIL_W + 1, HEADER_H, GUI_WIDTH - RAIL_W - 1, GLOBALS_Y - HEADER_H, C_BG);
 	snprintf(buffer, sizeof(buffer), "%d", channel + 1);
 	// Channel 3 in Ch3 Special Mode has its number light FM, as in the rail.
-	text(g, PAGE_X, 30, buffer, is_special(values, channel) ? C_FM_LIGHT : C_TEXT, 3);
+	text(g, PAGE_X, 30, buffer, is_special(values, channel) ? C_FM_LIGHT : noise_takes(values, channel) ? C_LINE : C_TEXT, 3);
 	if (takes_files(values, channel)) {
 		snprintf(buffer, sizeof(buffer), "%.*s%s", NAME_CHARS, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
 		text(g, NAME_X, 34, buffer, C_TEXT, 2);
@@ -1467,8 +1514,8 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	int kept_start, kept_end;
 	char pitch[16];
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
-		if (part == ENV_PITCH && *g->source.channel == PATCH_NUM_CHANNELS - 1) {
-			snprintf(hint, size, "CH10: SHIFT CHANGES NOISE, NOT PITCH");
+		if (part == ENV_PITCH && noise_without_pitch(patch_view(g->source.patch), *g->source.channel)) {
+			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH RATE TONE 3");
 			return true;
 		}
 		const int level = shape->frames[step] & 15;
@@ -1553,7 +1600,7 @@ static int envelope_frame(mdmi_gui *g, const patch_shape *shape, int psg, unsign
 
 static void draw_envelope(mdmi_gui *g, const patch_values *values)
 {
-	const bool noise = *g->source.channel == PATCH_NUM_CHANNELS - 1;
+	const bool noise = noise_without_pitch(values, *g->source.channel);
 	// Another envelope came (a program change, a file): the shadow of the old one's loop goes.
 	const int psg = *g->source.channel - PATCH_NUM_FM_CHANNELS;
 	if (g->source.loop_shadows[psg].kept && g->env_drag == ENV_NONE && strcmp(g->source.loop_shadows[psg].name, values->psg[psg].name) != 0) {
@@ -1572,7 +1619,7 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	text_right(g, 292, ENV_LEVEL_Y + 70, "-14", C_HINT, 1, 20);
 	text_right(g, 292, ENV_LEVEL_Y + 140, "-28", C_HINT, 1, 20);
 	text_right(g, 292, ENV_BASE_Y + 2, "OFF", C_HINT, 1, 20);
-	text(g, PAGE_X, ENV_PITCH_Y, noise ? "NOISE" : "PITCH", C_LABEL, 1);
+	text(g, PAGE_X, ENV_PITCH_Y, "PITCH", noise ? C_LINE : C_LABEL, 1);
 	if (!noise) {
 		static const struct {
 			const char *label;
@@ -2848,6 +2895,15 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LINE, 1);
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
 		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
+		if (channel == PATCH_NUM_CHANNELS - 1) {
+			fill(g, 242, NOISE_ROW_Y, 32, CELL_H, C_CELL);
+			text(g, 246, NOISE_ROW_Y + 6, "TYPE", C_LABEL, 1);
+			fill(g, 474, NOISE_ROW_Y, 32, CELL_H, C_CELL);
+			text(g, 478, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
+			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);
+		} else if (noise_takes(values, channel)) {
+			text(g, 332, 442, "TAKEN BY CH10 NOISE (RATE TONE 3): CH9 NOTES ARE SILENT", C_AMBER, 1);
+		}
 		draw_envelope(g, values);
 		return;
 	}

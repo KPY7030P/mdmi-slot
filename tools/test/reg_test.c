@@ -339,6 +339,76 @@ static void test_dac_psg(void)
 	check_psg_after_dac("DAC off: the same PSG notes sound as before", 0, tone, volume);
 }
 
+// Rising crossings of the left channel over half a second while a note of the channel sounds. The
+// threshold is the middle of the swing, so a narrow pulse (periodic noise: 1 of 16 steps) counts too.
+#define NOTE_SAMPLES (RATE / 2 / BLOCK * BLOCK)
+static float note_samples[NOTE_SAMPLES];
+
+static double note_hz(int channel, int key, uint16_t *tone3)
+{
+	midi((uint8_t)(0x90 | channel), (uint8_t)key, 127);
+	render(4);
+	*tone3 = mdmi_engine_test_psg_tone(engine, 2);
+	float low_most = 0, high_most = 0;
+	for (int block = 0; block < NOTE_SAMPLES / BLOCK; block++) {
+		mdmi_engine_render(engine, left, right, BLOCK);
+		for (int i = 0; i < BLOCK; i++) {
+			const float v = left[i];
+			note_samples[block * BLOCK + i] = v;
+			low_most = v < low_most ? v : low_most;
+			high_most = v > high_most ? v : high_most;
+		}
+	}
+	midi((uint8_t)(0x80 | channel), (uint8_t)key, 0);
+	render(SETTLE_BLOCKS);
+	const float middle = (low_most + high_most) / 2, band = (high_most - low_most) / 8;
+	long crossings = 0, first = -1, last = 0;
+	bool low = false;
+	for (long at = 0; at < NOTE_SAMPLES && band > 0.001f; at++) {
+		if (note_samples[at] < middle - band) {
+			low = true;
+		} else if (low && note_samples[at] > middle + band) {
+			low = false;
+			first = first < 0 ? at : first;
+			last = at;
+			crossings++;
+		}
+	}
+	return crossings > 1 ? (crossings - 1) * (double)RATE / (last - first) : 0;
+}
+
+// Stage 16 (D45): periodic noise on tone 3 plays the note, and channel 9 stays silent meanwhile.
+static void test_noise(void)
+{
+	const int noise = PATCH_NUM_CHANNELS - 1, tone3 = PATCH_NUM_CHANNELS - 2;
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3);
+	sync_and_settle();
+	// N from the table of key + 48; at high keys N is small and the table's steps coarse.
+	static const int KEYS[] = {33, 36, 45, 57};
+	int bad = 0;
+	for (size_t i = 0; i < sizeof(KEYS) / sizeof(*KEYS); i++) {
+		uint16_t n;
+		const double hz = note_hz(noise, KEYS[i], &n), want = 440.0 * pow(2.0, (KEYS[i] - 69) / 12.0);
+		const double chip = n ? 3579545.0 / (512.0 * n) : 0;
+		printf("    key %d: %.2f Hz, 6991/%d = %.2f Hz, the note %.2f Hz\n", KEYS[i], hz, n, chip, want);
+		bad += fabs(hz / chip - 1.0) > 0.01 || fabs(hz / want - 1.0) > 0.03;
+	}
+	check(bad == 0, "periodic noise on tone 3 sounds at 6991/N Hz within 1%, at the note within 3% (a quarter tone)");
+	midi((uint8_t)(0x90 | tone3), 60, 127);
+	render(SETTLE_BLOCKS);
+	check(mdmi_engine_test_psg_volume(engine, 2) == 15 && mdmi_engine_test_psg_tone(engine, 2) != 427, "a note on channel 9 writes nothing while the noise has its tone");
+	midi((uint8_t)(0x80 | tone3), 60, 0);
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_WHITE);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
+	sync_and_settle();
+	midi((uint8_t)(0x90 | tone3), 60, 127);
+	render(SETTLE_BLOCKS);
+	check(mdmi_engine_test_psg_volume(engine, 2) < 15 && mdmi_engine_test_psg_tone(engine, 2) == 427, "after a fixed rate channel 9 plays again");
+	midi((uint8_t)(0x80 | tone3), 60, 0);
+	render(SETTLE_BLOCKS);
+}
+
 // A new image restarts the core (stage 12): the plugin hands everything over again, and every channel
 // sounds as before. The same image twenty times, so a core that doesn't unload cleanly shows.
 #define RESTARTS 20
@@ -2144,6 +2214,7 @@ int main(int argc, char **argv)
 	test_program_from_clip();
 	test_dac();
 	test_dac_psg();
+	test_noise();
 	test_restart();
 	test_samples();
 	test_shaping();

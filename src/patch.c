@@ -11,6 +11,10 @@
 #define CC_DATA_ENTRY_MSB 6
 #define CC_VOLUME 7
 #define CC_PAN 10
+// The PSG noise's type and rate, on MIDI 10 only (D45).
+#define CC_NOISE_TYPE 12
+#define CC_NOISE_RATE 13
+#define NOISE_CC_CHANNEL 9
 #define CC_ALGORITHM 14
 #define CC_FEEDBACK 15
 #define CC_DATA_ENTRY_LSB 38
@@ -157,6 +161,8 @@ void patch_global_init(void)
 	define(&globals[GLOBAL_CH3_MODE], "Ch3 Special Mode", 1, 0, true);
 	define(&globals[GLOBAL_DAC], "DAC Enable", 1, 0, true);
 	define(&globals[GLOBAL_RETRIGGER], "Retrigger", PATCH_RETRIGGER_CUT, PATCH_RETRIGGER_CHIP, true);
+	define(&globals[GLOBAL_NOISE_TYPE], "Noise Type", PATCH_NOISE_WHITE, PATCH_NOISE_WHITE, true);
+	define(&globals[GLOBAL_NOISE_RATE], "Noise Rate", PATCH_NOISE_RATE_TONE3, PATCH_NOISE_RATE_HIGH, true);
 
 	define(&channel_params[PARAM_PRESET], "Preset", PRESETS - 1, 0, true);
 	define(&channel_params[PARAM_VOLUME], "Volume", 127, 127, true);
@@ -191,6 +197,8 @@ void patch_global_init(void)
 	}
 	// Last, so the knobs before it keep their places in a host's list.
 	panel_order[position++] = GLOBAL_RETRIGGER;
+	panel_order[position++] = GLOBAL_NOISE_TYPE;
+	panel_order[position++] = GLOBAL_NOISE_RATE;
 }
 
 bool patch_channel_has(int channel, int param)
@@ -768,6 +776,14 @@ static void format_global(int global, int value, char *text, size_t size)
 	case GLOBAL_RETRIGGER:
 		snprintf(text, size, "%s", value == PATCH_RETRIGGER_VOICE ? "Free" : value == PATCH_RETRIGGER_CUT ? "Cut" : "Chip");
 		break;
+	case GLOBAL_NOISE_TYPE:
+		snprintf(text, size, "%s", value == PATCH_NOISE_WHITE ? "White" : "Periodic");
+		break;
+	case GLOBAL_NOISE_RATE: {
+		static const char *const RATES[4] = {"High", "Mid", "Low", "Tone 3"};
+		snprintf(text, size, "%s", RATES[value & 3]);
+		break;
+	}
 	default:
 		snprintf(text, size, "%s", value ? "On" : "Off");
 		break;
@@ -1786,6 +1802,15 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_CH3_MODE, model_globals[GLOBAL_CH3_MODE] ? CC_ON : 0);
 		rom_globals[GLOBAL_CH3_MODE] = model_globals[GLOBAL_CH3_MODE];
 	}
+	// Only on MIDI 10 (D45). A driver swap doesn't touch these: the ROM writes the noise's mode again.
+	if (model_globals[GLOBAL_NOISE_TYPE] != rom_globals[GLOBAL_NOISE_TYPE]) {
+		emit_cc(emit, context, NOISE_CC_CHANNEL, CC_NOISE_TYPE, model_globals[GLOBAL_NOISE_TYPE] == PATCH_NOISE_WHITE ? CC_ON : 0);
+		rom_globals[GLOBAL_NOISE_TYPE] = model_globals[GLOBAL_NOISE_TYPE];
+	}
+	if (model_globals[GLOBAL_NOISE_RATE] != rom_globals[GLOBAL_NOISE_RATE]) {
+		emit_cc(emit, context, NOISE_CC_CHANNEL, CC_NOISE_RATE, model_globals[GLOBAL_NOISE_RATE] * (128 / 4));
+		rom_globals[GLOBAL_NOISE_RATE] = model_globals[GLOBAL_NOISE_RATE];
+	}
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		const int16_t *model = patch->model.channels[channel];
 		int16_t *rom = receiver->values.channels[channel];
@@ -1957,6 +1982,9 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 				patch->model.channels[channel][PARAM_PAN] = (int16_t)pan;
 				changed = true;
 			}
+		} else if ((cc == CC_NOISE_TYPE || cc == CC_NOISE_RATE) && channel == NOISE_CC_CHANNEL) {
+			patch->model.globals[cc == CC_NOISE_TYPE ? GLOBAL_NOISE_TYPE : GLOBAL_NOISE_RATE] = (int16_t)(cc == CC_NOISE_TYPE ? value >= 64 : value / (128 / 4));
+			changed = true;
 		} else if (cc_to_model(cc, value, &global, &param, &result)) {
 			if (global >= 0) {
 				patch->model.globals[global] = (int16_t)result;
