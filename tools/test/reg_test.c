@@ -2474,6 +2474,43 @@ static void test_outputs(void)
 	quiet();
 }
 
+// Stage 18a (D48): the PSG's voices play 3 dB above BlastEm's own mix, FM as it is. A note alone,
+// its level on the outputs against the core's mix of the same frames.
+static double measured_rms;
+
+static double measured_note_db(uint8_t status, uint8_t note, double *raw)
+{
+	quiet();
+	mdmi_engine_test_measure(engine, true);
+	midi(status, note, 127);
+	render(SETTLE_BLOCKS);
+	midi((uint8_t)(0x80 | (status & 0x0F)), note, 0);
+	mdmi_engine_test_measure(engine, false);
+	*raw = mdmi_engine_test_measured_db(engine, true);
+	measured_rms = mdmi_engine_test_measured_rms(engine);
+	return mdmi_engine_test_measured_db(engine, false);
+}
+
+static void test_psg_level(void)
+{
+	double tone_raw, noise_raw, fm_raw;
+	const double tone = measured_note_db(0x96, 64, &tone_raw);
+	const double tone_rms = measured_rms;
+	const double noise = measured_note_db(0x99, 60, &noise_raw);
+	const double noise_rms = measured_rms;
+	const double fm = measured_note_db(0x90, 60, &fm_raw);
+	printf("    against BlastEm's mix: PSG tone %+.3f dB, noise %+.3f dB, FM %+.3f dB; the voices as the core made them %+.3f, %+.3f, %+.3f dB\n",
+		tone, noise, fm, tone_raw, noise_raw, fm_raw);
+	printf("    BlastEm's mix RMS: tone %.1f, noise %.1f steps of 16 bits\n", tone_rms * 32768, noise_rms * 32768);
+	check(fabs(tone - tone_raw - 3.0) <= 0.01 && fabs(noise - noise_raw - 3.0) <= 0.01, "the PSG's tones and noise play 3.00 dB above the voices the core made");
+	check(fabs(fm - fm_raw) <= 0.01, "an FM note plays as the core made it");
+	// The voices against the core's own int16 mix, as in 0.17: this white noise is quiet (about 70 steps
+	// RMS), so the mix's rounding of up to 13 steps puts the voices 0.3 dB above it (ROADMAP, from 18a).
+	check(fabs(tone - 3.0) <= 0.1 && fabs(fm) <= 0.1, "a PSG tone is 3 dB above BlastEm's mix and FM at it, within 0.1 dB");
+	check(fabs(noise - 3.0) <= 0.5, "the PSG noise is 3 dB above BlastEm's mix, within 0.5 dB");
+	quiet();
+}
+
 static void test_reset(void)
 {
 	const uint8_t reset = 0xFF;
@@ -2537,6 +2574,8 @@ int main(int argc, char **argv)
 	test_adjacent();
 	test_reset();
 	test_outputs();
+	test_reset();
+	test_psg_level();
 	test_reset();
 	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

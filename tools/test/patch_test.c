@@ -359,6 +359,36 @@ static void test_load(void)
 		&& other.model.globals[GLOBAL_RETIRED] == 0, "the old Polyphony id is skipped, a value out of range clamped");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
 	CHECK(!patch_load(&other, odd, 7, NULL, NULL, NULL), "a cut state is refused");
+	CHECK(other.model.globals[GLOBAL_MASTER] == PATCH_MASTER_UNITY, "a project from before Master Volume opens at 0 dB");
+}
+
+// Master Volume (stage 18a): the plugin's output level, never the ROM's.
+static void test_master(void)
+{
+	printf("Master Volume\n");
+	static mdmi_patch patch;
+	patch_init(&patch);
+	clear();
+	sync(&patch);
+	CHECK(GLOBAL_MASTER == 9 && patch_get(&patch, GLOBAL_MASTER) == PATCH_MASTER_UNITY, "id 9, at 0 dB by default");
+	char text[16];
+	patch_format(&patch.bank, GLOBAL_MASTER, 0, text, sizeof(text));
+	CHECK(!strcmp(text, "-inf dB"), "0 reads %s", text);
+	patch_format(&patch.bank, GLOBAL_MASTER, 540, text, sizeof(text));
+	CHECK(!strcmp(text, "-6.0 dB"), "540 reads %s", text);
+	patch_format(&patch.bank, GLOBAL_MASTER, PATCH_MASTER_UNITY, text, sizeof(text));
+	CHECK(!strcmp(text, "0.0 dB"), "600 reads %s", text);
+	patch_format(&patch.bank, GLOBAL_MASTER, PATCH_MASTER_MAX, text, sizeof(text));
+	CHECK(!strcmp(text, "+12.0 dB"), "720 reads %s", text);
+	int value = -1;
+	CHECK(patch_parse(&patch.bank, GLOBAL_MASTER, "-6", &value) && value == 540, "\"-6\" is -6 dB (%d)", value);
+	CHECK(patch_parse(&patch.bank, GLOBAL_MASTER, "-6 dB", &value) && value == 540, "\"-6 dB\" is -6 dB (%d)", value);
+	CHECK(patch_parse(&patch.bank, GLOBAL_MASTER, "-inf", &value) && value == 0, "\"-inf\" is silence (%d)", value);
+	CHECK(patch_master_gain(0) == 0 && fabs(patch_master_gain(PATCH_MASTER_UNITY) - 1) < 1e-9 && fabs(patch_master_gain(540) - 0.501187) < 1e-5,
+		"the factor is 0, 1 and 0.501 at -inf, 0 and -6 dB");
+	clear();
+	set(&patch, GLOBAL_MASTER, 300);
+	CHECK(sent_bytes == 0, "a move sends the ROM nothing");
 }
 
 static void discard(void *context, const uint8_t *bytes, size_t length)
@@ -1884,6 +1914,7 @@ int main(int argc, char **argv)
 	test_noise();
 	test_incoming();
 	test_load();
+	test_master();
 	test_dealer();
 	test_files();
 	test_places();

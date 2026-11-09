@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.18.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.18.1).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -30,6 +30,13 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - An output per MIDI channel besides Main, so each channel can be recorded or processed on a track of its own.
   A channel's output carries all its notes, also a chord's notes on borrowed voices. Main still plays
   everything. This exists only in the emulator: a real console has one mixed output.
+- MASTER, at the right of the window's bottom strip, sets the plugin's output level from silence to +12 dB,
+  on Main and every channel's output alike. It can be automated and is saved with the project. There is no
+  limiter, so above 0 dB the plugin can clip. The console has no such knob.
+- The PSG plays 3 dB louder than in BlastEm, tones and noise, on Main and the channel outputs. BlastEm
+  puts a full PSG tone about 10 dB below one FM channel at full level. That balance is real, but it
+  differs between consoles, and it made the PSG hard to hear next to FM. A real console has its own
+  balance; checking it against a Genesis MK-1631 is planned.
 
 ## Requirements
 

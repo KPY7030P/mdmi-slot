@@ -90,6 +90,13 @@ void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep);
 int mdmi_engine_test_owner(const mdmi_engine *e, int voice);
 // Tests only: the longest wait from an owner to its key-on since the last call, in ms.
 float mdmi_engine_test_take_owner_wait(mdmi_engine *e);
+// Tests only (stage 18a): measure the outputs' sum against the core's own mix, in lockstep; the
+// result is the outputs' level over the mix's in dB, or with raw the voices' sum as the core made them,
+// all after a DC blocker.
+void mdmi_engine_test_measure(mdmi_engine *e, bool on);
+double mdmi_engine_test_measured_db(const mdmi_engine *e, bool raw);
+// The core's mix over the measurement, RMS of both sides after the DC blocker, full scale 1.
+double mdmi_engine_test_measured_rms(const mdmi_engine *e);
 // Tests only: what the running YM2612 holds in a register.
 uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg);
 // The attenuation of a PSG channel, 0-15, for tests.

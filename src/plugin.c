@@ -80,12 +80,42 @@ typedef struct {
 	// When the window last sent each knob something, in ms (D34): what the host sends back within
 	// HOST_ECHO_MS is Live's echo of it, not a lane.
 	uint32_t window_ms[GUI_HOST_SLOTS];
+	// Master Volume's factor at the end of the last block, the audio thread's only; below 0 before the first.
+	float master_gain;
 } mdmi_plugin;
 
 typedef struct {
 	mdmi_plugin *self;
 	uint32_t offset;
 } emit_target;
+
+// Master Volume (stage 18a) on every buffer alike, so Main stays the outputs' sum. It moves in a line
+// across the block from where the last one ended, so a lane or a drag has no steps.
+static void apply_master(mdmi_plugin *self, float *const *channels, uint32_t frames)
+{
+	// The audio thread is the model's writer: patch_get would take the main thread's snapshot.
+	const float target = (float)patch_master_gain(self->patch.model.globals[GLOBAL_MASTER]);
+	const float from = self->master_gain < 0 ? target : self->master_gain;
+	self->master_gain = target;
+	if (from == 1.0f && target == 1.0f) {
+		return;
+	}
+	const float step = frames ? (target - from) / (float)frames : 0;
+	for (int ch = 0; ch < MDMI_RENDER_CHANNELS; ch++) {
+		float *buffer = channels[ch];
+		bool seen = false;
+		for (int before = 0; before < ch && !seen; before++) {
+			seen = channels[before] == buffer;
+		}
+		// A host may hand one buffer to several channels: scale it once.
+		if (!buffer || seen) {
+			continue;
+		}
+		for (uint32_t i = 0; i < frames; i++) {
+			buffer[i] *= from + step * (float)(i + 1);
+		}
+	}
+}
 
 // What the ROM's PSG channels get decides where their envelopes are: a Note On starts one, a Note
 // Off of the key it plays or All Notes Off releases it (midi.c midi_note_off). Legato, a held note
@@ -572,6 +602,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		channels[port * 2 + 1] = out->channel_count > 1 ? out->data32[1] : NULL;
 	}
 	mdmi_engine_render_outputs(engine, channels, process->frames_count);
+	apply_master(self, channels, process->frames_count);
 	__atomic_store_n(&self->psg_times.clock, self->psg_times.clock + process->frames_count, __ATOMIC_RELEASE);
 	return CLAP_PROCESS_CONTINUE;
 }
@@ -1024,6 +1055,7 @@ static const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *f
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		self->psg_times.on[i] = self->psg_times.off[i] = GUI_NEVER;
 	}
+	self->master_gain = -1;
 	self->plugin.desc = &plugin_descriptor;
 	self->plugin.plugin_data = self;
 	self->plugin.init = plugin_init;

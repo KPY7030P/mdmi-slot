@@ -42,6 +42,9 @@
 #define LFO_RATE_X 160
 #define LFO_RATE_Y 484
 #define LFO_RATE 3
+// Master Volume at the strip's right end (stage 18a), and its id.
+#define MASTER_X 660
+#define MASTER 9
 // The bank page's button, its third place, and channel 4's Preset.
 #define BUTTON_BANK_X 244
 #define BANK_ROW_X 400
@@ -873,6 +876,16 @@ int main(int argc, char **argv)
 		click(window, ALL_PAN_R_X, ALL_CH2_Y);
 		run_ms(100);
 		CHECK(get_value(CH2_PAN) == 2, "a click on R pans channel 2 right");
+		// Master Volume (stage 18a): on ALL too, a drag of 10 px is 4 dB, a double click puts 0 dB back.
+		memset(pushed, 0, sizeof(pushed));
+		drag(window, MASTER_X, LFO_RATE_Y, LFO_RATE_Y + 10);
+		run_ms(100);
+		const int master_dragged = get_value(MASTER);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(MASTER_X, LFO_RATE_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(MASTER_X, LFO_RATE_Y));
+		run_ms(100);
+		CHECK(master_dragged == 560 && pushed_id[0] == MASTER && get_value(MASTER) == 600,
+			"MASTER on ALL drags to %d (560 is -4 dB) and a double click sets it back to %d (600 is 0 dB)", master_dragged, get_value(MASTER));
 		capture(window);
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM) > 6 * 50, "the FM rows draw their algorithms");
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 30, RAIL_CH8_Y + 10, COLOR_PSG) > 0, "the PSG rows draw their envelopes");

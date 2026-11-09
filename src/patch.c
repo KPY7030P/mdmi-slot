@@ -166,6 +166,7 @@ void patch_global_init(void)
 	define(&globals[GLOBAL_RETRIGGER], "Retrigger", PATCH_RETRIGGER_CUT, PATCH_RETRIGGER_CHIP, true);
 	define(&globals[GLOBAL_NOISE_TYPE], "Noise Type", PATCH_NOISE_WHITE, PATCH_NOISE_WHITE, true);
 	define(&globals[GLOBAL_NOISE_RATE], "Noise Rate", PATCH_NOISE_RATE_KIT, PATCH_NOISE_RATE_HIGH, true);
+	define(&globals[GLOBAL_MASTER], "Master Volume", PATCH_MASTER_MAX, PATCH_MASTER_UNITY, false);
 
 	define(&channel_params[PARAM_PRESET], "Preset", PRESETS - 1, 0, true);
 	define(&channel_params[PARAM_VOLUME], "Volume", 127, 127, true);
@@ -202,6 +203,7 @@ void patch_global_init(void)
 	panel_order[position++] = GLOBAL_RETRIGGER;
 	panel_order[position++] = GLOBAL_NOISE_TYPE;
 	panel_order[position++] = GLOBAL_NOISE_RATE;
+	panel_order[position++] = GLOBAL_MASTER;
 }
 
 bool patch_channel_has(int channel, int param)
@@ -763,6 +765,11 @@ double patch_filter_hz(int value)
 	return FILTER_MIN_HZ * pow(FILTER_RANGE, value / (double)FILTER_MAX);
 }
 
+double patch_master_gain(int value)
+{
+	return value <= 0 ? 0.0 : pow(10.0, (value - PATCH_MASTER_UNITY) / 200.0);
+}
+
 static void format_global(int global, int value, char *text, size_t size)
 {
 	switch (global) {
@@ -787,6 +794,15 @@ static void format_global(int global, int value, char *text, size_t size)
 		snprintf(text, size, "%s", RATES[value < 0 || value > PATCH_NOISE_RATE_KIT ? 0 : value]);
 		break;
 	}
+	case GLOBAL_MASTER:
+		if (value <= 0) {
+			snprintf(text, size, "-inf dB");
+		} else if (value == PATCH_MASTER_UNITY) {
+			snprintf(text, size, "0.0 dB");
+		} else {
+			snprintf(text, size, "%+.1f dB", (value - PATCH_MASTER_UNITY) / 10.0);
+		}
+		break;
 	default:
 		snprintf(text, size, "%s", value ? "On" : "Off");
 		break;
@@ -867,6 +883,11 @@ bool patch_parse(const patch_bank *bank, uint32_t id, const char *text, int *val
 	const patch_param_info *info = patch_param(id);
 	if (!info) {
 		return false;
+	}
+	// Master Volume's silence has no number: "-inf" is it, with or without its unit.
+	if (id == GLOBAL_MASTER && (same_label(text, "-inf") || same_label(text, "-inf dB") || same_label(text, "inf"))) {
+		*value = 0;
+		return true;
 	}
 	char label[64];
 	for (int v = 0; v <= info->max; v++) {

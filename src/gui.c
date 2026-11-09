@@ -69,6 +69,8 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define PAGE_X 242
 #define PAGE_RIGHT 708
 #define GLOBALS_Y 460
+#define MASTER_X 608
+#define MASTER_W 104
 #define FOOTER_Y 504
 #define ROM_SCALE 2
 #define CELL_H 20
@@ -918,8 +920,10 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		}
 	}
 	for (int i = 0; i < (int)(sizeof(GLOBAL_CELLS) / sizeof(*GLOBAL_CELLS)); i++) {
-		add_cell(g, 8 + i * 118, GLOBALS_Y + 6, 114, 32, (uint32_t)GLOBAL_CELLS[i].global, GLOBAL_CELLS[i].label, CELL_COLUMN);
+		add_cell(g, 8 + i * 100, GLOBALS_Y + 6, 96, 32, (uint32_t)GLOBAL_CELLS[i].global, GLOBAL_CELLS[i].label, CELL_COLUMN);
 	}
+	// The plugin's output level (stage 18a) at the strip's right end, under SAVE and UNDO on every page.
+	add_cell(g, MASTER_X, GLOBALS_Y + 6, MASTER_W, 32, GLOBAL_MASTER, "MASTER", CELL_COLUMN);
 }
 
 // A line of 1 px from one point to another.
@@ -1075,7 +1079,12 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
 	const uint32_t dark = held ? C_LINE : fm ? C_FM_DARK : C_PSG_DARK;
 	const int max = patch_param(c->id)->max > 0 ? patch_param(c->id)->max : 1;
-	if (c->kind == CELL_COLUMN) {
+	if (c->id == GLOBAL_MASTER) {
+		// Grey, as it belongs to no chip: a bar from the left, a tick at 0 dB as TUNE marks its middle.
+		fill(g, c->x, c->y, c->w, c->h, C_CELL);
+		fill(g, c->x, c->y, c->w * value / max, c->h, C_LINE);
+		fill(g, c->x + c->w * PATCH_MASTER_UNITY / max, c->y, 1, c->h, C_LABEL);
+	} else if (c->kind == CELL_COLUMN) {
 		fill(g, c->x, c->y, c->w, c->h, held ? C_LINE : C_CELL);
 	} else {
 		// A channel's cell is a bar filled up to its value, as in the mockup; TUNE from its middle.
@@ -1094,8 +1103,20 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	if (c->id == GLOBAL_DAC && value) {
 		shown = C_DAC;
 	}
+	// No limiter: above 0 dB the plugin can clip, so amber; silence is dim.
+	if (c->id == GLOBAL_MASTER) {
+		shown = value > PATCH_MASTER_UNITY ? C_AMBER : value == 0 ? C_HINT : C_TEXT;
+		if (value == 0) {
+			snprintf(buffer, sizeof(buffer), "-INF");
+		}
+	}
 	if (c->kind == CELL_COLUMN) {
 		text(g, c->x + 4, c->y + 4, c->label, label, 1);
+		// A value without room for its unit drops it, as in a row: 19926 for 19926 Hz.
+		char *unit = strchr(buffer, ' ');
+		if ((int)strlen(buffer) > (c->w - 8) / 12 && unit) {
+			*unit = 0;
+		}
 		buffer[(c->w - 8) / 12] = 0;
 		text(g, c->x + 4, c->y + 14, buffer, shown, 2);
 	} else {
@@ -3124,6 +3145,13 @@ static bool base_hint(mdmi_gui *g, char *hint, size_t size)
 	return true;
 }
 
+// Master Volume under the mouse: say that the console has no such knob.
+static bool master_hint(mdmi_gui *g)
+{
+	const int over = g->file_over ? -1 : hovered(g);
+	return over >= 0 && g->cells[over].id == GLOBAL_MASTER;
+}
+
 // Where the build's version starts at the footer's right end; the rest of the line ends before it.
 static int version_x(const mdmi_gui *g)
 {
@@ -3164,6 +3192,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
+	} else if (master_hint(g)) {
+		footer_text(g, "MASTER: PLUGIN ONLY, NOT ON THE CONSOLE", C_LABEL);
 	} else if (dac_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
@@ -4127,7 +4157,9 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		g->press_eaten = false;
 		return;
 	}
-	if (dac_editor(g, patch_view(g->source.patch))) {
+	// The global strip is the same on every page: a double click there puts a knob back on any of them.
+	const bool globals = y >= GLOBALS_Y && y < FOOTER_Y;
+	if (!globals && dac_editor(g, patch_view(g->source.patch))) {
 		if (dac_panel_double_click(g, x, y)) {
 			refresh(g);
 		} else {
@@ -4137,16 +4169,16 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	}
 	// A quick second press on the envelope draws as the first did.
 	patch_shape scratch;
-	if (is_envelope_page(g) && envelope_part_at(g, shown_shape(g, &scratch), x, y) != ENV_NONE) {
+	if (!globals && is_envelope_page(g) && envelope_part_at(g, shown_shape(g, &scratch), x, y) != ENV_NONE) {
 		on_down(g, x, y);
 		return;
 	}
 	// On ALL a quick second click on a row's sound switches again, as the first did.
-	if (*g->source.page == PAGE_ALL && x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && row_at(g, x, y) >= 0) {
+	if (!globals && *g->source.page == PAGE_ALL && x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && row_at(g, x, y) >= 0) {
 		on_down(g, x, y);
 		return;
 	}
-	int index = *g->source.page == PAGE_EDITOR ? hovered(g) : -1;
+	int index = *g->source.page == PAGE_EDITOR || globals ? hovered(g) : -1;
 	// The choice of SSG and its button take a quick second click as a click.
 	if (g->ssg_open >= 0 || (index >= 0 && g->cells[index].kind == CELL_SSG)) {
 		on_down(g, x, y);
@@ -4161,7 +4193,11 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	if (channel >= 0 && param == PARAM_PRESET) {
 		return;
 	}
-	// Where a click steps, a quick second click is one more step.
+	// Where a click steps, a quick second click is one more step on EDITOR, as ever; elsewhere the
+	// strip took no double click before, and a second step of DAC would reset the chips twice.
+	if (patch_param(id)->max + 1 <= 8 && *g->source.page != PAGE_EDITOR) {
+		return;
+	}
 	if (patch_param(id)->max + 1 <= 8) {
 		on_down(g, x, y);
 		on_up(g);

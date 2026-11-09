@@ -14,11 +14,11 @@
 #define BLOCK 256
 #define MAX_EVENTS 512
 #define FFT_SIZE 16384
-#define NUM_PARAMS 362
+#define NUM_PARAMS 363
 
 // Ids by D3: a global's id is its index, a channel's knob 1000 + channel number * 100 + param.
 // Id 0 held Polyphony until D20 and stays unused.
-enum { P_RETIRED, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC };
+enum { P_RETIRED, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC, P_RETRIGGER, P_NOISE_TYPE, P_NOISE_RATE, P_MASTER };
 enum { Q_PRESET, Q_VOLUME, Q_PAN, Q_FINE, Q_BEND, Q_PORTA_ON, Q_PORTA_TIME, Q_ALG, Q_FB, Q_AMS, Q_FMS, Q_OP };
 #define ID(channel, param) (1000 + ((channel) + 1) * 100 + (param))
 #define OP_SR 6
@@ -303,7 +303,7 @@ static void test_listing(void)
 	printf("listing\n");
 	instance *in = create_instance();
 	uint32_t count = in->params->count(in->plugin);
-	CHECK(count == NUM_PARAMS, "%u parameters: 8 global, 55 on each FM channel, 6 on each PSG channel", count);
+	CHECK(count == NUM_PARAMS, "%u parameters: 9 global, 55 on each FM channel, 6 on each PSG channel", count);
 	static bool seen[MAX_ID];
 	bool ids_valid = true;
 	for (uint32_t i = 0; i < count; i++) {
@@ -680,6 +680,58 @@ static void test_state(void)
 	destroy_instance(b);
 }
 
+// Master Volume (stage 18a): one factor on the plugin's output, smoothed, silence at its bottom.
+static void test_master(void)
+{
+	printf("Master Volume\n");
+	instance *in = create_instance();
+	clap_param_info_t info;
+	bool found = false;
+	for (uint32_t i = 0; i < in->params->count(in->plugin) && !found; i++) {
+		in->params->get_info(in->plugin, i, &info);
+		found = info.id == P_MASTER;
+	}
+	CHECK(found && !strcmp(info.name, "Master Volume") && info.default_value == 600 && info.max_value == 720 && !(info.flags & CLAP_PARAM_IS_STEPPED)
+		&& (info.flags & CLAP_PARAM_IS_AUTOMATABLE), "Master Volume is id 9, 0..720, 600 by default, automatable and smooth");
+	char text[64] = "";
+	in->params->value_to_text(in->plugin, P_MASTER, 0, text, sizeof(text));
+	CHECK(!strcmp(text, "-inf dB"), "0 reads %s", text);
+	in->params->value_to_text(in->plugin, P_MASTER, 600, text, sizeof(text));
+	CHECK(!strcmp(text, "0.0 dB"), "600 reads %s", text);
+	double value = -1;
+	CHECK(in->params->text_to_value(in->plugin, P_MASTER, "-inf", &value) && value == 0, "\"-inf\" is silence (value %.0f)", value);
+	CHECK(in->params->text_to_value(in->plugin, P_MASTER, "-6 dB", &value) && value == 540, "\"-6 dB\" is 540 (value %.0f)", value);
+
+	settle(in, 0.4);
+	// A PSG note holds its level, an FM piano would decay between the two measurements.
+	queue_midi(in, 0x96, 60, 127);
+	float *held = render(in, RATE);
+	const double unity = rms(held, RATE / 2, RATE / 4);
+	free(held);
+	queue_param(in, P_MASTER, 540);
+	held = render(in, RATE / 2);
+	const double down = rms(held, RATE / 4, RATE / 4);
+	// The block the change lands in moves in a line from 0 dB to -6 dB: its first 48 samples are near
+	// the old level, its last 48 near the new. A step would put both at -6 dB.
+	const double first = rms(held, 0, 48) / unity, last = rms(held, BLOCK - 48, 48) / unity;
+	free(held);
+	queue_param(in, P_MASTER, 0);
+	held = render(in, RATE / 4);
+	double loudest = 0;
+	for (uint32_t i = BLOCK; i < RATE / 4; i++) {
+		loudest = fabs(held[i]) > loudest ? fabs(held[i]) : loudest;
+	}
+	free(held);
+	queue_midi(in, 0x86, 60, 0);
+	queue_param(in, P_MASTER, 600);
+	settle(in, 0.25);
+	printf("    note at 0 dB rms %.4f, at -6 dB %.4f (%.2f dB); the block it changes in starts at %.2f and ends at %.2f of the level\n", unity, down, 20 * log10(down / unity), first, last);
+	CHECK(unity > 0.01 && fabs(20 * log10(down / unity) + 6.0) < 0.1, "-6 dB on the knob is -6 dB at the output");
+	CHECK(first > 0.85 && last < 0.65, "moving the knob makes no step: it moves across the block");
+	CHECK(loudest == 0, "-inf is silence after the block it lands in");
+	destroy_instance(in);
+}
+
 // Strongest partial in a band, from a spectrum of FFT_SIZE samples.
 static double peak_hz(const double *mag, double low_hz, double high_hz)
 {
@@ -955,6 +1007,7 @@ int main(int argc, char **argv)
 	test_same_moment();
 	test_tuning_knobs();
 	test_mode_knobs();
+	test_master();
 
 	entry->deinit();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);

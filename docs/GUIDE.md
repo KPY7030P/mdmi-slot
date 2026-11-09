@@ -34,11 +34,11 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 ## Knobs
 
 Every MIDI channel is an instrument of its own: its knobs always mean that channel, so lanes for several channels
-can run at once. There are 361 of them, too many for Live to fill its panel by itself: use Configure and touch a
+can run at once. There are 363 of them, too many for Live to fill its panel by itself: use Configure and touch a
 cell in the window. Choosing a channel in the window only changes the view, no knob or lane.
 
 - Global: Filter (3392 Hz matches the original console, top is off), LFO On, LFO Rate,
-  Ch3 Special Mode, DAC Enable, Retrigger, Noise Type, Noise Rate
+  Ch3 Special Mode, DAC Enable, Retrigger, Noise Type, Noise Rate, Master Volume
 - Every channel: Preset, Volume, Fine Tune, Bend Range, Porta On, Porta Time
 - FM channels 1-6 also: Pan, Algorithm, Feedback, AMS, FMS, and for each of 4 operators TL, MUL, DT, RS, AR, DR,
   SR, SL, RR, AM, SSG
@@ -188,9 +188,18 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   resets the YM2612), MIDI 11-13 notes in Ch3 Special Mode give voice 3 to channel 3. Each voice has its
   DC blocker before it goes to an output, so the YM2612's ladder offset of a silent voice doesn't step
   between outputs when the voice changes owner; one 20-channel resampler serves the outputs, and Main
-  is their sum. The voices' sum differs from BlastEm's own
+  is their sum. The PSG's four voices go to their outputs 3 dB louder (x1.4125, D48), after the DC blocker;
+  the check against BlastEm's mix takes the voices as the core made them. `reg_test` measures a PSG note
+  on the outputs against BlastEm's own mix: +3 dB, FM 0 dB. The voices' sum differs from BlastEm's own
   int16 mix by up to about 14 steps of 16 bits after the DC blocker: BlastEm's lowpass truncates in its
   feedback. The worker runs with denormals flushed to zero. Emulator only: a console has one mixed output.
+
+- Master Volume (stage 18a, id 9): tenths of dB, 0..720 is silence and -59.9..+12 dB, 600 is 0 dB. The
+  plugin's, never sent to the ROM. `plugin.c` multiplies every output buffer, Main included, right after
+  `mdmi_engine_render_outputs`, moving in a line across the block from the last block's factor, so Main
+  stays the outputs' sum and a lane has no steps. No limiter. In the window MASTER sits at the right end
+  of the strip of globals, on every page but ROM; the footer says the console ignores it. A double click
+  on any global cell puts its default back on every page.
 
 Toggling the DAC resets the YM2612 and the PSG, because the ROM swaps the Z80 driver: SGDK resets both chips,
 and the Z80's reset line also clears the YM2612. Sounding notes stop, `src/patch.c` reloads every FM
@@ -249,7 +258,8 @@ sanitizer needs address randomization off. `fetch_deps.sh` clones `third_party/`
 `BUILD.txt` there. It fails if Ableton Live has the VST3 locked. Live does not show plugin versions, so `BUILD.txt`
 is how to tell what is installed.
 
-The version is `0.N.M+revision`: N is the stage in `docs/ROADMAP.md`, M the delivery, and the revision is
+The version is `0.N.M+revision`: N is the stage in `docs/ROADMAP.md`, M the delivery (a lettered stage
+such as 18a is a delivery of its stage: 0.18.1), and the revision is
 `git describe`, ending in `-dirty` for uncommitted code.
 
 ## Release

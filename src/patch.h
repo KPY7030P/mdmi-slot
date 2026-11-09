@@ -32,8 +32,12 @@ enum {
 	// The PSG noise's mode (D45): the chip has one noise register, so these are the console's.
 	GLOBAL_NOISE_TYPE,
 	GLOBAL_NOISE_RATE,
+	// The plugin's output level in tenths of dB, 0 silence (stage 18a): the plugin's, never sent to the ROM.
+	GLOBAL_MASTER,
 	PATCH_NUM_GLOBALS,
 };
+#define PATCH_MASTER_MAX 720
+#define PATCH_MASTER_UNITY 600
 enum { PATCH_RETRIGGER_CHIP, PATCH_RETRIGGER_VOICE, PATCH_RETRIGGER_CUT };
 enum { PATCH_NOISE_PERIODIC, PATCH_NOISE_WHITE };
 // Noise Rate: three fixed rates, highest first, then channel 9's tone (channel 3 of the PSG), then a
@@ -302,6 +306,8 @@ void patch_format(const patch_bank *bank, uint32_t id, int value, char *text, si
 // What a typed label means, the inverse of patch_format. False if the text is no label or number.
 bool patch_parse(const patch_bank *bank, uint32_t id, const char *text, int *value);
 double patch_filter_hz(int value);
+// Master Volume's factor: 0 is silence, PATCH_MASTER_UNITY is 1.
+double patch_master_gain(int value);
 // Saved values are pairs of id and value, so knobs can be added without breaking projects.
 size_t patch_save_size(void);
 // Of one view, so the values and the names of a saved state belong together.

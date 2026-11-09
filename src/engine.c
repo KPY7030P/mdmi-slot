@@ -34,6 +34,10 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 #define STALE_TEMP_FILE_SECONDS (24 * 3600)
 // One-pole high-pass that removes the DC offset of the YM2612 DAC.
 #define DC_BLOCK_HZ 5.0
+// The PSG's voices, tones 1-3 and noise, play 3 dB above BlastEm's balance (owner, D48): an emulator
+// choice, consoles differ, the MK-1631 gets measured at stage 26.
+#define PSG_FIRST_VOICE 6
+#define PSG_GAIN 1.41253754f
 // The core's rate is constant for an NTSC machine.
 #define CORE_RATE (53693175.0 / (7 * 6 * 24))
 // The ring: Main, then each output (stage 17), left and right.
@@ -126,6 +130,12 @@ struct mdmi_engine {
 	uint32_t voice_batch_misses;
 	float voice_mix_error;
 	float mix_diff_in[2], mix_diff_out[2];
+	// Tests only (stage 18a): the energy of the core's own mix and of the outputs' sum, both after a DC
+	// blocker, while a test measures.
+	bool measuring, measure_primed;
+	float measure_dc_in[2], measure_dc_out[2], measure_raw_in[2], measure_raw_out[2];
+	double measure_core, measure_outputs, measure_raw;
+	uint64_t measure_frames;
 	bool thread_started;
 	double worst_run_ms;
 	double worst_wait_ms;
@@ -341,7 +351,8 @@ static void reset_owners(mdmi_engine *e)
 
 // Every voice plays into the output of the channel whose note it last started (D46): a release tail
 // stays with its channel until another channel's note keys the voice on. Main is the outputs' sum, so
-// the outputs add up to it exactly. The core's own mix only checks that the voices add up to it.
+// the outputs add up to it exactly. The core's own mix only checks that the voices add up to it, so
+// it takes the voices as the core made them, before the PSG's 3 dB.
 static size_t audio_batch_cb(const int16_t *data, size_t frames)
 {
 	mdmi_engine *e = current_engine();
@@ -389,7 +400,7 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 					const float blocked = sample - e->dc_in[k] + e->dc_coef * e->dc_out[k];
 					e->dc_in[k] = sample;
 					e->dc_out[k] = blocked;
-					in[out * 2 + ch] += blocked;
+					in[out * 2 + ch] += v >= PSG_FIRST_VOICE ? blocked * PSG_GAIN : blocked;
 				}
 				sum[0] += voice[v * 2];
 				sum[1] += voice[v * 2 + 1];
@@ -404,6 +415,33 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 				if (e->dc_primed && fabsf(error) > e->voice_mix_error) {
 					e->voice_mix_error = fabsf(error);
 				}
+			}
+			if (__atomic_load_n(&e->measuring, __ATOMIC_ACQUIRE)) {
+				for (int ch = 0; ch < 2; ch++) {
+					const float core = data[i * 2 + ch] / 32768.0f;
+					const float raw = sum[ch] * scale;
+					if (!e->measure_primed) {
+						e->measure_dc_in[ch] = core;
+						e->measure_dc_out[ch] = 0;
+						e->measure_raw_in[ch] = raw;
+						e->measure_raw_out[ch] = 0;
+					}
+					const float raw_blocked = raw - e->measure_raw_in[ch] + e->dc_coef * e->measure_raw_out[ch];
+					e->measure_raw_in[ch] = raw;
+					e->measure_raw_out[ch] = raw_blocked;
+					e->measure_raw += (double)raw_blocked * raw_blocked;
+					const float blocked = core - e->measure_dc_in[ch] + e->dc_coef * e->measure_dc_out[ch];
+					e->measure_dc_in[ch] = core;
+					e->measure_dc_out[ch] = blocked;
+					float outputs = 0;
+					for (int o = 0; o < MDMI_OUTPUTS; o++) {
+						outputs += in[o * 2 + ch];
+					}
+					e->measure_core += (double)blocked * blocked;
+					e->measure_outputs += (double)outputs * outputs;
+				}
+				e->measure_primed = true;
+				e->measure_frames++;
 			}
 		}
 		e->dc_primed = e->dc_primed || have_voices;
@@ -1201,6 +1239,26 @@ uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel)
 int mdmi_engine_test_owner(const mdmi_engine *e, int voice)
 {
 	return e->owner[voice];
+}
+
+void mdmi_engine_test_measure(mdmi_engine *e, bool on)
+{
+	if (on) {
+		e->measure_core = e->measure_outputs = e->measure_raw = 0;
+		e->measure_frames = 0;
+		e->measure_primed = false;
+	}
+	__atomic_store_n(&e->measuring, on, __ATOMIC_RELEASE);
+}
+
+double mdmi_engine_test_measured_db(const mdmi_engine *e, bool raw)
+{
+	return 10.0 * log10(((raw ? e->measure_raw : e->measure_outputs) + 1e-30) / (e->measure_core + 1e-30));
+}
+
+double mdmi_engine_test_measured_rms(const mdmi_engine *e)
+{
+	return sqrt(e->measure_core / (2.0 * (double)(e->measure_frames ? e->measure_frames : 1)));
 }
 
 float mdmi_engine_test_take_owner_wait(mdmi_engine *e)
