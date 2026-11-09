@@ -1,10 +1,10 @@
-THIRD-PARTY NOTICES for MDMI Mega Drive
+THIRD-PARTY NOTICES for MDMI Slot
 ==============================================================================
 
-MDMI Mega Drive is distributed under the GNU General Public License version 3
-(see LICENSE). The plugin files (MDMI Mega Drive.vst3, MDMI Mega Drive.clap)
+MDMI Slot is distributed under the GNU General Public License version 3
+(see LICENSE). The plugin files (MDMI Slot.vst3, MDMI Slot.clap)
 contain the components below. Their source, with our changes, is in the source
-release and in the repository: https://github.com/KPY7030P/mdmi-plugin
+release and in the repository: https://github.com/KPY7030P/mdmi-slot
 
 Each component is listed with its licence and copyright notice. Full licence
 texts follow in the appendices; the GNU GPL version 3 is in LICENSE.

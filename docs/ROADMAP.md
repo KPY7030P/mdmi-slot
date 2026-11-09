@@ -573,6 +573,8 @@
 
 **Результат.** На GitHub владельца (`KPY7030P/mdmi-plugin`, публичный) лежат исходники и выпуск «0.15.0 preview» с отметкой Pre-release: zip с плагином для Windows и zip с исходниками. Музыкант ставит плагин по README без помощи.
 
+2026-11-09: после выпуска 0.15.0 плагин переименован в MDMI Slot и вышел как 0.15.1 preview в `KPY7030P/mdmi-slot` (D43).
+
 **Что входит.**
 
 - История до первого push: почта автора заменена на noreply GitHub, `CLAUDE.md` и `.claude/` убраны (`git filter-repo` в Docker), теги поставлены заново. Перед этим полная копия `git bundle` рядом с репозиторием. `CLAUDE.md`, `.claude/` и `/refs/` в `.gitignore`.

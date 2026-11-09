@@ -10,8 +10,8 @@
 #include "patch.h"
 #include "state.h"
 
-#define PLUGIN_ID "dev.mdmi-plugin.mega-drive"
-#define PLUGIN_NAME "MDMI Mega Drive"
+#define PLUGIN_ID "dev.mdmi-slot.instrument"
+#define PLUGIN_NAME "MDMI Slot"
 #define EDIT_QUEUE 256
 
 static const char *const plugin_features[] = {
@@ -26,7 +26,7 @@ static const clap_plugin_descriptor_t plugin_descriptor = {
 	.id = PLUGIN_ID,
 	.name = PLUGIN_NAME,
 	.vendor = "MDMI Plugin",
-	.url = "https://github.com/KPY7030P/mdmi-plugin",
+	.url = "https://github.com/KPY7030P/mdmi-slot",
 	.manual_url = "",
 	.support_url = "",
 	.version = MDMI_VERSION,

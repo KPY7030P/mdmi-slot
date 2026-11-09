@@ -6,7 +6,7 @@ WIN_ROOT="$(cygpath -m "$ROOT")"
 OUT="$ROOT/build/test"
 WIN_OUT="$(cygpath -m "$OUT")"
 mkdir -p "$OUT"
-cp "$ROOT/build/cmake/out/CLAP/MDMI Mega Drive.clap" "$ROOT/build/cmake/" && cd "$ROOT/build/cmake" || exit 1
+cp "$ROOT/build/cmake/out/CLAP/MDMI Slot.clap" "$ROOT/build/cmake/" && cd "$ROOT/build/cmake" || exit 1
 export MDMI_PLUGIN_STATS=1
 failures=0
 
@@ -33,7 +33,7 @@ run() {
   # runs of up to three in a row.
   attempt=1
   while :; do
-    timeout 60 ./clap_host.exe "MDMI Mega Drive.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
+    timeout 60 ./clap_host.exe "MDMI Slot.clap" "$WIN_OUT/$name" "$rate" "$block" "$mode" "$instances" > "$log" 2>&1
     code=$?
     late="$(late_boot_ms "$log" "$rate")"
     [ "$mode" = realtime ] && [ "$late" != 0 ] || break
@@ -87,7 +87,7 @@ export MDMI_TEST_CRASH=freeze; run crash-freeze 48000 128 realtime 1; unset MDMI
 
 echo "=== vst3"
 log="$OUT/vst3.log"
-timeout 60 ./vst3_host.exe "out/VST3/MDMI Mega Drive.vst3" "$WIN_OUT/vst3" 48000 128 realtime > "$log" 2>&1
+timeout 60 ./vst3_host.exe "out/VST3/MDMI Slot.vst3" "$WIN_OUT/vst3" 48000 128 realtime > "$log" 2>&1
 code=$?
 [ "$code" = 0 ] || { fail "vst3: host exit $code"; tail -5 "$log"; }
 label="$(tr -d '\r\n' < "$ROOT/build/label.txt")"
@@ -113,20 +113,20 @@ grep -E "FAIL|PASSED|FAILED" "$log"
 
 echo "=== knobs"
 log="$OUT/param_test.log"
-timeout 600 ./param_test.exe "MDMI Mega Drive.clap" > "$log" 2>&1
+timeout 600 ./param_test.exe "MDMI Slot.clap" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "param_test: exit $code"
 
 echo "=== window"
 log="$OUT/gui.log"
-timeout 90 ./gui_test.exe "MDMI Mega Drive.clap" "$WIN_OUT/gui" > "$log" 2>&1
+timeout 90 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "gui_test: exit $code"
 log="$OUT/gui-crash.log"
 export MDMI_TEST_CRASH=segv
-timeout 90 ./gui_test.exe "MDMI Mega Drive.clap" "$WIN_OUT/gui" > "$log" 2>&1
+timeout 90 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
 code=$?
 unset MDMI_TEST_CRASH
 grep -E "FAIL|PASSED|FAILED" "$log"

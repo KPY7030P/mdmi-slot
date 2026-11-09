@@ -29,8 +29,8 @@ install_one() {
 }
 
 echo "Build $LABEL into $TARGET"
-install_one "VST3/MDMI Mega Drive.vst3" "MDMI Mega Drive.vst3"
-install_one "CLAP/MDMI Mega Drive.clap" "MDMI Mega Drive.clap"
+install_one "VST3/MDMI Slot.vst3" "MDMI Slot.vst3"
+install_one "CLAP/MDMI Slot.clap" "MDMI Slot.clap"
 
 if [ "$failed" != 0 ]; then
 	echo "INSTALL FAILED: the folder may still hold an older build."
@@ -39,7 +39,7 @@ if [ "$failed" != 0 ]; then
 fi
 {
 	echo "$LABEL"
-	echo "VST3 sha256 $(hash_of "$TARGET/MDMI Mega Drive.vst3")"
-	echo "CLAP sha256 $(hash_of "$TARGET/MDMI Mega Drive.clap")"
+	echo "VST3 sha256 $(hash_of "$TARGET/MDMI Slot.vst3")"
+	echo "CLAP sha256 $(hash_of "$TARGET/MDMI Slot.clap")"
 } > "$TARGET/BUILD.txt" || { echo "INSTALL FAILED: could not write BUILD.txt"; exit 1; }
 echo "OK: $TARGET holds build $LABEL"

@@ -1,4 +1,4 @@
-# MDMI Mega Drive
+# MDMI Slot
 
 A VST®3 and CLAP instrument for Windows that turns an emulated Sega Mega Drive into a synthesizer. Inside the
 plugin, the [BlastEm](https://www.retrodev.com/blastem/) emulator runs the
@@ -30,18 +30,18 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 
 ## Installing
 
-1. Download `MDMI-Mega-Drive-0.15.0-win64.zip` from the
-   [Releases page](https://github.com/KPY7030P/mdmi-plugin/releases) and unpack it.
-2. Close your host. Copy `MDMI Mega Drive.vst3` to `C:\Program Files\Common Files\VST3`.
-   For a CLAP host, copy `MDMI Mega Drive.clap` to `C:\Program Files\Common Files\CLAP`.
+1. Download `MDMI-Slot-0.15.1-win64.zip` from the
+   [Releases page](https://github.com/KPY7030P/mdmi-slot/releases) and unpack it.
+2. Close your host. Copy `MDMI Slot.vst3` to `C:\Program Files\Common Files\VST3`.
+   For a CLAP host, copy `MDMI Slot.clap` to `C:\Program Files\Common Files\CLAP`.
 3. In Live: Settings (Preferences in older versions), Plug-Ins, turn on "Use VST3 Plug-In System Folders" and press Rescan.
-   The instrument appears under Plug-Ins as **MDMI Mega Drive**.
+   The instrument appears under Plug-Ins as **MDMI Slot**.
 
 To update, replace the files while the host is closed: Live locks the VST3 while it runs.
 
 ## First steps
 
-1. Put MDMI Mega Drive on a MIDI track and open its window.
+1. Put MDMI Slot on a MIDI track and open its window.
 2. Play: MIDI channel 1 plays the first FM channel. To play several channels from one instrument, send
    other MIDI tracks to it on MIDI channels 2-10 (in Live: MIDI To the instrument's track, then the plugin
    and the channel). Each channel is an instrument of its own, with its own knobs.
@@ -59,7 +59,7 @@ English; the other notes in `docs/` are in Russian).
 - **Closing or removing the plugin while it is still loading** can, in rare cases, leave a thread running and
   crash or hang the host. A crash inside the emulator can also hang the host instead of only silencing the
   plugin. A failed engine leaves its DLL in `%TEMP%`.
-- **Unsigned DLL in `%TEMP%`.** Each instance unpacks the emulator, an unsigned DLL, to `%TEMP%\MDMI-Plugin`.
+- **Unsigned DLL in `%TEMP%`.** Each instance unpacks the emulator, an unsigned DLL, to `%TEMP%\MDMI-Slot`.
   Some antivirus programs scan or block it; the first load can then take several seconds.
 - **Audio dropouts with ASIO drivers** have not been checked yet: the dropout handling of 0.13 is tested in a
   test host, not yet with ASIO in Live. Long sessions, many instances, freezing and export are not fully

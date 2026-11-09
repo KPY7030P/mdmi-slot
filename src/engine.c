@@ -372,7 +372,7 @@ static bool unpack_files(mdmi_engine *e)
 	if (!GetTempPathA(sizeof(temp), temp)) {
 		return false;
 	}
-	snprintf(dir, sizeof(dir), "%sMDMI-Plugin\\", temp);
+	snprintf(dir, sizeof(dir), "%sMDMI-Slot\\", temp);
 	CreateDirectoryA(dir, NULL);
 	clean_stale_temp_files(dir);
 

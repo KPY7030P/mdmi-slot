@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 # 0.N.M: N is the stage in docs/ROADMAP.md, M the delivery within it.
-project(mdmi_plugin VERSION 0.15.0 LANGUAGES C CXX)
+project(mdmi_plugin VERSION 0.15.1 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
@@ -21,7 +21,7 @@ set(BLASTEM_DIR "${CMAKE_SOURCE_DIR}/third_party/blastem")
 set(CLAP_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/clap")
 set(VST3_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/vst3sdk")
 set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES FALSE)
-set(CLAP_WRAPPER_OUTPUT_NAME "MDMI Mega Drive")
+set(CLAP_WRAPPER_OUTPUT_NAME "MDMI Slot")
 add_subdirectory(third_party/clap-wrapper EXCLUDE_FROM_ALL)
 
 add_library(mdmi_impl STATIC src/plugin.c src/engine.c src/patch.c src/instrument.c src/state.c src/files.c src/resampler.c src/embed.c src/gui.c src/rom_image.c src/dac.c)
@@ -38,9 +38,9 @@ set_source_files_properties(src/embed.c PROPERTIES
 make_clapfirst_plugins(
   TARGET_NAME mdmi
   IMPL_TARGET mdmi_impl
-  OUTPUT_NAME "MDMI Mega Drive"
+  OUTPUT_NAME "MDMI Slot"
   ENTRY_SOURCE src/clap_entry.cpp
-  BUNDLE_IDENTIFIER "dev.mdmi-plugin.mega-drive"
+  BUNDLE_IDENTIFIER "dev.mdmi-slot.instrument"
   BUNDLE_VERSION "${PROJECT_VERSION}"
   ASSET_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
   PLUGIN_FORMATS CLAP VST3

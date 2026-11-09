@@ -3,8 +3,8 @@
 #
 #   make_release.sh v0.N.M
 #
-# MDMI-Mega-Drive-0.N.M-win64.zip   the plugins, LICENSE, NOTICE, THIRD_PARTY_NOTICES.txt, README.txt
-# MDMI-Mega-Drive-0.N.M-source.zip  the tag's tree, and in vendor/ every dependency at its pinned commit
+# MDMI-Slot-0.N.M-win64.zip   the plugins, LICENSE, NOTICE, THIRD_PARTY_NOTICES.txt, README.txt
+# MDMI-Slot-0.N.M-source.zip  the tag's tree, and in vendor/ every dependency at its pinned commit
 #                                   and the ROM's samples, so it builds without network (GPL section 6)
 set -e
 TAG="${1:?usage: make_release.sh v0.N.M}"

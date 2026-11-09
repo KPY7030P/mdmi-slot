@@ -1,4 +1,4 @@
-# MDMI Mega Drive: how it works
+# MDMI Slot: how it works
 
 The developer's guide; the musician's is the [README](../README.md). It was the README up to 0.14.0.
 
@@ -17,7 +17,7 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 - `tools/gen_rom_map.py` reads where the DAC sample table is from the ROM build's `symbol.txt`, so the
   plugin can patch the image (D36). `src/rom_image.c` patches it, `src/dac.c` turns WAV files into samples.
 - `src/embed.c` bundles that DLL and the ROM into the plugin. Each instance unpacks its own copy to
-  `%TEMP%\MDMI-Plugin`, because BlastEm keeps its state in globals.
+  `%TEMP%\MDMI-Slot`, because BlastEm keeps its state in globals.
 - `src/engine.c` runs the emulator on its own MMCSS thread and feeds a ring buffer. MIDI is applied at
   a fixed distance ahead of the audio, and that distance is reported to the host as latency.
   A host with a large device buffer calls several blocks in a row; a block of such a burst waits for the
@@ -220,6 +220,6 @@ The version is `0.N.M+revision`: N is the stage in `docs/ROADMAP.md`, M the deli
 ## Release
 
 `sh tools/make_release.sh v0.N.M` clones the tag into `dist/`, builds it, runs the tests and writes
-`MDMI-Mega-Drive-0.N.M-win64.zip` and `MDMI-Mega-Drive-0.N.M-source.zip` with their SHA-256. The source
+`MDMI-Slot-0.N.M-win64.zip` and `MDMI-Slot-0.N.M-source.zip` with their SHA-256. The source
 zip holds the tag's tree and, in `vendor/`, every dependency at its pinned commit and the ROM's samples,
 so it builds without network apart from the Docker images (D42). Licences: see the README.

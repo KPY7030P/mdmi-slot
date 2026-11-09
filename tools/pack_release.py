@@ -11,7 +11,7 @@ import tarfile
 import zipfile
 
 CLONE, VERSION, DIST = sys.argv[1], sys.argv[2], sys.argv[3]
-NAME = 'MDMI-Mega-Drive-' + VERSION
+NAME = 'MDMI-Slot-' + VERSION
 OUT = os.path.join(CLONE, 'build', 'cmake', 'out')
 
 
@@ -62,8 +62,8 @@ def sha256(path):
 def win64_zip():
     path = os.path.join(DIST, NAME + '-win64.zip')
     files = [
-        (os.path.join(OUT, 'VST3', 'MDMI Mega Drive.vst3'), 'MDMI Mega Drive.vst3'),
-        (os.path.join(OUT, 'CLAP', 'MDMI Mega Drive.clap'), 'MDMI Mega Drive.clap'),
+        (os.path.join(OUT, 'VST3', 'MDMI Slot.vst3'), 'MDMI Slot.vst3'),
+        (os.path.join(OUT, 'CLAP', 'MDMI Slot.clap'), 'MDMI Slot.clap'),
         (os.path.join(CLONE, 'LICENSE'), 'LICENSE.txt'),
         (os.path.join(CLONE, 'NOTICE'), 'NOTICE.txt'),
         (os.path.join(CLONE, 'THIRD_PARTY_NOTICES.txt'), 'THIRD_PARTY_NOTICES.txt'),
@@ -71,7 +71,7 @@ def win64_zip():
     ]
     with open(os.path.join(CLONE, 'README.md'), encoding='utf-8') as f:
         readme = f.read()
-    readme = ('This is README.md of https://github.com/KPY7030P/mdmi-plugin ; its links point into the\n'
+    readme = ('This is README.md of https://github.com/KPY7030P/mdmi-slot ; its links point into the\n'
               'repository. LICENSE and NOTICE are here as LICENSE.txt and NOTICE.txt.\n\n' + readme)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         for source, name in files[:-1]:
