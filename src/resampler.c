@@ -15,9 +15,10 @@ static double bessel_i0(double x)
 	return sum;
 }
 
-void resampler_init(resampler *r, double in_rate, double out_rate)
+void resampler_init(resampler *r, double in_rate, double out_rate, int channels)
 {
 	memset(r, 0, sizeof(*r));
+	r->channels = channels < 1 ? 1 : channels > RESAMPLER_MAX_CHANNELS ? RESAMPLER_MAX_CHANNELS : channels;
 	r->step = in_rate / out_rate;
 	double cutoff = out_rate < in_rate ? 0.97 * out_rate / in_rate : 0.97;
 	for (int phase = 0; phase <= RESAMPLER_PHASES; phase++) {
@@ -40,11 +41,12 @@ void resampler_init(resampler *r, double in_rate, double out_rate)
 	}
 }
 
-int resampler_push(resampler *r, float left, float right, float *out_left, float *out_right, int max_out)
+int resampler_push(resampler *r, const float *in, float *out, int max_out)
 {
 	// History is mirrored so the newest NUM_TAPS samples are always contiguous.
-	r->history[0][r->write_pos] = r->history[0][r->write_pos + NUM_TAPS] = left;
-	r->history[1][r->write_pos] = r->history[1][r->write_pos + NUM_TAPS] = right;
+	for (int ch = 0; ch < r->channels; ch++) {
+		r->history[ch][r->write_pos] = r->history[ch][r->write_pos + NUM_TAPS] = in[ch];
+	}
 	r->write_pos = (r->write_pos + 1) % NUM_TAPS;
 
 	int written = 0;
@@ -55,16 +57,19 @@ int resampler_push(resampler *r, float left, float right, float *out_left, float
 		float blend = (float)(scaled - phase);
 		const float *a = r->table[phase];
 		const float *b = r->table[phase + 1];
-		const float *hl = r->history[0] + r->write_pos;
-		const float *hr = r->history[1] + r->write_pos;
-		float sum_l = 0, sum_r = 0;
+		float coef[NUM_TAPS];
 		for (int tap = 0; tap < NUM_TAPS; tap++) {
-			float coef = a[tap] + (b[tap] - a[tap]) * blend;
-			sum_l += hl[tap] * coef;
-			sum_r += hr[tap] * coef;
+			coef[tap] = a[tap] + (b[tap] - a[tap]) * blend;
 		}
-		out_left[written] = sum_l;
-		out_right[written] = sum_r;
+		float *frame = out + written * r->channels;
+		for (int ch = 0; ch < r->channels; ch++) {
+			const float *h = r->history[ch] + r->write_pos;
+			float sum = 0;
+			for (int tap = 0; tap < NUM_TAPS; tap++) {
+				sum += h[tap] * coef[tap];
+			}
+			frame[ch] = sum;
+		}
 		written++;
 		r->frac += r->step;
 	}

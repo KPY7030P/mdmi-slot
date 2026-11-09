@@ -114,6 +114,12 @@ static void emit_to_engine(void *context, const uint8_t *bytes, size_t length)
 	mdmi_engine_midi(target->self->engine, target->offset, bytes, length);
 }
 
+static void owner_to_engine(void *context, int voice, int channel)
+{
+	emit_target *target = context;
+	mdmi_engine_voice_owner(target->self->engine, target->offset, voice, channel);
+}
+
 static void apply_filter(mdmi_plugin *self)
 {
 	mdmi_engine_set_filter(self->engine, patch_model_filter_hz(&self->patch));
@@ -155,6 +161,7 @@ static bool plugin_init(const clap_plugin_t *plugin)
 	self->host_params = self->host->get_extension(self->host, CLAP_EXT_PARAMS);
 	self->host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
 	patch_init(&self->patch);
+	self->patch.owner = owner_to_engine;
 	self->view.dac = &self->dac;
 	const files_host files = {&self->patch, &self->view, files_handed, self};
 	files_init(&self->files, &files);
@@ -553,41 +560,44 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		self->knobs_moved = false;
 		request_mark_dirty(self);
 	}
-	// A host may switch the output off. The emulator keeps its time anyway.
-	const clap_audio_buffer_t *out = process->audio_outputs_count ? &process->audio_outputs[0] : NULL;
-	bool has_output = out && out->data32 && out->channel_count > 0 && out->data32[0];
-	float *left = has_output ? out->data32[0] : NULL;
-	float *right = has_output && out->channel_count > 1 ? out->data32[1] : NULL;
-	float scratch_left[4096], scratch_right[4096];
-	uint32_t done = 0;
-	while (done < process->frames_count) {
-		uint32_t frames = process->frames_count - done;
-		if ((!left || !right) && frames > 4096) {
-			frames = 4096;
+	// Main, then MIDI channels 1-10 (D46). A host may give fewer ports or switch one off; the
+	// emulator keeps its time anyway.
+	float *channels[MDMI_RENDER_CHANNELS] = {NULL};
+	for (uint32_t port = 0; port < process->audio_outputs_count && port < 1 + MDMI_OUTPUTS; port++) {
+		const clap_audio_buffer_t *out = &process->audio_outputs[port];
+		if (!out->data32 || !out->channel_count) {
+			continue;
 		}
-		mdmi_engine_render(engine, left ? left + done : scratch_left, right ? right + done : scratch_right, frames);
-		done += frames;
+		channels[port * 2] = out->data32[0];
+		channels[port * 2 + 1] = out->channel_count > 1 ? out->data32[1] : NULL;
 	}
+	mdmi_engine_render_outputs(engine, channels, process->frames_count);
 	__atomic_store_n(&self->psg_times.clock, self->psg_times.clock + process->frames_count, __ATOMIC_RELEASE);
 	return CLAP_PROCESS_CONTINUE;
 }
 
+// Main and MIDI channels 1-10 (D46). Projects keep their routing by these ids and this order:
+// anything new goes after them.
 static uint32_t audio_ports_count(const clap_plugin_t *plugin, bool is_input)
 {
 	(void)plugin;
-	return is_input ? 0 : 1;
+	return is_input ? 0 : 1 + MDMI_OUTPUTS;
 }
 
 static bool audio_ports_get(const clap_plugin_t *plugin, uint32_t index, bool is_input, clap_audio_port_info_t *info)
 {
 	(void)plugin;
-	if (is_input || index != 0) {
+	if (is_input || index > MDMI_OUTPUTS) {
 		return false;
 	}
 	memset(info, 0, sizeof(*info));
-	info->id = 0;
-	strncpy(info->name, "Main", sizeof(info->name) - 1);
-	info->flags = CLAP_AUDIO_PORT_IS_MAIN;
+	info->id = index;
+	if (index == 0) {
+		strncpy(info->name, "Main", sizeof(info->name) - 1);
+		info->flags = CLAP_AUDIO_PORT_IS_MAIN;
+	} else {
+		snprintf(info->name, sizeof(info->name), "Ch %u", index);
+	}
 	info->channel_count = 2;
 	info->port_type = CLAP_PORT_STEREO;
 	info->in_place_pair = CLAP_INVALID_ID;

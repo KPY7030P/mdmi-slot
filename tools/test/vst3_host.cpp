@@ -193,10 +193,17 @@ int main(int argc, char **argv)
 		fprintf(stderr, "no IAudioProcessor\n");
 		return 1;
 	}
-	component->activateBus(kAudio, kOutput, 0, true);
+	// Every bus gets a buffer, as Live gives them: clap-wrapper reads one for each (stage 17).
+	const int32 out_buses = component->getBusCount(kAudio, kOutput);
+	for (int32 bus = 0; bus < out_buses; bus++) {
+		component->activateBus(kAudio, kOutput, bus, true);
+	}
 	component->activateBus(kEvent, kInput, 0, true);
-	SpeakerArrangement stereo = SpeakerArr::kStereo;
-	processor->setBusArrangements(nullptr, 0, &stereo, 1);
+	std::vector<SpeakerArrangement> stereo(out_buses, SpeakerArr::kStereo);
+	if (processor->setBusArrangements(nullptr, 0, stereo.data(), out_buses) != kResultOk) {
+		fprintf(stderr, "setBusArrangements refused %d stereo outputs\n", out_buses);
+		return 1;
+	}
 
 	ProcessSetup setup = {};
 	setup.processMode = offline ? kOffline : kRealtime;
@@ -257,6 +264,7 @@ int main(int argc, char **argv)
 	const double cc_seconds = 3.8;
 	const uint32_t total = rate * SECONDS;
 	std::vector<float> left(total + block), right(total + block);
+	std::vector<float> spare_buffer(2 * block);
 
 	LARGE_INTEGER freq, start, now;
 	QueryPerformanceFrequency(&freq);
@@ -292,15 +300,24 @@ int main(int argc, char **argv)
 			cc_sent = true;
 		}
 		float *channels[2] = {left.data() + pos, right.data() + pos};
-		AudioBusBuffers out = {};
-		out.numChannels = 2;
-		out.channelBuffers32 = channels;
+		std::vector<AudioBusBuffers> outs(out_buses);
+		std::vector<float *> spare(2 * out_buses);
+		for (int32 bus = 0; bus < out_buses; bus++) {
+			outs[bus].numChannels = 2;
+			if (bus == 0) {
+				outs[bus].channelBuffers32 = channels;
+			} else {
+				spare[2 * bus] = spare_buffer.data();
+				spare[2 * bus + 1] = spare_buffer.data() + block;
+				outs[bus].channelBuffers32 = &spare[2 * bus];
+			}
+		}
 		ProcessData data;
 		data.processMode = setup.processMode;
 		data.symbolicSampleSize = kSample32;
 		data.numSamples = block;
-		data.numOutputs = 1;
-		data.outputs = &out;
+		data.numOutputs = out_buses;
+		data.outputs = outs.data();
 		data.inputEvents = &events;
 		data.inputParameterChanges = &changes;
 		processor->process(data);

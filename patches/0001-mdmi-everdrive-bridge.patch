@@ -25,7 +25,7 @@ index 5fc1254..9e83783 100644
  #else
  	static uint8_t freeze_choice;
 diff --git a/libblastem.c b/libblastem.c
-index 3472c7f..ec348cd 100644
+index 3472c7f..4058e37 100644
 --- a/libblastem.c
 +++ b/libblastem.c
 @@ -8,6 +8,7 @@
@@ -47,7 +47,7 @@ index 3472c7f..ec348cd 100644
  }
  
  RETRO_API unsigned retro_api_version(void)
-@@ -533,6 +538,18 @@ void render_audio_created(audio_source *src)
+@@ -533,18 +538,48 @@ void render_audio_created(audio_source *src)
  {
  }
  
@@ -63,11 +63,31 @@ index 3472c7f..ec348cd 100644
 +	audio_slices = enabled;
 +}
 +
++//MDMI: each voice of the chip, handed over just before the mix of the same frames (stage 17)
++#define MDMI_VOICES 10
++typedef void (*mdmi_voice_batch_t)(const float *voices, const uint16_t *keyon, size_t frames);
++static mdmi_voice_batch_t voice_batch;
++RETRO_API void mdmi_set_voice_batch(mdmi_voice_batch_t fn)
++{
++	voice_batch = fn;
++}
++
  void render_do_audio_ready(audio_source *src)
  {
  	int16_t *tmp = src->front;
-@@ -545,6 +562,9 @@ void render_do_audio_ready(audio_source *src)
+ 	src->front = src->back;
+ 	src->back = tmp;
++	render_swap_voices(src);
+ 	src->front_populated = 1;
+ 	src->buffer_pos = 0;
+ 	if (all_sources_ready()) {
+ 		int16_t buffer[256];
  		int min_remaining_out;
++		if (voice_batch) {
++			static float voices[128 * MDMI_VOICES * 2];
++			static uint16_t keyon[128];
++			voice_batch(voices, keyon, render_collect_voices(voices, keyon, 128, MDMI_VOICES));
++		}
  		mix_and_convert((uint8_t *)buffer, sizeof(buffer), &min_remaining_out);
  		retro_audio_sample_batch(buffer, sizeof(buffer)/(2*sizeof(*buffer)));
 +		if (audio_slices) {
@@ -76,7 +96,7 @@ index 3472c7f..ec348cd 100644
  	}
  }
  
-@@ -588,3 +608,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
+@@ -588,3 +623,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
  	}
  	return NULL;
  }
@@ -354,11 +374,180 @@ index 4076afd..d6363b8 100644
 +	code_blocks = NULL;
 +	code_count = code_storage = 0;
  }
+diff --git a/psg.c b/psg.c
+index 3fb55c6..dd2d6e3 100644
+--- a/psg.c
++++ b/psg.c
+@@ -14,6 +14,7 @@ void psg_init(psg_context * context, uint32_t master_clock, uint32_t clock_div)
+ {
+ 	memset(context, 0, sizeof(*context));
+ 	context->audio = render_audio_source("PSG", master_clock, clock_div, 2);
++	render_audio_source_voices(context->audio, 6, 4);
+ 	context->clock_inc = clock_div;
+ 	for (int i = 0; i < 4; i++) {
+ 		context->volume[i] = 0xF;
+@@ -131,6 +132,7 @@ void psg_run(psg_context * context, uint32_t cycles)
+ 		}
+ 
+ 		int16_t left_accum = 0, right_accum = 0;
++		int16_t voice_left[4] = {0, 0, 0, 0}, voice_right[4] = {0, 0, 0, 0};
+ 		uint8_t pan_left = 0x10, pan_right = 0x1;
+ 
+ 		int16_t value;
+@@ -139,9 +141,11 @@ void psg_run(psg_context * context, uint32_t cycles)
+ 				value = volume_table[context->volume[i]];
+ 				if (context->pan & pan_left) {
+ 					left_accum += value;
++					voice_left[i] = value;
+ 				}
+ 				if (context->pan & pan_right) {
+ 					right_accum += value;
++					voice_right[i] = value;
+ 				}
+ 			} else {
+ 				value = 0;
+@@ -159,9 +163,11 @@ void psg_run(psg_context * context, uint32_t cycles)
+ 			value = volume_table[context->volume[3]];
+ 			if (context->pan & pan_left) {
+ 				left_accum += value;
++				voice_left[3] = value;
+ 			}
+ 			if (context->pan & pan_right) {
+ 				right_accum += value;
++				voice_right[3] = value;
+ 			}
+ 		}
+ #ifndef IS_LIB
+@@ -170,7 +176,7 @@ void psg_run(psg_context * context, uint32_t cycles)
+ 		}
+ #endif
+ 
+-		render_put_stereo_sample(context->audio, left_accum, right_accum);
++		render_put_voices_sample(context->audio, left_accum, right_accum, voice_left, voice_right, 0);
+ 
+ 		context->cycles += context->clock_inc;
+ 	}
 diff --git a/render_audio.c b/render_audio.c
-index 9f0b28b..899e5c4 100644
+index 9f0b28b..3d75af5 100644
 --- a/render_audio.c
 +++ b/render_audio.c
-@@ -414,6 +414,19 @@ static void update_source(audio_source *src, double rc, uint8_t sync_changed)
+@@ -331,6 +331,10 @@ void render_free_source(audio_source *src)
+ 	}
+ 
+ 	free(src->front);
++	free(src->voice_front);
++	free(src->voice_back);
++	free(src->keyon_front);
++	free(src->keyon_back);
+ 	if (render_is_audio_sync()) {
+ 		free(src->back);
+ 		render_free_audio_opaque(src->opaque);
+@@ -373,6 +377,24 @@ void render_put_mono_sample(audio_source *src, int16_t value)
+ 
+ void render_put_stereo_sample(audio_source *src, int16_t left, int16_t right)
+ {
++	render_put_voices_sample(src, left, right, NULL, NULL, 0);
++}
++
++//MDMI: the voices take the mix's own steps, lowpass and interpolation, in float and at the same
++//positions, so they add up to the mix but for its rounding
++void render_put_voices_sample(audio_source *src, int16_t left, int16_t right, const int16_t *voice_left, const int16_t *voice_right, uint16_t keyon)
++{
++	uint8_t voice_values = voice_left && src->voice_back ? 2 * src->num_voices : 0;
++	float current[2 * RENDER_MAX_SOURCE_VOICES];
++	if (voice_values) {
++		float alpha = src->lowpass_alpha / 65536.0f;
++		for (uint8_t v = 0; v < src->num_voices; v++)
++		{
++			current[2 * v] = voice_left[v] * alpha + src->voice_last[2 * v] * (1.0f - alpha);
++			current[2 * v + 1] = voice_right[v] * alpha + src->voice_last[2 * v + 1] * (1.0f - alpha);
++		}
++		src->keyon_pending |= keyon;
++	}
+ 	left = lowpass_sample(src, src->last_left, left);
+ 	right = lowpass_sample(src, src->last_right, right);
+ 	src->buffer_fraction += src->buffer_inc;
+@@ -381,6 +403,17 @@ void render_put_stereo_sample(audio_source *src, int16_t left, int16_t right)
+ 	{
+ 		src->buffer_fraction -= BUFFER_INC_RES;
+ 
++		if (voice_values) {
++			uint32_t frame = ((src->buffer_pos & src->mask) / 2) % src->voice_frames;
++			float weight = (float)((src->buffer_fraction << 16) / src->buffer_inc) / 65536.0f;
++			float *dest = src->voice_back + frame * voice_values;
++			for (uint8_t i = 0; i < voice_values; i++)
++			{
++				dest[i] = src->voice_last[i] * weight + current[i] * (1.0f - weight);
++			}
++			src->keyon_back[frame] = src->keyon_pending;
++			src->keyon_pending = 0;
++		}
+ 		interp_sample(src, src->last_left, left);
+ 		interp_sample(src, src->last_right, right);
+ 
+@@ -391,6 +424,61 @@ void render_put_stereo_sample(audio_source *src, int16_t left, int16_t right)
+ 	}
+ 	src->last_left = left;
+ 	src->last_right = right;
++	if (voice_values) {
++		memcpy(src->voice_last, current, voice_values * sizeof(float));
++	}
++}
++
++void render_audio_source_voices(audio_source *src, uint8_t base, uint8_t count)
++{
++	if (count > RENDER_MAX_SOURCE_VOICES || src->num_channels != 2) {
++		return;
++	}
++	uint32_t frames = render_is_audio_sync() ? buffer_samples : (src->mask + 1) / 2;
++	src->voice_front = calloc(frames * 2 * count, sizeof(float));
++	src->voice_back = calloc(frames * 2 * count, sizeof(float));
++	src->keyon_front = calloc(frames, sizeof(uint16_t));
++	src->keyon_back = calloc(frames, sizeof(uint16_t));
++	src->voice_frames = frames;
++	src->voice_base = base;
++	src->num_voices = count;
++}
++
++void render_swap_voices(audio_source *src)
++{
++	float *voices = src->voice_front;
++	src->voice_front = src->voice_back;
++	src->voice_back = voices;
++	uint16_t *keyon = src->keyon_front;
++	src->keyon_front = src->keyon_back;
++	src->keyon_back = keyon;
++}
++
++//MDMI: the front buffers' voices in the mix's units, total_voices per frame, each left and right
++uint32_t render_collect_voices(float *out, uint16_t *keyon, uint32_t frames, uint8_t total_voices)
++{
++	memset(out, 0, frames * total_voices * 2 * sizeof(float));
++	memset(keyon, 0, frames * sizeof(uint16_t));
++	for (uint8_t i = 0; i < num_audio_sources; i++)
++	{
++		audio_source *src = audio_sources[i];
++		if (!src->voice_front || src->voice_base + src->num_voices > total_voices) {
++			continue;
++		}
++		float gain = src->gain_mult * overall_gain_mult / 0x7FFF;
++		uint32_t count = frames < src->voice_frames ? frames : src->voice_frames;
++		for (uint32_t f = 0; f < count; f++)
++		{
++			const float *from = src->voice_front + f * 2 * src->num_voices;
++			float *to = out + (f * total_voices + src->voice_base) * 2;
++			for (uint8_t v = 0; v < 2 * src->num_voices; v++)
++			{
++				to[v] = from[v] * gain;
++			}
++			keyon[f] |= src->keyon_front[f] << src->voice_base;
++		}
++	}
++	return frames;
+ }
+ 
+ static void update_source(audio_source *src, double rc, uint8_t sync_changed)
+@@ -414,6 +502,19 @@ static void update_source(audio_source *src, double rc, uint8_t sync_changed)
  	}
  }
  
@@ -379,10 +568,47 @@ index 9f0b28b..899e5c4 100644
  void render_audio_initialized(render_audio_format format, uint32_t rate, uint8_t channels, uint32_t buffer_size, int sample_size_in)
  {
 diff --git a/render_audio.h b/render_audio.h
-index 914219f..54efbf6 100644
+index 914219f..c32901b 100644
 --- a/render_audio.h
 +++ b/render_audio.h
-@@ -44,6 +44,7 @@ void render_audio_initialized(render_audio_format format, uint32_t rate, uint8_t
+@@ -2,6 +2,7 @@
+ #define RENDER_AUDIO_H_
+ 
+ #include <stdint.h>
++#define RENDER_MAX_SOURCE_VOICES 6
+ typedef enum {
+ 	RENDER_AUDIO_S16,
+ 	RENDER_AUDIO_FLOAT,
+@@ -26,6 +27,16 @@ typedef struct {
+ 	int16_t  last_right;
+ 	uint8_t  num_channels;
+ 	uint8_t  front_populated;
++	//MDMI: each voice of the chip on its own, beside the mix (stage 17)
++	float    *voice_front;
++	float    *voice_back;
++	uint16_t *keyon_front;
++	uint16_t *keyon_back;
++	float    voice_last[2 * RENDER_MAX_SOURCE_VOICES];
++	uint32_t voice_frames;
++	uint16_t keyon_pending;
++	uint8_t  num_voices;
++	uint8_t  voice_base;
+ } audio_source;
+ 
+ //public interface
+@@ -34,6 +45,11 @@ void render_audio_source_gaindb(audio_source *src, float gain);
+ void render_audio_adjust_clock(audio_source *src, uint64_t master_clock, uint64_t sample_divider);
+ void render_put_mono_sample(audio_source *src, int16_t value);
+ void render_put_stereo_sample(audio_source *src, int16_t left, int16_t right);
++//MDMI: a source whose mix is the sum of voices hands them over too; keyon has a bit per voice
++void render_audio_source_voices(audio_source *src, uint8_t base, uint8_t count);
++void render_put_voices_sample(audio_source *src, int16_t left, int16_t right, const int16_t *voice_left, const int16_t *voice_right, uint16_t keyon);
++void render_swap_voices(audio_source *src);
++uint32_t render_collect_voices(float *out, uint16_t *keyon, uint32_t frames, uint8_t total_voices);
+ void render_pause_source(audio_source *src);
+ void render_resume_source(audio_source *src);
+ void render_free_source(audio_source *src);
+@@ -44,6 +60,7 @@ void render_audio_initialized(render_audio_format format, uint32_t rate, uint8_t
  int mix_and_convert(unsigned char *byte_stream, int len, int *min_remaining_out);
  uint8_t all_sources_ready(void);
  void render_audio_adjust_speed(float adjust_ratio);
@@ -447,3 +673,58 @@ index 09efac7..7daabbc 100644
  	exit(1);
  }
  
+diff --git a/ym2612.c b/ym2612.c
+index 585c283..416533d 100644
+--- a/ym2612.c
++++ b/ym2612.c
+@@ -144,6 +144,7 @@ void ym_init(ym2612_context * context, uint32_t master_clock, uint32_t clock_div
+ 	context->clock_inc = clock_div * 6;
+ 	context->busy_cycles = BUSY_CYCLES * context->clock_inc;
+ 	context->audio = render_audio_source("YM2612", master_clock, context->clock_inc * OPN2_NUM_OPERATORS, 2);
++	render_audio_source_voices(context->audio, 0, OPN2_NUM_CHANNELS);
+ 	//TODO: pick a randomish high initial value and lower it over time
+ 	context->invalid_status_decay = 225000 * context->clock_inc;
+ 	context->status_address_mask = (options & YM_OPT_3834) ? 0 : 3;
+@@ -461,7 +462,9 @@ void ym_run_phase(ym2612_context *context, uint32_t channel, uint32_t op)
+ void ym_output_sample(ym2612_context *context)
+ {
+ 	int16_t left = 0, right = 0;
++	int16_t voice_left[OPN2_NUM_CHANNELS], voice_right[OPN2_NUM_CHANNELS];
+ 	for (int i = 0; i < OPN2_NUM_CHANNELS; i++) {
++		int16_t left_before = left, right_before = right;
+ 		int16_t value = context->channels[i].output;
+ 		if (value >= 0) {
+ 			value += context->zero_offset;
+@@ -496,8 +499,11 @@ void ym_output_sample(ym2612_context *context)
+ 			}
+ 			right += (value * context->volume_mult) / (60 * context->volume_div);
+ 		}
++		voice_left[i] = left - left_before;
++		voice_right[i] = right - right_before;
+ 	}
+-	render_put_stereo_sample(context->audio, left, right);
++	render_put_voices_sample(context->audio, left, right, voice_left, voice_right, context->mdmi_keyon);
++	context->mdmi_keyon = 0;
+ }
+ 
+ void ym_run(ym2612_context * context, uint32_t to_cycle)
+@@ -775,6 +781,7 @@ void ym_data_write(ym2612_context * context, uint8_t value)
+ 					if (changes & keyon_bits[bit]) {
+ 						if (value & keyon_bits[bit]) {
+ 							first_key_on = 1;
++							context->mdmi_keyon |= 1 << channel;
+ 							//printf("Key On for operator %d in channel %d\n", op, channel);
+ 							keyon(context->operators + op, context->channels + channel);
+ 						} else {
+diff --git a/ym2612.h b/ym2612.h
+index a5768dc..cc9f9e5 100644
+--- a/ym2612.h
++++ b/ym2612.h
+@@ -68,6 +68,7 @@ typedef struct {
+ 	uint8_t      lfo_am_step;
+ 	uint8_t      lfo_pm_step;
+ 	uint8_t      csm_keyon;
++	uint8_t      mdmi_keyon; //MDMI: channels keyed on since the last sample
+ 	uint8_t      status;
+ 	uint8_t      last_status;
+ 	uint8_t      selected_reg;

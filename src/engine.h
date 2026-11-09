@@ -9,6 +9,13 @@
 // a private copy of the BlastEm DLL because the core keeps its state in globals.
 typedef struct mdmi_engine mdmi_engine;
 
+// The chip's voices: FM 1-6 (the DAC on 6), PSG tones 1-3, noise. Each plays into the output of the
+// MIDI channel whose note it last started (D46); MIDI channels 1-10 have an output each.
+#define MDMI_VOICES 10
+#define MDMI_OUTPUTS 10
+// Main left and right, then each output's left and right.
+#define MDMI_RENDER_CHANNELS (2 + 2 * MDMI_OUTPUTS)
+
 typedef struct {
 	uint32_t underruns;
 	uint32_t dropped_midi;
@@ -33,6 +40,13 @@ typedef struct {
 	uint32_t worst_short;
 	uint32_t longest_burst;
 	uint32_t sample_rate;
+	// Stage 17: owners whose voice didn't key on within a second, the longest wait
+	// from an owner to its key-on, batches whose voices did not come, and how far the voices' sum
+	// strayed from the core's own mix after the DC blocker, in its 16-bit steps.
+	uint32_t owner_misses;
+	float owner_wait_ms;
+	uint32_t voice_batch_misses;
+	float voice_mix_error;
 } mdmi_engine_stats;
 
 // The ROM's screen. A frame stays valid until the next call to mdmi_engine_latest_frame.
@@ -72,6 +86,8 @@ bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size);
 // after mdmi_engine_render it stands at the step past the audio, whatever the scheduler did. It may
 // still be finishing that step by a few cycles while the test reads it.
 void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep);
+// Tests only: the longest wait from an owner to its key-on since the last call, in ms.
+float mdmi_engine_test_take_owner_wait(mdmi_engine *e);
 // Tests only: what the running YM2612 holds in a register.
 uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg);
 // The attenuation of a PSG channel, 0-15, for tests.
@@ -85,6 +101,12 @@ const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);
 // Audio thread. Queue a block's MIDI first, then render that block.
 void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *bytes, size_t length);
 void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset);
+// The voice's next note belongs to channel 0-9 (MIDI 1-10): queued with the block's MIDI, it takes
+// the voice from the voice's next key-on on, so a sounding tail stays where it was.
+void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel);
+// Main only.
 void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t frames);
+// MDMI_RENDER_CHANNELS buffers, any of them NULL.
+void mdmi_engine_render_outputs(mdmi_engine *e, float *const *channels, uint32_t frames);
 
 #endif

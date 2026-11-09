@@ -1621,6 +1621,7 @@ void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
 // none of them.
 static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, patch_emit_fn emit, void *context)
 {
+	int voice = note->channel;
 	if (!alone) {
 		int waiting = -1, first = -1;
 		for (int voice = PATCH_NUM_FM_CHANNELS - 1; voice >= 0; voice--) {
@@ -1637,6 +1638,11 @@ static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, pa
 		patch->voices[waiting].key = patch->voices[first].key;
 		patch->voices[first].key = note->key;
 		patch->voices[first].pending = false;
+		voice = first;
+	}
+	// The DAC keys nothing on: its voice is channel 6's from the DAC's start on (patch_sync).
+	if (patch->owner && !is_dac_voice(patch, note->channel)) {
+		patch->owner(context, voice, note->channel);
 	}
 	emit_note(emit, context, 0x90, note->channel, note->key, note->velocity);
 }
@@ -1781,6 +1787,10 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 	if (model_globals[GLOBAL_DAC] != rom_globals[GLOBAL_DAC]) {
 		// The ROM swaps the Z80 driver for this, and the Z80's reset line also clears the YM2612.
 		// The ROM doesn't know, so FM stays silent until its registers are written again.
+		// The switch resets the YM2612, so no tail sounds on: the DAC's voice is channel 6's at once.
+		if (patch->owner && model_globals[GLOBAL_DAC] && receiver == &patch->rom) {
+			patch->owner(context, -(PATCH_NUM_FM_CHANNELS - 1) - 1, PATCH_NUM_FM_CHANNELS - 1);
+		}
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_DAC, model_globals[GLOBAL_DAC] ? CC_ON : 0);
 		rom_globals[GLOBAL_DAC] = model_globals[GLOBAL_DAC];
 		rom_globals[GLOBAL_LFO_ON] = rom_globals[GLOBAL_LFO_RATE] = rom_globals[GLOBAL_CH3_MODE] = PATCH_UNKNOWN;
@@ -1922,6 +1932,10 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	bool fm = channel < PATCH_NUM_FM_CHANNELS;
 	bool changed = false, moved = false;
 	bool note = fm && (status == 0x90 || status == 0x80) && length >= 3;
+	// MIDI 11-13 play channel 3's operators in Ch3 Special Mode: on its voice, into its output.
+	if (patch->owner && status == 0x90 && length >= 3 && bytes[2] && channel >= 10 && channel <= 12) {
+		patch->owner(context, 2, 2);
+	}
 	if (note && status == 0x90 && bytes[2]) {
 		note_on(patch, channel, bytes[1] & 0x7F, bytes[2], emit, context);
 		return false;

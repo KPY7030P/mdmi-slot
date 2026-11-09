@@ -29,11 +29,42 @@ static mdmi_engine *engine;
 static mdmi_patch *patch;
 static int failures;
 static float left[BLOCK], right[BLOCK];
+// Stage 17: each output's block, how much each output sounded since the last reset_energy, and how
+// far Main strayed from the outputs' sum.
+static float outputs[2 * MDMI_OUTPUTS][BLOCK];
+static double out_energy[MDMI_OUTPUTS];
+static float sum_error;
 
 static void emit(void *context, const uint8_t *bytes, size_t length)
 {
 	(void)context;
 	mdmi_engine_midi(engine, 0, bytes, length);
+}
+
+static void owner(void *context, int voice, int channel)
+{
+	(void)context;
+	mdmi_engine_voice_owner(engine, 0, voice, channel);
+}
+
+static void render_block(int frames)
+{
+	float *channels[MDMI_RENDER_CHANNELS] = {left, right};
+	for (int ch = 0; ch < 2 * MDMI_OUTPUTS; ch++) {
+		channels[2 + ch] = outputs[ch];
+	}
+	mdmi_engine_render_outputs(engine, channels, (uint32_t)frames);
+	for (int i = 0; i < frames; i++) {
+		float sum[2] = {0, 0};
+		for (int o = 0; o < MDMI_OUTPUTS; o++) {
+			const float l = outputs[o * 2][i], r = outputs[o * 2 + 1][i];
+			out_energy[o] += (double)l * l + (double)r * r;
+			sum[0] += l;
+			sum[1] += r;
+		}
+		const float error = fmaxf(fabsf(sum[0] - left[i]), fabsf(sum[1] - right[i]));
+		sum_error = error > sum_error ? error : sum_error;
+	}
 }
 
 // The dealer's clock (D41), the way the plugin keeps it: notes that wait start when due.
@@ -43,7 +74,7 @@ static void tick(int frames)
 {
 	patch_set_now(patch, clock_samples, RATE);
 	patch_due(patch, emit, NULL);
-	mdmi_engine_render(engine, left, right, frames);
+	render_block(frames);
 	clock_samples += (uint64_t)frames;
 	patch_set_now(patch, clock_samples, RATE);
 }
@@ -2206,6 +2237,144 @@ static void test_adjacent(void)
 	set_on(ch, PARAM_PRESET, 0);
 }
 
+static void reset_energy(void)
+{
+	memset(out_energy, 0, sizeof(out_energy));
+}
+
+// The outputs that sounded since reset_energy, as a bit per output: those within 30 dB of the loudest.
+// Below that lie the YM2612's ladder steps: a silent voice's offset jumps when the ROM sets the next
+// note's pan before its key-on, and that step still belongs to the voice's old channel (D46), 37 dB
+// under the note in the Ch3 Special test.
+static int loud_outputs(void)
+{
+	double most = 0;
+	for (int o = 0; o < MDMI_OUTPUTS; o++) {
+		most = out_energy[o] > most ? out_energy[o] : most;
+	}
+	int mask = 0;
+	for (int o = 0; o < MDMI_OUTPUTS; o++) {
+		if (most > 0 && out_energy[o] > most * 1e-3) {
+			mask |= 1 << o;
+		}
+	}
+	return mask;
+}
+
+static void check_outputs(int want, const char *what)
+{
+	const int got = loud_outputs();
+	char list[64] = "";
+	for (int o = 0; o < MDMI_OUTPUTS; o++) {
+		if (got >> o & 1) {
+			snprintf(list + strlen(list), sizeof(list) - strlen(list), " %d", o + 1);
+		}
+	}
+	printf("  %s: %s (outputs sounding:%s)\n", got == want ? "ok  " : "FAIL", what, got ? list : " none");
+	if (got != want) {
+		failures++;
+		for (int o = 0; o < MDMI_OUTPUTS; o++) {
+			printf("    output %d: %.1f dB\n", o + 1, 10.0 * log10(out_energy[o] + 1e-30));
+		}
+	}
+}
+
+// Every note off, and then until the releases have died away, at most 10 s.
+static void quiet(void)
+{
+	patch_all_notes_off(patch, emit, NULL);
+	for (int i = 0; i < 200; i++) {
+		reset_energy();
+		render(10);
+		double most = 0;
+		for (int o = 0; o < MDMI_OUTPUTS; o++) {
+			most = out_energy[o] > most ? out_energy[o] : most;
+		}
+		// Until the envelopes have ended: a release near silence that the next note's registers make
+		// louder again before its key-on is still the old channel's (D46).
+		if (most < 1e-10) {
+			break;
+		}
+	}
+	reset_energy();
+}
+
+// Stage 17 (D46): each MIDI channel has an output, and a voice plays into the output of the channel
+// whose note it last started.
+static void test_outputs(void)
+{
+	// test_restart leaves PSG 2 sounding with its envelope of no release (ROADMAP); a note with the
+	// bank's envelope ends it.
+	midi(0xC7, 0, 0);
+	midi(0x97, 60, 127);
+	midi(0x87, 60, 0);
+	quiet();
+	play_chord(3, true);
+	int lent = 0;
+	for (int voice = 1; voice < FM_CHANNELS; voice++) {
+		lent += patch->playing[voice] == 0;
+	}
+	check(lent == 2, "a chord of three on channel 1 borrows two voices");
+	reset_energy();
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 0, "the whole chord plays into output 1");
+	midi(0x91, 72, 127);
+	render(SETTLE_BLOCKS);
+	reset_energy();
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 0 | 1 << 1, "channel 2 takes its voice back into output 2, the chord stays in output 1");
+	quiet();
+
+	set_global(GLOBAL_CH3_MODE, 1);
+	sync_and_settle();
+	reset_energy();
+	midi(0x92, 60, 127);
+	for (int op = 0; op < 3; op++) {
+		midi((uint8_t)(0x9A + op), (uint8_t)(64 + op * 3), 127);
+	}
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 2, "Ch3 Special with MIDI 11-13: all in output 3");
+	for (int op = 0; op < 3; op++) {
+		midi((uint8_t)(0x8A + op), (uint8_t)(64 + op * 3), 0);
+	}
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	quiet();
+
+	set_global(GLOBAL_DAC, 1);
+	wait_for_voices(FM_CHANNELS - 2);
+	quiet();
+	midi(0x95, 36, 127);
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 5, "a DAC sample plays into output 6");
+	set_global(GLOBAL_DAC, 0);
+	wait_for_voices(FM_CHANNELS - 1);
+	quiet();
+
+	midi(0x96, 64, 127);
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 6, "PSG tone 1 plays into output 7");
+	quiet();
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3);
+	sync_and_settle();
+	reset_energy();
+	midi(0x99, 45, 127);
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 9, "noise on tone 3 plays into output 10, output 9 is silent");
+	quiet();
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_KIT);
+	sync_and_settle();
+	reset_energy();
+	midi(0x99, 36, 127);
+	render(SETTLE_BLOCKS);
+	check_outputs(1 << 9, "a Kit drum plays into output 10, output 9 is silent");
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_WHITE);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
+	sync_and_settle();
+	quiet();
+}
+
 static void test_reset(void)
 {
 	const uint8_t reset = 0xFF;
@@ -2225,6 +2394,7 @@ int main(int argc, char **argv)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	patch_global_init();
 	patch_init(patch);
+	patch->owner = owner;
 	if (!mdmi_engine_global_init() || !(engine = mdmi_engine_create())) {
 		printf("FAIL: engine\n");
 		return 1;
@@ -2251,6 +2421,8 @@ int main(int argc, char **argv)
 	test_shaping();
 	test_live();
 	test_load();
+	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
+	mdmi_engine_test_take_owner_wait(engine);
 	test_voice_by_hand();
 	test_reset();
 	test_dealer();
@@ -2264,11 +2436,23 @@ int main(int argc, char **argv)
 	test_reset();
 	test_adjacent();
 	test_reset();
+	test_outputs();
+	test_reset();
+	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {
 		printf("  FAIL: %u MIDI messages lost\n", stats.dropped_midi);
 		failures++;
 	}
+	printf("    voices against the core's mix: %.2f steps of 16 bits at most; Main against the outputs' sum: %.2g\n", stats.voice_mix_error, sum_error);
+	// BlastEm's lowpass truncates in its feedback, the voices run it in float (D46); a voice a sample
+	// off would show hundreds of steps on an attack.
+	check(stats.voice_mix_error <= 16.0f, "over every test the chip's voices add up to the core's mix within 16 steps of 16 bits after the DC blocker");
+	check(sum_error < 1e-5f, "Main is the sum of the ten outputs");
+	printf("    an owner waited for its key-on %.1f ms at most, %.1f ms in the tests without a restart\n", stats.owner_wait_ms, wait_no_restart);
+	check(wait_no_restart <= 40.0f, "without a restart every owner met its key-on within 40 ms (chords, Retrigger, revive, Porta)");
+	check(stats.owner_misses == 0, "every owner found a key-on on its voice within a second");
+	check(stats.voice_batch_misses == 0, "every batch of the mix came with its voices");
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;
 }

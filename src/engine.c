@@ -1,8 +1,11 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include <avrt.h>
+#include <pmmintrin.h>
+#include <xmmintrin.h>
 #include "engine.h"
 #include "libretro.h"
 #include "resampler.h"
@@ -31,6 +34,14 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 #define STALE_TEMP_FILE_SECONDS (24 * 3600)
 // One-pole high-pass that removes the DC offset of the YM2612 DAC.
 #define DC_BLOCK_HZ 5.0
+// The core's rate is constant for an NTSC machine.
+#define CORE_RATE (53693175.0 / (7 * 6 * 24))
+// The ring: Main, then each output (stage 17), left and right.
+#define RING_CHANNELS (2 + 2 * MDMI_OUTPUTS)
+#define OUT_CHANNELS (2 * MDMI_OUTPUTS)
+#define NO_OWNER -1
+// An owner whose voice hasn't keyed on in this long counts as a miss.
+#define OWNER_STUCK_SECONDS 1.0
 
 // An image for the next boot, handed from the main thread to the worker.
 typedef struct {
@@ -38,8 +49,13 @@ typedef struct {
 	uint8_t bytes[];
 } rom_image;
 
+enum { CHUNK_MIDI, CHUNK_OWNER, CHUNK_OWNER_NOW };
+
+// A piece of a MIDI message, or which channel a voice's next note belongs to (CHUNK_OWNER: bytes
+// hold the voice and the channel). Both go in one queue so they keep their order.
 typedef struct {
 	uint64_t target;
+	uint8_t kind;
 	uint8_t length;
 	uint8_t bytes[MIDI_CHUNK];
 } midi_chunk;
@@ -59,6 +75,8 @@ typedef uint32_t (*has_failed_fn)(void);
 typedef size_t (*cart_compare_fn)(const uint8_t *, size_t, size_t, size_t);
 typedef void (*write_ram_fn)(size_t, const uint8_t *, size_t);
 typedef void (*set_lowpass_fn)(double);
+typedef void (*voice_batch_fn)(const float *, const uint16_t *, size_t);
+typedef void (*set_voice_batch_fn)(voice_batch_fn);
 typedef uint8_t (*test_ym_read_fn)(uint8_t, uint8_t);
 typedef uint8_t (*test_psg_volume_fn)(uint8_t);
 typedef uint16_t (*test_psg_tone_fn)(uint8_t);
@@ -91,8 +109,23 @@ struct mdmi_engine {
 	uint32_t fill_target;
 	resampler *rs;
 	float dc_coef;
-	float dc_in[2], dc_out[2];
+	float dc_in[OUT_CHANNELS], dc_out[OUT_CHANNELS];
 	bool dc_primed;
+	// The worker's: the core's voices of the batch it is about to mix, and which output each voice
+	// plays into (D46). A pending owner takes the voice at its next key-on.
+	float voices[CORE_BATCH_FRAMES * MDMI_VOICES * 2];
+	uint16_t keyon[CORE_BATCH_FRAMES];
+	uint32_t voice_frames;
+	int8_t owner[MDMI_VOICES];
+	int8_t pending_owner[MDMI_VOICES];
+	uint64_t pending_since[MDMI_VOICES];
+	uint64_t core_frames;
+	uint32_t owner_misses;
+	float owner_wait_ms;
+	float owner_wait_round_ms;
+	uint32_t voice_batch_misses;
+	float voice_mix_error;
+	float mix_diff_in[2], mix_diff_out[2];
 	bool thread_started;
 	double worst_run_ms;
 	double worst_wait_ms;
@@ -133,7 +166,7 @@ struct mdmi_engine {
 	uint32_t longest_burst;
 	double last_render_end_ms;
 
-	float *ring[2];
+	float *ring[RING_CHANNELS];
 	uint32_t ring_mask;
 	uint64_t ring_read;
 	uint64_t ring_write;
@@ -286,31 +319,103 @@ static void audio_cb(int16_t left, int16_t right)
 	(void)right;
 }
 
+// The core hands over its voices just before the mix of the same frames.
+static void voice_batch_cb(const float *voices, const uint16_t *keyon, size_t frames)
+{
+	mdmi_engine *e = current_engine();
+	if (frames > CORE_BATCH_FRAMES) {
+		frames = CORE_BATCH_FRAMES;
+	}
+	memcpy(e->voices, voices, frames * MDMI_VOICES * 2 * sizeof(float));
+	memcpy(e->keyon, keyon, frames * sizeof(uint16_t));
+	e->voice_frames = (uint32_t)frames;
+}
+
+static void reset_owners(mdmi_engine *e)
+{
+	for (int voice = 0; voice < MDMI_VOICES; voice++) {
+		e->owner[voice] = (int8_t)voice;
+		e->pending_owner[voice] = NO_OWNER;
+	}
+}
+
+// Every voice plays into the output of the channel whose note it last started (D46): a release tail
+// stays with its channel until another channel's note keys the voice on. Main is the outputs' sum, so
+// the outputs add up to it exactly. The core's own mix only checks that the voices add up to it.
 static size_t audio_batch_cb(const int16_t *data, size_t frames)
 {
 	mdmi_engine *e = current_engine();
+	const bool have_voices = e->voice_frames == frames;
+	e->voice_frames = 0;
 	if (e->discard_audio) {
 		return frames;
 	}
+	if (!have_voices) {
+		e->voice_batch_misses++;
+	}
+	// The core's int16 mix is its float mix * 0x7FFF; the plugin's scale is int16 / 32768.
+	const float scale = 32767.0f / 32768.0f;
+	const uint64_t stuck_frames = (uint64_t)(OWNER_STUCK_SECONDS * CORE_RATE);
 	uint64_t write = e->ring_write;
-	for (size_t i = 0; i < frames; i++) {
-		float in[2];
-		for (int ch = 0; ch < 2; ch++) {
-			float sample = data[i * 2 + ch] / 32768.0f;
-			if (!e->dc_primed) {
-				e->dc_in[ch] = sample;
+	for (size_t i = 0; i < frames; i++, e->core_frames++) {
+		float in[OUT_CHANNELS] = {0};
+		if (have_voices) {
+			const uint16_t keyon = e->keyon[i];
+			const float *voice = e->voices + i * MDMI_VOICES * 2;
+			float sum[2] = {0, 0};
+			for (int v = 0; v < MDMI_VOICES; v++) {
+				if (e->pending_owner[v] != NO_OWNER && keyon >> v & 1) {
+					const float waited_ms = (float)((e->core_frames - e->pending_since[v]) * 1000.0 / CORE_RATE);
+					e->owner_wait_ms = waited_ms > e->owner_wait_ms ? waited_ms : e->owner_wait_ms;
+					e->owner_wait_round_ms = waited_ms > e->owner_wait_round_ms ? waited_ms : e->owner_wait_round_ms;
+					e->owner[v] = e->pending_owner[v];
+					e->pending_owner[v] = NO_OWNER;
+				} else if (e->pending_owner[v] != NO_OWNER && e->core_frames - e->pending_since[v] == stuck_frames) {
+					// Far longer than the ROM ever takes, even behind a whole resend after a restart:
+					// the voice the dealer named isn't the one the ROM keyed on.
+					e->owner_misses++;
+				}
+				const int out = e->owner[v];
+				in[out * 2] += voice[v * 2] * scale;
+				in[out * 2 + 1] += voice[v * 2 + 1] * scale;
+				sum[0] += voice[v * 2];
+				sum[1] += voice[v * 2 + 1];
 			}
-			float out = sample - e->dc_in[ch] + e->dc_coef * e->dc_out[ch];
-			e->dc_in[ch] = sample;
+			// The core's lowpass rounds down in its feedback, which leaves it a slow offset the
+			// voices, in float, don't have; the DC blocker takes that from both, so compare after it.
+			for (int ch = 0; ch < 2; ch++) {
+				const float diff = sum[ch] * 32767.0f - data[i * 2 + ch];
+				const float error = diff - e->mix_diff_in[ch] + e->dc_coef * e->mix_diff_out[ch];
+				e->mix_diff_in[ch] = diff;
+				e->mix_diff_out[ch] = error;
+				if (e->dc_primed && fabsf(error) > e->voice_mix_error) {
+					e->voice_mix_error = fabsf(error);
+				}
+			}
+		}
+		for (int ch = 0; ch < OUT_CHANNELS; ch++) {
+			if (!e->dc_primed) {
+				e->dc_in[ch] = in[ch];
+			}
+			const float out = in[ch] - e->dc_in[ch] + e->dc_coef * e->dc_out[ch];
+			e->dc_in[ch] = in[ch];
 			e->dc_out[ch] = out;
 			in[ch] = out;
 		}
 		e->dc_primed = true;
-		float out_l[8], out_r[8];
-		int count = resampler_push(e->rs, in[0], in[1], out_l, out_r, 8);
+		float out[8 * OUT_CHANNELS];
+		int count = resampler_push(e->rs, in, out, 8);
 		for (int n = 0; n < count; n++) {
-			e->ring[0][write & e->ring_mask] = out_l[n];
-			e->ring[1][write & e->ring_mask] = out_r[n];
+			const float *frame = out + n * OUT_CHANNELS;
+			float main_l = 0, main_r = 0;
+			for (int o = 0; o < MDMI_OUTPUTS; o++) {
+				main_l += frame[o * 2];
+				main_r += frame[o * 2 + 1];
+				e->ring[2 + o * 2][write & e->ring_mask] = frame[o * 2];
+				e->ring[3 + o * 2][write & e->ring_mask] = frame[o * 2 + 1];
+			}
+			e->ring[0][write & e->ring_mask] = main_l;
+			e->ring[1][write & e->ring_mask] = main_r;
 			write++;
 		}
 	}
@@ -475,6 +580,7 @@ static bool load_core(mdmi_engine *e)
 	LOAD(write_ram, write_ram_fn, "mdmi_write_ram")
 	LOAD(deinit, void_fn, "retro_deinit")
 	LOAD(set_lowpass, set_lowpass_fn, "mdmi_set_lowpass")
+	LOAD(set_voice_batch, set_voice_batch_fn, "mdmi_set_voice_batch")
 	e->retro_run = run;
 	e->midi_write = midi_write;
 	e->has_failed = has_failed;
@@ -493,6 +599,8 @@ static bool load_core(mdmi_engine *e)
 	set_video(video_cb);
 	set_sample(audio_cb);
 	set_batch(audio_batch_cb);
+	set_voice_batch(voice_batch_cb);
+	reset_owners(e);
 	set_poll(input_poll_cb);
 	set_state(input_state_cb);
 	retro_init();
@@ -569,7 +677,17 @@ static void pump_midi(mdmi_engine *e, uint64_t position)
 		if (chunk->target > position) {
 			break;
 		}
-		e->midi_write(chunk->bytes, chunk->length);
+		if (chunk->kind == CHUNK_OWNER) {
+			// The latest wins: a voice taken by another channel before it keyed on cuts the note that
+			// was meant for it anyway.
+			e->pending_owner[chunk->bytes[0]] = (int8_t)chunk->bytes[1];
+			e->pending_since[chunk->bytes[0]] = e->core_frames;
+		} else if (chunk->kind == CHUNK_OWNER_NOW) {
+			e->owner[chunk->bytes[0]] = (int8_t)chunk->bytes[1];
+			e->pending_owner[chunk->bytes[0]] = NO_OWNER;
+		} else {
+			e->midi_write(chunk->bytes, chunk->length);
+		}
 		tail++;
 	}
 	__atomic_store_n(&e->midi_tail, tail, __ATOMIC_RELEASE);
@@ -717,6 +835,10 @@ static DWORD WINAPI worker_main(LPVOID param)
 	mdmi_engine *e = param;
 	TlsSetValue(tls_engine, e);
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+	// Decaying voices, DC blockers and filters reach denormal floats, which cost a hundred times a
+	// normal one; on an audio thread they are zero (stage 17: twenty streams instead of two).
+	_MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+	_MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
 
 	if (!load_core(e)) {
 		__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
@@ -904,8 +1026,9 @@ void mdmi_engine_destroy(mdmi_engine *e)
 			CloseHandle(e->wake);
 		}
 		free(e->rs);
-		free(e->ring[0]);
-		free(e->ring[1]);
+		for (int ch = 0; ch < RING_CHANNELS; ch++) {
+			free(e->ring[ch]);
+		}
 		free(e->midi_queue);
 		free(e->frames);
 		free(e);
@@ -917,13 +1040,12 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 	if (e->thread_started && worker_dead(e)) {
 		return false;
 	}
-	// The core's rate is constant for an NTSC machine.
-	const double core_rate = 53693175.0 / (7 * 6 * 24);
+	const double core_rate = CORE_RATE;
 	e->sample_rate = sample_rate;
-	resampler_init(e->rs, core_rate, sample_rate);
+	resampler_init(e->rs, core_rate, sample_rate, OUT_CHANNELS);
 	e->dc_coef = (float)(1.0 - 2.0 * 3.14159265358979 * DC_BLOCK_HZ / core_rate);
 	e->dc_primed = false;
-	e->dc_out[0] = e->dc_out[1] = 0;
+	memset(e->dc_out, 0, sizeof(e->dc_out));
 
 	uint32_t batch = (uint32_t)(CORE_BATCH_FRAMES * sample_rate / core_rate) + 2;
 	uint32_t margin = (uint32_t)(sample_rate * MARGIN_SECONDS);
@@ -937,15 +1059,18 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 		ring_frames *= 2;
 	}
 	if (ring_frames != e->ring_mask + 1 || !e->ring[0]) {
-		for (int ch = 0; ch < 2; ch++) {
+		bool all = true;
+		for (int ch = 0; ch < RING_CHANNELS; ch++) {
 			free(e->ring[ch]);
 			e->ring[ch] = calloc(ring_frames, sizeof(float));
+			all = all && e->ring[ch];
 		}
-		if (!e->ring[0] || !e->ring[1]) {
-			// Both or neither: the next activation then allocates again.
-			free(e->ring[0]);
-			free(e->ring[1]);
-			e->ring[0] = e->ring[1] = NULL;
+		if (!all) {
+			// All or none: the next activation then allocates again.
+			for (int ch = 0; ch < RING_CHANNELS; ch++) {
+				free(e->ring[ch]);
+				e->ring[ch] = NULL;
+			}
 			return false;
 		}
 		e->ring_mask = ring_frames - 1;
@@ -1068,6 +1193,13 @@ uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel)
 	return e->test_psg_tone(channel);
 }
 
+float mdmi_engine_test_take_owner_wait(mdmi_engine *e)
+{
+	const float wait = e->owner_wait_round_ms;
+	e->owner_wait_round_ms = 0;
+	return wait;
+}
+
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 {
 	mdmi_engine_stats stats = {
@@ -1092,6 +1224,10 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.worst_short = __atomic_load_n(&e->worst_short, __ATOMIC_RELAXED),
 		.longest_burst = __atomic_load_n(&e->longest_burst, __ATOMIC_RELAXED),
 		.sample_rate = (uint32_t)e->sample_rate,
+		.owner_misses = __atomic_load_n(&e->owner_misses, __ATOMIC_RELAXED),
+		.owner_wait_ms = e->owner_wait_ms,
+		.voice_batch_misses = __atomic_load_n(&e->voice_batch_misses, __ATOMIC_RELAXED),
+		.voice_mix_error = e->voice_mix_error,
 	};
 	return stats;
 }
@@ -1126,6 +1262,7 @@ void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *byt
 		midi_chunk *chunk = &e->midi_queue[head % MIDI_QUEUE_SIZE];
 		size_t count = length < MIDI_CHUNK ? length : MIDI_CHUNK;
 		chunk->target = target;
+		chunk->kind = CHUNK_MIDI;
 		chunk->length = (uint8_t)count;
 		memcpy(chunk->bytes, bytes, count);
 		bytes += count;
@@ -1133,6 +1270,31 @@ void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *byt
 		head++;
 	}
 	__atomic_store_n(&e->midi_head, head, __ATOMIC_RELEASE);
+}
+
+void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel)
+{
+	const bool at_once = voice < 0;
+	if (at_once) {
+		voice = -1 - voice;
+	}
+	if (voice < 0 || voice >= MDMI_VOICES || channel < 0 || channel >= MDMI_OUTPUTS) {
+		return;
+	}
+	uint64_t target = __atomic_load_n(&e->ring_read, __ATOMIC_RELAXED) + sample_offset + e->midi_delay;
+	uint32_t head = e->midi_head;
+	uint32_t tail = __atomic_load_n(&e->midi_tail, __ATOMIC_ACQUIRE);
+	if (MIDI_QUEUE_SIZE - (head - tail) < 1) {
+		__atomic_fetch_add(&e->dropped_midi, 1, __ATOMIC_RELAXED);
+		return;
+	}
+	midi_chunk *chunk = &e->midi_queue[head % MIDI_QUEUE_SIZE];
+	chunk->target = target;
+	chunk->kind = at_once ? CHUNK_OWNER_NOW : CHUNK_OWNER;
+	chunk->length = 2;
+	chunk->bytes[0] = (uint8_t)voice;
+	chunk->bytes[1] = (uint8_t)channel;
+	__atomic_store_n(&e->midi_head, head + 1, __ATOMIC_RELEASE);
 }
 
 void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset)
@@ -1144,6 +1306,12 @@ void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset)
 }
 
 void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t frames)
+{
+	float *channels[MDMI_RENDER_CHANNELS] = {left, right};
+	mdmi_engine_render_outputs(e, channels, frames);
+}
+
+void mdmi_engine_render_outputs(mdmi_engine *e, float *const *channels, uint32_t frames)
 {
 	uint64_t read = e->ring_read;
 	__atomic_store_n(&e->lockstep_target, read + frames, __ATOMIC_RELEASE);
@@ -1208,12 +1376,18 @@ void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t fram
 			j_max(&e->j_burst_short_max, e->burst_short);
 		}
 	}
-	for (uint32_t i = 0; i < count; i++) {
-		left[i] = e->ring[0][(read + i) & e->ring_mask];
-		right[i] = e->ring[1][(read + i) & e->ring_mask];
-	}
-	for (uint32_t i = count; i < frames; i++) {
-		left[i] = right[i] = 0;
+	for (int ch = 0; ch < RING_CHANNELS; ch++) {
+		float *dest = channels[ch];
+		if (!dest) {
+			continue;
+		}
+		const float *ring = e->ring[ch];
+		for (uint32_t i = 0; i < count; i++) {
+			dest[i] = ring[(read + i) & e->ring_mask];
+		}
+		for (uint32_t i = count; i < frames; i++) {
+			dest[i] = 0;
+		}
 	}
 	__atomic_store_n(&e->ring_read, read + count, __ATOMIC_RELEASE);
 	SetEvent(e->wake);

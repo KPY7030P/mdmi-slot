@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.16.1).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.17.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -25,6 +25,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   the noise follows the note and periodic noise plays bass; Kit lays a drum kit over every octave (C kick,
   D snare, F# hat...), made for C1-B1, an octave up the same kit higher. Both take channel 9's tone, so channel 9 is silent.
   Not checked on a real console yet.
+- An output per MIDI channel besides Main, so each channel can be recorded or processed on a track of its own.
+  A channel's output carries all its notes, also a chord's notes on borrowed voices. Main still plays
+  everything. This exists only in the emulator: a real console has one mixed output.
 
 ## Requirements
 
@@ -54,6 +57,10 @@ To update, replace the files while the host is closed: Live locks the VST3 while
 4. To automate a knob in Live, press Configure on the device and touch the cell in the window. The plugin
    has hundreds of knobs, too many for Live to list by itself.
 5. The project saves everything: knob values, the bank, dropped files, samples.
+6. To take channels apart in Live: make an audio track per channel, set its Audio From to the plugin's track and
+   then **Ch 1-MDMI Slot** ... **Ch 10-MDMI Slot**, and Monitor to **In**. Main keeps playing everything, so mute
+   or route away the plugin's own track, or you hear the channels twice. Channel 3 in Ch3 Special Mode
+   includes MIDI 11-13, channel 6 the DAC, channel 10 the noise.
 
 [docs/GUIDE.md](docs/GUIDE.md) in the repository describes the pages, knobs and MIDI controllers in detail (in
 English; the other notes in `docs/` are in Russian).

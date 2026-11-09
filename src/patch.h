@@ -185,9 +185,15 @@ typedef struct {
 	uint8_t velocity;
 } patch_note;
 
+// Which MIDI channel 0-9 a chip voice 0-9 plays for from its next key-on (stage 17, D46), told with
+// the context of the emit that sends the note. A voice given as -1 - voice changes owner at once.
+typedef void (*patch_owner_fn)(void *context, int voice, int channel);
+
 typedef struct {
 	patch_values model;
 	patch_receiver rom;
+	// Told whose note each FM voice starts; NULL when nobody listens.
+	patch_owner_fn owner;
 	// The dealer of FM voices: one for all receivers, so all get the same layout.
 	patch_voice voices[PATCH_NUM_FM_CHANNELS];
 	// Notes held on channels that play only on their own voice: Porta On, Ch3 Special, DAC.

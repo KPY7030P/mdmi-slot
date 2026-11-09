@@ -171,6 +171,18 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   a click on one sets it as one gesture, any other click closes the choice. In Ch3 Special Mode
   channel 3's number on the page is light FM, as in the rail.
 
+- Outputs (stage 17, D46): Main and Ch 1 to Ch 10, one stereo port each, in this order and with these ids for
+  good (Live keeps routing by them). The patched BlastEm hands over each of the chip's ten voices (FM 1-6, the
+  DAC on 6, PSG tones 1-3, noise) beside its mix, through the same lowpass and interpolation in float, and
+  marks each 0x28 key-on. The dealer (`start_note`) tells the engine which MIDI channel a voice's note is
+  for, queued with the note; the engine moves the voice to that channel's output at the voice's next key-on,
+  so a release tail stays with its channel until another channel's note starts on the voice. A newer owner
+  replaces one still waiting. The DAC's voice is channel 6's the moment the DAC switches on (the switch
+  resets the YM2612), MIDI 11-13 notes give voice 3 to channel 3. Each output has its DC blocker; one
+  20-channel resampler serves them all, and Main is their sum. The voices' sum differs from BlastEm's own
+  int16 mix by up to about 14 steps of 16 bits after the DC blocker: BlastEm's lowpass truncates in its
+  feedback. The worker runs with denormals flushed to zero. Emulator only: a console has one mixed output.
+
 Toggling the DAC resets the YM2612 and the PSG, because the ROM swaps the Z80 driver: SGDK resets both chips,
 and the Z80's reset line also clears the YM2612. Sounding notes stop, `src/patch.c` reloads every FM
 channel's sound afterwards, and our ROM writes its PSG tones and volumes again (D35).
