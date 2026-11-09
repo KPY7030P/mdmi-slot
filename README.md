@@ -21,8 +21,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - DAC samples on channel 6: drop WAV files on notes, trim, tune and shape them.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
   from silence.
-- PSG noise on channel 10: Noise Type (white or periodic) and Noise Rate (three fixed rates, or Tone 3, where
-  periodic noise plays bass at the note's pitch and channel 9 stays silent). Not checked on a real console yet.
+- PSG noise on channel 10: Noise Type (white or periodic) and Noise Rate: three fixed rates (L M H), Note
+  (every key its own noise), or Tone 3 (the noise follows the note, periodic noise plays bass, channel 9 stays
+  silent). Not checked on a real console yet.
 
 ## Requirements
 

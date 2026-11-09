@@ -253,19 +253,25 @@ static void test_noise(void)
 	patch_format(&patch.bank, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3, text, sizeof(text));
 	CHECK(!strcmp(text, "Tone 3"), "the rate reads %s", text);
 	clear();
+	set(&patch, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_NOTE);
+	CHECK(sent_cc(0xB9, 13, 104), "Note goes as CC 13 104, the ROM's fifth range");
+	midi(&patch, 0xB9, 13, 127);
+	CHECK(patch.model.globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_NOTE, "CC 13 127 from a clip is Note");
+	set(&patch, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
+	clear();
 	set(&patch, GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
 	set(&patch, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3);
-	CHECK(sent_bytes == 6 && sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 96), "type and rate go as CC 12 and 13 on MIDI 10");
+	CHECK(sent_bytes == 6 && sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 78), "type and rate go as CC 12 and 13 on MIDI 10");
 	clear();
 	set(&patch, GLOBAL_DAC, 1);
-	CHECK(!sent_cc(0xB9, 12, 0) && !sent_cc(0xB9, 13, 96), "a driver swap sends neither: the ROM writes the mode again");
+	CHECK(!sent_cc(0xB9, 12, 0) && !sent_cc(0xB9, 13, 78), "a driver swap sends neither: the ROM writes the mode again");
 	clear();
 	const uint8_t reset = 0xFF;
 	patch_midi(&patch, &reset, 1, record, NULL);
-	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 96), "after a reset both go again");
+	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 78), "after a reset both go again");
 	clear();
 	midi(&patch, 0xB9, 13, 40);
-	CHECK(patch.model.globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_MID && sent_cc(0xB9, 13, 32), "CC 13 from a clip on MIDI 10 moves the knob");
+	CHECK(patch.model.globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_MID && sent_cc(0xB9, 13, 26), "CC 13 from a clip on MIDI 10 moves the knob");
 	clear();
 	midi(&patch, 0xB8, 12, 127);
 	CHECK(patch.model.globals[GLOBAL_NOISE_TYPE] == PATCH_NOISE_PERIODIC, "CC 12 on another channel doesn't");
@@ -276,7 +282,7 @@ static void test_noise(void)
 	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL) && patch_take_incoming(&other), "a saved state loads");
 	clear();
 	patch_rom_booted(&other, record, NULL);
-	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 32), "a loaded project sends its noise to a booted ROM");
+	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 26), "a loaded project sends its noise to a booted ROM");
 }
 
 static void test_incoming(void)

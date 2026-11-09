@@ -407,6 +407,27 @@ static void test_noise(void)
 	check(mdmi_engine_test_psg_volume(engine, 2) < 15 && mdmi_engine_test_psg_tone(engine, 2) == 427, "after a fixed rate channel 9 plays again");
 	midi((uint8_t)(0x80 | tone3), 60, 0);
 	render(SETTLE_BLOCKS);
+	// Rate Note: the chip's noise control as the key's own mode, the same key the same mode.
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_NOTE);
+	sync_and_settle();
+	static const struct {
+		int key, control;
+	} BY_KEY[] = {{52, 6}, {46, 5}, {45, 0}, {52, 6}};
+	bad = 0;
+	for (size_t i = 0; i < sizeof(BY_KEY) / sizeof(*BY_KEY); i++) {
+		midi((uint8_t)(0x90 | noise), (uint8_t)BY_KEY[i].key, 127);
+		render(SETTLE_BLOCKS);
+		const int control = mdmi_engine_test_psg_tone(engine, 3);
+		midi((uint8_t)(0x80 | noise), (uint8_t)BY_KEY[i].key, 0);
+		render(SETTLE_BLOCKS);
+		if (control != BY_KEY[i].control) {
+			printf("    key %d: noise control %d, meant %d\n", BY_KEY[i].key, control, BY_KEY[i].control);
+			bad++;
+		}
+	}
+	check(bad == 0, "at rate Note each key sets the chip's noise to its own mode");
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
+	sync_and_settle();
 }
 
 // A new image restarts the core (stage 12): the plugin hands everything over again, and every channel

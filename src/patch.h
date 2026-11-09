@@ -36,8 +36,9 @@ enum {
 };
 enum { PATCH_RETRIGGER_CHIP, PATCH_RETRIGGER_VOICE, PATCH_RETRIGGER_CUT };
 enum { PATCH_NOISE_PERIODIC, PATCH_NOISE_WHITE };
-// Noise Rate: three fixed rates, highest first, then channel 9's tone (channel 3 of the PSG).
-enum { PATCH_NOISE_RATE_HIGH, PATCH_NOISE_RATE_MID, PATCH_NOISE_RATE_LOW, PATCH_NOISE_RATE_TONE3 };
+// Noise Rate: three fixed rates, highest first, then channel 9's tone (channel 3 of the PSG), then a
+// mode of its own for each key (owner, D45).
+enum { PATCH_NOISE_RATE_HIGH, PATCH_NOISE_RATE_MID, PATCH_NOISE_RATE_LOW, PATCH_NOISE_RATE_TONE3, PATCH_NOISE_RATE_NOTE };
 
 // What a MIDI channel has. PSG channels have the first ones except Pan; the rest are the FM voice.
 enum {

@@ -794,19 +794,21 @@ static int active_op(const mdmi_gui *g)
 static int feedback_x(int algorithm);
 
 // Channel 10's noise (stage 16, D45): TYPE and RATE as fields, each followed by its choices, in the
-// empty band between the channel's cells and the envelope's loop strip.
+// empty band between the channel's cells and the envelope's loop strip. RATE's fixed rates go low to
+// high as L M H (owner); at NOTE each key has its own type, so TYPE's field is dim.
 #define NOISE_ROW_Y 82
 static const struct {
 	uint32_t global;
 	const char *label;
 	int value, x, w;
 } NOISE_CHOICES[] = {
-	{GLOBAL_NOISE_TYPE, "PERIODIC", PATCH_NOISE_PERIODIC, 276, 96},
-	{GLOBAL_NOISE_TYPE, "WHITE", PATCH_NOISE_WHITE, 374, 96},
-	{GLOBAL_NOISE_RATE, "HIGH", PATCH_NOISE_RATE_HIGH, 508, 50},
-	{GLOBAL_NOISE_RATE, "MID", PATCH_NOISE_RATE_MID, 560, 36},
-	{GLOBAL_NOISE_RATE, "LOW", PATCH_NOISE_RATE_LOW, 598, 36},
-	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 636, 72},
+	{GLOBAL_NOISE_TYPE, "PERIODIC", PATCH_NOISE_PERIODIC, 276, 98},
+	{GLOBAL_NOISE_TYPE, "WHITE", PATCH_NOISE_WHITE, 378, 66},
+	{GLOBAL_NOISE_RATE, "NOTE", PATCH_NOISE_RATE_NOTE, 482, 54},
+	{GLOBAL_NOISE_RATE, "L", PATCH_NOISE_RATE_LOW, 540, 28},
+	{GLOBAL_NOISE_RATE, "M", PATCH_NOISE_RATE_MID, 570, 28},
+	{GLOBAL_NOISE_RATE, "H", PATCH_NOISE_RATE_HIGH, 600, 28},
+	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 632, 75},
 };
 
 // The cells of the open page and the global knobs, so drawing and the mouse agree.
@@ -2896,10 +2898,11 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
 		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
 		if (channel == PATCH_NUM_CHANNELS - 1) {
+			const bool by_key = values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_NOTE;
 			fill(g, 242, NOISE_ROW_Y, 32, CELL_H, C_CELL);
-			text(g, 246, NOISE_ROW_Y + 6, "TYPE", C_LABEL, 1);
-			fill(g, 474, NOISE_ROW_Y, 32, CELL_H, C_CELL);
-			text(g, 478, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
+			text(g, 246, NOISE_ROW_Y + 6, "TYPE", by_key ? C_LINE : C_LABEL, 1);
+			fill(g, 448, NOISE_ROW_Y, 32, CELL_H, C_CELL);
+			text(g, 452, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
 			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);
 		} else if (noise_takes(values, channel)) {
 			text(g, 332, 442, "TAKEN BY CH10 NOISE (RATE TONE 3): CH9 NOTES ARE SILENT", C_AMBER, 1);

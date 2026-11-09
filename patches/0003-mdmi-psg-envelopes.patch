@@ -1,5 +1,5 @@
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..ac8e68c 100644
+index 5145b6a..7e15ce7 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -492,7 +492,9 @@ void midi_note_off(u8 chan, u8 pitch)
@@ -96,26 +96,27 @@ index 5145b6a..ac8e68c 100644
 +        break;
 +    case CC_NOISE_RATE:
 +        if (ch == GENERAL_MIDI_PERCUSSION_CHANNEL)
-+            midi_psg_noise_rate(value / 32);
++            midi_psg_noise_rate(value * 5 / 128);
 +        break;
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
 diff --git a/src/midi.h b/src/midi.h
-index 731aa8c..648c070 100644
+index 731aa8c..47ed44e 100644
 --- a/src/midi.h
 +++ b/src/midi.h
-@@ -38,6 +38,9 @@
+@@ -38,6 +38,10 @@
  #define CC_VOLUME 7
  #define CC_PAN 10
  #define CC_EXPRESSION 11
-+// MDMI plugin fork, stage 16 (D45): the PSG noise's type and rate, on MIDI 10 only.
++// MDMI plugin fork, stage 16 (D45): the PSG noise's type and rate, on MIDI 10 only. Rate is
++// value * 5 / 128: N/512, N/1024, N/2048, tone 3, by note.
 +#define CC_NOISE_TYPE 12
 +#define CC_NOISE_RATE 13
  #define CC_GENMDM_FM_ALGORITHM 14
  #define CC_GENMDM_FM_FEEDBACK 15
  #define CC_GENMDM_TOTAL_LEVEL_OP1 16
-@@ -135,6 +138,8 @@
+@@ -135,6 +139,8 @@
  
  #define STORE_PROGRAM_TYPE_FM 0x00
  #define STORE_PROGRAM_TYPE_PSG 0x01
@@ -185,10 +186,10 @@ index c37b89a..baea9a2 100644
 +// Whether a held note may start again when a later one is released: not a one-shot (D38).
 +bool midi_dac_retriggers(u8 pitch);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..cb0ee9b 100644
+index 82a5655..ad6d5a9 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
-@@ -11,6 +11,14 @@
+@@ -11,6 +11,18 @@
  #define MIN_MIDI_KEY 45
  #define MAX_MIDI_KEY 127
  #define NUM_TONES (128 - MIN_MIDI_KEY)
@@ -200,10 +201,14 @@ index 82a5655..cb0ee9b 100644
 +#define NOISE_TONE3_KEY_SHIFT 48
 +#define MAX_NOISE_TONE3_KEY (MAX_MIDI_KEY - NOISE_TONE3_KEY_SHIFT)
 +#define TONE_UNKNOWN 0xFFFF
++// Rate NOTE (D45, owner): each key picks its own mode, as the emulator read it from the key's tone
++// before (tone & 7, keys 0-44 as the key 4 octaves up). A key that then took channel 3's tone gets a
++// fixed rate instead, key % 3, so channel 3 stays free. The byte is written as any other mode.
++#define NOISE_RATE_NOTE 4
  
  static const u16 TONES_NTSC[NUM_TONES] = { 1016, 959, 905, 855, 807, 761, 719, 678, 640, 604, 570,
      538, 508, 479, 452, 427, 403, 380, 359, 339, 320, 302, 285, 269, 254, 239, 226, 213, 201, 190,
-@@ -48,7 +56,14 @@ typedef struct MidiPsgChannel {
+@@ -48,7 +60,16 @@ typedef struct MidiPsgChannel {
  static u8 userDefinedEnvelope[256];
  static u8* userDefinedEnvelopePtr;
  static const u8** envelopes;
@@ -215,20 +220,22 @@ index 82a5655..cb0ee9b 100644
  static MidiPsgChannel psgChannels[MAX_PSG_CHANS];
 +static u8 noiseType;
 +static u8 noiseRate;
++static u8 writtenType;
++static u8 writtenRate;
  
  static u16 tone_for_midi_key(u8 midiKey);
  static MidiPsgChannel* psg_channel(u8 psgChan);
-@@ -67,6 +82,9 @@ void midi_psg_init(const u8** defaultEnvelopes)
+@@ -67,6 +88,9 @@ void midi_psg_init(const u8** defaultEnvelopes)
  void midi_psg_reset(void)
  {
      userDefinedEnvelopePtr = NULL;
-+    noiseType = PSG_NOISE_TYPE_WHITE;
-+    noiseRate = PSG_NOISE_FREQ_CLOCK2;
++    noiseType = writtenType = PSG_NOISE_TYPE_WHITE;
++    noiseRate = writtenRate = PSG_NOISE_FREQ_CLOCK2;
 +    memset(activeStoredEnvelopes, 0, sizeof(activeStoredEnvelopes));
      for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
          MidiPsgChannel* psgChan = psg_channel(chan);
          psgChan->attenuation = PSG_ATTENUATION_SILENCE;
-@@ -76,7 +94,7 @@ void midi_psg_reset(void)
+@@ -76,7 +100,7 @@ void midi_psg_reset(void)
          psgChan->velocity = MAX_MIDI_VOLUME;
          psgChan->envelope = 0;
          psgChan->noteReleased = false;
@@ -237,7 +244,7 @@ index 82a5655..cb0ee9b 100644
          psgChan->pitch = 0;
          psgChan->cents = 0;
          init_envelope(psgChan);
-@@ -85,8 +103,18 @@ void midi_psg_reset(void)
+@@ -85,8 +109,18 @@ void midi_psg_reset(void)
  
  static void init_envelope(MidiPsgChannel* psgChan)
  {
@@ -258,7 +265,7 @@ index 82a5655..cb0ee9b 100644
      psgChan->envelopeLoopStart = NULL;
  }
  
-@@ -119,6 +147,9 @@ static u16 tone_from_pitch_cents(PitchCents pc)
+@@ -119,6 +153,9 @@ static u16 tone_from_pitch_cents(PitchCents pc)
  static u16 envelope_tone(MidiPsgChannel* psgChan)
  {
      PitchCents pc = { .pitch = psgChan->pitch, .cents = psgChan->cents };
@@ -268,13 +275,39 @@ index 82a5655..cb0ee9b 100644
      u8 shift = *psgChan->envelopeStep >> 4;
      switch (shift) {
      case 0:
-@@ -169,16 +200,35 @@ static u16 envelope_tone(MidiPsgChannel* psgChan)
+@@ -169,16 +206,61 @@ static u16 envelope_tone(MidiPsgChannel* psgChan)
      return tone_from_pitch_cents(pc);
  }
  
 +static bool noise_on_tone3(void)
 +{
 +    return noiseRate == PSG_NOISE_FREQ_TONE3;
++}
++
++static void write_noise(u8 type, u8 rate)
++{
++    PSG_setNoise(type, rate);
++    writtenType = type;
++    writtenRate = rate;
++}
++
++// The mode a key plays at rate NOTE: bit 2 the type, bits 0-1 the rate, never tone 3.
++static void write_noise_of_key(u8 key)
++{
++    u8 mode = TONES_NTSC[(key < MIN_MIDI_KEY ? key + NOISE_TONE3_KEY_SHIFT : key) - MIN_MIDI_KEY] & 7;
++    if ((mode & 3) == PSG_NOISE_FREQ_TONE3) {
++        mode = (mode & 4) | (key % 3);
++    }
++    write_noise(mode >> 2, mode & 3);
++}
++
++static void write_noise_for(u8 key)
++{
++    if (noiseRate == NOISE_RATE_NOTE) {
++        write_noise_of_key(key);
++    } else {
++        write_noise(noiseType, noiseRate);
++    }
 +}
 +
 +// The one place that keeps channel 3 for the noise: while the noise runs on tone 3, channel 3's own
@@ -305,7 +338,7 @@ index 82a5655..cb0ee9b 100644
      if (newAtt != psgChan->attenuation) {
          PSG_setEnvelope(psgChan->chanNum, newAtt);
          psgChan->attenuation = newAtt;
-@@ -209,12 +259,41 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
+@@ -209,12 +291,41 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
      apply_attenuation(psgChan, effective_attenuation(psgChan));
  }
  
@@ -314,7 +347,7 @@ index 82a5655..cb0ee9b 100644
 +// again.
 +void midi_psg_chip_reset(void)
 +{
-+    PSG_setNoise(noiseType, noiseRate);
++    write_noise(writtenType, writtenRate);
 +    for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
 +        MidiPsgChannel* psgChan = &psgChannels[chan];
 +        psgChan->freq = TONE_UNKNOWN;
@@ -343,12 +376,12 @@ index 82a5655..cb0ee9b 100644
      }
      MidiPsgChannel* psgChan = psg_channel(chan);
 +    if (chan == NOISE_CHAN) {
-+        PSG_setNoise(noiseType, noiseRate);
++        write_noise_for(pitch);
 +    }
      psgChan->noteReleased = false;
      psgChan->pitch = pitch;
      psgChan->cents = cents;
-@@ -293,6 +372,15 @@ void midi_psg_load_envelope(const u8* eef)
+@@ -293,6 +404,15 @@ void midi_psg_load_envelope(const u8* eef)
      userDefinedEnvelopePtr = userDefinedEnvelope;
  }
  
@@ -364,7 +397,7 @@ index 82a5655..cb0ee9b 100644
  static u16 tone_for_midi_key(u8 midiKey)
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
-@@ -310,6 +398,38 @@ static MidiPsgChannel* psg_channel(u8 chan)
+@@ -310,6 +430,45 @@ static MidiPsgChannel* psg_channel(u8 chan)
      return &psgChannels[chan];
  }
  
@@ -377,6 +410,8 @@ index 82a5655..cb0ee9b 100644
 +    }
 +    MidiPsgChannel* tone3 = psg_channel(TONE3_CHAN);
 +    MidiPsgChannel* noise = psg_channel(NOISE_CHAN);
++    // At NOTE the key decides the type: a new type writes nothing, which would restart the noise.
++    const bool keyed = rate == NOISE_RATE_NOTE && noiseRate == NOISE_RATE_NOTE;
 +    if (rate == PSG_NOISE_FREQ_TONE3 && !noise_on_tone3() && tone3->noteOn) {
 +        note_off(tone3);
 +    }
@@ -384,7 +419,12 @@ index 82a5655..cb0ee9b 100644
 +    noiseRate = rate;
 +    tone3->freq = TONE_UNKNOWN;
 +    noise->freq = TONE_UNKNOWN;
-+    PSG_setNoise(noiseType, noiseRate);
++    // At rate NOTE a key writes its own mode: now only for a key that sounds, else at the next note.
++    if (noiseRate != NOISE_RATE_NOTE) {
++        write_noise(noiseType, noiseRate);
++    } else if (noise->noteOn && !keyed) {
++        write_noise_of_key(noise->pitch);
++    }
 +    if (noise->noteOn) {
 +        apply_tone(noise, envelope_tone(noise));
 +    }
@@ -397,7 +437,7 @@ index 82a5655..cb0ee9b 100644
 +
 +void midi_psg_noise_rate(u8 rate)
 +{
-+    set_noise(noiseType, rate & 3);
++    set_noise(noiseType, rate > NOISE_RATE_NOTE ? NOISE_RATE_NOTE : rate);
 +}
 +
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
@@ -672,7 +712,7 @@ index d9cce30..1f46f85 100644
  
      stub_usb_receive_note_on(MIDI_CHANNEL_6, MIDI_PITCH_C4, MIDI_VOLUME_MAX);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..ea7b708 100644
+index d2449c4..116d9a4 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -688,7 +728,7 @@ index d2449c4..ea7b708 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +232,22 @@ int main(void)
+@@ -226,10 +232,24 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -699,6 +739,8 @@ index d2449c4..ea7b708 100644
 +        midi_test(test_midi_psg_noise_on_tone3_keeps_channel_3),
 +        midi_test(test_midi_psg_noise_switched_to_tone3_while_sounding),
 +        midi_test(test_midi_psg_noise_envelope_pitch_goes_through_tone3),
++        midi_test(test_midi_psg_noise_on_note_picks_the_mode_of_each_key),
++        midi_test(test_midi_psg_noise_switched_to_note_while_sounding),
  
          midi_dac_test(test_midi_dac_plays_note),
          midi_dac_test(test_midi_dac_stops_note),
@@ -711,7 +753,7 @@ index d2449c4..ea7b708 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +267,8 @@ int main(void)
+@@ -249,6 +269,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -721,7 +763,7 @@ index d2449c4..ea7b708 100644
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..e283343 100644
+index 9650279..cfb7644 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,6 +1,8 @@
@@ -922,7 +964,7 @@ index 9650279..e283343 100644
 +void test_midi_dac_switch_rewrites_noise_on_tone3(UNUSED void** state)
 +{
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
-+    __real_midi_cc(GENERAL_MIDI_PERCUSSION_CHANNEL, 13, 127);
++    __real_midi_cc(GENERAL_MIDI_PERCUSSION_CHANNEL, 13, 96);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
 +    expect_psg_tone(PSG_CH3, 106);
 +    expect_psg_attenuation(PSG_NOISE_CH4, 0);
@@ -979,7 +1021,7 @@ index 13ce5a1..0fdb43c 100644
          u8 psgChan = chan - MIN_PSG_CHAN;
          __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..c0604a2 100644
+index affbb29..f803595 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
 @@ -3,13 +3,19 @@
@@ -1066,7 +1108,7 @@ index affbb29..c0604a2 100644
  
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          __real_midi_program(chan, 1);
-@@ -428,4 +434,145 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +434,192 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -1091,7 +1133,7 @@ index affbb29..c0604a2 100644
 +                expect_psg_noise(type, rate);
 +                hasRate = rate;
 +            }
-+            __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, rate * 32 + 31);
++            __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, rate * 26 + 13);
 +            for (u8 k = 0; k < sizeof(keys); k++) {
 +                if (rate == PSG_NOISE_FREQ_TONE3 && keys[k] > 79) {
 +                    __real_midi_note_on(NOISE_MIDI_CHAN, keys[k], MAX_MIDI_VOLUME);
@@ -1120,7 +1162,7 @@ index affbb29..c0604a2 100644
 +
 +void test_midi_psg_noise_mode_only_on_midi_10(UNUSED void** state)
 +{
-+    __real_midi_cc(TONE3_MIDI_CHAN, CC_NOISE_RATE, 127);
++    __real_midi_cc(TONE3_MIDI_CHAN, CC_NOISE_RATE, 96);
 +    __real_midi_cc(MIDI_CHANNEL_1, CC_NOISE_TYPE, 0);
 +
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
@@ -1214,11 +1256,58 @@ index affbb29..c0604a2 100644
 +    expect_psg_tone(PSG_CH3, 106);
 +    __real_midi_psg_tick();
 +}
++
++// Rate NOTE: each key writes its own mode, the one the emulator read from its tone before; a key
++// that took tone 3 then gets a fixed rate, key % 3. The same key always writes the same byte.
++static void noise_key(u8 key, u8 type, u8 rate)
++{
++    expect_psg_noise(type, rate);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, key, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(NOISE_MIDI_CHAN, key);
++}
++
++void test_midi_psg_noise_on_note_picks_the_mode_of_each_key(UNUSED void** state)
++{
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 127);
++
++    noise_key(45, PSG_NOISE_TYPE_PERIODIC, PSG_NOISE_FREQ_CLOCK2);
++    noise_key(46, PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK4);
++    noise_key(47, PSG_NOISE_TYPE_PERIODIC, PSG_NOISE_FREQ_CLOCK4);
++    noise_key(52, PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK8);
++    noise_key(2, PSG_NOISE_TYPE_PERIODIC, PSG_NOISE_FREQ_CLOCK4);
++    noise_key(46, PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK4);
++
++    expect_psg_tone(PSG_CH3, TONE_NTSC_C4);
++    expect_psg_attenuation(PSG_CH3, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(TONE3_MIDI_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++}
++
++void test_midi_psg_noise_switched_to_note_while_sounding(UNUSED void** state)
++{
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, 52, MAX_MIDI_VOLUME);
++
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK8);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 127);
++    // A type lane at NOTE writes nothing: the write would restart the sounding noise.
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_TYPE, 0);
++
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(NOISE_MIDI_CHAN, 52);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_TYPE, 0);
++
++    expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK8);
++    __real_midi_cc(0, 78, 0x7F);
++}
 diff --git a/tests/unit/test_midi_psg.h b/tests/unit/test_midi_psg.h
-index bfb01a6..20702c5 100644
+index bfb01a6..112a189 100644
 --- a/tests/unit/test_midi_psg.h
 +++ b/tests/unit/test_midi_psg.h
-@@ -26,4 +26,11 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
+@@ -26,4 +26,13 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_lower_limit_psg_envelope(UNUSED void** state);
  void test_midi_loads_psg_envelope(UNUSED void** state);
@@ -1232,6 +1321,8 @@ index bfb01a6..20702c5 100644
 +void test_midi_psg_noise_on_tone3_keeps_channel_3(UNUSED void** state);
 +void test_midi_psg_noise_switched_to_tone3_while_sounding(UNUSED void** state);
 +void test_midi_psg_noise_envelope_pitch_goes_through_tone3(UNUSED void** state);
++void test_midi_psg_noise_on_note_picks_the_mode_of_each_key(UNUSED void** state);
++void test_midi_psg_noise_switched_to_note_while_sounding(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
 index 9ce9691..5791105 100644
 --- a/tests/unit/test_midi_sysex.c

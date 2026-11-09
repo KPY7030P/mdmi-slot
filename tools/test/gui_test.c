@@ -910,11 +910,11 @@ int main(int argc, char **argv)
 		// Stage 16 (D45): channel 10's page has the noise's TYPE and RATE; TONE 3 takes channel 9.
 		click(window, RAIL_X, RAIL_CH8_Y + 80);
 		run_ms(100);
-		click(window, 672, 92);
+		click(window, 669, 92);
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "noise");
-		CHECK(get_value(8) == 3 && count_color_in(637, 707, 83, 101, COLOR_PSG) > 500, "TONE 3 on channel 10's page sets Noise Rate and lights in PSG's colour");
+		CHECK(get_value(8) == 3 && count_color_in(633, 706, 83, 101, COLOR_PSG) > 500, "TONE 3 on channel 10's page sets Noise Rate and lights in PSG's colour");
 		click(window, RAIL_X, RAIL_CH8_Y + 40);
 		run_ms(200);
 		capture(window);
@@ -922,7 +922,7 @@ int main(int argc, char **argv)
 		CHECK(count_color_in(332, 662, 442, 449, COLOR_AMBER) > 100, "channel 9's page says in amber that the noise takes it");
 		click(window, RAIL_X, RAIL_CH8_Y + 80);
 		run_ms(100);
-		click(window, 533, 92);
+		click(window, 614, 92);
 		run_ms(200);
 		CHECK(get_value(8) == 0, "HIGH puts the rate back");
 
