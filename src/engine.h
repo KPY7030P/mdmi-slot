@@ -86,6 +86,8 @@ bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size);
 // after mdmi_engine_render it stands at the step past the audio, whatever the scheduler did. It may
 // still be finishing that step by a few cycles while the test reads it.
 void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep);
+// Tests only: the channel a voice plays for now.
+int mdmi_engine_test_owner(const mdmi_engine *e, int voice);
 // Tests only: the longest wait from an owner to its key-on since the last call, in ms.
 float mdmi_engine_test_take_owner_wait(mdmi_engine *e);
 // Tests only: what the running YM2612 holds in a register.
@@ -102,8 +104,9 @@ const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);
 void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *bytes, size_t length);
 void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset);
 // The voice's next note belongs to channel 0-9 (MIDI 1-10): queued with the block's MIDI, it takes
-// the voice from the voice's next key-on on, so a sounding tail stays where it was.
-void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel);
+// the voice from the voice's next key-on on, so a sounding tail stays where it was; at_once takes it
+// when the queue gets there.
+void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel, bool at_once);
 // Main only.
 void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t frames);
 // MDMI_RENDER_CHANNELS buffers, any of them NULL.

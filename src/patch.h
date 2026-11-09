@@ -185,9 +185,9 @@ typedef struct {
 	uint8_t velocity;
 } patch_note;
 
-// Which MIDI channel 0-9 a chip voice 0-9 plays for from its next key-on (stage 17, D46), told with
-// the context of the emit that sends the note. A voice given as -1 - voice changes owner at once.
-typedef void (*patch_owner_fn)(void *context, int voice, int channel);
+// Which MIDI channel 0-9 a chip voice 0-9 plays for from its next key-on, or at once (stage 17, D46),
+// told with the context of the emit that sends the note.
+typedef void (*patch_owner_fn)(void *context, int voice, int channel, bool at_once);
 
 typedef struct {
 	patch_values model;

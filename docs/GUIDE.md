@@ -178,8 +178,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   for, queued with the note; the engine moves the voice to that channel's output at the voice's next key-on,
   so a release tail stays with its channel until another channel's note starts on the voice. A newer owner
   replaces one still waiting. The DAC's voice is channel 6's the moment the DAC switches on (the switch
-  resets the YM2612), MIDI 11-13 notes give voice 3 to channel 3. Each output has its DC blocker; one
-  20-channel resampler serves them all, and Main is their sum. The voices' sum differs from BlastEm's own
+  resets the YM2612), MIDI 11-13 notes in Ch3 Special Mode give voice 3 to channel 3. Each voice has its
+  DC blocker before it goes to an output, so the YM2612's ladder offset of a silent voice doesn't step
+  between outputs when the voice changes owner; one 20-channel resampler serves the outputs, and Main
+  is their sum. The voices' sum differs from BlastEm's own
   int16 mix by up to about 14 steps of 16 bits after the DC blocker: BlastEm's lowpass truncates in its
   feedback. The worker runs with denormals flushed to zero. Emulator only: a console has one mixed output.
 

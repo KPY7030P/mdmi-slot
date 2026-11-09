@@ -41,10 +41,10 @@ static void emit(void *context, const uint8_t *bytes, size_t length)
 	mdmi_engine_midi(engine, 0, bytes, length);
 }
 
-static void owner(void *context, int voice, int channel)
+static void owner(void *context, int voice, int channel, bool at_once)
 {
 	(void)context;
-	mdmi_engine_voice_owner(engine, 0, voice, channel);
+	mdmi_engine_voice_owner(engine, 0, voice, channel, at_once);
 }
 
 static void render_block(int frames)
@@ -2318,12 +2318,36 @@ static void test_outputs(void)
 	reset_energy();
 	render(SETTLE_BLOCKS);
 	check_outputs(1 << 0, "the whole chord plays into output 1");
-	midi(0x91, 72, 127);
+	// A channel whose own voice the chord borrowed plays: its note moves the chord's note on, and
+	// the voice comes to its output only at the key-on of its note; until then the voice is output 1's.
+	int taken = -1;
+	for (int voice = FM_CHANNELS - 1; voice > 0; voice--) {
+		taken = patch->playing[voice] == 0 ? voice : taken;
+	}
+	mdmi_engine_test_take_owner_wait(engine);
+	midi((uint8_t)(0x90 | taken), 72, 127);
+	double before_new = 0, before_old = 0;
+	int blocks_before = 0;
+	for (int i = 0; i < 400 && mdmi_engine_test_owner(engine, taken) != taken; i++) {
+		reset_energy();
+		render(1);
+		before_new += out_energy[taken];
+		before_old += out_energy[0];
+		blocks_before++;
+	}
+	const float wait = mdmi_engine_test_take_owner_wait(engine);
+	printf("    voice %d came to output %d after %d blocks, %.1f ms after its note reached the ROM\n", taken + 1, taken + 1, blocks_before, wait);
+	check(mdmi_engine_test_owner(engine, taken) == taken && wait > 0.0f && before_new < 1e-12 && before_old > 0,
+		"until its key-on the taken voice plays into output 1 and the new channel's output is silent");
 	render(SETTLE_BLOCKS);
 	reset_energy();
 	render(SETTLE_BLOCKS);
-	check_outputs(1 << 0 | 1 << 1, "channel 2 takes its voice back into output 2, the chord stays in output 1");
+	check_outputs(1 << 0 | 1 << taken, "then the channel plays into its own output, the chord stays in output 1");
 	quiet();
+	// Every voice the chord's: the DAC's voice must still be channel 6's once the DAC is on.
+	play_chord(FM_CHANNELS, true);
+	quiet();
+	check(mdmi_engine_test_owner(engine, FM_CHANNELS - 1) == 0, "a chord of six on channel 1 holds voice 6 too");
 
 	set_global(GLOBAL_CH3_MODE, 1);
 	sync_and_settle();
@@ -2344,6 +2368,7 @@ static void test_outputs(void)
 	set_global(GLOBAL_DAC, 1);
 	wait_for_voices(FM_CHANNELS - 2);
 	quiet();
+	check(mdmi_engine_test_owner(engine, FM_CHANNELS - 1) == FM_CHANNELS - 1, "the DAC switched on gives voice 6 to channel 6 at once");
 	midi(0x95, 36, 127);
 	render(SETTLE_BLOCKS);
 	check_outputs(1 << 5, "a DAC sample plays into output 6");

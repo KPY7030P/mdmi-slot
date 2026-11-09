@@ -114,10 +114,10 @@ static void emit_to_engine(void *context, const uint8_t *bytes, size_t length)
 	mdmi_engine_midi(target->self->engine, target->offset, bytes, length);
 }
 
-static void owner_to_engine(void *context, int voice, int channel)
+static void owner_to_engine(void *context, int voice, int channel, bool at_once)
 {
 	emit_target *target = context;
-	mdmi_engine_voice_owner(target->self->engine, target->offset, voice, channel);
+	mdmi_engine_voice_owner(target->self->engine, target->offset, voice, channel, at_once);
 }
 
 static void apply_filter(mdmi_plugin *self)

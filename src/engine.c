@@ -109,7 +109,7 @@ struct mdmi_engine {
 	uint32_t fill_target;
 	resampler *rs;
 	float dc_coef;
-	float dc_in[OUT_CHANNELS], dc_out[OUT_CHANNELS];
+	float dc_in[MDMI_VOICES * 2], dc_out[MDMI_VOICES * 2];
 	bool dc_primed;
 	// The worker's: the core's voices of the batch it is about to mix, and which output each voice
 	// plays into (D46). A pending owner takes the voice at its next key-on.
@@ -351,6 +351,7 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 		return frames;
 	}
 	if (!have_voices) {
+		// Both sides make batches of 128 frames; a batch without its voices would play silence.
 		e->voice_batch_misses++;
 	}
 	// The core's int16 mix is its float mix * 0x7FFF; the plugin's scale is int16 / 32768.
@@ -375,9 +376,21 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 					// the voice the dealer named isn't the one the ROM keyed on.
 					e->owner_misses++;
 				}
+				// Each voice has its DC blocker before it goes to an output: a silent FM voice keeps
+				// the YM2612's ladder offset, which would otherwise step from one output to another
+				// when the voice changes owner.
 				const int out = e->owner[v];
-				in[out * 2] += voice[v * 2] * scale;
-				in[out * 2 + 1] += voice[v * 2 + 1] * scale;
+				for (int ch = 0; ch < 2; ch++) {
+					const int k = v * 2 + ch;
+					const float sample = voice[k] * scale;
+					if (!e->dc_primed) {
+						e->dc_in[k] = sample;
+					}
+					const float blocked = sample - e->dc_in[k] + e->dc_coef * e->dc_out[k];
+					e->dc_in[k] = sample;
+					e->dc_out[k] = blocked;
+					in[out * 2 + ch] += blocked;
+				}
 				sum[0] += voice[v * 2];
 				sum[1] += voice[v * 2 + 1];
 			}
@@ -393,16 +406,7 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 				}
 			}
 		}
-		for (int ch = 0; ch < OUT_CHANNELS; ch++) {
-			if (!e->dc_primed) {
-				e->dc_in[ch] = in[ch];
-			}
-			const float out = in[ch] - e->dc_in[ch] + e->dc_coef * e->dc_out[ch];
-			e->dc_in[ch] = in[ch];
-			e->dc_out[ch] = out;
-			in[ch] = out;
-		}
-		e->dc_primed = true;
+		e->dc_primed = e->dc_primed || have_voices;
 		float out[8 * OUT_CHANNELS];
 		int count = resampler_push(e->rs, in, out, 8);
 		for (int n = 0; n < count; n++) {
@@ -541,6 +545,11 @@ static double now_ms(void)
 
 static bool load_core(mdmi_engine *e)
 {
+	// Decaying voices, DC blockers and filters reach denormal floats, which cost a hundred times a
+	// normal one: reg_test ran 4 times as long and six real-time instances fell behind (stage 17).
+	// Set at every load, in case a core's start resets the thread's float state.
+	_MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+	_MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
 	double t0 = now_ms();
 	// A restart keeps the DLL file it already has.
 	if (!(e->dll_path[0] || unpack_files(e)) || !write_rom(e)) {
@@ -835,10 +844,6 @@ static DWORD WINAPI worker_main(LPVOID param)
 	mdmi_engine *e = param;
 	TlsSetValue(tls_engine, e);
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-	// Decaying voices, DC blockers and filters reach denormal floats, which cost a hundred times a
-	// normal one; on an audio thread they are zero (stage 17: twenty streams instead of two).
-	_MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-	_MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
 
 	if (!load_core(e)) {
 		__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
@@ -1193,6 +1198,11 @@ uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel)
 	return e->test_psg_tone(channel);
 }
 
+int mdmi_engine_test_owner(const mdmi_engine *e, int voice)
+{
+	return e->owner[voice];
+}
+
 float mdmi_engine_test_take_owner_wait(mdmi_engine *e)
 {
 	const float wait = e->owner_wait_round_ms;
@@ -1272,12 +1282,8 @@ void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *byt
 	__atomic_store_n(&e->midi_head, head, __ATOMIC_RELEASE);
 }
 
-void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel)
+void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel, bool at_once)
 {
-	const bool at_once = voice < 0;
-	if (at_once) {
-		voice = -1 - voice;
-	}
 	if (voice < 0 || voice >= MDMI_VOICES || channel < 0 || channel >= MDMI_OUTPUTS) {
 		return;
 	}
