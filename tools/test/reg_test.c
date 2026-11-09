@@ -407,13 +407,13 @@ static void test_noise(void)
 	check(mdmi_engine_test_psg_volume(engine, 2) < 15 && mdmi_engine_test_psg_tone(engine, 2) == 427, "after a fixed rate channel 9 plays again");
 	midi((uint8_t)(0x80 | tone3), 60, 0);
 	render(SETTLE_BLOCKS);
-	// Type and rate Note: the chip's noise control as the key's drum in the kit, every octave the same.
-	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_TYPE_NOTE);
-	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_NOTE);
+	// Rate Kit: each key the type of its drum on tone 3, and an octave up the same drum an octave higher.
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_KIT);
 	sync_and_settle();
 	static const struct {
 		int key, control;
-	} BY_KEY[] = {{36, 2}, {38, 5}, {42, 4}, {48, 2}, {37, 0}};
+	} BY_KEY[] = {{36, 3}, {38, 7}, {42, 7}, {48, 3}};
 	bad = 0;
 	for (size_t i = 0; i < sizeof(BY_KEY) / sizeof(*BY_KEY); i++) {
 		midi((uint8_t)(0x90 | noise), (uint8_t)BY_KEY[i].key, 127);
@@ -426,7 +426,11 @@ static void test_noise(void)
 			bad++;
 		}
 	}
-	check(bad == 0, "at type and rate Note each key sets the chip's noise to its drum's mode");
+	check(bad == 0, "at rate Kit each key sets the chip's noise to its drum's type on tone 3");
+	uint16_t n_low, n_high;
+	const double kick = note_hz(noise, 36, &n_low), kick_up = note_hz(noise, 48, &n_high);
+	printf("    kick on C2 %.2f Hz, on C3 %.2f Hz\n", kick, kick_up);
+	check(kick > 0 && fabs(kick_up / kick - 2.0) < 0.04, "the kick an octave up sounds an octave higher");
 	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_WHITE);
 	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
 	sync_and_settle();

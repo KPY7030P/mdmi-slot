@@ -21,9 +21,10 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - DAC samples on channel 6: drop WAV files on notes, trim, tune and shape them.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
   from silence.
-- PSG noise on channel 10: Noise Type (periodic, white, or Note) and Noise Rate (L M H, Tone 3, or Note).
-  Note lays a drum kit over every octave (C kick, D snare, F# hat...); on Tone 3 the noise follows the note,
-  periodic noise plays bass, and channel 9 stays silent. Not checked on a real console yet.
+- PSG noise on channel 10: Noise Type (periodic or white) and Noise Rate (L M H, Tone 3, or Kit). On Tone 3
+  the noise follows the note and periodic noise plays bass; Kit lays a drum kit over every octave (C kick,
+  D snare, F# hat...), an octave up the same kit higher. Both take channel 9's tone, so channel 9 is silent.
+  Not checked on a real console yet.
 
 ## Requirements
 

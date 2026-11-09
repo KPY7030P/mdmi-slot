@@ -484,16 +484,16 @@ static bool is_special(const patch_values *values, int channel)
 	return channel == 2 && values->globals[GLOBAL_CH3_MODE];
 }
 
-// Stage 16 (D45): the noise runs on channel 9's tone, so channel 9 makes no sound of its own.
+// Stage 16 (D45): the noise runs on channel 9's tone (Tone 3, Kit), so channel 9 makes no sound of its own.
 static bool noise_takes(const patch_values *values, int channel)
 {
-	return channel == PATCH_NUM_CHANNELS - 2 && values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_TONE3;
+	return channel == PATCH_NUM_CHANNELS - 2 && values->globals[GLOBAL_NOISE_RATE] >= PATCH_NOISE_RATE_TONE3;
 }
 
 // On channel 10 the envelope's pitch shift moves the noise's pitch only on Tone 3.
 static bool noise_without_pitch(const patch_values *values, int channel)
 {
-	return channel == PATCH_NUM_CHANNELS - 1 && values->globals[GLOBAL_NOISE_RATE] != PATCH_NOISE_RATE_TONE3;
+	return channel == PATCH_NUM_CHANNELS - 1 && values->globals[GLOBAL_NOISE_RATE] < PATCH_NOISE_RATE_TONE3;
 }
 
 // The rail's level bar (stage 9): 16 segments, the channel's volume (CC7) in its dark colour, and
@@ -795,8 +795,8 @@ static int feedback_x(int algorithm);
 
 // Channel 10's noise (stage 16, D45): TYPE and RATE as fields, each followed by its choices, in the
 // empty band between the channel's cells and the envelope's loop strip, in the small font so no two
-// labels run together. RATE's fixed rates go low to high as L M H (owner); NOTE in either group means
-// the key decides, by a drum kit repeated every octave.
+// labels run together. RATE's fixed rates go low to high as L M H (owner); at KIT the drums choose
+// their type, so TYPE is dim.
 #define NOISE_ROW_Y 82
 static const struct {
 	uint32_t global;
@@ -805,12 +805,11 @@ static const struct {
 } NOISE_CHOICES[] = {
 	{GLOBAL_NOISE_TYPE, "PERIODIC", PATCH_NOISE_PERIODIC, 276, 64},
 	{GLOBAL_NOISE_TYPE, "WHITE", PATCH_NOISE_WHITE, 342, 50},
-	{GLOBAL_NOISE_TYPE, "NOTE", PATCH_NOISE_TYPE_NOTE, 394, 44},
-	{GLOBAL_NOISE_RATE, "NOTE", PATCH_NOISE_RATE_NOTE, 482, 44},
-	{GLOBAL_NOISE_RATE, "L", PATCH_NOISE_RATE_LOW, 528, 38},
-	{GLOBAL_NOISE_RATE, "M", PATCH_NOISE_RATE_MID, 568, 38},
-	{GLOBAL_NOISE_RATE, "H", PATCH_NOISE_RATE_HIGH, 608, 38},
-	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 648, 59},
+	{GLOBAL_NOISE_RATE, "L", PATCH_NOISE_RATE_LOW, 436, 44},
+	{GLOBAL_NOISE_RATE, "M", PATCH_NOISE_RATE_MID, 482, 44},
+	{GLOBAL_NOISE_RATE, "H", PATCH_NOISE_RATE_HIGH, 528, 44},
+	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 574, 66},
+	{GLOBAL_NOISE_RATE, "KIT", PATCH_NOISE_RATE_KIT, 642, 65},
 };
 
 // The cells of the open page and the global knobs, so drawing and the mouse agree.
@@ -996,10 +995,13 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			const bool pan = param == PARAM_PAN;
 			// The noise's mode is the PSG's own choice, lit in its colour (stage 16).
 			const bool psg = c->id == GLOBAL_NOISE_TYPE || c->id == GLOBAL_NOISE_RATE;
+			// At Kit the drums choose their type: TYPE is dim, its choice kept for later.
+			const bool dim = c->id == GLOBAL_NOISE_TYPE && values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_KIT;
+			const bool lit = on && !dim;
 			const int scale = !psg && (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
 			const int width = (int)strlen(c->label) * 6 * scale - scale;
-			fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : psg ? C_PSG : C_FM) : C_CELL);
-			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, on ? (pan || psg ? C_BG : C_TEXT) : C_LABEL, scale);
+			fill(g, c->x, c->y, c->w, c->h, lit ? (pan ? C_TEXT : psg ? C_PSG : C_FM) : C_CELL);
+			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, lit ? (pan || psg ? C_BG : C_TEXT) : dim ? (on ? C_HINT : C_LINE) : C_LABEL, scale);
 		}
 		if (changed && c->choice == base) {
 			fill(g, c->x, c->y + c->h - 2, c->w, 2, C_AMBER);
@@ -1519,7 +1521,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	char pitch[16];
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && noise_without_pitch(patch_view(g->source.patch), *g->source.channel)) {
-			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH RATE TONE 3");
+			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH TONE 3 OR KIT");
 			return true;
 		}
 		const int level = shape->frames[step] & 15;
@@ -2900,13 +2902,14 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
 		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
 		if (channel == PATCH_NUM_CHANNELS - 1) {
+			const bool kit = values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_KIT;
 			fill(g, 242, NOISE_ROW_Y, 32, CELL_H, C_CELL);
-			text(g, 246, NOISE_ROW_Y + 6, "TYPE", C_LABEL, 1);
-			fill(g, 448, NOISE_ROW_Y, 32, CELL_H, C_CELL);
-			text(g, 452, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
+			text(g, 246, NOISE_ROW_Y + 6, "TYPE", kit ? C_LINE : C_LABEL, 1);
+			fill(g, 402, NOISE_ROW_Y, 32, CELL_H, C_CELL);
+			text(g, 406, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
 			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);
 		} else if (noise_takes(values, channel)) {
-			text(g, 332, 442, "TAKEN BY CH10 NOISE (RATE TONE 3): CH9 NOTES ARE SILENT", C_AMBER, 1);
+			text(g, 332, 442, "TAKEN BY CH10 NOISE (TONE 3, KIT): CH9 NOTES ARE SILENT", C_AMBER, 1);
 		}
 		draw_envelope(g, values);
 		return;
