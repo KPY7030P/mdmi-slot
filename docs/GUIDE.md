@@ -71,10 +71,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   The window shows the fixed rates low to high, L M H. Kit is a General MIDI drum kit in every octave: C
   kick, C# rim, D snare, D# clap, E snare, F low tom, F# closed hat, G tom, G# pedal hat, A tom, A# open
   hat, B tom. It is made for keys 36-47 (C1 in Live), each drum a type and a tone 3 value N; an octave up
-  halves N, down doubles it (1-1023). It runs on tone 3, so channel 9 is silent as at Tone 3; Noise Type,
-  tune, bend and the envelope's pitch do nothing there and are dim. Our
+  halves N, down doubles it (1-1023). It runs on tone 3, so channel 9 is silent as at Tone 3; Noise Type and the
+  envelope's pitch do nothing there; tune and bend still move the key before the ROM picks the drum (a
+  known flaw, ROADMAP), and the window dims them all. Our
   ROM writes the mode as the one byte `E0|mode`, never followed by a data byte, on every note of channel 10,
-  on a change and after a driver swap; a note doesn't choose it any more. On Tone 3, note k writes the tone of
+  on a change and after a driver swap; a note chooses it only at Kit, by its drum. On Tone 3, note k writes the tone of
   key k + 48 into the PSG's channel 3: periodic noise loops over 16 bits, so it sounds at note k, notes 0-79.
   Channel 9 is silent meanwhile: the ROM cuts its note and takes none of its events. At a fixed rate every
   key plays the noise, 0-44 too (before 0.16 they were dropped), and the envelope's pitch shift does nothing.
