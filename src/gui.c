@@ -794,21 +794,23 @@ static int active_op(const mdmi_gui *g)
 static int feedback_x(int algorithm);
 
 // Channel 10's noise (stage 16, D45): TYPE and RATE as fields, each followed by its choices, in the
-// empty band between the channel's cells and the envelope's loop strip. RATE's fixed rates go low to
-// high as L M H (owner); at NOTE each key has its own type, so TYPE's field is dim.
+// empty band between the channel's cells and the envelope's loop strip, in the small font so no two
+// labels run together. RATE's fixed rates go low to high as L M H (owner); NOTE in either group means
+// the key decides, by a drum kit repeated every octave.
 #define NOISE_ROW_Y 82
 static const struct {
 	uint32_t global;
 	const char *label;
 	int value, x, w;
 } NOISE_CHOICES[] = {
-	{GLOBAL_NOISE_TYPE, "PERIODIC", PATCH_NOISE_PERIODIC, 276, 98},
-	{GLOBAL_NOISE_TYPE, "WHITE", PATCH_NOISE_WHITE, 378, 66},
-	{GLOBAL_NOISE_RATE, "NOTE", PATCH_NOISE_RATE_NOTE, 482, 54},
-	{GLOBAL_NOISE_RATE, "L", PATCH_NOISE_RATE_LOW, 540, 28},
-	{GLOBAL_NOISE_RATE, "M", PATCH_NOISE_RATE_MID, 570, 28},
-	{GLOBAL_NOISE_RATE, "H", PATCH_NOISE_RATE_HIGH, 600, 28},
-	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 632, 75},
+	{GLOBAL_NOISE_TYPE, "PERIODIC", PATCH_NOISE_PERIODIC, 276, 64},
+	{GLOBAL_NOISE_TYPE, "WHITE", PATCH_NOISE_WHITE, 342, 50},
+	{GLOBAL_NOISE_TYPE, "NOTE", PATCH_NOISE_TYPE_NOTE, 394, 44},
+	{GLOBAL_NOISE_RATE, "NOTE", PATCH_NOISE_RATE_NOTE, 482, 44},
+	{GLOBAL_NOISE_RATE, "L", PATCH_NOISE_RATE_LOW, 528, 38},
+	{GLOBAL_NOISE_RATE, "M", PATCH_NOISE_RATE_MID, 568, 38},
+	{GLOBAL_NOISE_RATE, "H", PATCH_NOISE_RATE_HIGH, 608, 38},
+	{GLOBAL_NOISE_RATE, "TONE 3", PATCH_NOISE_RATE_TONE3, 648, 59},
 };
 
 // The cells of the open page and the global knobs, so drawing and the mouse agree.
@@ -994,7 +996,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			const bool pan = param == PARAM_PAN;
 			// The noise's mode is the PSG's own choice, lit in its colour (stage 16).
 			const bool psg = c->id == GLOBAL_NOISE_TYPE || c->id == GLOBAL_NOISE_RATE;
-			const int scale = (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
+			const int scale = !psg && (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
 			const int width = (int)strlen(c->label) * 6 * scale - scale;
 			fill(g, c->x, c->y, c->w, c->h, on ? (pan ? C_TEXT : psg ? C_PSG : C_FM) : C_CELL);
 			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, on ? (pan || psg ? C_BG : C_TEXT) : C_LABEL, scale);
@@ -2898,9 +2900,8 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
 		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
 		if (channel == PATCH_NUM_CHANNELS - 1) {
-			const bool by_key = values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_NOTE;
 			fill(g, 242, NOISE_ROW_Y, 32, CELL_H, C_CELL);
-			text(g, 246, NOISE_ROW_Y + 6, "TYPE", by_key ? C_LINE : C_LABEL, 1);
+			text(g, 246, NOISE_ROW_Y + 6, "TYPE", C_LABEL, 1);
 			fill(g, 448, NOISE_ROW_Y, 32, CELL_H, C_CELL);
 			text(g, 452, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
 			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);

@@ -66,11 +66,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   the rest.
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
-- PSG noise (stage 16, D45): Noise Type (White, Periodic) and Noise Rate (High, Mid, Low: the chip's clock
-  / 512, 1024, 2048; Tone 3; Note) are the console's, one noise register, and go as CC 12 and 13 on MIDI 10.
-  The window shows the fixed rates low to high, L M H. At Note each key has a mode of its own, the one the
-  emulator read from its tone before 0.16 (tone & 7), but written as a byte, so the console plays the same;
-  keys that took tone 3 that way get the fixed rate key % 3, and Noise Type has no say. Our
+- PSG noise (stage 16, D45): Noise Type (Periodic, White, Note) and Noise Rate (High, Mid, Low: the chip's
+  clock / 512, 1024, 2048; Tone 3; Note) are the console's, one noise register, and go as CC 12 and 13 on
+  MIDI 10. The window shows the fixed rates low to high, L M H. Note means the key decides, by a General
+  MIDI drum kit repeated in every octave: C kick, C# rim, D snare, D# clap, E snare, F low tom, F# closed
+  hat, G tom, G# pedal hat, A tom, A# open hat, B tom. Rate Note is always a fixed rate, so channel 9
+  stays free; Type Note on Tone 3 plays the kit's types at the note's pitch. Our
   ROM writes the mode as the one byte `E0|mode`, never followed by a data byte, on every note of channel 10,
   on a change and after a driver swap; a note doesn't choose it any more. On Tone 3, note k writes the tone of
   key k + 48 into the PSG's channel 3: periodic noise loops over 16 bits, so it sounds at note k, notes 0-79.
@@ -195,7 +196,7 @@ clip envelope or Live's CC Control. Values are 0-127 and scaled to the knob's ra
 | 51-54, 55-58, 59-62 | SR, SL, RR. SR above 15 only by knob, CC reaches 0-15 | 1-6 |
 | 70-73, 90-93 | AM, SSG | 1-6 |
 | 74, 1, 80, 78 | LFO On, LFO Rate, Ch3 Special Mode, DAC Enable | any |
-| 12, 13 | Noise Type (0-63 Periodic, 64-127 White), Noise Rate (value * 5 / 128: High, Mid, Low, Tone 3, Note) | 10 |
+| 12, 13 | Noise Type (value * 3 / 128: Periodic, White, Note), Noise Rate (value * 5 / 128: High, Mid, Low, Tone 3, Note) | 10 |
 
 Notes, pitch bend and other controllers pass to the ROM. CC 121 is turned into what the standard means by it, centre
 bend and pedal up, because the ROM would also reset the channel's program and voices. CC 87 and CC 84 are dropped: one would make a program number mean another sound for good, the other lets the ROM give any note any voice, past the plugin.

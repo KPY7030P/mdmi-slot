@@ -253,6 +253,11 @@ static void test_noise(void)
 	patch_format(&patch.bank, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3, text, sizeof(text));
 	CHECK(!strcmp(text, "Tone 3"), "the rate reads %s", text);
 	clear();
+	set(&patch, GLOBAL_NOISE_TYPE, PATCH_NOISE_TYPE_NOTE);
+	CHECK(sent_cc(0xB9, 12, 86), "type Note goes as CC 12 86, the ROM's third range");
+	midi(&patch, 0xB9, 12, 50);
+	CHECK(patch.model.globals[GLOBAL_NOISE_TYPE] == PATCH_NOISE_WHITE && sent_cc(0xB9, 12, 43), "CC 12 50 from a clip is White, sent as 43");
+	clear();
 	set(&patch, GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_NOTE);
 	CHECK(sent_cc(0xB9, 13, 104), "Note goes as CC 13 104, the ROM's fifth range");
 	midi(&patch, 0xB9, 13, 127);

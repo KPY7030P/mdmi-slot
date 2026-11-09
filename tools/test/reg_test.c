@@ -407,12 +407,13 @@ static void test_noise(void)
 	check(mdmi_engine_test_psg_volume(engine, 2) < 15 && mdmi_engine_test_psg_tone(engine, 2) == 427, "after a fixed rate channel 9 plays again");
 	midi((uint8_t)(0x80 | tone3), 60, 0);
 	render(SETTLE_BLOCKS);
-	// Rate Note: the chip's noise control as the key's own mode, the same key the same mode.
+	// Type and rate Note: the chip's noise control as the key's drum in the kit, every octave the same.
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_TYPE_NOTE);
 	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_NOTE);
 	sync_and_settle();
 	static const struct {
 		int key, control;
-	} BY_KEY[] = {{52, 6}, {46, 5}, {45, 0}, {52, 6}};
+	} BY_KEY[] = {{36, 2}, {38, 5}, {42, 4}, {48, 2}, {37, 0}};
 	bad = 0;
 	for (size_t i = 0; i < sizeof(BY_KEY) / sizeof(*BY_KEY); i++) {
 		midi((uint8_t)(0x90 | noise), (uint8_t)BY_KEY[i].key, 127);
@@ -425,7 +426,8 @@ static void test_noise(void)
 			bad++;
 		}
 	}
-	check(bad == 0, "at rate Note each key sets the chip's noise to its own mode");
+	check(bad == 0, "at type and rate Note each key sets the chip's noise to its drum's mode");
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_WHITE);
 	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
 	sync_and_settle();
 }
