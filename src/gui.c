@@ -868,6 +868,10 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			}
 		}
 		for (size_t i = 0; i < sizeof(CHANNEL_CELLS) / sizeof(*CHANNEL_CELLS); i++) {
+			// Channel 10 at a fixed rate has no pitch: only VOL is a cell, the rest dim (draw_page).
+			if (noise_without_pitch(values, channel) && CHANNEL_CELLS[i].param != PARAM_VOLUME) {
+				continue;
+			}
 			add_cell(g, CHANNEL_CELLS[i].x, GRID_ROW1_Y, CHANNEL_CELLS[i].w, CELL_H, PATCH_CHANNEL_ID(channel, CHANNEL_CELLS[i].param), CHANNEL_CELLS[i].label, CELL_ROW);
 			if (CHANNEL_CELLS[i].param == PARAM_PORTA_ON) {
 				g->cells[g->cell_count - 1].look = LOOK_SWITCH;
@@ -1371,6 +1375,9 @@ static int envelope_part_at(mdmi_gui *g, const patch_shape *shape, int x, int y)
 	if (x < ENV_X || x >= ENV_X + ENV_LANE_W) {
 		return ENV_NONE;
 	}
+	if (y >= ENV_PITCH_Y && y < ENV_PITCH_BOTTOM && noise_without_pitch(patch_view(g->source.patch), *g->source.channel)) {
+		return ENV_NONE;
+	}
 	return y >= ENV_LEVEL_Y && y < ENV_LEVEL_BOTTOM ? ENV_LEVEL : y >= ENV_PITCH_Y && y < ENV_PITCH_BOTTOM ? ENV_PITCH : ENV_NONE;
 }
 
@@ -1654,10 +1661,11 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 			fill(g, x, top, w - 1, 3, C_PSG);
 		}
 		const int row = pitch_row(shape->frames[i]), pitch_top = ENV_PITCH_Y + row * ENV_PITCH_ROW;
+		const uint32_t pitch_ink = noise ? C_LINE : C_PSG;
 		if (row < 7) {
-			fill(g, x, pitch_top, w - 1, ENV_CENTRE_Y - pitch_top, C_PSG);
+			fill(g, x, pitch_top, w - 1, ENV_CENTRE_Y - pitch_top, pitch_ink);
 		} else if (row > 7) {
-			fill(g, x, ENV_CENTRE_Y + 1, w - 1, pitch_top + ENV_PITCH_ROW - ENV_CENTRE_Y - 1, C_PSG);
+			fill(g, x, ENV_CENTRE_Y + 1, w - 1, pitch_top + ENV_PITCH_ROW - ENV_CENTRE_Y - 1, pitch_ink);
 		}
 	}
 	fill(g, ENV_X, ENV_BASE_Y, ENV_LANE_W - 1, 1, C_LINE);
@@ -2908,6 +2916,18 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 			fill(g, 402, NOISE_ROW_Y, 32, CELL_H, C_CELL);
 			text(g, 406, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
 			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);
+			if (noise_without_pitch(values, channel)) {
+				// The places of TUNE, BEND, PORTA and TIME, dim like PAN's: a fixed rate has no pitch.
+				static const struct {
+					const char *label;
+					int x, w;
+				} NO_PITCH[] = {{"TUNE", 422, 96}, {"BEND", 522, 64}, {"PORTA", 590, 50}, {"TIME", 644, 64}};
+				for (size_t i = 0; i < sizeof(NO_PITCH) / sizeof(*NO_PITCH); i++) {
+					fill(g, NO_PITCH[i].x, GRID_ROW1_Y, NO_PITCH[i].w, CELL_H, C_BG);
+					frame(g, NO_PITCH[i].x, GRID_ROW1_Y, NO_PITCH[i].w, CELL_H, C_CELL);
+					text(g, NO_PITCH[i].x + 4, GRID_ROW1_Y + 6, NO_PITCH[i].label, C_LINE, 1);
+				}
+			}
 		} else if (noise_takes(values, channel)) {
 			text(g, 332, 442, "TAKEN BY CH10 NOISE (TONE 3, KIT): CH9 NOTES ARE SILENT", C_AMBER, 1);
 		}
