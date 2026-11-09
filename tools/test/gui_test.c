@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <ole2.h>
+#include <shellapi.h>
+#include <shlobj.h>
 #include <clap/clap.h>
 
 #define RATE 48000
@@ -351,6 +354,123 @@ static int64_t project_take(const clap_istream_t *stream, void *buffer, uint64_t
 	memcpy(buffer, project + project_read, count);
 	project_read += count;
 	return (int64_t)count;
+}
+
+// Files dropped as from Explorer (stage 18): a data object holding only CF_HDROP, handed straight to
+// the window's drop target.
+typedef struct {
+	IDataObject iface;
+	HGLOBAL files;
+} test_data;
+
+static HRESULT STDMETHODCALLTYPE data_query(IDataObject *self, REFIID riid, void **out)
+{
+	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDataObject)) {
+		*out = self;
+		return S_OK;
+	}
+	*out = NULL;
+	return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE data_ref(IDataObject *self)
+{
+	(void)self;
+	return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE data_get(IDataObject *self, FORMATETC *format, STGMEDIUM *medium)
+{
+	if (format->cfFormat != CF_HDROP || !(format->tymed & TYMED_HGLOBAL)) {
+		return DV_E_FORMATETC;
+	}
+	const HGLOBAL from = ((test_data *)self)->files;
+	const SIZE_T size = GlobalSize(from);
+	HGLOBAL copy = GlobalAlloc(GMEM_MOVEABLE, size);
+	memcpy(GlobalLock(copy), GlobalLock(from), size);
+	GlobalUnlock(copy);
+	GlobalUnlock(from);
+	medium->tymed = TYMED_HGLOBAL;
+	medium->hGlobal = copy;
+	medium->pUnkForRelease = NULL;
+	return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE data_query_get(IDataObject *self, FORMATETC *format)
+{
+	(void)self;
+	return format->cfFormat == CF_HDROP ? S_OK : DV_E_FORMATETC;
+}
+
+static HRESULT STDMETHODCALLTYPE data_none(void)
+{
+	return E_NOTIMPL;
+}
+
+static IDataObjectVtbl data_vtable = {
+	data_query, data_ref, data_ref, data_get, (void *)data_none, data_query_get, (void *)data_none,
+	(void *)data_none, (void *)data_none, (void *)data_none, (void *)data_none, (void *)data_none,
+};
+
+// Drops one file at a point of the window; the effect the window chose.
+static DWORD drop_file(HWND window, const char *path, int x, int y)
+{
+	wchar_t wide[MAX_PATH];
+	const int chars = MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH);
+	const SIZE_T size = sizeof(DROPFILES) + (chars + 1) * sizeof(wchar_t);
+	test_data data = {{&data_vtable}, GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size)};
+	DROPFILES *files = GlobalLock(data.files);
+	files->pFiles = sizeof(DROPFILES);
+	files->fWide = TRUE;
+	memcpy((uint8_t *)files + sizeof(DROPFILES), wide, chars * sizeof(wchar_t));
+	GlobalUnlock(data.files);
+	IDropTarget *target = GetPropA(window, "OleDropTargetInterface");
+	POINT screen = {x, y};
+	ClientToScreen(window, &screen);
+	const POINTL point = {screen.x, screen.y};
+	DWORD effect = DROPEFFECT_COPY;
+	if (target) {
+		target->lpVtbl->DragEnter(target, &data.iface, MK_LBUTTON, point, &effect);
+		effect = DROPEFFECT_COPY;
+		target->lpVtbl->DragOver(target, MK_LBUTTON, point, &effect);
+		const DWORD over = effect;
+		effect = DROPEFFECT_COPY;
+		if (over != DROPEFFECT_NONE) {
+			target->lpVtbl->Drop(target, &data.iface, MK_LBUTTON, point, &effect);
+		} else {
+			target->lpVtbl->DragLeave(target);
+		}
+		effect = over;
+	} else {
+		effect = (DWORD)-1;
+	}
+	GlobalFree(data.files);
+	return effect;
+}
+
+// A mono 16-bit WAV of a sine to drop.
+static void write_wav(const char *path, uint32_t hz, uint32_t frames)
+{
+	FILE *f = fopen(path, "wb");
+	const uint32_t data = frames * 2, riff = 36 + data, fmt = 16, rate = hz * 2;
+	const uint16_t pcm = 1, mono = 1, align = 2, bits = 16;
+	fwrite("RIFF", 1, 4, f);
+	fwrite(&riff, 4, 1, f);
+	fwrite("WAVEfmt ", 1, 8, f);
+	fwrite(&fmt, 4, 1, f);
+	fwrite(&pcm, 2, 1, f);
+	fwrite(&mono, 2, 1, f);
+	fwrite(&hz, 4, 1, f);
+	fwrite(&rate, 4, 1, f);
+	fwrite(&align, 2, 1, f);
+	fwrite(&bits, 2, 1, f);
+	fwrite("data", 1, 4, f);
+	fwrite(&data, 4, 1, f);
+	for (uint32_t i = 0; i < frames; i++) {
+		const int16_t v = (int16_t)(12000 * sin(2 * 3.14159265358979 * 330 * i / hz));
+		fwrite(&v, 2, 1, f);
+	}
+	fclose(f);
 }
 
 // A change of samples goes into the running core (D39): for a while the header must never say
@@ -1036,6 +1156,54 @@ int main(int argc, char **argv)
 		const long reset_ms = wait_applied(window);
 		capture(window);
 		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "CLEAR gives note 40 the ROM's sample again, no restart (%ld ms)", reset_ms);
+		// Stage 18: a WAV dropped on the open note's wave replaces its sound, an FM file is refused
+		// there; LOOP and ONE-SHOT exclude each other.
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(200);
+		click(window, GRID_NOTE40_X + 17, GRID_NOTE40_Y + 8);
+		run_ms(100);
+		char wav_path[MAX_PATH], tfi_path[MAX_PATH];
+		GetTempPathA(MAX_PATH, wav_path);
+		strcpy(tfi_path, wav_path);
+		strcat(wav_path, "mdmi_gui_test_wave.wav");
+		strcat(tfi_path, "mdmi_gui_test_wave.tfi");
+		write_wav(wav_path, 22050, 11025);
+		{
+			static const uint8_t tfi[42] = {4, 0};
+			FILE *f = fopen(tfi_path, "wb");
+			fwrite(tfi, 1, sizeof(tfi), f);
+			fclose(f);
+		}
+		const int rom_cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
+		const DWORD tfi_effect = drop_file(window, tfi_path, 470, 333);
+		const DWORD wav_effect = drop_file(window, wav_path, 470, 333);
+		const long wave_ms = wait_applied(window);
+		capture(window);
+		save_bmp(argv[2], "dac-wave-drop");
+		const int wave_cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
+		CHECK(tfi_effect == DROPEFFECT_NONE, "an FM file over the wave is refused");
+		CHECK(wav_effect == DROPEFFECT_COPY && wave_ms >= 0 && rom_cell < 300 && wave_cell > 300, "a WAV dropped on the wave replaces the open note's sound (cell %d px, was %d)", wave_cell, rom_cell);
+		click(window, 660, DAC_ROW_A_Y + 10);
+		const long loop_ms = wait_applied(window);
+		capture(window);
+		save_bmp(argv[2], "dac-loop");
+		const int loop_on = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
+		const int shot_off = count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
+		CHECK(loop_ms >= 0 && loop_on > 1000 && shot_off == 0, "LOOP lights (%d px), ONE-SHOT stays off", loop_on);
+		click(window, 660, DAC_ROW_B_Y + 10);
+		wait_applied(window);
+		capture(window);
+		const int loop_off = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
+		const int shot_on = count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
+		CHECK(shot_on > 1000 && loop_off == 0, "ONE-SHOT turns LOOP off (%d px, LOOP %d px)", shot_on, loop_off);
+		click(window, 660, DAC_ROW_A_Y + 10);
+		wait_applied(window);
+		capture(window);
+		CHECK(count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0
+				&& count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000,
+			"and LOOP turns ONE-SHOT off");
+		DeleteFileA(wav_path);
+		DeleteFileA(tfi_path);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		send_midi(0xB0, 78, 0);
 		run_ms(800);

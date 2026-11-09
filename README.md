@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.17.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.18.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -18,7 +18,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - Chords on FM channels, played on the voices of silent channels (not with Porta On, Ch3 Special Mode or
   the DAC).
 - Instrument files: TFI, VGI and TYI for FM, EEF for PSG. Drop them from Explorer on a channel or a bank place.
-- DAC samples on channel 6: drop WAV files on notes, trim, tune and shape them.
+- DAC samples on channel 6: drop WAV files on notes or on the open note's wave, trim, tune and shape them.
+  Channel 6's Pan (CC 10) puts a sample left, centre or right, also while it plays. A sample with LOOP
+  repeats while the key is held. Not checked on a real console yet.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
   from silence.
 - PSG noise on channel 10: Noise Type (periodic or white) and Noise Rate (L M H, Tone 3, or Kit). On Tone 3
@@ -78,8 +80,8 @@ English; the other notes in `docs/` are in Russian).
 - **Arrow keys** in the window work only in the VST3 version, not in CLAP hosts.
 - **File names that are not in Latin letters** (for example Cyrillic) show as blanks in the window.
 - **Windows only.** There are no Mac or Linux builds.
-- The sound is BlastEm's emulation. A real console may sound different in places. The noise modes of 0.16 are
-  written the same way for both, but have not been checked on a console.
+- The sound is BlastEm's emulation. A real console may sound different in places. The noise modes of 0.16 and the
+  DAC pan and loop of 0.18 are written the same way for both, but have not been checked on a console.
 
 ## Building from source
 

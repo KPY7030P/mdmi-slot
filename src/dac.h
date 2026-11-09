@@ -31,6 +31,9 @@ typedef struct {
 	bool fade;
 	// Note Off doesn't stop it (ROM_SAMPLE_ONE_SHOT).
 	bool one_shot;
+	// It repeats until Note Off (ROM_SAMPLE_LOOP, stage 18): the length is cut to whole blocks, so
+	// the driver's repeat has no silence in it, and FADE doesn't apply. Never with one_shot.
+	bool loop;
 } dac_edit;
 
 typedef struct {
@@ -65,6 +68,10 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit);
 // The driver rate an edit gives, and what its bytes would take of the ROM, without preparing them.
 int dac_rate(const dac_sample *sample, const dac_edit *edit);
 uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit);
+// With LOOP, the source frame where the repeat goes back to the start; edit->end otherwise, or when
+// the sample is shorter than one block and so plays once (dac_loop_short).
+uint32_t dac_loop_end(const dac_sample *sample, const dac_edit *edit);
+bool dac_loop_short(const dac_sample *sample, const dac_edit *edit);
 // The gain that brings the kept part's peak just under full scale.
 int dac_normalize_gain(const dac_sample *sample);
 dac_sample *dac_copy(const dac_sample *sample);

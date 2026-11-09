@@ -1711,6 +1711,45 @@ static void test_dac_edit(void)
 	edit.gain = 0;
 	edit.one_shot = true;
 	CHECK(dac_prepare(s, &edit) && s->sample.flags == ROM_SAMPLE_ONE_SHOT, "ONE-SHOT is the record's flag");
+	// LOOP (stage 18): whole blocks, no fade, its own flag; under one block it plays once.
+	{
+		dac_edit loop = edit;
+		loop.one_shot = false;
+		loop.loop = true;
+		loop.gain = normal;
+		const uint32_t plain = (uint32_t)ceil(22050 / (22050 / ROM_SAMPLE_HZ[dac_rate(s, &loop)]));
+		const bool made = dac_prepare(s, &loop);
+		int end_peak = 0;
+		for (uint32_t i = s->sample.length - 20; made && i < s->sample.length; i++) {
+			end_peak = abs(s->bytes[i]) > end_peak ? abs(s->bytes[i]) : end_peak;
+		}
+		CHECK(made && s->sample.flags == ROM_SAMPLE_LOOP && s->sample.length % ROM_SAMPLE_BLOCK == 0 && s->sample.length <= plain && s->sample.length > plain - ROM_SAMPLE_BLOCK
+				&& dac_cost(s, &loop) == s->sample.length,
+			"LOOP: its flag, %u bytes of %u cut to whole blocks, the cost says so", s->sample.length, plain);
+		CHECK(end_peak > 80, "LOOP: no fade at the seam (last 20 samples peak %d)", end_peak);
+		const uint32_t seam = dac_loop_end(s, &loop);
+		CHECK(seam < loop.end && seam > loop.end - 300 && !dac_loop_short(s, &loop), "LOOP: the repeat goes back at frame %u of %u", seam, loop.end);
+		loop.end = 200;
+		CHECK(dac_prepare(s, &loop) && dac_loop_short(s, &loop) && s->sample.flags == 0 && dac_loop_end(s, &loop) == loop.end,
+			"LOOP under one block: plays once, no flag");
+		dac_set one = {0}, back = {0};
+		loop.end = 22050;
+		dac_prepare(s, &loop);
+		dac_put(&one, 45, dac_copy(s));
+		const size_t one_size = dac_block_size(&one);
+		uint8_t *one_block = malloc(one_size);
+		dac_block_write(&one, one_block);
+		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[45]->edit.loop && !back.notes[45]->edit.one_shot && back.notes[45]->sample.flags == ROM_SAMPLE_LOOP,
+			"the project keeps LOOP");
+		// An older build's head: the same byte 1 is one-shot, as it always was.
+		const size_t mode_at = 3 + DAC_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1;
+		CHECK(one_block[mode_at] == 2, "LOOP is mode 2 in the head");
+		one_block[mode_at] = 1;
+		CHECK(dac_block_read(&back, one_block, one_size) && !back.notes[45]->edit.loop && back.notes[45]->edit.one_shot, "mode 1 reads as one-shot, as before stage 18");
+		free(one_block);
+		dac_clear(&one);
+		dac_clear(&back);
+	}
 	edit.start = 30000;
 	CHECK(!dac_prepare(s, &edit) && s->edit.start == 0, "a start past the source is refused, the sample unchanged");
 

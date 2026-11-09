@@ -80,7 +80,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   key plays the noise, 0-44 too (before 0.16 they were dropped), and the envelope's pitch shift does nothing.
   Not checked on a console.
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
-- DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own.
+- DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own. Channel 6's
+  Pan (CC 10) pans them (stage 18): our ROM writes B6 at once, so a sounding sample moves, and hands the
+  pan to the driver for the next start; switching the DAC on or off writes channel 6's pan again for the
+  side now in charge.
 - DAC pages (stage 12, D36, D37, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on is a
   grid of the 128 notes and the selected note's wave with REPLACE and CLEAR; BANK lists the same notes.
   Each note plays the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
@@ -97,7 +100,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Any sample is prepared on EDITOR (D38, D39; one of the ROM's becomes the project's own, a copy of
   its bytes, at its first change): START and END (the tabs of a strip over the wave, as the PSG loop's), PITCH and
   CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
-  last 4 ms) and ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads). Nothing changes while the
+  last 4 ms), ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads) and LOOP (stage 18: it repeats
+  until Note Off, record flag 0x01 for the SGDK driver's own loop; the length is cut to whole 256-byte
+  blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP and ONE-SHOT
+  exclude each other; the project's head byte is 0 cut, 1 one-shot, 2 loop. A WAV dropped on the open
+  note's wave goes to that note. Nothing changes while the
   mouse is down; on mouse up the sample is prepared once and goes into the running core. A double click puts a
   value back. The project keeps the file's sound (mono, 16 bits, up to 16 MB in all), the settings and
   the ROM's bytes, so an opened project plays the same bytes and the trim can still go back.

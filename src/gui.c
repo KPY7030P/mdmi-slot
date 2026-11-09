@@ -268,6 +268,8 @@ struct mdmi_gui {
 	int file_samples;
 	int dac_drop_note;
 	int dac_drop_count;
+	// The drop aims at the open note's wave rather than a cell (stage 18).
+	bool dac_drop_wave;
 	bool drop_envelopes;
 	char file_paths[PATCH_BANK_SIZE][MAX_PATH * 3];
 	char file_name[64];
@@ -2089,7 +2091,7 @@ static void dac_button(mdmi_gui *g, int x, const char *label, bool enabled)
 // mouse going up prepares the sample once and restarts the core.
 enum {
 	DACC_NONE = -1, DACC_START, DACC_END, DACC_PITCH, DACC_CENTS, DACC_GAIN, DACC_NORMALIZE, DACC_FADE, DACC_ONE_SHOT,
-	DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
+	DACC_LOOP, DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
 };
 #define DAC_ROW_A_Y 398
 #define DAC_ROW_B_Y 422
@@ -2102,6 +2104,8 @@ static const struct {
 	// START and END are the trim strip's tabs, no cells.
 	{0, 0, 0, "START"}, {0, 0, 0, "END"}, {242, DAC_ROW_B_Y, 84, "PITCH"}, {328, DAC_ROW_B_Y, 62, "CT"},
 	{396, DAC_ROW_B_Y, 100, "GAIN"}, {498, DAC_ROW_B_Y, 62, "NORMALIZE"}, {566, DAC_ROW_B_Y, 52, "FADE"}, {620, DAC_ROW_B_Y, 80, "ONE-SHOT"},
+	// LOOP over ONE-SHOT: one column for how the note ends (stage 18, docs/design/dac-page.md).
+	{620, DAC_ROW_A_Y, 80, "LOOP"},
 	{274, DAC_ROW_A_Y, 32, "AUTO"}, {308, DAC_ROW_A_Y, 22, "32"}, {332, DAC_ROW_A_Y, 22, "22"}, {356, DAC_ROW_A_Y, 22, "16"},
 	{380, DAC_ROW_A_Y, 28, "13.4"}, {410, DAC_ROW_A_Y, 22, "11"}, {434, DAC_ROW_A_Y, 22, "8"},
 };
@@ -2245,11 +2249,13 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 	// FADE is on almost always (owner): a dim word, and NO FADE in amber when it isn't.
 	{
 		const int x = DAC_CONTROLS[DACC_FADE].x, y = DAC_CONTROLS[DACC_FADE].y, w = DAC_CONTROLS[DACC_FADE].w;
-		const bool over = booted && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
+		const bool over = booted && !edit->loop && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
 		const char *word = edit->fade ? "FADE" : "NO FADE";
-		text(g, x + (w - (int)strlen(word) * 6) / 2, y + 7, word, !booted ? C_LINE : over ? C_TEXT : edit->fade ? C_LINE : C_AMBER, 1);
+		// A loop has no end to fade: the word stays, too dim to read as a choice (stage 18).
+		text(g, x + (w - (int)strlen(word) * 6) / 2, y + 7, word, edit->loop ? C_CELL : !booted ? C_LINE : over ? C_TEXT : edit->fade ? C_LINE : C_AMBER, 1);
 	}
 	switch_cell(g, DACC_ONE_SHOT, edit->one_shot, booted);
+	switch_cell(g, DACC_LOOP, edit->loop, booted);
 	// RATE: the one chosen lit, AUTO's pick dark under it.
 	const int picked = dac_rate(own, edit);
 	for (int c = DACC_RATE_AUTO; c < DACC_RATE_END; c++) {
@@ -2288,6 +2294,15 @@ static bool gain_clips(const mdmi_gui *g, const dac_sample *own, const dac_edit 
 	return peak * gain > 32767.5;
 }
 
+// A WAV held over the wave goes to the open note: the BANK list's drop frame, the wave under it (stage 18).
+static void draw_wave_drop(mdmi_gui *g)
+{
+	if (g->file_over && g->dac_drop_wave && g->dac_drop_count > 0) {
+		frame(g, WAVE_X, WAVE_Y, WAVE_W, WAVE_H, C_AMBER);
+		frame(g, WAVE_X + 1, WAVE_Y + 1, WAVE_W - 2, WAVE_H - 2, C_AMBER);
+	}
+}
+
 // The wave: a file's source whole, its kept part lit and the trim marks; the ROM's bytes as they are.
 static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac_sample *own, const dac_edit *edit)
 {
@@ -2297,6 +2312,7 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 		fill(g, WAVE_X, middle, WAVE_W, 1, C_LINE);
 		const char *empty = "EMPTY. DROP A WAV HERE OR PRESS REPLACE";
 		text(g, WAVE_X + (WAVE_W - (int)strlen(empty) * 6) / 2, middle - 10, empty, C_HINT, 1);
+		draw_wave_drop(g);
 		return;
 	}
 	// Min and max a column, made again only for another sample.
@@ -2321,13 +2337,16 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 	}
 	const double gain = edit ? pow(10.0, edit->gain / 200.0) : 1.0;
 	const int start = edit ? wave_x_of(own, edit->start) : WAVE_X, end = edit ? wave_x_of(own, edit->end) : WAVE_X + WAVE_W;
+	// With LOOP the part after the last whole block isn't played: it reads as trimmed (stage 18).
+	const bool short_loop = edit && dac_loop_short(own, edit);
+	const int played = !edit ? end : short_loop ? start : edit->loop ? wave_x_of(own, dac_loop_end(own, edit)) : end;
 	if (edit) {
-		fill(g, start, WAVE_Y, end - start, WAVE_H, C_CELL);
+		fill(g, start, WAVE_Y, played - start, WAVE_H, C_CELL);
 	}
 	fill(g, WAVE_X, middle, WAVE_W, 1, C_LINE);
 	for (int column = 0; column < WAVE_W; column++) {
 		const int x = WAVE_X + column;
-		const bool kept = x >= start && x < end;
+		const bool kept = x >= start && x < played;
 		const double high = g->wave_high[column] * gain / 32768.0, low = g->wave_low[column] * gain / 32768.0;
 		const bool cut = kept && (high > 1 || low < -1) && (edit != &own->edit || own->clipped);
 		int top = middle - (int)(fmin(high, 1) * half), bottom = middle - (int)(fmax(low, -1) * half);
@@ -2341,10 +2360,14 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 		const int over = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
 		char words[32], a[16];
 		fill(g, start, TRIM_Y, end - start, TRIM_H, C_CELL);
-		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
-		snprintf(words, sizeof(words), "%s MS", a);
+		ms_text(ms_of(own, (edit->loop && !short_loop ? dac_loop_end(own, edit) : edit->end) - edit->start), a, sizeof(a));
+		snprintf(words, sizeof(words), short_loop ? "TOO SHORT" : edit->loop ? "LOOP %s MS" : "%s MS", a);
 		if ((int)strlen(words) * 6 + 4 <= end - start) {
-			text(g, start + (end - start - (int)strlen(words) * 6) / 2, TRIM_Y + 4, words, C_DAC, 1);
+			text(g, start + (end - start - (int)strlen(words) * 6) / 2, TRIM_Y + 4, words, short_loop ? C_AMBER : C_DAC, 1);
+		}
+		if (edit->loop && !short_loop && played < end - 1) {
+			// Where the repeat goes back to the start: on the wave only, not through the strip.
+			fill(g, played, WAVE_Y, 1, WAVE_H, C_LABEL);
 		}
 		const uint32_t start_ink = g->dac_drag == DACC_MARK_START ? C_AMBER : over == DACC_MARK_START ? C_TEXT : C_DAC;
 		const uint32_t end_ink = g->dac_drag == DACC_MARK_END ? C_AMBER : over == DACC_MARK_END ? C_TEXT : C_DAC;
@@ -2367,6 +2390,7 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 			}
 		}
 	}
+	draw_wave_drop(g);
 }
 
 // What a gesture on the panel makes of the edit at this point.
@@ -2432,7 +2456,8 @@ static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
 {
 	const dac_sample *own = panel_sample(g, note);
 	if (!own || (edit->start == own->edit.start && edit->end == own->edit.end && edit->pitch == own->edit.pitch && edit->gain == own->edit.gain
-			&& edit->rate == own->edit.rate && edit->fade == own->edit.fade && edit->one_shot == own->edit.one_shot)) {
+			&& edit->rate == own->edit.rate && edit->fade == own->edit.fade && edit->one_shot == own->edit.one_shot
+			&& edit->loop == own->edit.loop)) {
 		return;
 	}
 	char message[FILES_MESSAGE];
@@ -2449,11 +2474,19 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 		return c != DACC_NONE;
 	}
 	dac_edit edit = own->edit;
-	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_NORMALIZE || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
+	if (c == DACC_FADE && edit.loop) {
+		return true;
+	}
+	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_LOOP || c == DACC_NORMALIZE || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
 		if (c == DACC_FADE) {
 			edit.fade = !edit.fade;
 		} else if (c == DACC_ONE_SHOT) {
+			// ONE-SHOT and LOOP exclude each other: a loop would never stop (stage 18).
 			edit.one_shot = !edit.one_shot;
+			edit.loop = edit.loop && !edit.one_shot;
+		} else if (c == DACC_LOOP) {
+			edit.loop = !edit.loop;
+			edit.one_shot = edit.one_shot && !edit.loop;
 		} else if (c == DACC_NORMALIZE) {
 			edit.gain = (int16_t)dac_normalize_gain(own);
 		} else {
@@ -2554,10 +2587,20 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT -0.5", dac_normalize_gain(own) / 10.0);
 		break;
 	case DACC_FADE:
-		snprintf(out, size, edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
+		snprintf(out, size, edit->loop ? "FADE: NOT USED WHILE LOOP IS ON" : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
 		break;
 	case DACC_ONE_SHOT:
-		snprintf(out, size, edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
+		snprintf(out, size, edit->loop ? "ONE-SHOT: PLAYS TO THE END, LOOP GOES OFF" : edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
+		break;
+	case DACC_LOOP:
+		if (!edit->loop) {
+			snprintf(out, size, edit->one_shot ? "LOOP: REPEAT WHILE HELD, ONE-SHOT GOES OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
+		} else if (dac_loop_short(own, edit)) {
+			snprintf(out, size, "LOOP: UNDER 256 BYTES, NOTHING TO REPEAT");
+		} else {
+			ms_text(ms_of(own, edit->end - dac_loop_end(own, edit)), a, sizeof(a));
+			snprintf(out, size, "LOOP %.2f S: END CUT %s MS TO A BLOCK", dac_cost(own, edit) / ROM_SAMPLE_HZ[dac_rate(own, edit)], a);
+		}
 		break;
 	default: {
 		dac_edit other = *edit;
@@ -4226,10 +4269,13 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 	g->drop_add = false;
 	g->drop_lit = 0;
 	g->dac_drop_count = 0;
+	g->dac_drop_wave = false;
 	const patch_values *values = patch_view(g->source.patch);
 	if (g->file_samples > 0) {
-		// WAV go only to the DAC page's notes, one after another from the row (stage 12).
-		const int note = dac_editor(g, values) ? grid_note_at(x, y) : dac_bank(g, values) ? dac_note_at(g, x, y) : -1;
+		// WAV go only to the DAC page's notes, one after another from the row (stage 12), or from the
+		// open note when dropped on its wave (stage 18).
+		g->dac_drop_wave = dac_editor(g, values) && g->dac_selected >= 0 && in_box(x, y, WAVE_X, WAVE_Y, WAVE_W, WAVE_H);
+		const int note = g->dac_drop_wave ? g->dac_selected : dac_editor(g, values) ? grid_note_at(x, y) : dac_bank(g, values) ? dac_note_at(g, x, y) : -1;
 		if (!dac_editor(g, values) && !dac_bank(g, values)) {
 			hint(g, C_LABEL, "WAV: open CH6 with DAC on");
 		} else if (!engine_booted(g)) {

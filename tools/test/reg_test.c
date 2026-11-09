@@ -890,6 +890,75 @@ static void test_live(void)
 	boot_image(rom, rom_size);
 }
 
+// Stage 18: a LOOP sample repeats while the note is held, with no gap at the seam, and stops at
+// Note Off; CC 10 pans the DAC on output 6, also while a sample sounds.
+static void test_loop_pan(void)
+{
+	dac_set set = {0};
+	// Four blocks at 22 kHz, about 46 ms: 500 ms held is ten repeats.
+	dac_put(&set, 50, square_sample(256 * 4, 100));
+	set.notes[50]->sample.flags = ROM_SAMPLE_LOOP;
+	boot_set(&set);
+	midi(0xB5, 10, 0);
+	render(SETTLE_BLOCKS);
+	midi(0x95, 50, 127);
+	// The note sounds after the plugin's latency (12.6 ms) and the driver's start.
+	render(RATE / 16 / BLOCK);
+	// 1 ms windows over 500 ms: each must hold the square; a seam of silence would leave one quiet.
+	const int window = RATE / 1000;
+	int windows = 0, quiet_windows = 0, at = 0;
+	float peak = 0, weakest = 1;
+	double side[2] = {0, 0};
+	for (int b = 0; b < RATE / 2 / BLOCK; b++) {
+		tick(BLOCK);
+		for (int i = 0; i < BLOCK; i++) {
+			peak = fabsf(left[i]) > peak ? fabsf(left[i]) : peak;
+			side[0] += (double)outputs[10][i] * outputs[10][i];
+			side[1] += (double)outputs[11][i] * outputs[11][i];
+			if (++at == window) {
+				windows++;
+				quiet_windows += peak < 0.05f;
+				weakest = peak < weakest ? peak : weakest;
+				peak = 0;
+				at = 0;
+			}
+		}
+	}
+	printf("    LOOP held 500 ms: %d of %d 1 ms windows quiet, weakest %.3f; output 6 L %.1f dB, R %.1f dB\n", quiet_windows, windows,
+		weakest, 10 * log10(side[0] + 1e-30), 10 * log10(side[1] + 1e-30));
+	// A 1 ms window can't see a pause shorter than itself (the DAC holds its last byte); that there is
+	// none comes from the driver, which outputs samples while it recopies the params (drv_pcm.s80).
+	check(quiet_windows == 0, "a LOOP sample sounds through ten times its length, no 1 ms window quiet");
+	// The side turned off isn't zero: the YM2612's ladder gives it an offset by the sample's sign, as
+	// BlastEm models it (ym2612.c, zero_offset); about 29 dB down here.
+	check(side[0] > 1 && side[1] < side[0] * 0.01, "CC 10 at 0: output 6 left sounds, right at least 20 dB down");
+	// Pan right while it plays: the driver writes B6 only at a sample's start, the ROM writes it now.
+	midi(0xB5, 10, 127);
+	render(RATE / 50 / BLOCK);
+	side[0] = side[1] = 0;
+	for (int b = 0; b < RATE / 10 / BLOCK; b++) {
+		tick(BLOCK);
+		for (int i = 0; i < BLOCK; i++) {
+			side[0] += (double)outputs[10][i] * outputs[10][i];
+			side[1] += (double)outputs[11][i] * outputs[11][i];
+		}
+	}
+	printf("    after CC 10 at 127 mid-sample: output 6 L %.1f dB, R %.1f dB\n", 10 * log10(side[0] + 1e-30), 10 * log10(side[1] + 1e-30));
+	check(side[1] > 1 && side[0] < side[1] * 0.01, "CC 10 moves a sounding sample to the right");
+	midi(0x85, 50, 0);
+	render(RATE / 20 / BLOCK);
+	const float after = loudest(RATE / 10 / BLOCK);
+	printf("    LOOP 50 to 150 ms after Note Off: loudest %.4f\n", after);
+	check(after < 0.01f, "a LOOP sample stops at Note Off");
+	midi(0xB5, 10, 64);
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	dac_clear(&set);
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	boot_image(rom, rom_size);
+}
+
 static void test_load(void)
 {
 	static uint8_t state[PATCH_NUM_IDS * 6];
@@ -2331,12 +2400,17 @@ static void test_outputs(void)
 	for (int i = 0; i < 400 && mdmi_engine_test_owner(engine, taken) != taken; i++) {
 		reset_energy();
 		render(1);
-		before_new += out_energy[taken];
-		before_old += out_energy[0];
-		blocks_before++;
+		// The block the key-on falls in already plays into the new output after it: only whole
+		// blocks before it count (it depends on where in a block the key-on falls).
+		if (mdmi_engine_test_owner(engine, taken) != taken) {
+			before_new += out_energy[taken];
+			before_old += out_energy[0];
+			blocks_before++;
+		}
 	}
 	const float wait = mdmi_engine_test_take_owner_wait(engine);
-	printf("    voice %d came to output %d after %d blocks, %.1f ms after its note reached the ROM\n", taken + 1, taken + 1, blocks_before, wait);
+	printf("    voice %d came to output %d after %d blocks, %.1f ms after its note reached the ROM; before it output %d %.3g, output 1 %.3g\n", taken + 1,
+		taken + 1, blocks_before, wait, taken + 1, before_new, before_old);
 	check(mdmi_engine_test_owner(engine, taken) == taken && wait > 0.0f && before_new < 1e-12 && before_old > 0,
 		"until its key-on the taken voice plays into output 1 and the new channel's output is silent");
 	render(SETTLE_BLOCKS);
@@ -2445,6 +2519,7 @@ int main(int argc, char **argv)
 	test_samples();
 	test_shaping();
 	test_live();
+	test_loop_pan();
 	test_load();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);

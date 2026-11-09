@@ -1,5 +1,5 @@
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..6296e96 100644
+index 5145b6a..e20276c 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -403,6 +403,12 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
@@ -91,15 +91,22 @@ index 5145b6a..6296e96 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -1002,6 +1042,7 @@ static void enable_dac(bool enable)
+@@ -1000,8 +1040,13 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+ 
+ static void enable_dac(bool enable)
  {
-     deviceChannels[5].ops = enable ? &DAC_VTable : &FM_VTable;
+-    deviceChannels[5].ops = enable ? &DAC_VTable : &FM_VTable;
++    DeviceChannel* devChan = &deviceChannels[5];
++    devChan->ops = enable ? &DAC_VTable : &FM_VTable;
      synth_enable_dac(enable);
++    // update_pan drops a pan equal to the one cached, so the side now in charge of channel 6
++    // gets it here: the DAC a pan set before it, FM the pan after the driver swap (stage 18).
++    devChan->ops->pan(devChan->num, devChan->pan);
 +    midi_psg_chip_reset();
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1252,6 +1293,14 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1252,6 +1297,14 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_RESET_ALL_CONTROLLERS:
          resetAllControllers(ch);
          break;
@@ -139,34 +146,37 @@ index 731aa8c..e18b744 100644
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
 diff --git a/src/midi_dac.c b/src/midi_dac.c
-index 33ac142..82bc913 100644
+index 33ac142..a2bcf95 100644
 --- a/src/midi_dac.c
 +++ b/src/midi_dac.c
-@@ -1,21 +1,33 @@
+@@ -1,5 +1,10 @@
  #include "midi_dac.h"
  #include "pcm_sample.h"
- 
-+static const PcmSample* playing;
++#include "synth.h"
 +
++static const PcmSample* playing;
++// Channel 6's pan as the driver's B6 value; the driver writes it at each sample's start (stage 18).
++static SoundPanning pan = SOUND_PAN_CENTER;
+ 
  void midi_dac_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity)
  {
-     const PcmSample* sample = percussionPcmSample[pitch];
+@@ -7,7 +12,14 @@ void midi_dac_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity)
      if (!sample) {
          return;
      }
+-    SND_PCM_startPlay(sample->data, sample->length, sample->rate, SOUND_PAN_CENTER, 0);
 +    playing = sample;
-     SND_PCM_startPlay(sample->data, sample->length, sample->rate, SOUND_PAN_CENTER, 0);
- }
- 
++    SND_PCM_startPlay(sample->data, sample->length, sample->rate, pan, sample->flags & PCM_LOOP);
++}
++
 +bool midi_dac_retriggers(u8 pitch)
 +{
 +    const PcmSample* sample = percussionPcmSample[pitch];
 +    return !sample || !(sample->flags & PCM_ONE_SHOT);
-+}
-+
- void midi_dac_reset(void)
- {
  }
+ 
+ void midi_dac_reset(void)
+@@ -16,6 +28,9 @@ void midi_dac_reset(void)
  
  void midi_dac_note_off(u8 chan, u8 pitch)
  {
@@ -176,7 +186,30 @@ index 33ac142..82bc913 100644
      SND_PCM_stopPlay();
  }
  
-@@ -31,8 +43,11 @@ void midi_dac_program(u8 chan, u8 program)
+@@ -23,16 +38,33 @@ void midi_dac_channel_volume(u8 chan, u8 volume)
+ {
+ }
+ 
+-void midi_dac_pan(u8 chan, u8 pan)
++// As FM pan: 0-31 left, 32-95 centre, 96-127 right. Written to B6 at once, so a sounding sample
++// moves too; the driver writes B6 only when a sample starts.
++void midi_dac_pan(u8 chan, u8 value)
+ {
++    u8 mode;
++    if (value > 95) {
++        pan = SOUND_PAN_RIGHT;
++        mode = STEREO_MODE_RIGHT;
++    } else if (value > 31) {
++        pan = SOUND_PAN_CENTER;
++        mode = STEREO_MODE_CENTRE;
++    } else {
++        pan = SOUND_PAN_LEFT;
++        mode = STEREO_MODE_LEFT;
++    }
++    synth_stereo(chan, mode);
+ }
+ 
+ void midi_dac_program(u8 chan, u8 program)
  {
  }
  
@@ -671,15 +704,17 @@ index 46e6069..3fa0ada 100644
  const PcmSample* percussionPcmSample[128] = {
      NULL, NULL, NULL, NULL, NULL,
 diff --git a/src/pcm_sample.h b/src/pcm_sample.h
-index df535e9..9fb9088 100644
+index df535e9..f363b5d 100644
 --- a/src/pcm_sample.h
 +++ b/src/pcm_sample.h
-@@ -1,10 +1,15 @@
+@@ -1,10 +1,17 @@
  #pragma once
  #include "types.h"
  
 +// flags: PCM_ONE_SHOT lets the sample play to its end whatever Note Off comes (MDMI plugin, D38).
++// PCM_LOOP repeats the sample until Note Off; its length is whole 256-byte blocks (stage 18).
 +// The record stays 10 bytes, the flags byte was its padding.
++#define PCM_LOOP 0x01
 +#define PCM_ONE_SHOT 0x02
 +
  typedef struct PcmSample {
@@ -743,19 +778,28 @@ index 0fd5ac6..ff2f83e 100644
  void _expect_psg_tone(u8 channel, u16 value, const char* const file, const int line);
  void _expect_psg_attenuation(u8 channel, u8 value, const char* const file, const int line);
 diff --git a/tests/system/test_e2e.c b/tests/system/test_e2e.c
-index d9cce30..1f46f85 100644
+index d9cce30..af9ea3f 100644
 --- a/tests/system/test_e2e.c
 +++ b/tests/system/test_e2e.c
-@@ -264,6 +264,7 @@ void test_plays_pcm_sample(void** state)
+@@ -264,6 +264,16 @@ void test_plays_pcm_sample(void** state)
      expect_value(__wrap_YM2612_write, port, 0);
      expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
      expect_function_call(__wrap_Z80_releaseBus);
++    // Channel 6's pan goes to the DAC as it takes the channel over (stage 18).
++    expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
++    will_return(__wrap_Z80_getAndRequestBus, false);
++    expect_value(__wrap_YM2612_writeReg, part, 1);
++    expect_value(__wrap_YM2612_writeReg, reg, 0xB6);
++    expect_value(__wrap_YM2612_writeReg, data, 0xC0);
++    expect_value(__wrap_YM2612_write, port, 0);
++    expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
++    expect_function_call(__wrap_Z80_releaseBus);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
      midi_rx_read();
  
      stub_usb_receive_note_on(MIDI_CHANNEL_6, MIDI_PITCH_C4, MIDI_VOLUME_MAX);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..d453a02 100644
+index d2449c4..08c9a54 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -207,6 +207,12 @@ int main(void)
@@ -771,7 +815,7 @@ index d2449c4..d453a02 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +232,25 @@ int main(void)
+@@ -226,10 +232,29 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -794,10 +838,14 @@ index d2449c4..d453a02 100644
 +        midi_dac_test(test_midi_dac_all_notes_off_stops_one_shot),
 +        midi_dac_test(test_midi_dac_released_key_leaves_other_sample),
 +        midi_dac_test(test_midi_dac_all_notes_off_forgets_held_keys),
++        midi_dac_test(test_midi_dac_pan_sets_b6_and_next_sample),
++        midi_dac_test(test_midi_dac_disable_rewrites_fm_pan),
++        midi_dac_test(test_midi_dac_loop_sample_loops_until_note_off),
++        midi_test(test_midi_dac_pan_before_enable_applies),
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +270,8 @@ int main(void)
+@@ -249,6 +274,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -807,7 +855,7 @@ index d2449c4..d453a02 100644
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..cfb7644 100644
+index 9650279..5bac158 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,6 +1,8 @@
@@ -819,31 +867,34 @@ index 9650279..cfb7644 100644
  #include "snd/sound.h"
  #include "snd/pcm/snd_pcm.h"
  
-@@ -13,6 +15,7 @@ int test_midi_dac_setup(UNUSED void** state)
+@@ -13,6 +15,8 @@ int test_midi_dac_setup(UNUSED void** state)
      test_midi_setup(state);
  
      expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
      __real_midi_cc(0, 78, 0x7F);
  
      return 0;
-@@ -21,6 +24,7 @@ int test_midi_dac_setup(UNUSED void** state)
+@@ -21,6 +25,8 @@ int test_midi_dac_setup(UNUSED void** state)
  void test_midi_enables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
  
      __real_midi_cc(0, 78, 0x7F);
  }
-@@ -28,6 +32,7 @@ void test_midi_enables_dac(UNUSED void** state)
+@@ -28,6 +34,8 @@ void test_midi_enables_dac(UNUSED void** state)
  void test_midi_disables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, false);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
  
      __real_midi_cc(0, 78, 0);
  }
-@@ -62,3 +67,176 @@ void test_midi_dac_stops_note(UNUSED void** state)
+@@ -62,3 +70,255 @@ void test_midi_dac_stops_note(UNUSED void** state)
  
      __real_midi_note_off(dacFmChannel, noteKey);
  }
@@ -988,6 +1039,7 @@ index 9650279..cfb7644 100644
 +    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    expect_psg_tone(psgChan, TONE_NTSC_C4);
 +    expect_psg_attenuation(psgChan, 0);
@@ -997,6 +1049,7 @@ index 9650279..cfb7644 100644
 +    __real_midi_note_off(chan, MIDI_PITCH_C4);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, false);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0);
 +
@@ -1015,16 +1068,93 @@ index 9650279..cfb7644 100644
 +    __real_midi_note_on(GENERAL_MIDI_PERCUSSION_CHANNEL, 36, MAX_MIDI_VOLUME);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
 +    expect_psg_tone(PSG_CH3, 106);
 +    expect_psg_attenuation(PSG_NOISE_CH4, 0);
 +    __real_midi_cc(0, 78, 0x7F);
 +}
++
++static void expect_pcm_start_pan(SoundPanning pan, u8 loop)
++{
++    expect_any(__wrap_SND_PCM_startPlay, sample);
++    expect_any(__wrap_SND_PCM_startPlay, len);
++    expect_any(__wrap_SND_PCM_startPlay, rate);
++    expect_value(__wrap_SND_PCM_startPlay, pan, pan);
++    expect_value(__wrap_SND_PCM_startPlay, loop, loop);
++}
++
++// CC 10 on channel 6 pans the DAC as FM pan: 0-31 left, 32-95 centre, 96-127 right. B6 is
++// written at once, so a sounding sample moves, and the next sample starts there (stage 18).
++void test_midi_dac_pan_sets_b6_and_next_sample(UNUSED void** state)
++{
++    const u8 values[3] = { 0, 64, 127 };
++    const u8 modes[3] = { STEREO_MODE_LEFT, STEREO_MODE_CENTRE, STEREO_MODE_RIGHT };
++    const SoundPanning pans[3] = { SOUND_PAN_LEFT, SOUND_PAN_CENTER, SOUND_PAN_RIGHT };
++
++    for (u8 i = 0; i < 3; i++) {
++        expect_pcm_start_pan(i == 0 ? SOUND_PAN_CENTER : pans[i - 1], 0);
++        __real_midi_note_on(dacFmChannel, noteKey, 100);
++        expect_synth_stereo(dacFmChannel, modes[i]);
++        __real_midi_cc(dacFmChannel, CC_PAN, values[i]);
++        expect_function_call(__wrap_SND_PCM_stopPlay);
++        __real_midi_note_off(dacFmChannel, noteKey);
++    }
++    expect_pcm_start_pan(SOUND_PAN_RIGHT, 0);
++    __real_midi_note_on(dacFmChannel, noteKey, 100);
++}
++
++// A pan set while channel 6 is FM reaches the DAC when it is switched on (stage 18).
++void test_midi_dac_pan_before_enable_applies(UNUSED void** state)
++{
++    expect_synth_stereo(dacFmChannel, STEREO_MODE_LEFT);
++    __real_midi_cc(dacFmChannel, CC_PAN, 0);
++
++    expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_synth_stereo(dacFmChannel, STEREO_MODE_LEFT);
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
++    __real_midi_cc(0, 78, 0x7F);
++
++    expect_pcm_start_pan(SOUND_PAN_LEFT, 0);
++    __real_midi_note_on(dacFmChannel, noteKey, 100);
++}
++
++// After the DAC is switched off, FM 6 gets its pan again: the driver swap reset the chip (stage 18).
++void test_midi_dac_disable_rewrites_fm_pan(UNUSED void** state)
++{
++    expect_synth_stereo(dacFmChannel, STEREO_MODE_RIGHT);
++    __real_midi_cc(dacFmChannel, CC_PAN, 127);
++
++    expect_value(__wrap_synth_enable_dac, enable, false);
++    expect_synth_stereo(dacFmChannel, STEREO_MODE_RIGHT);
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
++    __real_midi_cc(0, 78, 0);
++}
++
++// A LOOP sample goes to the driver with its loop flag and stops at Note Off (stage 18).
++void test_midi_dac_loop_sample_loops_until_note_off(UNUSED void** state)
++{
++    static const u8 data[512] = { 0 };
++    static const PcmSample looped = { data, sizeof(data), 1, PCM_LOOP };
++    const PcmSample* saved = percussionPcmSample[nullNoteKey];
++    percussionPcmSample[nullNoteKey] = &looped;
++
++    expect_value(__wrap_SND_PCM_startPlay, sample, data);
++    expect_value(__wrap_SND_PCM_startPlay, len, sizeof(data));
++    expect_value(__wrap_SND_PCM_startPlay, rate, 1);
++    expect_value(__wrap_SND_PCM_startPlay, pan, SOUND_PAN_CENTER);
++    expect_value(__wrap_SND_PCM_startPlay, loop, 1);
++    __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
++    expect_function_call(__wrap_SND_PCM_stopPlay);
++    __real_midi_note_off(dacFmChannel, nullNoteKey);
++
++    percussionPcmSample[nullNoteKey] = saved;
++}
 diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
-index 5e63f7b..79bb23a 100644
+index 5e63f7b..34909ab 100644
 --- a/tests/unit/test_midi_dac.h
 +++ b/tests/unit/test_midi_dac.h
-@@ -3,6 +3,13 @@
+@@ -3,6 +3,17 @@
  int test_midi_dac_setup(UNUSED void** state);
  void test_midi_enables_dac(UNUSED void** state);
  void test_midi_disables_dac(UNUSED void** state);
@@ -1038,6 +1168,10 @@ index 5e63f7b..79bb23a 100644
 +void test_midi_dac_all_notes_off_stops_one_shot(UNUSED void** state);
 +void test_midi_dac_released_key_leaves_other_sample(UNUSED void** state);
 +void test_midi_dac_all_notes_off_forgets_held_keys(UNUSED void** state);
++void test_midi_dac_pan_sets_b6_and_next_sample(UNUSED void** state);
++void test_midi_dac_pan_before_enable_applies(UNUSED void** state);
++void test_midi_dac_disable_rewrites_fm_pan(UNUSED void** state);
++void test_midi_dac_loop_sample_loops_until_note_off(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dynamic.c b/tests/unit/test_midi_dynamic.c
 index a9ca2a6..e96539f 100644
 --- a/tests/unit/test_midi_dynamic.c
@@ -1065,7 +1199,7 @@ index 13ce5a1..0fdb43c 100644
          u8 psgChan = chan - MIN_PSG_CHAN;
          __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..4bbb972 100644
+index affbb29..736df00 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
 @@ -3,13 +3,19 @@
@@ -1152,7 +1286,7 @@ index affbb29..4bbb972 100644
  
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          __real_midi_program(chan, 1);
-@@ -428,4 +434,220 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +434,221 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -1354,6 +1488,7 @@ index affbb29..4bbb972 100644
 +    __real_midi_note_off(NOISE_MIDI_CHAN, 52);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
 +    __real_midi_cc(0, 78, 0x7F);
 +}

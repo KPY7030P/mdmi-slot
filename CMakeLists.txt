@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 # 0.N.M: N is the stage in docs/ROADMAP.md, M the delivery within it.
-project(mdmi_plugin VERSION 0.17.0 LANGUAGES C CXX)
+project(mdmi_plugin VERSION 0.18.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
@@ -59,7 +59,7 @@ add_executable(gui_test tools/test/gui_test.c)
 target_compile_options(gui_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
 target_include_directories(gui_test PRIVATE "${CLAP_SDK_ROOT}/include")
 target_link_options(gui_test PRIVATE -static)
-target_link_libraries(gui_test PRIVATE gdi32 user32)
+target_link_libraries(gui_test PRIVATE gdi32 user32 ole32 uuid)
 add_dependencies(mdmi_all gui_test)
 
 add_executable(vst3_host tools/test/vst3_host.cpp)

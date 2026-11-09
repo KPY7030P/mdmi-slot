@@ -115,12 +115,37 @@ int dac_rate(const dac_sample *sample, const dac_edit *edit)
 	return rate_of(sample, edit);
 }
 
+static double step_of(const dac_sample *sample, const dac_edit *edit)
+{
+	return sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate_of(sample, edit)];
+}
+
+// The bytes a LOOP sample keeps of its length: whole blocks, or all of it under one block.
+static uint32_t loop_length(const dac_edit *edit, uint32_t length)
+{
+	return edit->loop && length >= ROM_SAMPLE_BLOCK ? length & ~(ROM_SAMPLE_BLOCK - 1) : length;
+}
+
 uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit)
 {
-	const int rate = rate_of(sample, edit);
-	const double step = sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate];
-	const double length = ceil((edit->end > edit->start ? edit->end - edit->start : 1) / step);
-	return rom_image_cost(length < ROM_IMAGE_MAX ? (uint32_t)length : ROM_IMAGE_MAX);
+	const double length = ceil((edit->end > edit->start ? edit->end - edit->start : 1) / step_of(sample, edit));
+	return rom_image_cost(loop_length(edit, length < ROM_IMAGE_MAX ? (uint32_t)length : ROM_IMAGE_MAX));
+}
+
+bool dac_loop_short(const dac_sample *sample, const dac_edit *edit)
+{
+	return edit->loop && edit->end > edit->start && ceil((edit->end - edit->start) / step_of(sample, edit)) < ROM_SAMPLE_BLOCK;
+}
+
+uint32_t dac_loop_end(const dac_sample *sample, const dac_edit *edit)
+{
+	if (!edit->loop || edit->end <= edit->start || dac_loop_short(sample, edit)) {
+		return edit->end;
+	}
+	const double step = step_of(sample, edit);
+	const uint32_t kept = loop_length(edit, (uint32_t)ceil((edit->end - edit->start) / step));
+	const double end = edit->start + kept * step;
+	return end < edit->end ? (uint32_t)end : edit->end;
 }
 
 bool dac_prepare(dac_sample *sample, const dac_edit *edit)
@@ -135,7 +160,7 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 	if (length_wanted > ROM_IMAGE_MAX || rom_image_cost((uint32_t)length_wanted) > rom_image_room()) {
 		return false;
 	}
-	const uint32_t length = (uint32_t)length_wanted, cost = rom_image_cost(length);
+	uint32_t length = (uint32_t)length_wanted, cost = rom_image_cost(length);
 	const double cutoff = step > 1 ? 0.95 / step : 1.0;
 	const int side = (int)ceil(SINC_SIDE * (step > 1 ? step : 1));
 	double *out = malloc(length * sizeof(double));
@@ -152,7 +177,12 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 		out[k] = source_at(sample->source + edit->start, frames, k * step, table, side) * gain;
 	}
 	free(table);
-	if (edit->fade) {
+	// A loop ends on a block's end and starts again at once: no padding, no fade (stage 18).
+	const bool loops = edit->loop && length >= ROM_SAMPLE_BLOCK;
+	if (loops) {
+		length = cost = loop_length(edit, length);
+	}
+	if (edit->fade && !loops) {
 		// The last few ms go down to silence, so the end doesn't click.
 		uint32_t fade = (uint32_t)lround(FADE_SECONDS * ROM_SAMPLE_HZ[rate]);
 		fade = fade < length ? fade : length;
@@ -174,7 +204,7 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 	sample->sample.rate = (uint8_t)rate;
 	sample->sample.length = cost;
 	sample->sample.bytes = bytes;
-	sample->sample.flags = edit->one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+	sample->sample.flags = loops ? ROM_SAMPLE_LOOP : edit->one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
 	return true;
 }
 
@@ -391,7 +421,8 @@ uint32_t dac_sources(const dac_set *set)
 
 static bool same_edit(const dac_edit *a, const dac_edit *b)
 {
-	return a->start == b->start && a->end == b->end && a->pitch == b->pitch && a->gain == b->gain && a->rate == b->rate && a->fade == b->fade && a->one_shot == b->one_shot;
+	return a->start == b->start && a->end == b->end && a->pitch == b->pitch && a->gain == b->gain && a->rate == b->rate && a->fade == b->fade && a->one_shot == b->one_shot
+		&& a->loop == b->loop;
 }
 
 bool dac_same(const dac_set *a, const dac_set *b)
@@ -494,7 +525,8 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 		put16(&out, (uint16_t)s->edit.gain);
 		*out++ = (uint8_t)s->edit.rate;
 		*out++ = s->edit.fade;
-		*out++ = s->edit.one_shot;
+		// How Note Off ends it: 0 cuts, 1 one-shot, 2 loop (stage 18; a build before reads 2 as one-shot).
+		*out++ = s->edit.loop ? 2 : s->edit.one_shot ? 1 : 0;
 		*out++ = s->sample.rate;
 		*out++ = s->clipped;
 		put32(&out, s->sample.length);
@@ -544,7 +576,9 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		s->edit.gain = (int16_t)get16(&h);
 		s->edit.rate = (int8_t)*h++;
 		s->edit.fade = *h++ != 0;
-		s->edit.one_shot = *h++ != 0;
+		s->edit.loop = *h == 2;
+		s->edit.one_shot = *h != 0 && !s->edit.loop;
+		h++;
 		s->sample.rate = *h++;
 		s->clipped = *h++ != 0;
 		const uint32_t bytes = get32(&h);
@@ -576,7 +610,9 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		at += bytes;
 		s->sample.length = bytes;
 		s->sample.bytes = s->bytes;
-		s->sample.flags = s->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+		// A loop kept less than one block plays once, as dac_prepare made it.
+		s->sample.flags = s->edit.loop && bytes % ROM_SAMPLE_BLOCK == 0 && !dac_loop_short(s, &s->edit) ? ROM_SAMPLE_LOOP
+			: s->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
 		dac_put(set, note, s);
 	}
 	return true;
