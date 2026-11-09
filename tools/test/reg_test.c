@@ -413,7 +413,7 @@ static void test_noise(void)
 	sync_and_settle();
 	static const struct {
 		int key, control;
-	} BY_KEY[] = {{36, 3}, {38, 7}, {42, 7}, {48, 3}};
+	} BY_KEY[] = {{36, 7}, {38, 7}, {41, 3}, {53, 3}};
 	bad = 0;
 	for (size_t i = 0; i < sizeof(BY_KEY) / sizeof(*BY_KEY); i++) {
 		midi((uint8_t)(0x90 | noise), (uint8_t)BY_KEY[i].key, 127);
@@ -428,9 +428,9 @@ static void test_noise(void)
 	}
 	check(bad == 0, "at rate Kit each key sets the chip's noise to its drum's type on tone 3");
 	uint16_t n_low, n_high;
-	const double kick = note_hz(noise, 36, &n_low), kick_up = note_hz(noise, 48, &n_high);
-	printf("    kick on C2 %.2f Hz, on C3 %.2f Hz\n", kick, kick_up);
-	check(kick > 0 && fabs(kick_up / kick - 2.0) < 0.04, "the kick an octave up sounds an octave higher");
+	const double tom = note_hz(noise, 41, &n_low), tom_up = note_hz(noise, 53, &n_high);
+	printf("    low tom on key 41 %.2f Hz, on key 53 %.2f Hz\n", tom, tom_up);
+	check(tom > 0 && fabs(tom_up / tom - 2.0) < 0.04, "the low tom an octave up sounds an octave higher");
 	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_WHITE);
 	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
 	sync_and_settle();

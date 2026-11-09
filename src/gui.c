@@ -490,10 +490,10 @@ static bool noise_takes(const patch_values *values, int channel)
 	return channel == PATCH_NUM_CHANNELS - 2 && values->globals[GLOBAL_NOISE_RATE] >= PATCH_NOISE_RATE_TONE3;
 }
 
-// On channel 10 the envelope's pitch shift moves the noise's pitch only on Tone 3.
+// On channel 10 pitch moves the noise only on Tone 3: a fixed rate has none, Kit's drums their own.
 static bool noise_without_pitch(const patch_values *values, int channel)
 {
-	return channel == PATCH_NUM_CHANNELS - 1 && values->globals[GLOBAL_NOISE_RATE] < PATCH_NOISE_RATE_TONE3;
+	return channel == PATCH_NUM_CHANNELS - 1 && values->globals[GLOBAL_NOISE_RATE] != PATCH_NOISE_RATE_TONE3;
 }
 
 // The rail's level bar (stage 9): 16 segments, the channel's volume (CC7) in its dark colour, and
@@ -868,7 +868,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			}
 		}
 		for (size_t i = 0; i < sizeof(CHANNEL_CELLS) / sizeof(*CHANNEL_CELLS); i++) {
-			// Channel 10 at a fixed rate has no pitch: only VOL is a cell, the rest dim (draw_page).
+			// Channel 10 off Tone 3 has no pitch: only VOL is a cell, the rest dim (draw_page).
 			if (noise_without_pitch(values, channel) && CHANNEL_CELLS[i].param != PARAM_VOLUME) {
 				continue;
 			}
@@ -1528,7 +1528,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	char pitch[16];
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && noise_without_pitch(patch_view(g->source.patch), *g->source.channel)) {
-			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH TONE 3 OR KIT");
+			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH RATE TONE 3");
 			return true;
 		}
 		const int level = shape->frames[step] & 15;
@@ -2917,7 +2917,7 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 			text(g, 406, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
 			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);
 			if (noise_without_pitch(values, channel)) {
-				// The places of TUNE, BEND, PORTA and TIME, dim like PAN's: a fixed rate has no pitch.
+				// The places of TUNE, BEND, PORTA and TIME, dim like PAN's: no pitch off Tone 3.
 				static const struct {
 					const char *label;
 					int x, w;
