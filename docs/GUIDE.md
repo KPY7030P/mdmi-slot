@@ -80,16 +80,22 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   key plays the noise, 0-44 too (before 0.16 they were dropped), and the envelope's pitch shift does nothing.
   Not checked on a console.
 - Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
-- DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own. Channel 6's
-  Pan (CC 10) pans them (stage 18): our ROM writes B6 at once, so a sounding sample moves, and hands the
-  pan to the driver for the next start; switching the DAC on or off writes channel 6's pan again for the
-  side now in charge.
+- DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own. Since stage
+  19 (D49, `docs/research/pcm4.md`) the driver is SGDK's PCM4: four voices mixed on the Z80 at one rate,
+  `ROM_PCM4_HZ` 15236 Hz as BlastEm plays it (3579545 / 223 = 16052 on a console). Our ROM writes the
+  driver's RAM itself (`pcm_driver.h`, `midi_dac.c`): a channel 6 note goes past the one-voice note stack
+  to `midi_dac_play`, which gives the key its own voice while it sounds, else a free one, else the oldest
+  start's, and sets the voice's volume to velocity >> 3; Note Off touches only the key's voice. The ROM's
+  samples are made by rescomp `PCM4 15500`, so they last as in 0.18. Channel 6's Pan (CC 10) pans them
+  (stage 18): our ROM writes B6 at once for all four, the driver never writes it; switching the DAC on or
+  off writes channel 6's pan again for the side now in charge.
 - DAC pages (stage 12, D36, D37, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on is a
   grid of the 128 notes and the selected note's wave with REPLACE and CLEAR; BANK lists the same notes.
   Each note plays the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
   it), a WAV dropped on it, or nothing. WAV files dropped on a row go to that note and the next ones; a
-  file is turned into the driver's format (mono, 8 bits, the lowest of its six rates that keeps the
-  file's, at most 32 kHz) and kept in the project, up to the image's free room, about 1.9 MB. CLEAR
+  file is turned into the driver's format (mono, 8 bits, PCM4's one rate since stage 19; RATE and AUTO
+  stay in the project and do nothing, a project of 0.18 is prepared again from its sources when it
+  opens) and kept in the project, up to the image's free room, about 1.9 MB. CLEAR
   gives a note the ROM's sample back; on a note of the ROM's it removes the sample and RESTORE brings
   it back. A sample dragged to another note swaps with it, Ctrl copies; the ROM's go as copies of their
   bytes. UNDO puts back the samples before the last change. A change goes straight into the running

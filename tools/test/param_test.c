@@ -858,7 +858,9 @@ static void test_mode_knobs(void)
 	queue_midi(in, 0xB0, 78, 127);
 	settle(in, 0.1);
 	queue_midi(in, 0xB0, 78, 0);
-	settle(in, 0.1);
+	// PCM4 takes about 75 ms longer to switch on than drv_pcm did (stage 19, accepted): the
+	// voices come back a little later.
+	settle(in, 0.2);
 	float *ch1_clip = play_note(in, 0, 60, 0.7);
 	double *ch1_clip_spec = spectrum(ch1_clip, 4000);
 	CHECK(similarity(ch1_spec, ch1_clip_spec) > 0.97, "CC78 from a clip recovers too, spectrum %.3f", similarity(ch1_spec, ch1_clip_spec));

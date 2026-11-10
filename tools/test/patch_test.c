@@ -1521,7 +1521,7 @@ static double sine_hz(const dac_sample *s, int *peak)
 			crossings++;
 		}
 	}
-	return crossings > 1 ? (crossings - 1) * ROM_SAMPLE_HZ[s->sample.rate] / (last - first) : 0;
+	return crossings > 1 ? (crossings - 1) * ROM_PCM4_HZ / (last - first) : 0;
 }
 
 static void test_dac(void)
@@ -1540,8 +1540,8 @@ static void test_dac(void)
 		dac_sample *s = dac_from_wav(wav, size, "sine", &error);
 		int peak = 0;
 		const double hz = s ? sine_hz(s, &peak) : 0;
-		const double seconds = s ? s->sample.length / ROM_SAMPLE_HZ[s->sample.rate] : 0;
-		CHECK(s && s->sample.rate == WAVS[i].index && s->sample.length % ROM_SAMPLE_BLOCK == 0 && fabs(hz / 440 - 1) < 0.005 && peak >= 60 && peak <= 66 && seconds >= 0.5 && seconds < 0.5 + 256 / ROM_SAMPLE_HZ[WAVS[i].index] + 0.001,
+		const double seconds = s ? s->sample.length / ROM_PCM4_HZ : 0;
+		CHECK(s && s->sample.rate == WAVS[i].index && s->sample.length % ROM_SAMPLE_BLOCK == 0 && fabs(hz / 440 - 1) < 0.005 && peak >= 60 && peak <= 66 && seconds >= 0.5 && seconds < 0.5 + 256 / ROM_PCM4_HZ + 0.001,
 			"WAV %u Hz, %d ch, %d bit%s: driver rate %d, %.1f Hz, peak %d, %.3f s", WAVS[i].rate, WAVS[i].channels, WAVS[i].bits, WAVS[i].is_float ? " float" : "", s ? s->sample.rate : -1, hz, peak, seconds);
 		dac_free(s);
 		free(wav);
@@ -1577,7 +1577,9 @@ static void test_dac(void)
 	free(image);
 	uint8_t *bad = malloc(rom_size);
 	memcpy(bad, rom, rom_size);
-	memset(bad + 0x200000, 0x55, rom_size - 0x200000);
+	uint32_t bad_table, bad_table_ram, bad_records;
+	rom_image_zone(&bad_table, &bad_table_ram, &bad_records);
+	memset(bad + bad_table, 0x55, ROM_IMAGE_TABLE_BYTES);
 	CHECK(!dac_image(&set, bad, rom_size, &built), "an image without the expected table is not patched");
 	free(bad);
 
@@ -1693,7 +1695,7 @@ static void test_dac_files(void)
 // The source frame of a block's start at the edit's rate, a little inside it so it rounds there.
 static uint32_t block_frame(const dac_sample *s, const dac_edit *edit, uint32_t block)
 {
-	const double step = s->source_hz / ROM_SAMPLE_HZ[dac_rate(s, edit)];
+	const double step = s->source_hz / ROM_PCM4_HZ;
 	return edit->start + (uint32_t)(block * ROM_SAMPLE_BLOCK * step + step);
 }
 
@@ -1811,6 +1813,83 @@ static void test_dac_marks(void)
 	dac_free(s);
 }
 
+// Stage 19: a project of 0.18 holds bytes made at drv_pcm's rates; opened, they are made again
+// at PCM4's one rate from the sources, last as long as the sources, and RATE stays as it was.
+static void test_dac_old_project(void)
+{
+	printf("DAC: a 0.18 project at PCM4's rate\n");
+	size_t size;
+	uint8_t *wav = sine_wav(22050, 1, 16, false, 440, 2.0, 0.5, &size);
+	const char *error;
+	dac_sample *s = dac_from_wav(wav, size, "old.wav", &error);
+	free(wav);
+	dac_set set = {0};
+	static const int RATES[3] = {0, 1, 5};
+	for (int k = 0; k < 3; k++) {
+		dac_sample *c = dac_copy(s);
+		dac_edit e = c->edit;
+		e.rate = (int8_t)RATES[k];
+		if (k == 1) {
+			e.loop = true;
+			e.loop_start = 5000;
+			e.loop_end = 30000;
+		}
+		dac_prepare(c, &e);
+		// The bytes 0.18 made: as many as its driver's rate gave the source.
+		const uint32_t old = rom_image_cost((uint32_t)ceil(s->source_frames * ROM_SAMPLE_HZ[RATES[k]] / s->source_hz));
+		free(c->bytes);
+		c->bytes = calloc(1, old);
+		c->sample.bytes = c->bytes;
+		c->sample.length = old;
+		dac_put(&set, 40 + k, c);
+	}
+	// A copy of one of the ROM's samples in 0.18: bytes for 22050 Hz, played at 21600.
+	int8_t *rom_bytes = calloc(1, 256 * 200);
+	for (int i = 0; i < 256 * 200; i++) {
+		rom_bytes[i] = (int8_t)(i % 40 < 20 ? 60 : -60);
+	}
+	const rom_sample old_rom = {1, 256 * 200, rom_bytes, 0, 0, 0};
+	dac_sample *copy = dac_from_rom(&old_rom, "OldRom");
+	copy->source_hz = 21600;
+	dac_put(&set, 50, copy);
+	free(rom_bytes);
+	const size_t block_size = dac_block_size(&set);
+	uint8_t *block = malloc(block_size);
+	dac_block_write(&set, block);
+	dac_set read = {0};
+	bool opened = dac_block_read(&read, block, block_size), lengths = true, rates = true;
+	for (int k = 0; k < 3 && opened; k++) {
+		const dac_sample *r = read.notes[40 + k];
+		const double now = r->sample.length / ROM_PCM4_HZ, was = (double)s->source_frames / s->source_hz;
+		printf("    RATE %d: %.3f s of %.3f s, %u bytes\n", RATES[k], now, was, r->sample.length);
+		lengths = lengths && fabs(now / was - 1) < 0.01;
+		rates = rates && r->edit.rate == RATES[k];
+	}
+	const dac_sample *rom_read = opened ? read.notes[50] : NULL;
+	const double rom_now = rom_read ? rom_read->sample.length / ROM_PCM4_HZ : 0, rom_was = 256 * 200 / 21600.0;
+	printf("    ROM copy: %.3f s of %.3f s\n", rom_now, rom_was);
+	CHECK(opened && lengths && rom_read && fabs(rom_now / rom_was - 1) < 0.01, "a 0.18 project's samples are made again at PCM4's rate and last as long, within 1%%");
+	CHECK(opened && read.notes[41]->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS) && read.notes[41]->edit.loop_end == 30000, "its LOOP and marks stay");
+	// Saved again and opened: RATE is still what 0.18 had.
+	const size_t again_size = opened ? dac_block_size(&read) : 0;
+	uint8_t *again = malloc(again_size ? again_size : 1);
+	if (opened) {
+		dac_block_write(&read, again);
+	}
+	dac_set twice = {0};
+	const bool reopened = opened && dac_block_read(&twice, again, again_size);
+	for (int k = 0; k < 3 && reopened; k++) {
+		rates = rates && twice.notes[40 + k]->edit.rate == RATES[k];
+	}
+	CHECK(rates && reopened && dac_same(&read, &twice), "RATE is written back as it was, and the project reads the same again");
+	free(block);
+	free(again);
+	dac_clear(&set);
+	dac_clear(&read);
+	dac_clear(&twice);
+	dac_free(s);
+}
+
 static void test_dac_edit(void)
 {
 	printf("DAC samples prepared\n");
@@ -1841,7 +1920,8 @@ static void test_dac_edit(void)
 	CHECK(dac_prepare(s, &edit) && fabs(sine_hz(s, &peak) / fifth - 1) < 0.01, "a fifth down: %.1f Hz, %.1f wanted", sine_hz(s, &peak), fifth);
 	edit.pitch = 0;
 	edit.rate = 4;
-	CHECK(dac_prepare(s, &edit) && s->sample.rate == 4 && fabs(sine_hz(s, &peak) / 440 - 1) < 0.01 && s->sample.length < whole / 2 + 512, "rate 11 kHz by hand: same pitch %.1f Hz, %u bytes", sine_hz(s, &peak), s->sample.length);
+	// PCM4 has one rate (stage 19): the field stays in the edit, the bytes are the same.
+	CHECK(dac_prepare(s, &edit) && s->edit.rate == 4 && fabs(sine_hz(s, &peak) / 440 - 1) < 0.01 && s->sample.length == whole, "RATE 11 kHz kept in the edit: same pitch %.1f Hz, same %u bytes", sine_hz(s, &peak), s->sample.length);
 	edit.rate = DAC_RATE_AUTO;
 	CHECK(dac_prepare(s, &edit) && sine_hz(s, &peak) > 0 && peak >= 30 && peak <= 34 && !s->clipped, "a quarter of full scale peaks at %d", peak);
 	edit.gain = (int16_t)dac_normalize_gain(s);
@@ -1868,7 +1948,7 @@ static void test_dac_edit(void)
 		loop.one_shot = false;
 		loop.loop = true;
 		loop.gain = normal;
-		const uint32_t plain = (uint32_t)ceil(22050 / (22050 / ROM_SAMPLE_HZ[dac_rate(s, &loop)]));
+		const uint32_t plain = (uint32_t)ceil(22050 / (22050 / ROM_PCM4_HZ));
 		const bool made = dac_prepare(s, &loop);
 		int end_peak = 0;
 		for (uint32_t i = s->sample.length - 20; made && i < s->sample.length; i++) {
@@ -2052,6 +2132,7 @@ int main(int argc, char **argv)
 	test_dac_files();
 	test_dac_edit();
 	test_dac_marks();
+	test_dac_old_project();
 	test_dac_moves();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);

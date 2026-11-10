@@ -1975,11 +1975,6 @@ static bool rom_has(int note)
 	return ROM_SAMPLE_NAMES[note][0] != 0;
 }
 
-static void rate_text(int rate, char *out, size_t size)
-{
-	static const char *const RATES[ROM_SAMPLE_RATES] = {"32", "22", "16", "13.4", "11", "8"};
-	snprintf(out, size, "%s", RATES[rate]);
-}
 
 // A file's name without its folder and .wav, cut to the room.
 static void sample_label(const char *path, char *out, size_t size, int chars)
@@ -2117,7 +2112,7 @@ static void dac_warnings(mdmi_gui *g, const patch_values *values, int y)
 	const int player = patch_voice_player(g->source.patch, PATCH_NUM_FM_CHANNELS - 1);
 	const bool lent = player >= 0 && player != PATCH_NUM_FM_CHANNELS - 1;
 	fill(g, BANK_X, y, BANK_RIGHT - BANK_X, 1, C_CELL);
-	text(g, BANK_X, y + 5, "ONE SAMPLE AT A TIME. NO VOLUME. ALL NOTES/SOUND OFF DO NOT STOP IT.", C_HINT, 1);
+	text(g, BANK_X, y + 5, "4 VOICES: A 5TH NOTE CUTS THE OLDEST, LOUD ONES CLIP. VELOCITY IS VOLUME.", C_HINT, 1);
 	text(g, BANK_X, y + 15, "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE.", tuned ? C_AMBER : C_HINT, 1);
 	text(g, BANK_X, y + 25, "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM.", lent ? C_AMBER : C_HINT, 1);
 	text(g, BANK_X, y + 35, "THE DAC SWITCH BELOW RESETS THE CHIP: ALL SOUNDING NOTES ARE CUT.", C_HINT, 1);
@@ -2152,6 +2147,9 @@ enum {
 	DACC_LOOP_START, DACC_LOOP_END, DACC_LOOP_BODY,
 };
 #define DAC_ROW_A_Y 398
+// The rate's words in RATE's row (stage 19).
+#define DAC_RATE_TEXT_X 274
+#define DAC_RATE_TEXT_W 139
 #define DAC_ROW_B_Y 422
 #define DAC_CELL_H 20
 
@@ -2280,12 +2278,13 @@ static int dac_control_at(const mdmi_gui *g, int x, int y)
 		}
 		return near_ls ? DACC_LOOP_START : near_le ? DACC_LOOP_END : DACC_NONE;
 	}
-	for (int c = 0; c < (int)(sizeof(DAC_CONTROLS) / sizeof(*DAC_CONTROLS)); c++) {
+	for (int c = 0; c < DACC_RATE_AUTO; c++) {
 		if (in_box(x, y, DAC_CONTROLS[c].x, DAC_CONTROLS[c].y, DAC_CONTROLS[c].w, DAC_CELL_H)) {
 			return c;
 		}
 	}
-	return DACC_NONE;
+	// The rate's words answer the mouse with the footer only.
+	return in_box(x, y, DAC_RATE_TEXT_X, DAC_ROW_A_Y, DAC_RATE_TEXT_W, DAC_CELL_H) ? DACC_RATE_AUTO : DACC_NONE;
 }
 
 static void split_pitch(int pitch, int *semitones, int *cents)
@@ -2365,17 +2364,9 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 	shown_marks(own, edit, &marks);
 	// Under one block there is nothing to repeat: LOOP is dim and takes no click (18b).
 	switch_cell(g, DACC_LOOP, edit->loop, booted && (edit->loop || !marks.too_short));
-	// RATE: the one chosen lit, AUTO's pick dark under it.
-	const int picked = dac_rate(own, edit);
-	for (int c = DACC_RATE_AUTO; c < DACC_RATE_END; c++) {
-		const int x = DAC_CONTROLS[c].x, y = DAC_CONTROLS[c].y, w = DAC_CONTROLS[c].w;
-		const int rate = c - DACC_RATE_AUTO - 1;
-		const bool chosen = rate == edit->rate, auto_pick = edit->rate == DAC_RATE_AUTO && rate == picked;
-		const bool over = booted && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
-		fill(g, x, y, w, DAC_CELL_H, !booted ? C_CELL : chosen ? C_DAC : auto_pick ? C_DAC_DARK : over ? C_LINE : C_CELL);
-		const int width = (int)strlen(DAC_CONTROLS[c].label) * 6;
-		text(g, x + (w - width) / 2, y + 7, DAC_CONTROLS[c].label, !booted ? C_LINE : chosen ? C_BG : auto_pick ? C_TEXT : C_LABEL, 1);
-	}
+	// RATE: words, not cells, since PCM4 has one rate for all voices (stage 19, dac-page.md).
+	snprintf(buffer, sizeof(buffer), "%.1f KHZ FOR ALL VOICES", ROM_PCM4_HZ / 1000);
+	text(g, DAC_RATE_TEXT_X, DAC_ROW_A_Y + 7, buffer, C_HINT, 1);
 	// What the sample takes of the ROM.
 	snprintf(buffer, sizeof(buffer), "%.1f", dac_cost(own, edit) / 1024.0);
 	text_right(g, 520, DAC_ROW_A_Y + 3, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_TEXT, 2, 54);
@@ -2671,10 +2662,10 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 	dac_edit edit = own->edit;
 	dac_marks marks;
 	shown_marks(own, &edit, &marks);
-	if ((c == DACC_FADE && fade_unused(own, &edit)) || (c == DACC_LOOP && !edit.loop && marks.too_short)) {
+	if ((c == DACC_FADE && fade_unused(own, &edit)) || (c == DACC_LOOP && !edit.loop && marks.too_short) || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
 		return true;
 	}
-	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_LOOP || c == DACC_NORMALIZE || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
+	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_LOOP || c == DACC_NORMALIZE) {
 		if (c == DACC_FADE) {
 			edit.fade = !edit.fade;
 		} else if (c == DACC_ONE_SHOT) {
@@ -2684,10 +2675,8 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 		} else if (c == DACC_LOOP) {
 			edit.loop = !edit.loop;
 			edit.one_shot = edit.one_shot && !edit.loop;
-		} else if (c == DACC_NORMALIZE) {
-			edit.gain = (int16_t)dac_normalize_gain(own);
 		} else {
-			edit.rate = (int8_t)(c - DACC_RATE_AUTO - 1);
+			edit.gain = (int16_t)dac_normalize_gain(own);
 		}
 		dac_apply(g, g->dac_selected, &edit);
 		return true;
@@ -2763,7 +2752,7 @@ static void loop_hint(const dac_sample *own, const dac_edit *edit, int c, bool h
 	dac_marks m;
 	shown_marks(own, edit, &m);
 	char a[16], b[16];
-	const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_SAMPLE_HZ[dac_rate(own, edit)];
+	const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ;
 	if (m.too_short) {
 		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
 		ms_text(block_ms, b, sizeof(b));
@@ -2827,7 +2816,7 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		snprintf(out, size, held ? "END %s MS. RELEASE TO APPLY" : "END %s MS OF %s. DOUBLE CLICK: ALL", a, b);
 		break;
 	case DACC_PITCH:
-		snprintf(out, size, "PITCH %+d ST: %.2f S. DOUBLE CLICK: 0", semitones, dac_cost(own, edit) / ROM_SAMPLE_HZ[dac_rate(own, edit)]);
+		snprintf(out, size, "PITCH %+d ST: %.2f S. DOUBLE CLICK: 0", semitones, dac_cost(own, edit) / ROM_PCM4_HZ);
 		break;
 	case DACC_CENTS:
 		snprintf(out, size, "CENTS %+d, -50..+50. DOUBLE CLICK: 0", cents);
@@ -2853,7 +2842,7 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		dac_marks m;
 		shown_marks(own, edit, &m);
 		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
-		ms_text(ROM_SAMPLE_BLOCK * 1000.0 / ROM_SAMPLE_HZ[dac_rate(own, edit)], b, sizeof(b));
+		ms_text(ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ, b, sizeof(b));
 		if (m.too_short) {
 			snprintf(out, size, edit->loop ? "TOO SHORT: %s MS KEPT, LOOP NEEDS %s" : "LOOP OFF: %s MS KEPT, NEEDS %s", a, b);
 		} else if (!edit->loop) {
@@ -2869,14 +2858,10 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		}
 		break;
 	}
-	default: {
-		dac_edit other = *edit;
-		other.rate = (int8_t)(c - DACC_RATE_AUTO - 1);
-		const int rate = dac_rate(own, &other);
-		rate_text(rate, a, sizeof(a));
-		snprintf(out, size, other.rate == DAC_RATE_AUTO ? "AUTO: %s KHZ FOR THIS SAMPLE, %.1f KB" : "RATE %s KHZ: %.1f KB OF ROM", a, dac_cost(own, &other) / 1024.0);
+	default:
+		// The rate's words (stage 19): PCM4 plays all four voices at one rate.
+		snprintf(out, size, "RATE IS FIXED: 4 VOICES SHARE %.1f KHZ", ROM_PCM4_HZ / 1000);
 		break;
-	}
 	}
 	return true;
 }
@@ -2960,7 +2945,7 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 	fill(g, BANK_X, TRIM_Y, WAVE_W, WAVE_Y - TRIM_Y, C_BG);
 	draw_wave(g, note, has ? &sample : NULL, own, edit);
 	// The note's name big, its number first on the line below (owner, D37).
-	char key[8], rate[8];
+	char key[8];
 	note_name(note, key, sizeof(key));
 	text(g, BANK_X, DAC_BUTTON_Y, key, note == playing ? C_PLAYING : C_TEXT, 3);
 	if (has) {
@@ -2973,11 +2958,9 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 	text(g, DAC_PANEL_TEXT_X, DAC_LINE1_Y, buffer, C_TEXT, 1);
 	const int after = DAC_PANEL_TEXT_X + (int)strlen(buffer) * 6;
 	if (has) {
-		// While a gesture lasts, what the edit would make.
-		const int shown_rate = edit ? dac_rate(own, edit) : sample.rate;
-		const double seconds = (edit ? dac_cost(own, edit) : sample.length) / ROM_SAMPLE_HZ[shown_rate];
-		rate_text(shown_rate, rate, sizeof(rate));
-		snprintf(buffer, sizeof(buffer), "  %.2f S  %s KHZ", seconds, rate);
+		// While a gesture lasts, what the edit would make. One rate for all (stage 19), shown in RATE.
+		const double seconds = (edit ? dac_cost(own, edit) : sample.length) / ROM_PCM4_HZ;
+		snprintf(buffer, sizeof(buffer), "  %.2f S", seconds);
 		text(g, after, DAC_LINE1_Y, buffer, g->dac_drag != DACC_NONE ? C_AMBER : C_LABEL, 1);
 		text(g, 448, DAC_LINE1_Y, !booted && file ? "LOADING" : file ? "FILE" : "ROM", !booted && file ? C_AMBER : file ? C_DAC : C_HINT, 1);
 	}
@@ -3000,7 +2983,7 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 		const bool lent = player >= 0 && player != PATCH_NUM_FM_CHANNELS - 1;
 		text(g, BANK_X, 448, lent ? "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM."
 			: tuned ? "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE."
-			: "ONE SAMPLE AT A TIME. NO VOLUME. ALL NOTES/SOUND OFF DO NOT STOP IT.", lent || tuned ? C_AMBER : C_HINT, 1);
+			: "4 VOICES: A 5TH NOTE CUTS THE OLDEST, LOUD ONES CLIP. VELOCITY IS VOLUME.", lent || tuned ? C_AMBER : C_HINT, 1);
 	} else {
 		dac_warnings(g, values, 400);
 	}
@@ -3039,7 +3022,7 @@ static void draw_dac_list(mdmi_gui *g, const patch_values *values)
 	text(g, 250, 84, "NOTE", C_HINT, 1);
 	text(g, 310, 84, "SAMPLE", C_DAC, 1);
 	text_right(g, 520, 84, "LENGTH", C_HINT, 1, 40);
-	text(g, 528, 84, "RATE", C_HINT, 1);
+
 	text(g, 580, 84, "FILE", C_HINT, 1);
 	const int playing = held_dac_note(g);
 	const int hover = g->file_over ? -1 : dac_note_at(g, g->mouse_x, g->mouse_y);
@@ -3067,11 +3050,8 @@ static void draw_dac_list(mdmi_gui *g, const patch_values *values)
 		} else if (has) {
 			sample_label(name, buffer, sizeof(buffer), 14);
 			text(g, 310, y + 3, buffer, !booted && file ? C_LINE : file ? C_TEXT : C_LABEL, 2);
-			snprintf(buffer, sizeof(buffer), "%.2f S", sample.length / ROM_SAMPLE_HZ[sample.rate]);
+			snprintf(buffer, sizeof(buffer), "%.2f S", sample.length / ROM_PCM4_HZ);
 			text_right(g, 520, y + 7, buffer, C_LABEL, 1, 60);
-			rate_text(sample.rate, buffer, sizeof(buffer));
-			strcat(buffer, "K");
-			text(g, 528, y + 7, buffer, C_LABEL, 1);
 		} else {
 			text(g, 310, y + 7, "---", C_LINE, 1);
 		}
@@ -3118,19 +3098,18 @@ static void note_hint(const mdmi_gui *g, int note, bool grid, char *out, size_t 
 	rom_sample sample;
 	const char *name;
 	bool file;
-	char key[8], rate[8];
+	char key[8];
 	note_name(note, key, sizeof(key));
 	(void)grid;
 	if (!note_sample(g, note, &sample, &name, &file)) {
 		snprintf(out, size, "%d %s EMPTY: DROP A WAV HERE", note, key);
 		return;
 	}
-	rate_text(sample.rate, rate, sizeof(rate));
 	// The footer holds about 42 characters before the version: a file's name goes last, cut at its end.
 	if (file) {
-		snprintf(out, size, "%d %s %.2f S %s KHZ %.60s", note, key, sample.length / ROM_SAMPLE_HZ[sample.rate], rate, name);
+		snprintf(out, size, "%d %s %.2f S %.60s", note, key, sample.length / ROM_PCM4_HZ, name);
 	} else {
-		snprintf(out, size, "%d %s %s %.2f S %s KHZ, ROM", note, key, name, sample.length / ROM_SAMPLE_HZ[sample.rate], rate);
+		snprintf(out, size, "%d %s %s %.2f S, ROM", note, key, name, sample.length / ROM_PCM4_HZ);
 	}
 }
 
@@ -3157,7 +3136,7 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 	}
 	if (in_box(x, y, DAC_FREE_X, 30, DAC_FREE_W, 22)) {
 		const double free = rom_image_room() - dac_used(dac_of(g));
-		snprintf(out, size, "FREE %.2f MB: %.0f S AT 32 KHZ, %.0f S AT 22 KHZ", free / 1048576.0, free / ROM_SAMPLE_HZ[0], free / ROM_SAMPLE_HZ[1]);
+		snprintf(out, size, "FREE %.2f MB: %.0f S OF SAMPLES", free / 1048576.0, free / ROM_PCM4_HZ);
 		return true;
 	}
 	const int note = grid ? grid_note_at(x, y) : dac_note_at(g, x, y);

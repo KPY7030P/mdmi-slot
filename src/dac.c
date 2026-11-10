@@ -117,7 +117,7 @@ int dac_rate(const dac_sample *sample, const dac_edit *edit)
 
 static double step_of(const dac_sample *sample, const dac_edit *edit)
 {
-	return sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate_of(sample, edit)];
+	return sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_PCM4_HZ;
 }
 
 // The record's flags and marks from the edit's marks; the marks only when they aren't the whole.
@@ -138,10 +138,10 @@ static void set_flags(dac_sample *sample, const dac_marks *marks)
 	}
 }
 
-// The shortest span from the start to the loop's end, in blocks by rate, that lets a loop have an
-// intro: the ROM moves the driver on to the loop once a frame, before the first repeat
-// (docs/research/drv-pcm-loop-marks.md, section 3: NTSC with a frame to spare).
-static const uint32_t LEAST_WITH_INTRO[ROM_SAMPLE_RATES] = {5, 4, 3, 3, 2, 2};
+// The shortest span from the start to the loop's end, in blocks, that lets a loop have an intro:
+// the ROM moves the driver on to the loop once a frame, before the first repeat (PCM4,
+// docs/research/pcm4.md, section 4: NTSC with a frame to spare, PAL without).
+#define LEAST_WITH_INTRO 3u
 
 static uint32_t blocks_at(double bytes)
 {
@@ -152,12 +152,12 @@ void dac_marks_of(const dac_sample *sample, const dac_edit *edit, dac_marks *m)
 {
 	const double step = step_of(sample, edit);
 	if (!(step > 0)) {
-		*m = (dac_marks){.frame_end = edit->end, .least_with_intro = LEAST_WITH_INTRO[rate_of(sample, edit)]};
+		*m = (dac_marks){.frame_end = edit->end, .least_with_intro = LEAST_WITH_INTRO};
 		return;
 	}
 	const double wanted = ceil((edit->end > edit->start ? edit->end - edit->start : 1) / step);
 	*m = (dac_marks){.length = wanted < ROM_IMAGE_MAX ? (uint32_t)wanted : ROM_IMAGE_MAX, .frame_end = edit->end,
-		.least_with_intro = LEAST_WITH_INTRO[rate_of(sample, edit)]};
+		.least_with_intro = LEAST_WITH_INTRO};
 	if (!edit->loop) {
 		return;
 	}
@@ -204,7 +204,7 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 	}
 	const int rate = rate_of(sample, edit);
 	const long frames = (long)(edit->end - edit->start);
-	const double step = sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate];
+	const double step = step_of(sample, edit);
 	const double length_wanted = ceil(frames / step);
 	dac_marks marks;
 	dac_marks_of(sample, edit, &marks);
@@ -235,7 +235,7 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 	}
 	if (edit->fade && (!marks.loops || marks.release)) {
 		// The last few ms go down to silence, so the end doesn't click.
-		uint32_t fade = (uint32_t)lround(FADE_SECONDS * ROM_SAMPLE_HZ[rate]);
+		uint32_t fade = (uint32_t)lround(FADE_SECONDS * ROM_PCM4_HZ);
 		fade = fade < length ? fade : length;
 		for (uint32_t i = 0; i < fade; i++) {
 			out[length - fade + i] *= (double)(fade - 1 - i) / fade;
@@ -400,7 +400,8 @@ dac_sample *dac_from_rom(const rom_sample *rom, const char *name)
 	memcpy(bytes, rom->bytes, rom->length);
 	snprintf(s->name, sizeof(s->name), "%s", name);
 	s->source = source;
-	s->source_hz = (uint32_t)lround(ROM_SAMPLE_HZ[rom->rate]);
+	// The ROM's own samples are made for PCM4 (stage 19): they play at its rate.
+	s->source_hz = (uint32_t)lround(ROM_PCM4_HZ);
 	s->source_frames = rom->length;
 	// Kept as the ROM had it: its rate, no fade, so the bytes stay the same until it is prepared.
 	s->edit = (dac_edit){.start = 0, .end = rom->length, .rate = (int8_t)rom->rate};
@@ -670,6 +671,12 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		dac_marks marks;
 		dac_marks_of(s, &s->edit, &marks);
 		set_flags(s, &marks);
+		// Made again from the source: a project of 0.18 has bytes at the single voice driver's
+		// rates (stage 19); for one of 0.19 it gives the same bytes. Without room the saved ones stay.
+		if (frames) {
+			const dac_edit edit = s->edit;
+			dac_prepare(s, &edit);
+		}
 		dac_put(set, note, s);
 	}
 	return true;

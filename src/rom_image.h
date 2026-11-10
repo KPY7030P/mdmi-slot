@@ -18,6 +18,11 @@
 // 161, 221, 264, 321 and 443 (hardware-specialist, drv_pcm.s80), 2-3% above what the emulator plays.
 // The console's own rates are still to be measured (ROADMAP).
 extern const double ROM_SAMPLE_HZ[ROM_SAMPLE_RATES];
+// Stage 19 (D49): PCM4 plays every sample at one rate, its four voices mixed. This is the rate
+// BlastEm plays, measured by reg_test (15207-15266 over six notes); SGDK's cycles give 3579545 / 223
+// = 16052 Hz on a console. The rates above only read projects of 0.18 and earlier; the record's rate
+// byte stays and the ROM doesn't read it.
+#define ROM_PCM4_HZ 15236.0
 
 // Our ROM's flags in a sample's record: ONE_SHOT, Note Off doesn't stop it (D38); LOOP, it repeats
 // until Note Off (stage 18).

@@ -636,9 +636,10 @@ static void test_samples(void)
 	for (int i = 0; i < 7; i++) {
 		bool in_order;
 		const double hz = ramp_rate(KEYS[i], &in_order);
-		printf("    note %d: %.0f bytes a second, the driver's rate %.0f\n", KEYS[i], hz, ROM_SAMPLE_HZ[RATES[i]]);
-		check(in_order && hz > ROM_SAMPLE_HZ[RATES[i]] * 0.99 && hz < ROM_SAMPLE_HZ[RATES[i]] * 1.01,
-			i ? "a sample on a note the ROM has none for plays at its rate" : "a sample in place of the ROM's plays its bytes at its rate");
+		// PCM4 plays every sample at one rate, whatever the record's rate byte (stage 19).
+		printf("    note %d, rate byte %d: %.0f bytes a second, PCM4 %.0f\n", KEYS[i], RATES[i], hz, ROM_PCM4_HZ);
+		check(in_order && hz > ROM_PCM4_HZ * 0.995 && hz < ROM_PCM4_HZ * 1.005,
+			i ? "a sample on a note the ROM has none for plays at PCM4's rate" : "a sample in place of the ROM's plays its bytes at PCM4's rate");
 	}
 	bool in_order;
 	ramp_rate(41, &in_order);
@@ -939,16 +940,24 @@ static void mark_letters(const float *peaks, int count, float loudest, char *out
 // intro, the loop once and the release; without a release Note Off cuts, as in 0.18.
 static void test_loop_marks(void)
 {
-	static const uint32_t LEAST[ROM_SAMPLE_RATES] = {5, 4, 3, 3, 2, 2};
 	float peaks[MARK_WINDOWS];
 	char held[MARK_WINDOWS + 1], after[MARK_WINDOWS + 1];
 	bool seams = true, releases = true, intros = true;
-	for (int rate = 0; rate < ROM_SAMPLE_RATES; rate++) {
-		const uint32_t intro = 1, loop = LEAST[rate] - 1 > 0 ? LEAST[rate] - 1 : 1, release = 2;
-		const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_SAMPLE_HZ[rate];
+	// On PCM4's voice 0, then on voice 3 with three silent one-shots holding voices 0-2 (stage 19).
+	for (int voice = 0; voice < 4; voice += 3) {
+		const int rate = voice;
+		const uint32_t intro = 1, loop = 2, release = 2;
+		const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ;
 		dac_set set = {0};
-		dac_put(&set, 50, marked_sample(rate, intro, loop, release));
+		dac_put(&set, 50, marked_sample(1, intro, loop, release));
+		for (int k = 0; k < 3; k++) {
+			dac_put(&set, 60 + k, square_sample(256 * 400, 0));
+			set.notes[60 + k]->sample.flags = ROM_SAMPLE_ONE_SHOT;
+		}
 		boot_set(&set);
+		for (int k = 0; k < voice; k++) {
+			midi(0x95, (uint8_t)(60 + k), 127);
+		}
 		for (int phase = 0; phase < 6; phase++) {
 			// The Note On at six places a sixth of a ROM frame apart (16.69 ms, 801 samples at 48 kHz,
 			// counted from the test's own clock, which runs with the core's): one of them comes just
@@ -1006,6 +1015,8 @@ static void test_loop_marks(void)
 		}
 		mark_letters(peaks, all, loudest, held);
 		const char *at = held + strspn(held, "Q");
+		// The onset's window may read in between, as in the held check above.
+		at += *at == 'R' || *at == '?';
 		const size_t i_n = strspn(at, "I?");
 		const size_t l_n = strspn(at + i_n, "L?");
 		const size_t r_n = strspn(at + i_n + l_n, "R?");
@@ -1016,12 +1027,15 @@ static void test_loop_marks(void)
 			printf("    rate %d, Note Off in the intro: %s\n", rate, held);
 		}
 		intros = intros && once;
-		printf("    rate %d: block %.1f ms, intro 1, loop %u, release 2 blocks: %s\n", rate, block_ms, loop, seams && releases && once ? "ok" : "FAILED");
+		printf("    voice %d: block %.1f ms, intro 1, loop %u, release 2 blocks: %s\n", voice, block_ms, loop, seams && releases && once ? "ok" : "FAILED");
+		for (int k = 0; k < voice; k++) {
+			midi(0x85, (uint8_t)(60 + k), 0);
+		}
 		set_global(GLOBAL_DAC, 0);
 		sync_and_settle();
 		dac_clear(&set);
 	}
-	check(seams, "a loop with the shortest intro goes back to the loop's start, no quiet window, at 6 rates and 6 places in the frame");
+	check(seams, "a loop with the shortest intro goes back to the loop's start, no quiet window, on voices 0 and 3 at 6 places in the frame");
 	check(releases, "Note Off plays the loop out, then the release, then silence");
 	check(intros, "Note Off in the intro: the intro, the loop once, the release, silence");
 	// No release: Note Off cuts, as in 0.18.
@@ -1043,6 +1057,218 @@ static void test_loop_marks(void)
 	}
 	size_t rom_size;
 	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	boot_image(rom, rom_size);
+}
+
+// A square of a period in bytes, as a one-shot long enough to hold through a test.
+static dac_sample *tone_sample(int period, int level, uint32_t blocks)
+{
+	dac_sample *s = square_sample(blocks * ROM_SAMPLE_BLOCK, level);
+	for (uint32_t i = 0; i < s->sample.length; i++) {
+		s->bytes[i] = (int8_t)(i % (uint32_t)period < (uint32_t)period / 2 ? level : -level);
+	}
+	s->sample.flags = ROM_SAMPLE_ONE_SHOT;
+	return s;
+}
+
+// Output 6's left side over some ms, and the magnitude at a frequency (Goertzel).
+static float captured[RATE];
+static int capture_ms(int ms)
+{
+	int n = 0;
+	for (int w = 0; w < ms; w++) {
+		tick(RATE / 1000);
+		for (int i = 0; i < RATE / 1000; i++) {
+			captured[n++] = outputs[10][i];
+		}
+	}
+	return n;
+}
+
+static double magnitude_at(int n, double hz)
+{
+	const double k = 2 * cos(2 * 3.14159265358979 * hz / RATE);
+	double s1 = 0, s2 = 0;
+	for (int i = 0; i < n; i++) {
+		const double s0 = captured[i] + k * s1 - s2;
+		s2 = s1;
+		s1 = s0;
+	}
+	return sqrt(s1 * s1 + s2 * s2 - k * s1 * s2) / n;
+}
+
+static const char *files_dir;
+
+// A WAV's length in seconds from its header, 0 if it can't be read.
+static double wav_seconds(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return 0;
+	}
+	uint8_t head[4096];
+	const size_t got = fread(head, 1, sizeof(head), f);
+	fclose(f);
+	uint32_t rate = 0, block = 0, data = 0;
+	for (size_t at = 12; at + 8 <= got;) {
+		uint32_t length;
+		memcpy(&length, head + at + 4, 4);
+		if (!memcmp(head + at, "fmt ", 4)) {
+			memcpy(&rate, head + at + 12, 4);
+			uint16_t b;
+			memcpy(&b, head + at + 20, 2);
+			block = b;
+		} else if (!memcmp(head + at, "data", 4)) {
+			data = length;
+			break;
+		}
+		at += 8 + length + (length & 1);
+	}
+	return rate && block ? (double)data / block / rate : 0;
+}
+
+// Stage 19: PCM4's four voices. A kick keeps its level while a hat plays over it; four notes all
+// sound and a fifth takes the oldest's voice; CC 10 pans them all; the ROM's samples last as long
+// as in 0.18; how long a Note On and the DAC switch take.
+static void test_four_voices(void)
+{
+	static const int PERIODS[5] = {128, 96, 64, 48, 40};
+	dac_set set = {0};
+	for (int k = 0; k < 5; k++) {
+		dac_put(&set, 70 + k, tone_sample(PERIODS[k], 30, 120));
+	}
+	dac_put(&set, 76, tone_sample(4, 30, 120));
+	boot_set(&set);
+	// Kick alone, then the hat 100 ms in: the kick's fundamental stays within 1 dB.
+	const double kick_hz = ROM_PCM4_HZ / PERIODS[0];
+	midi(0x95, 70, 127);
+	render(RATE / 10 / BLOCK);
+	double alone = magnitude_at(capture_ms(100), kick_hz);
+	midi(0x95, 76, 127);
+	render(RATE / 20 / BLOCK);
+	const double with_hat = magnitude_at(capture_ms(100), kick_hz);
+	printf("    kick at %.0f Hz alone %.5f, with the hat %.5f (%+.2f dB)\n", kick_hz, alone, with_hat, 20 * log10(with_hat / alone));
+	check(alone > 0.005 && fabs(20 * log10(with_hat / alone)) < 1, "a hat over the kick leaves the kick's level within 1 dB");
+	midi(0xB5, 123, 0);
+	render(RATE / 20 / BLOCK);
+	// Four at once, then a fifth.
+	for (int k = 0; k < 4; k++) {
+		midi(0x95, (uint8_t)(70 + k), 127);
+		render(2);
+	}
+	render(RATE / 10 / BLOCK);
+	int n = capture_ms(100);
+	bool all = true;
+	for (int k = 0; k < 4; k++) {
+		const double m = magnitude_at(n, ROM_PCM4_HZ / PERIODS[k]);
+		printf("    four voices: %.0f Hz %.5f\n", ROM_PCM4_HZ / PERIODS[k], m);
+		all = all && m > alone * 0.5;
+	}
+	check(all, "four samples at once all sound");
+	midi(0x95, 74, 127);
+	render(RATE / 10 / BLOCK);
+	n = capture_ms(100);
+	const double oldest = magnitude_at(n, ROM_PCM4_HZ / PERIODS[0]), fifth = magnitude_at(n, ROM_PCM4_HZ / PERIODS[4]);
+	bool others = true;
+	for (int k = 1; k < 4; k++) {
+		others = others && magnitude_at(n, ROM_PCM4_HZ / PERIODS[k]) > alone * 0.5;
+	}
+	printf("    a fifth note: the oldest %.5f, the fifth %.5f\n", oldest, fifth);
+	check(fifth > alone * 0.5 && oldest < alone * 0.1 && others, "a fifth note takes the oldest's voice, the other three sound on");
+	// Pan left with two voices sounding.
+	midi(0xB5, 123, 0);
+	render(RATE / 20 / BLOCK);
+	midi(0xB5, 10, 0);
+	midi(0x95, 70, 127);
+	midi(0x95, 71, 127);
+	render(RATE / 10 / BLOCK);
+	double side[2] = {0, 0};
+	for (int b = 0; b < RATE / 10 / BLOCK; b++) {
+		tick(BLOCK);
+		for (int i = 0; i < BLOCK; i++) {
+			side[0] += (double)outputs[10][i] * outputs[10][i];
+			side[1] += (double)outputs[11][i] * outputs[11][i];
+		}
+	}
+	printf("    two voices panned left: output 6 L %.1f dB, R %.1f dB\n", 10 * log10(side[0] + 1e-30), 10 * log10(side[1] + 1e-30));
+	check(side[0] > 1 && side[1] < side[0] * 0.01, "CC 10 at 0 with two voices: output 6 right at least 20 dB down");
+	midi(0xB5, 10, 64);
+	midi(0xB5, 123, 0);
+	render(RATE / 20 / BLOCK);
+	// Note On to sound at 20 places in the ROM's frame.
+	double least = 1e9, most = 0;
+	for (int k = 0; k < 20; k++) {
+		for (int ms = 0; ms < 3 + k % 17; ms++) {
+			tick(RATE / 1000);
+		}
+		midi(0x95, 72, 127);
+		int ms = 0;
+		for (; ms < 200; ms++) {
+			tick(RATE / 1000);
+			float peak = 0;
+			for (int i = 0; i < RATE / 1000; i++) {
+				peak = fabsf(outputs[10][i]) > peak ? fabsf(outputs[10][i]) : peak;
+			}
+			if (peak > 0.02f) {
+				break;
+			}
+		}
+		least = ms < least ? ms : least;
+		most = ms > most ? ms : most;
+		midi(0x85, 72, 0);
+		midi(0xB5, 123, 0);
+		render(RATE / 20 / BLOCK);
+	}
+	printf("    Note On to sound, plugin latency included: %.0f to %.0f ms\n", least, most);
+	check(most < 80, "a DAC note sounds within 80 ms of its Note On");
+	// The DAC switched on: how long until a note sent at once sounds.
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	set_global(GLOBAL_DAC, 1);
+	patch_due(patch, emit, NULL);
+	midi(0x95, 72, 127);
+	int pause = 0, ready = -1;
+	for (; pause < 1000; pause++) {
+		tick(RATE / 1000);
+		// The driver's init writes 0x2B = 0x80 once it is loaded: where the pause goes (stage 19).
+		ready = ready < 0 && mdmi_engine_test_ym(engine, 0, 0x2B) == 0x80 ? pause : ready;
+		float peak = 0;
+		for (int i = 0; i < RATE / 1000; i++) {
+			peak = fabsf(outputs[10][i]) > peak ? fabsf(outputs[10][i]) : peak;
+		}
+		if (peak > 0.02f) {
+			break;
+		}
+	}
+	printf("    DAC Enable to the first sample sounding: %d ms, to the driver ready (0x2B) %d ms\n", pause, ready);
+	check(pause < 1000, "after DAC Enable a note sounds");
+	midi(0xB5, 123, 0);
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	dac_clear(&set);
+	// The ROM's own samples: as long as in 0.18, where rescomp made them for 22050 Hz and the driver
+	// played 21600. Their sound without the padding to a block.
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	static const int NOTES[3] = {35, 37, 38};
+	static const char *const NAMES[3] = {"StdKick", "StdSnr1", "Clap"};
+	bool lengths = true;
+	for (int k = 0; k < 3; k++) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/../../../third_party/mdmi/res/samples/%s.wav", files_dir, NAMES[k]);
+		rom_sample s;
+		const double was = wav_seconds(path) * 22050 / 21600;
+		uint32_t sound = 0;
+		if (rom_image_sample(rom, rom_size, NOTES[k], &s)) {
+			for (uint32_t i = 0; i < s.length; i++) {
+				sound = s.bytes[i] ? i + 1 : sound;
+			}
+		}
+		const double now = sound / ROM_PCM4_HZ;
+		printf("    %s: %.3f s in 0.18, %.3f s now (%+.1f%%)\n", NAMES[k], was, now, was > 0 ? (now / was - 1) * 100 : 0);
+		lengths = lengths && was > 0 && fabs(now / was - 1) < 0.03;
+	}
+	check(lengths, "the ROM's samples last as long as in 0.18, within 3%");
 	boot_image(rom, rom_size);
 }
 
@@ -2714,6 +2940,7 @@ int main(int argc, char **argv)
 	test_live();
 	test_loop_pan();
 	test_loop_marks();
+	test_four_voices();
 	test_load();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);
