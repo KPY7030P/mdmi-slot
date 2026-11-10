@@ -22,7 +22,8 @@ typedef struct {
 	void *context;
 } files_host;
 
-enum { UNDO_NONE, UNDO_CHANNEL, UNDO_PLACE, UNDO_ENVELOPE_PLACE, UNDO_STATE, UNDO_SAMPLES };
+// UNDO_ARP: a drawn row, only the row comes back (review of stage 20: a voice's knobs moved since stay).
+enum { UNDO_NONE, UNDO_CHANNEL, UNDO_PLACE, UNDO_ENVELOPE_PLACE, UNDO_STATE, UNDO_SAMPLES, UNDO_ARP };
 
 typedef struct {
 	files_host host;
@@ -35,6 +36,12 @@ typedef struct {
 	// The channel's base with it (D31).
 	patch_instrument undo_base_instrument;
 	patch_envelope undo_base_envelope;
+	// The row of the channel or the place, and of the channel's base (stage 20).
+	patch_arp undo_arp;
+	patch_arp undo_base_arp;
+	// A place record of STORE: the channel whose base it changed, which undo gives back with the
+	// place, or -1.
+	int undo_channel;
 	uint8_t *undo_state;
 	size_t undo_state_size;
 	// The DAC samples before the last change of them, swapped back by undo.
@@ -61,6 +68,15 @@ bool files_save(mdmi_files *files, const char *path, int kind, int channel, char
 // A drawn envelope for a PSG channel, the way a dropped EEF goes (stage 8). The first of a gesture
 // gives what the channel had before it, which undo puts back.
 void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope);
+// A drawn arp row for any channel 1-10, the same way (stage 20): the voice or envelope and the base
+// stay. Hand it at most once per window frame and at mouse up; before is the row before the gesture
+// on its first call, NULL after, and undo puts it back. The host is told nothing (D19).
+void files_draw_arp(mdmi_files *files, int channel, const patch_arp *before, const patch_arp *arp);
+// STORE (stage 20): the channel's whole sound (voice or envelope, name, row) into its Preset's
+// place, one undo step that puts the place and the channel's base back. The channel then plays its
+// place as it is. False when it does already: files_can_store says which.
+bool files_can_store(mdmi_files *files, int channel);
+bool files_store(mdmi_files *files, int channel, char *message, size_t size);
 bool files_undo(mdmi_files *files, char *message, size_t size);
 // WAV files onto the DAC's notes one after another from first (stage 12, D36), in the order given;
 // the core restarts with them. The set's room is checked for all of them first: if they don't fit,

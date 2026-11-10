@@ -139,6 +139,7 @@ static void remember(mdmi_files *files, int undo, int target, const patch_instru
 	dac_clear(&files->undo_dac);
 	files->undo = undo;
 	files->undo_target = target;
+	files->undo_channel = -1;
 	files->undo_state = state;
 	files->undo_state_size = state_size;
 	if (instrument) {
@@ -162,34 +163,46 @@ static void remember(mdmi_files *files, int undo, int target, const patch_instru
 	}
 }
 
-// Undo puts the channel's base back with its sound (D31).
+// Undo puts the channel's base back with its sound (D31), and the row of each (stage 20).
 static void remember_base(mdmi_files *files, int channel)
 {
 	patch_base_view(files->host.patch, channel, &files->undo_base_instrument, &files->undo_base_envelope);
+	patch_arp_base_view(files->host.patch, channel, &files->undo_base_arp);
 }
 
-// A file is the channel's base as well; undo gives the one the channel had.
-static void put_on_channel(mdmi_files *files, int channel, const patch_instrument *instrument, const patch_instrument *base)
+// A file is the channel's base as well, and brings an empty row: files have none (D44). Undo gives
+// the channel, its base and their rows back as they were.
+static void put_on_channel(mdmi_files *files, int channel, const patch_instrument *instrument, const patch_instrument *base, const patch_arp *arp, const patch_arp *arp_base)
 {
 	patch_instrument before;
 	channel_instrument(files->host.patch, channel, &before);
-	patch_instrument before_base;
-	patch_base_view(files->host.patch, channel, &before_base, NULL);
+	const patch_arp before_arp = *patch_arp_view(files->host.patch, channel);
+	remember_base(files, channel);
+	const patch_instrument before_base = files->undo_base_instrument;
+	const patch_arp before_arp_base = files->undo_base_arp;
 	patch_load_voice(files->host.patch, channel, instrument, base);
+	patch_load_arp(files->host.patch, channel, arp, arp_base);
 	remember(files, UNDO_CHANNEL, channel, &before, NULL, NULL, 0);
 	files->undo_base_instrument = before_base;
+	files->undo_arp = before_arp;
+	files->undo_base_arp = before_arp_base;
 	files->host.handed(files->host.context, false);
 }
 
-static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_envelope *envelope, const patch_envelope *base)
+static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_envelope *envelope, const patch_envelope *base, const patch_arp *arp, const patch_arp *arp_base)
 {
 	patch_envelope before;
 	channel_envelope(files->host.patch, channel, &before);
-	patch_envelope before_base;
-	patch_base_view(files->host.patch, channel, NULL, &before_base);
+	const patch_arp before_arp = *patch_arp_view(files->host.patch, channel);
+	remember_base(files, channel);
+	const patch_envelope before_base = files->undo_base_envelope;
+	const patch_arp before_arp_base = files->undo_base_arp;
 	patch_load_envelope(files->host.patch, channel, envelope, base);
+	patch_load_arp(files->host.patch, channel, arp, arp_base);
 	remember(files, UNDO_CHANNEL, channel, NULL, &before, NULL, 0);
 	files->undo_base_envelope = before_base;
+	files->undo_arp = before_arp;
+	files->undo_base_arp = before_arp_base;
 	files->host.handed(files->host.context, false);
 }
 
@@ -198,6 +211,7 @@ void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *b
 {
 	if (before) {
 		remember_base(files, channel);
+		files->undo_arp = *patch_arp_view(files->host.patch, channel);
 	}
 	patch_load_envelope(files->host.patch, channel, envelope, NULL);
 	if (before) {
@@ -207,20 +221,121 @@ void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *b
 	files->host.handed(files->host.context, false);
 }
 
-static void put_in_place(mdmi_files *files, int place, const patch_instrument *instrument)
+void files_draw_arp(mdmi_files *files, int channel, const patch_arp *before, const patch_arp *arp)
 {
-	patch_instrument before = patch_bank_view(files->host.patch)->places[place];
-	patch_load_place(files->host.patch, place, instrument);
-	remember(files, UNDO_PLACE, place, &before, NULL, NULL, 0);
+	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
+		return;
+	}
+	if (before) {
+		remember(files, UNDO_ARP, channel, NULL, NULL, NULL, 0);
+		files->undo_arp = *before;
+		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d arp before drawing", channel + 1);
+	}
+	patch_load_arp(files->host.patch, channel, arp, NULL);
 	files->host.handed(files->host.context, false);
 }
 
-static void put_envelope_in_place(mdmi_files *files, int place, const patch_envelope *envelope)
+// A place gets a sound and its row; undo puts back the place as it was.
+static void put_in_place(mdmi_files *files, int place, const patch_instrument *instrument, const patch_arp *arp)
 {
-	patch_envelope before = patch_bank_view(files->host.patch)->envelopes[place];
-	patch_load_envelope_place(files->host.patch, place, envelope);
-	remember(files, UNDO_ENVELOPE_PLACE, place, NULL, &before, NULL, 0);
+	const patch_instrument before = patch_bank_view(files->host.patch)->places[place];
+	const patch_arp before_arp = patch_bank_view(files->host.patch)->place_arps[place];
+	patch_load_place(files->host.patch, place, instrument, arp);
+	remember(files, UNDO_PLACE, place, &before, NULL, NULL, 0);
+	files->undo_arp = before_arp;
 	files->host.handed(files->host.context, false);
+}
+
+static void put_envelope_in_place(mdmi_files *files, int place, const patch_envelope *envelope, const patch_arp *arp)
+{
+	const patch_envelope before = patch_bank_view(files->host.patch)->envelopes[place];
+	const patch_arp before_arp = patch_bank_view(files->host.patch)->envelope_arps[place];
+	patch_load_envelope_place(files->host.patch, place, envelope, arp);
+	remember(files, UNDO_ENVELOPE_PLACE, place, NULL, &before, NULL, 0);
+	files->undo_arp = before_arp;
+	files->host.handed(files->host.context, false);
+}
+
+// STORE and its undo (stage 20): the place gets a sound and row, and the channel keeps its own with
+// a new base. The place and the base as they were are remembered, so undo is the same swap back.
+static void swap_place(mdmi_files *files, int channel, int place, const patch_instrument *instrument, const patch_envelope *envelope, const patch_arp *arp, const patch_instrument *base, const patch_envelope *base_envelope, const patch_arp *base_arp)
+{
+	mdmi_patch *patch = files->host.patch;
+	const bool psg = is_psg(channel);
+	const patch_bank *bank = patch_bank_view(patch);
+	const patch_instrument place_was = bank->places[place];
+	const patch_envelope envelope_was = bank->envelopes[place];
+	const patch_arp arp_was = psg ? bank->envelope_arps[place] : bank->place_arps[place];
+	const patch_arp row = *patch_arp_view(patch, channel);
+	remember_base(files, channel);
+	const patch_instrument base_was = files->undo_base_instrument;
+	const patch_envelope base_envelope_was = files->undo_base_envelope;
+	const patch_arp base_arp_was = files->undo_base_arp;
+	if (psg) {
+		patch_envelope sound;
+		channel_envelope(patch, channel, &sound);
+		patch_load_envelope_place(patch, place, envelope, arp);
+		patch_load_envelope(patch, channel, &sound, base_envelope);
+	} else {
+		patch_instrument sound;
+		channel_instrument(patch, channel, &sound);
+		patch_load_place(patch, place, instrument, arp);
+		patch_load_voice(patch, channel, &sound, base);
+	}
+	patch_load_arp(patch, channel, &row, base_arp);
+	// After STORE the channel plays its place as it is, so it goes back to the place's number when the
+	// ROM can play it there; after its undo the row decides again.
+	patch_choose_program_again(patch, channel);
+	remember(files, psg ? UNDO_ENVELOPE_PLACE : UNDO_PLACE, place, psg ? NULL : &place_was, psg ? &envelope_was : NULL, NULL, 0);
+	files->undo_arp = arp_was;
+	files->undo_base_instrument = base_was;
+	files->undo_base_envelope = base_envelope_was;
+	files->undo_base_arp = base_arp_was;
+	files->undo_channel = channel;
+	files->host.handed(files->host.context, false);
+}
+
+bool files_can_store(mdmi_files *files, int channel)
+{
+	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
+		return false;
+	}
+	mdmi_patch *patch = files->host.patch;
+	const patch_arp row = *patch_arp_view(patch, channel);
+	const int place = patch_view(patch)->channels[channel][PARAM_PRESET] & (PATCH_BANK_SIZE - 1);
+	const patch_bank *bank = patch_bank_view(patch);
+	if (is_psg(channel)) {
+		patch_envelope sound;
+		channel_envelope(patch, channel, &sound);
+		return !patch_arp_same(&row, &bank->envelope_arps[place]) || memcmp(sound.steps, bank->envelopes[place].steps, sizeof(sound.steps)) || strcmp(sound.name, bank->envelopes[place].name);
+	}
+	patch_instrument sound;
+	channel_instrument(patch, channel, &sound);
+	return !patch_arp_same(&row, &bank->place_arps[place]) || memcmp(sound.voice, bank->places[place].voice, sizeof(sound.voice)) || strcmp(sound.name, bank->places[place].name);
+}
+
+bool files_store(mdmi_files *files, int channel, char *message, size_t size)
+{
+	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
+		return false;
+	}
+	mdmi_patch *patch = files->host.patch;
+	const int place = patch_view(patch)->channels[channel][PARAM_PRESET] & (PATCH_BANK_SIZE - 1);
+	if (!files_can_store(files, channel)) {
+		snprintf(message, size, "CH%d is bank %d as is", channel + 1, place + 1);
+		return false;
+	}
+	const patch_arp row = *patch_arp_view(patch, channel);
+	patch_instrument instrument = {0};
+	patch_envelope envelope = {0};
+	if (is_psg(channel)) {
+		channel_envelope(patch, channel, &envelope);
+	} else {
+		channel_instrument(patch, channel, &instrument);
+	}
+	swap_place(files, channel, place, &instrument, &envelope, &row, &instrument, &envelope, &row);
+	snprintf(message, size, "CH%d stored in bank %d", channel + 1, place + 1);
+	return true;
 }
 
 // A bank, or everything. False with the state untouched if the bytes are no state.
@@ -302,7 +417,8 @@ bool files_open(mdmi_files *files, const char *path, int channel, char *message,
 		if (!read_envelope(path, &envelope, message, size)) {
 			return false;
 		}
-		put_envelope_on_channel(files, channel, &envelope, &envelope);
+		const patch_arp none = PATCH_ARP_EMPTY;
+		put_envelope_on_channel(files, channel, &envelope, &envelope, &none, &none);
 		snprintf(message, size, "Loaded %s to CH%d", envelope.name, channel + 1);
 		return true;
 	}
@@ -315,7 +431,8 @@ bool files_open(mdmi_files *files, const char *path, int channel, char *message,
 		if (!read_instrument(path, &instrument, message, size)) {
 			return false;
 		}
-		put_on_channel(files, channel, &instrument, &instrument);
+		const patch_arp none = PATCH_ARP_EMPTY;
+		put_on_channel(files, channel, &instrument, &instrument, &none, &none);
 		snprintf(message, size, "Loaded %s to CH%d", instrument.name, channel + 1);
 		return true;
 	}
@@ -376,8 +493,10 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, boo
 		if (place >= PATCH_BANK_SIZE) {
 			no_room++;
 		} else if (envelopes && read_envelope(sorted[i], &envelope, error, sizeof(error))) {
+			bank->envelope_arps[place] = PATCH_ARP_EMPTY;
 			bank->envelopes[place++] = envelope;
 		} else if (!envelopes && read_instrument(sorted[i], &instrument, error, sizeof(error))) {
+			bank->place_arps[place] = PATCH_ARP_EMPTY;
 			bank->places[place++] = instrument;
 		} else if (unread++ == 0) {
 			snprintf(why, sizeof(why), "%s", error);
@@ -395,11 +514,11 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, boo
 		}
 	} else if (loaded == 1 && envelopes) {
 		const patch_envelope envelope = bank->envelopes[first];
-		put_envelope_in_place(files, first, &envelope);
+		put_envelope_in_place(files, first, &envelope, NULL);
 		snprintf(message, size, "Loaded %s to slot %d", envelope.name, first + 1);
 	} else if (loaded == 1) {
 		const patch_instrument instrument = bank->places[first];
-		put_in_place(files, first, &instrument);
+		put_in_place(files, first, &instrument, NULL);
 		snprintf(message, size, "Loaded %s to slot %d", instrument.name, first + 1);
 	} else {
 		size_t before_size;
@@ -692,18 +811,34 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 		return false;
 	}
 	snprintf(message, size, "Undone: %s", files->undo_text);
-	if (undo == UNDO_CHANNEL && is_psg(target)) {
+	const patch_arp arp = files->undo_arp, base_arp = files->undo_base_arp;
+	const int store_channel = files->undo_channel;
+	if (undo == UNDO_ARP) {
+		// The row alone, the one now kept for a second undo.
+		const patch_arp now = *patch_arp_view(files->host.patch, target);
+		patch_load_arp(files->host.patch, target, &arp, NULL);
+		remember(files, UNDO_ARP, target, NULL, NULL, NULL, 0);
+		files->undo_arp = now;
+		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d arp as drawn", target + 1);
+		files->host.handed(files->host.context, false);
+	} else if (undo == UNDO_CHANNEL && is_psg(target)) {
 		patch_envelope back = files->undo_envelope, base = files->undo_base_envelope;
-		put_envelope_on_channel(files, target, &back, &base);
+		put_envelope_on_channel(files, target, &back, &base, &arp, &base_arp);
 	} else if (undo == UNDO_CHANNEL) {
 		patch_instrument back = files->undo_instrument, base = files->undo_base_instrument;
-		put_on_channel(files, target, &back, &base);
+		put_on_channel(files, target, &back, &base, &arp, &base_arp);
+	} else if ((undo == UNDO_PLACE || undo == UNDO_ENVELOPE_PLACE) && store_channel >= 0
+		&& (patch_view(files->host.patch)->channels[store_channel][PARAM_PRESET] & (PATCH_BANK_SIZE - 1)) == target) {
+		// STORE: the place and the channel's base go back together, the channel keeps its sound.
+		patch_instrument back = files->undo_instrument, base = files->undo_base_instrument;
+		patch_envelope back_envelope = files->undo_envelope, base_envelope = files->undo_base_envelope;
+		swap_place(files, store_channel, target, &back, &back_envelope, &arp, &base, &base_envelope, &base_arp);
 	} else if (undo == UNDO_ENVELOPE_PLACE) {
 		patch_envelope back = files->undo_envelope;
-		put_envelope_in_place(files, target, &back);
+		put_envelope_in_place(files, target, &back, &arp);
 	} else if (undo == UNDO_PLACE) {
 		patch_instrument back = files->undo_instrument;
-		put_in_place(files, target, &back);
+		put_in_place(files, target, &back, &arp);
 	} else if (undo == UNDO_SAMPLES) {
 		// The samples before and now trade places, so a second undo brings the change back.
 		dac_set *dac = files->host.view->dac;

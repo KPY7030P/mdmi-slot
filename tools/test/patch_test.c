@@ -96,6 +96,18 @@ static int count_voices(void)
 	return count;
 }
 
+// How many SysEx 0A of a type went out: 00 a voice, 01 an envelope, 02 an FM row, 03 a PSG row.
+static int count_stored(uint8_t type)
+{
+	int count = 0;
+	for (size_t i = 0; i + 5 < sent_bytes; i++) {
+		if (sent[i] == 0xF0 && sent[i + 1] == 0x00 && sent[i + 4] == 0x0A && sent[i + 5] == type) {
+			count++;
+		}
+	}
+	return count;
+}
+
 static int op_param(int op, int field)
 {
 	return PARAM_OP_BASE + op * OP_FIELDS + field;
@@ -279,7 +291,7 @@ static void test_noise(void)
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	patch_save(patch_view(&patch), state);
 	patch_init(&other);
-	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL) && patch_take_incoming(&other), "a saved state loads");
+	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL, NULL) && patch_take_incoming(&other), "a saved state loads");
 	clear();
 	patch_rom_booted(&other, record, NULL);
 	CHECK(sent_cc(0xB9, 12, 0) && sent_cc(0xB9, 13, 26), "a loaded project sends its noise to a booted ROM");
@@ -321,7 +333,8 @@ static void test_incoming(void)
 	clear();
 	const uint8_t sysex[6] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
 	patch_midi(&patch, sysex, sizeof(sysex), record, NULL);
-	CHECK(memcmp(sent, sysex, sizeof(sysex)) == 0 && count_voices() == 6 && count_sysex(0x03) == 1, "a GM reset goes through, then static mapping and every voice");
+	CHECK(memcmp(sent, sysex, sizeof(sysex)) == 0 && count_stored(0x00) == 6 && count_sysex(0x03) == 1 && count_stored(0x02) == 6 && count_stored(0x03) == 1,
+		"a GM reset goes through, then static mapping, every voice, and the row under each number in use, unknown now (the PSG channels share 1): %d FM, %d PSG", count_stored(0x02), count_stored(0x03));
 	clear();
 	sync(&patch);
 	CHECK(sent_bytes == 0, "after that nothing is left to send");
@@ -341,7 +354,7 @@ static void test_load(void)
 	static uint8_t state[PATCH_NUM_IDS * 6];
 	CHECK(patch_save_size() == sizeof(state), "%d knobs, %d bytes", PATCH_NUM_IDS, (int)patch_save_size());
 	patch_save(patch_view(&patch), state);
-	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL), "a saved state loads");
+	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL, NULL), "a saved state loads");
 	CHECK(patch_get(&other, PRESET_ID(0)) == 9, "the main thread sees it before it is taken");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "the writer's model is untouched until then");
 	CHECK(patch_take_incoming(&other) && !patch_take_incoming(&other), "it is taken once");
@@ -355,10 +368,10 @@ static void test_load(void)
 	memcpy(odd + 4, &any, 2);
 	memcpy(odd + 6, &rate, 4);
 	memcpy(odd + 10, &big, 2);
-	CHECK(patch_load(&other, odd, sizeof(odd), NULL, NULL, NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
+	CHECK(patch_load(&other, odd, sizeof(odd), NULL, NULL, NULL, NULL) && patch_take_incoming(&other) && other.model.globals[GLOBAL_LFO_RATE] == 7
 		&& other.model.globals[GLOBAL_RETIRED] == 0, "the old Polyphony id is skipped, a value out of range clamped");
 	CHECK(other.model.channels[0][PARAM_PRESET] == 0, "and a knob the state lacks gets its default");
-	CHECK(!patch_load(&other, odd, 7, NULL, NULL, NULL), "a cut state is refused");
+	CHECK(!patch_load(&other, odd, 7, NULL, NULL, NULL, NULL), "a cut state is refused");
 	CHECK(other.model.globals[GLOBAL_MASTER] == PATCH_MASTER_UNITY, "a project from before Master Volume opens at 0 dB");
 }
 
@@ -456,7 +469,7 @@ static void test_threads(void)
 		reads++;
 		if (reads % 64 == 0) {
 			memcpy(loaded, state, sizeof(loaded));
-			patch_load(&stress, loaded, sizeof(loaded), NULL, NULL, NULL);
+			patch_load(&stress, loaded, sizeof(loaded), NULL, NULL, NULL, NULL);
 		}
 	}
 	stop_writer = 1;
@@ -1268,6 +1281,243 @@ static void test_bases(void)
 		&& !patch_sound_changed(&other.model, &other.model.psg[1], 7), "an older project: the tweak shows, the file doesn't");
 	free(old);
 	free(state);
+	files_free(&files);
+}
+
+// Stage 20: arp rows. The SysEx 0A of a row type (02 FM, 03 PSG) under a program that went out
+// last, with its length, or NULL.
+static const uint8_t *sent_row(uint8_t type, int program, size_t *length)
+{
+	const uint8_t *found = NULL;
+	for (size_t i = 0; i + 7 < sent_bytes; i++) {
+		if (sent[i] == 0xF0 && sent[i + 1] == 0x00 && sent[i + 4] == 0x0A && sent[i + 5] == type && sent[i + 6] == program) {
+			const uint8_t *end = memchr(sent + i, 0xF7, sent_bytes - i);
+			*length = (size_t)(end - (sent + i)) + 1;
+			found = sent + i;
+		}
+	}
+	return found;
+}
+
+// The program of the last row of a type that went out, or -1.
+static int row_program(uint8_t type)
+{
+	int program = -1;
+	for (size_t i = 0; i + 7 < sent_bytes; i++) {
+		if (sent[i] == 0xF0 && sent[i + 1] == 0x00 && sent[i + 4] == 0x0A && sent[i + 5] == type) {
+			program = sent[i + 6];
+		}
+	}
+	return program;
+}
+
+static patch_arp make_arp(int count, int loop, const int *shifts)
+{
+	patch_arp arp = PATCH_ARP_EMPTY;
+	arp.count = (uint8_t)count;
+	arp.loop = (int8_t)loop;
+	for (int i = 0; i < count; i++) {
+		arp.steps[i] = (int8_t)shifts[i];
+	}
+	return arp;
+}
+
+static bool same_rows(const patch_arp *a, const patch_arp *b, int count)
+{
+	return !memcmp(a, b, (size_t)count * sizeof(patch_arp));
+}
+
+static bool all_empty(const patch_arp *rows, int count)
+{
+	const patch_arp none = PATCH_ARP_EMPTY;
+	for (int i = 0; i < count; i++) {
+		if (memcmp(&rows[i], &none, sizeof(none))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void test_arps(void)
+{
+	printf("Arp rows\n");
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	files_view = (state_view){0};
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	size_t length;
+	const uint8_t *row;
+
+	// Two GM places with rows: a major chord looped, and the longest row there is.
+	static const int MAJOR[3] = {0, 4, 7};
+	int shifts[PATCH_ARP_STEPS];
+	for (int i = 0; i < PATCH_ARP_STEPS; i++) {
+		shifts[i] = i * 7 % 49 - PATCH_ARP_SHIFT;
+	}
+	const patch_arp chord = make_arp(3, 0, MAJOR), longest = make_arp(PATCH_ARP_STEPS, 5, shifts);
+	patch_instrument place = patch_bank_view(patch)->places[10];
+	patch_load_place(patch, 10, &place, &chord);
+	place = patch_bank_view(patch)->places[20];
+	patch_load_place(patch, 20, &place, &longest);
+	patch_take_incoming(patch);
+	clear();
+	sync(patch);
+	CHECK(patch_place_is_gm(&patch->bank, 10) && patch_place_is_gm(&patch->bank, 20) && sent_bytes == 0, "places 11 and 21 keep GM with their rows, which aren't sent before use");
+
+	// A Preset lane between them: each row goes once, at its first use, then a step is a PC only.
+	clear();
+	set(patch, PRESET_ID(0), 10);
+	row = sent_row(0x02, 10, &length);
+	CHECK(last_program(0) == 10 && count_stored(0x02) == 1 && count_stored(0x00) == 0 && row && length == 12 && row[7] == 0 && row[8] == 64 && row[9] == 68 && row[10] == 71 && row[11] == 0xF7,
+		"first step to 11: the PC and its row, 0A 02 10 loop 0, steps +64: %d bytes", (int)sent_bytes);
+	clear();
+	set(patch, PRESET_ID(0), 20);
+	row = sent_row(0x02, 20, &length);
+	CHECK(last_program(0) == 20 && count_stored(0x02) == 1 && row && length == 41 && row[7] == 5 && row[8] == 64 - PATCH_ARP_SHIFT, "first step to 21: the longest row is one SysEx of %d bytes", row ? (int)length : 0);
+	bool only_pc = true;
+	for (int pass = 0; pass < 3; pass++) {
+		for (int step = 0; step < 2; step++) {
+			const int to = step ? 20 : 10;
+			clear();
+			set(patch, PRESET_ID(0), to);
+			only_pc = only_pc && sent_bytes == 2 && sent[0] == 0xC0 && sent[1] == to;
+		}
+	}
+	CHECK(only_pc, "after the first pass each step sends only its program change, as without rows");
+
+	// A row SysEx from a clip goes nowhere.
+	clear();
+	const uint8_t from_clip[2][10] = {{0xF0, 0x00, 0x22, 0x77, 0x0A, 0x02, 0x05, 0x7F, 0x40, 0xF7}, {0xF0, 0x00, 0x22, 0x77, 0x0A, 0x03, 0x05, 0x7F, 0x40, 0xF7}};
+	patch_midi(patch, from_clip[0], sizeof(from_clip[0]), record, NULL);
+	patch_midi(patch, from_clip[1], sizeof(from_clip[1]), record, NULL);
+	CHECK(sent_bytes == 0, "0A 02 and 0A 03 from a clip are dropped");
+
+	// Channel 2 on Grand Piano draws a row of its own: a place's number holds the place's row, so it
+	// takes a service number with the whole voice.
+	const patch_arp none = PATCH_ARP_EMPTY;
+	files_draw_arp(&files, 1, &none, &chord);
+	clear();
+	sync(patch);
+	const int service = last_program(1);
+	CHECK(service >= 116 && count_stored(0x00) == 1 && row_program(0x02) == service && patch_sound_changed(&patch->model, NULL, 1) && files_can_store(&files, 1),
+		"a channel with its own row on a GM place goes to service number %d with its voice", service);
+	static const int UP[2] = {0, 12};
+	const patch_arp octave = make_arp(2, 0, UP);
+	files_draw_arp(&files, 1, NULL, &octave);
+	clear();
+	sync(patch);
+	CHECK(sent_bytes == 11 && count_stored(0x02) == 1 && row_program(0x02) == service, "drawing on, it sends only 0A 02 under the same number: %d bytes", (int)sent_bytes);
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH2 arp before drawing"), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+
+	// STORE: the channel's sound and row into place 1, and the channel back on number 0.
+	CHECK(files_store(&files, 1, message, sizeof(message)) && !strcmp(message, "CH2 stored in bank 1"), "STORE: %s", message);
+	clear();
+	sync(patch);
+	row = sent_row(0x02, 0, &length);
+	CHECK(last_program(1) == 0 && patch->rom.programs[1] == 0 && count_stored(0x00) == 0 && row && length == 11, "the channel is back on the place's number, with the row under it");
+	CHECK(patch_arp_same(&patch->bank.place_arps[0], &octave) && patch_arp_same(&patch_bank_view(patch)->place_arps[0], &octave) && patch_place_is_gm(&patch->bank, 0),
+		"place 1 has the row, its voice is still GM");
+	CHECK(!patch_sound_changed(&patch->model, NULL, 1) && !files_can_store(&files, 1) && !files_store(&files, 1, message, sizeof(message)), "the * is out and STORE has nothing to do: %s", message);
+	CHECK(patch_arp_same(&patch->model.arps[2], &octave), "channel 3, which played place 1 as it was, follows it");
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "slot 1 back to Grand Piano"), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	CHECK(files_undo(&files, message, sizeof(message)) && patch->bank.place_arps[0].count == 0 && patch_arp_same(&patch->model.arps[1], &octave) && patch_sound_changed(&patch->model, NULL, 1)
+		&& patch->model.arps[2].count == 0, "undo of STORE: the place's row goes, the channel keeps its own with the * again");
+	clear();
+	sync(patch);
+	row = sent_row(0x02, 0, &length);
+	CHECK(last_program(1) >= 116 && row && length == 9 && row[7] == 0x7F, "back on a service number; number 0 gets its empty row again as 0A 02 00 7F F7");
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->bank.place_arps[0], &octave) && !patch_sound_changed(&patch->model, NULL, 1), "a second undo stores it again");
+	clear();
+	sync(patch);
+	CHECK(last_program(1) == 0, "and the channel is on number 0 again");
+
+	// Undo of a drawing; a dropped file has no row.
+	files_draw_arp(&files, 1, &octave, &chord);
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &octave), "undo of a drawing puts the row before the gesture back");
+	// A knob moved after the drawing stays when the drawing is undone (review of stage 20).
+	files_draw_arp(&files, 1, &octave, &chord);
+	// Op1 TL of channel 2 (1411 is channel 4's, patch.h).
+	const uint32_t tl = 1111;
+	const int tl_was = patch_get(patch, tl);
+	patch_set(patch, tl, tl_was + 7);
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &octave) && patch_get(patch, tl) == tl_was + 7,
+		"undo of a drawing on FM puts back only the row, a knob moved since stays (TL %d)", patch_get(patch, tl));
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &chord), "a second undo brings the drawing back");
+	files_undo(&files, message, sizeof(message));
+	CHECK(open_file(&files, files_dir, "Duck Guitar.tfi", 1, -1, message) && patch->model.arps[1].count == 0 && patch->model.arp_bases[1].count == 0 && !patch_sound_changed(&patch->model, NULL, 1),
+		"a dropped TFI brings an empty row, its base too: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &octave) && patch_arp_same(&patch->model.arp_bases[1], &octave), "undo gives the row and base row back");
+
+	// PSG: channel 8 with a row of its own goes to a service number with its envelope, then only 0A 03.
+	files_draw_arp(&files, 7, &none, &chord);
+	clear();
+	sync(patch);
+	const int psg_service = last_program(7);
+	// The service numbers hold the ROM's Plain since the reset, so the envelope needs no 0A 01 here.
+	CHECK(psg_service >= 120 && row_program(0x03) == psg_service && !memcmp(patch->rom.psg_stored[psg_service - 120], patch->model.psg[1].steps, PATCH_ENVELOPE_STEPS + 1),
+		"a PSG channel with its own row takes service number %d, which holds its envelope", psg_service);
+	files_draw_arp(&files, 7, NULL, &octave);
+	clear();
+	sync(patch);
+	CHECK(sent_bytes == 11 && count_stored(0x03) == 1 && row_program(0x03) == psg_service, "drawing on, it sends only 0A 03: %d bytes", (int)sent_bytes);
+	CHECK(files_store(&files, 7, message, sizeof(message)), "STORE on channel 8: %s", message);
+	clear();
+	sync(patch);
+	CHECK(last_program(7) == 0 && count_stored(0x01) == 0 && sent_row(0x03, 0, &length) && patch_arp_same(&patch->bank.envelope_arps[0], &octave) && !patch_sound_changed(&patch->model, &patch->model.psg[1], 7),
+		"STORE puts it back on the place's number, the ROM's envelope with the row");
+	open_file(&files, files_dir, "PSG Organ.eef", 8, -1, message);
+	CHECK(patch->model.arps[8].count == 0 && patch->model.arp_bases[8].count == 0, "a dropped EEF brings an empty row");
+	files_undo(&files, message, sizeof(message));
+
+	// A project, a bank file and a snapshot keep the rows and a loop's shadow.
+	patch_arp shadowed = make_arp(4, -1, shifts);
+	shadowed.shadow_kept = 1;
+	shadowed.shadow = 2;
+	files_draw_arp(&files, 3, &none, &shadowed);
+	place = patch_bank_view(patch)->places[50];
+	patch_load_place(patch, 50, &place, &shadowed);
+	patch_envelope envelope = patch_bank_view(patch)->envelopes[60];
+	patch_load_envelope_place(patch, 60, &envelope, &longest);
+	patch_take_incoming(patch);
+	CHECK(patch->model.arps[3].shadow_kept && patch->model.arps[3].shadow == 2 && patch->bank.place_arps[50].shadow_kept, "a row keeps its loop's shadow");
+	static patch_values saved;
+	static patch_bank saved_bank;
+	saved = patch->model;
+	saved_bank = patch->bank;
+	size_t size;
+	uint8_t *state = state_build(patch, &files_view, &size);
+	static mdmi_patch other;
+	patch_init(&other);
+	state_view view = {0};
+	bool knobs;
+	CHECK(state && state_read(&other, state, size, &view, &knobs) && patch_take_incoming(&other) && same_rows(other.model.arps, saved.arps, PATCH_NUM_CHANNELS)
+		&& same_rows(other.model.arp_bases, saved.arp_bases, PATCH_NUM_CHANNELS) && same_rows(other.bank.place_arps, saved_bank.place_arps, PATCH_BANK_SIZE)
+		&& same_rows(other.bank.envelope_arps, saved_bank.envelope_arps, PATCH_BANK_SIZE) && other.model.arps[3].shadow_kept && other.model.arps[3].shadow == 2,
+		"a project reads back with every row and the shadow");
+	size_t old_size;
+	uint8_t *old = without_block(state, size, 10, &old_size);
+	patch_init(&other);
+	CHECK(old_size + 8 + 276 * sizeof(patch_arp) == size && state_read(&other, old, old_size, &view, &knobs) && patch_take_incoming(&other) && all_empty(other.model.arps, PATCH_NUM_CHANNELS)
+		&& all_empty(other.model.arp_bases, PATCH_NUM_CHANNELS) && all_empty(other.bank.place_arps, PATCH_BANK_SIZE) && all_empty(other.bank.envelope_arps, PATCH_BANK_SIZE)
+		&& !memcmp(other.model.channels, saved.channels, sizeof(saved.channels)),
+		"a project of 0.19, without block 10, opens with every row empty");
+	free(old);
+	free(state);
+
+	char bank_path[MAX_PATH], snap_path[MAX_PATH];
+	path_in(bank_path, sizeof(bank_path), temp_dir, "arps.mdbank");
+	path_in(snap_path, sizeof(snap_path), temp_dir, "arps.mdsnap");
+	CHECK(files_save(&files, bank_path, FILES_BANK, 0, message, sizeof(message)) && files_save(&files, snap_path, FILES_SNAPSHOT, 0, message, sizeof(message)), "bank and snapshot saved: %s", message);
+	patch_init(patch);
+	CHECK(files_open(&files, bank_path, 0, message, sizeof(message)) && same_rows(patch->bank.place_arps, saved_bank.place_arps, PATCH_BANK_SIZE)
+		&& same_rows(patch->bank.envelope_arps, saved_bank.envelope_arps, PATCH_BANK_SIZE) && patch_arp_same(&patch->model.arps[5], &octave) && !patch->model.arps[3].shadow_kept,
+		"an .mdbank brings the places' rows, not the channels' own; a channel on place 1 follows it: %s", message);
+	patch_init(patch);
+	CHECK(files_open(&files, snap_path, 0, message, sizeof(message)) && same_rows(patch->model.arps, saved.arps, PATCH_NUM_CHANNELS) && same_rows(patch->model.arp_bases, saved.arp_bases, PATCH_NUM_CHANNELS)
+		&& same_rows(patch->bank.place_arps, saved_bank.place_arps, PATCH_BANK_SIZE), "an .mdsnap brings every row: %s", message);
 	files_free(&files);
 }
 
@@ -2126,6 +2376,7 @@ int main(int argc, char **argv)
 	test_drawing();
 	test_sound_changed();
 	test_bases();
+	test_arps();
 	test_cursor();
 	test_fm_envelope();
 	test_dac();

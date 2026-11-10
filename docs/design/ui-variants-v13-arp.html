@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MDMI: ряд арпеджио, v13</title>
+<style>
+  body { margin: 0; background: #111; color: #c8c8c8; font: 14px/1.55 Consolas, "Courier New", monospace; }
+  main { max-width: 1500px; margin: 0 auto; padding: 20px 28px 80px; }
+  h1 { color: #eee; font-size: 22px; margin: 4px 0 8px; }
+  h2 { color: #eee; font-size: 19px; border-top: 1px solid #444; padding-top: 18px; margin-top: 40px; }
+  p { max-width: 1100px; margin: 6px 0; }
+  canvas { display: block; image-rendering: pixelated; background: #000; outline: 1px solid #333; }
+  .lbl { color: #888; font-size: 12px; margin: 2px 0 4px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+</style>
+</head>
+<body>
+<main>
+<h1>MDMI: ряд арпеджио (этап 20), v13</h1>
+<p>art-director, 2026-11-10. Окно 720x528, шрифт 5x7, 16 цветов. Текст решений: <code>arpeggio.md</code>. Один виджет
+282x124 на обеих страницах: на FM на месте графика (переключатель ARP в блоке справа), на PSG под огибающей.
+Кнопка STORE в шапке, слева от LOAD.</p>
+
+<h2>1. PSG, канал 7: огибающая ужата, ряд под ней</h2>
+<canvas id="psg"></canvas>
+<p class="lbl">Мышь на шаге 2 ряда: столбец подсвечен, у вершины рамка со значением, подвал говорит шаг. Строка 0, +4, +7,
+петля на всё. Огибающая: уровни по 7 px, высота EEF по 4 px, строки «767 MS» под длиной больше нет.</p>
+
+<h2>2. FM, канал 4: ARP вместо графика, мышь на STORE</h2>
+<canvas id="fm"></canvas>
+<p class="lbl">ARP в блоке залит C_FM: показан ряд. Число 6 в переключателе видно и при графике: у звука есть
+арпеджио. STORE горит, пока канал отличается от своего места; в подвале что и куда.</p>
+
+<h2>3. Состояния виджета, x2</h2>
+<div class="row">
+  <div><div class="lbl">Пусто: 0 шагов, призрак 4 столбцов</div><canvas id="s0"></canvas></div>
+  <div><div class="lbl">Без петли, 12 шагов: выключатель LOOP</div><canvas id="s1"></canvas></div>
+  <div><div class="lbl">Петля выключена: тень с шага 3</div><canvas id="s2"></canvas></div>
+</div>
+<div class="row">
+  <div><div class="lbl">32 шага, тяга ушка (янтарь)</div><canvas id="s3"></canvas></div>
+  <div><div class="lbl">Рисование: −12 на шаге 3</div><canvas id="s4"></canvas></div>
+  <div><div class="lbl">Тусклый: CH3 SPECIAL или CH10 не TONE 3</div><canvas id="s5"></canvas></div>
+</div>
+</main>
+<script>
+"use strict";
+const FONT = "0000000000 00005F0000 0007000700 147F147F14 242A7F2A12 2313086462 3649562050 0008070300 001C224100 0041221C00 2A1C7F1C2A 08083E0808 0080703000 0808080808 0000606000 2010080402 3E5149453E 00427F4000 7249494946 2141494D33 1814127F10 2745454539 3C4A494931 4121110907 3649494936 464949291E 0000140000 0040340000 0008142241 1414141414 0041221408 0201590906 3E415D594E 7C1211127C 7F49494936 3E41414122 7F4141413E 7F49494941 7F09090901 3E41415173 7F0808087F 00417F4100 2040413F01 7F08142241 7F40404040 7F021C027F 7F0408107F 3E4141413E 7F09090906 3E4151215E 7F09192946 2649494932 03017F0103 3F4040403F 1F2040201F 3F4038403F 6314081463 0304780403 6159494D43 007F414141 0204081020 004141417F 0402010204 4040404040 0003070800 2054547840 7F28444438 3844444428 384444287F 3854545418 00087E0902 18A4A49C78 7F08040478 00447D4000 2040403D00 7F10284400 00417F4000 7C04780478 7C08040478 3844444438 FC18242418 182424 18FC 7C08040408 4854545424 04043F4424 3C4040207C 1C2040201C 3C4030403C 4428102844 4C9090907C 4464544C44 0008364100 0000770000 0041360800 0201020402"
+  .replace("182424 18FC", "18242418FC").split(" ");
+const C = {
+  bg: "#000000", cell: "#222222", line: "#444444", hint: "#666666", label: "#AAAAAA", text: "#EEEEEE",
+  fmD: "#222266", fm: "#4422EE", fmL: "#8888EE", psgD: "#004466", psg: "#22CCEE",
+  dacD: "#442200", dac: "#EE8822", lit: "#AAEE22", amber: "#EECC66", err: "#EE2222",
+};
+let g;
+function use(id, w, h) { const cv = typeof id === "string" ? document.getElementById(id) : id; cv.width = w; cv.height = h; g = cv.getContext("2d"); g.imageSmoothingEnabled = false; R(0, 0, w, h, C.bg); return cv; }
+function R(x, y, w, h, c) { if (w <= 0 || h <= 0) return; g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function B(x, y, w, h, c) { R(x, y, w, 1, c); R(x, y + h - 1, w, 1, c); R(x, y, 1, h, c); R(x + w - 1, y, 1, h, c); }
+function T(s, x, y, c = C.text, z = 2) {
+  g.fillStyle = c; s = String(s);
+  for (let i = 0; i < s.length; i++) {
+    const hex = FONT[s.charCodeAt(i) - 32]; if (!hex) continue;
+    const cx = x + i * 6 * z;
+    for (let col = 0; col < 5; col++) { const bits = parseInt(hex.substr(col * 2, 2), 16); for (let row = 0; row < 8; row++) if (bits >> row & 1) g.fillRect(cx + col * z, y + row * z, z, z); }
+  }
+}
+const TW = (s, z = 2) => String(s).length * 6 * z;
+function TR(s, right, y, c, z = 2) { T(s, right - TW(s, z) + z, y, c, z); }
+function TC(s, x, w, y, c, z = 2) { T(s, x + Math.floor((w - TW(s, z) + z) / 2), y, c, z); }
+function crop(id, fn, x, y, w, h, z) {
+  const off = document.createElement("canvas"); use(off, 720, 528); fn();
+  const cv = document.getElementById(id); cv.width = w * z; cv.height = h * z;
+  const cx = cv.getContext("2d"); cx.imageSmoothingEnabled = false; cx.drawImage(off, x, y, w, h, 0, 0, w * z, h * z);
+}
+const ms = n => Math.round(n * 1000 / 60);
+const sgn = v => v > 0 ? "+" + v : String(v);
+
+// ---------- frame ----------
+const RAIL = [
+  { name: "Synth Bass 1", note: "C-2", held: 1 }, { name: "Rhodes" }, { name: "Square Lead", note: "C-5", held: 1 },
+  { name: "Brass Arp", star: 1, note: "E-4", held: 1 }, { name: "Overdrive Guit" }, { name: "Grand Piano" },
+  { name: "Chip Arp", star: 1, psg: 1, note: "C-5", held: 1 }, { name: "Square Lead", psg: 1 }, { name: "Plain", psg: 1 }, { name: "Plain", psg: 1 },
+];
+const rowY = i => i < 6 ? 44 + i * 40 : 300 + (i - 6) * 40;
+function frame(st) {
+  R(0, 27, 720, 1, C.line); T("MDMI", 8, 7, C.text, 2);
+  [["ALL", 60, 56], ["EDITOR", 120, 80], ["BANK", 204, 80], ["ROM", 288, 56]].forEach(([l, x, w]) => { const on = l === "EDITOR"; R(x, 2, w, 24, on ? C.text : C.cell); TC(l, x, w, 7, on ? C.bg : C.label, 2); });
+  T("RUNNING", 352, 7, C.lit, 2);
+  // STORE: 468, 64 wide, the slot of ADD on BANK.
+  const so = st.storeOver, sd = st.storeOff;
+  B(468, 2, 64, 24, sd ? C.cell : so ? C.text : C.line); TC("STORE", 468, 64, 7, sd ? C.line : so ? C.text : C.label, 2);
+  [["LOAD", 536], ["SAVE", 596], ["UNDO", 656]].forEach(([l, x]) => { B(x, 2, 56, 24, C.line); TC(l, x, 56, 7, C.label, 2); });
+  R(0, 28, 232, 16, C.cell); T("YM2612", 8, 32, C.fmL, 1); R(0, 284, 232, 16, C.cell); T("SN76489", 8, 288, C.psg, 1);
+  RAIL.forEach((c, i) => {
+    const y = rowY(i), sel = i === st.sel, kind = c.psg ? C.psg : C.fm, dark = c.psg ? C.psgD : C.fmD;
+    R(0, y + 39, 232, 1, C.cell); if (sel) R(4, y, 229, 39, dark); R(0, y, 4, 39, kind);
+    T(String(i + 1), 10, y + 7, C.text, 3); T(c.name.slice(0, 13) + (c.star ? "*" : ""), 54, y + 5, C.text, 2);
+    for (let k = 0; k < 16; k++) R(54 + k * 8, y + 25, 7, 4, c.held && k < 11 ? C.lit : k < 13 ? dark : C.cell);
+    TR(c.note || "---", 226, y + 22, c.held ? C.lit : C.line, 1);
+  });
+  R(232, 28, 1, 432, C.line); R(0, 460, 720, 1, C.line);
+  [["LFO", "On"], ["LFO RATE", "3.98 Hz"], ["FILTER", "3392 Hz"], ["CH3 SPECIAL", "Off"], ["DAC", "Off"], ["RETRIGGER", "Chip"]].forEach(([l, v], i) => {
+    const x = 8 + i * 100; R(x, 466, 96, 32, C.cell); T(l, x + 4, 470, C.label, 1); T(v, x + 4, 480, C.text, 2);
+  });
+  R(608, 466, 104, 32, C.cell); T("MASTER", 612, 470, C.label, 1); TR("0.0 dB", 708, 480, C.text, 2);
+  T(st.footer || "", 8, 512, st.footerInk || C.label, 1); TR("0.20.0", 712, 512, C.hint, 1);
+}
+function cell(x, y, w, label, val, frac, dark, o = {}) {
+  R(x, y, w, 20, C.cell); R(x, y, Math.round(w * frac), 20, dark);
+  T(label, x + 4, y + 6, C.label, 1); TR(val, x + w - 4, y + 3, o.ink || C.text, 2);
+}
+function pageTop(n, name, src, psg) {
+  const dark = psg ? C.psgD : C.fmD;
+  T(String(n), 242, 30, C.text, 3); T(name, 288, 34, C.text, 2);
+  R(592, 30, 116, 22, C.cell); TR(src, 704, 34, C.text, 2);
+  cell(242, 56, 112, "VOL", "100", 0.79, dark);
+  if (psg) { B(358, 56, 60, 20, C.cell); T("PAN", 362, 62, C.line, 1); TR("-", 414, 59, C.line, 2); }
+  else ["L", "C", "R"].forEach((p, i) => { const on = i === 1; R(358 + i * 20, 56, 19, 20, on ? C.fm : C.cell); TC(p, 358 + i * 20, 19, 59, on ? C.text : C.label, 2); });
+  cell(422, 56, 96, "TUNE", "+0", 0, dark);
+  cell(522, 56, 64, "BEND", "2", 0.17, dark);
+  B(590, 56, 50, 20, C.line); TC("PORTA", 590, 50, 62, C.label, 1);
+  cell(644, 56, 64, "TIME", "64", 0.5, dark);
+}
+
+// ---------- the arp widget: 282x124 at (bx, by) ----------
+// st: { steps:[], loop: start|-1, shadow: start|-1, fm, dim, hover: step, tag, drawing, tabDrag, ghost }
+function arp(bx, by, st) {
+  const ink = st.dim ? C.line : st.fm ? C.fmL : C.psg, dark = st.dim ? C.cell : st.fm ? C.fmD : C.psgD;
+  const LX = bx + 22, LW = 200, LY = by + 15, n = st.steps.length;
+  const cx = i => LX + Math.floor(i * LW / n), yv = v => LY + 2 * (24 - v);
+  R(bx, by, 282, 124, C.bg); B(bx, by, 282, 124, C.cell);
+  // scale
+  [["+24", 0], ["+12", 22], ["0", 46], ["-12", 70], ["-24", 91]].forEach(([s, dy]) => TR(s, bx + 20, LY + dy, st.dim ? C.line : C.hint, 1));
+  const loopOn = st.loop >= 0 && n > 0;
+  // columns
+  for (let i = 0; i < n; i++) {
+    const x = cx(i), w = cx(i + 1) - x, inLoop = loopOn && i >= st.loop, hov = i === st.hover && !st.dim;
+    R(x, LY, w, 98, hov ? C.line : inLoop ? C.cell : C.bg);
+    R(x, LY + 24, w, 1, inLoop || hov ? C.line : C.cell); R(x, LY + 72, w, 1, inLoop || hov ? C.line : C.cell);
+    R(x, LY + 48, w, 2, C.line);
+    const v = st.steps[i], y = yv(v);
+    if (v > 0) { R(x, y + 2, w - 1, LY + 48 - y - 2, dark); R(x, y, w - 1, 2, ink); }
+    else if (v < 0) { R(x, LY + 50, w - 1, y - LY - 50, dark); R(x, y, w - 1, 2, ink); }
+    else R(x, LY + 48, w - 1, 2, ink);
+    if (w >= 20) TC(sgn(v), x, w, by + 114, st.dim ? C.line : hov ? C.text : C.label, 1);
+  }
+  if (n === 0) {
+    R(LX, LY + 48, LW, 2, C.line); R(LX, LY + 24, LW, 1, C.cell); R(LX, LY + 72, LW, 1, C.cell);
+    for (let k = 1; k < 4; k++) for (let y = LY; y < LY + 98; y += 2) R(LX + k * 50, y, 1, 1, C.cell);
+    TC("DRAW AN ARP", LX, LW, LY + 30, C.hint, 1);
+  }
+  // strip
+  const sy = by + 2;
+  if (n > 0 && loopOn) {
+    const ls = cx(st.loop) - 1, end = LX + LW;
+    const tabInk = st.dim ? C.line : st.tabDrag ? C.amber : ink;
+    R(ls + 1, sy, end - ls - 1, 12, st.bodyOver ? C.line : C.cell);
+    TC("LOOP", ls + 1, end - ls - 1, sy + 3, st.dim ? C.line : ink, 1);
+    R(ls - 8, sy, 8, 12, tabInk); R(ls, sy, 1, LY + 98 - sy, tabInk);
+  } else if (n > 0 && st.shadow >= 0) {
+    const ls = cx(st.shadow) - 1, end = LX + LW;
+    B(ls, sy, end - ls, 12, C.line); TC("LOOP", ls, end - ls, sy + 3, C.label, 1);
+  } else if (n > 0) {
+    B(LX, sy, 36, 12, st.dim ? C.cell : C.line); T("LOOP", LX + 3, sy + 3, st.dim ? C.line : C.label, 1);
+    T("ONCE, THEN HOLDS", LX + 44, sy + 3, C.hint, 1);
+  }
+  // tag
+  if (st.tag != null && n > 0) {
+    const i = st.tag, v = st.steps[i], cxm = (cx(i) + cx(i + 1)) >> 1, s = sgn(v), w = TW(s, 1) + 5;
+    let y = v >= 0 ? yv(v) - 15 : yv(v) + 5; if (y < LY) y = yv(v) + 5; if (y + 13 > LY + 98) y = yv(v) - 15;
+    const x = Math.max(LX, Math.min(LX + LW - w, cxm - (w >> 1)));
+    R(x, y, w, 13, C.bg); B(x, y, w, 13, C.label); T(s, x + 3, y + 3, C.text, 1);
+  }
+  // side column
+  const RX = bx + 228;
+  T("ARP", RX + 2, by + 4, st.dim ? C.line : C.label, 1);
+  const full = n >= 32;
+  R(RX, by + 16, 52, 20, st.dim ? C.bg : n ? dark : C.cell);
+  if (st.dim) B(RX, by + 16, 52, 20, C.cell);
+  if (st.lenOver) B(RX, by + 16, 52, 20, C.line);
+  TR(String(n), RX + 48, by + 18, st.dim ? C.line : full ? C.amber : n ? C.text : C.label, 2);
+  T(full ? "MAX" : n ? "STEPS" : "NO ARP", RX + 2, by + 39, full ? C.amber : C.hint, 1);
+  if (n) T(ms(n) + " MS", RX + 2, by + 51, st.dim ? C.line : C.label, 1);
+  T("CONSOLE:", RX + 2, by + 100, C.hint, 1); T("UNTESTED", RX + 2, by + 110, C.hint, 1);
+}
+
+// ---------- PSG page ----------
+function envelope() {
+  const X = 296, W = 404, n = 24, L = 122, ROW = 7, BASE = L + 105, BOT = L + 112, P = 240, PR = 4, PB = 300, CEN = 270;
+  const lv = [0, 0, 1, 2, 2, 3, 3, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 14, 15];
+  const loopS = 4, loopE = 12;
+  const colx = i => X + Math.floor(i * W / n);
+  TR("0DB", 292, L, C.hint, 1); TR("-14", 292, L + 49, C.hint, 1); TR("-28", 292, L + 96, C.hint, 1); TR("OFF", 292, BASE + 1, C.hint, 1);
+  T("PITCH", 242, P, C.label, 1);
+  [["+5", 0], ["+1", 15], ["0", 27], ["-1", 39], ["-5", 53]].forEach(([s, dy]) => TR(s, 292, P + dy, C.hint, 1));
+  for (let i = 0; i < n; i++) {
+    const x = colx(i), w = colx(i + 1) - x, inL = i >= loopS && i < loopE;
+    R(x, L, w, BOT - L, inL ? C.cell : C.bg); R(x, P, w, PB - P, inL ? C.cell : C.bg);
+    for (let k = 1; k < 15; k++) R(x, L + ROW * k, w, 1, inL ? C.line : C.cell);
+    const top = L + ROW * lv[i];
+    if (lv[i] < 15) { R(x, top + 3, w - 1, BASE - top - 3, C.psgD); R(x, top, w - 1, 3, C.psg); }
+  }
+  R(X, BASE, W - 1, 1, C.line); R(X, CEN, W - 1, 1, C.line);
+  const sx = colx(loopS) - 1, ex = colx(loopE) - 1;
+  R(sx + 1, 106, ex - sx - 1, 14, C.cell); TC("LOOP", sx + 1, ex - sx - 1, 109, C.psg, 1);
+  T("RELEASE", ex + 12, 109, C.label, 1);
+  R(sx, 106, 1, PB - 106, C.psg); R(ex, 106, 1, PB - 106, C.psg); R(sx - 8, 106, 8, 14, C.psg); R(ex + 1, 106, 8, 14, C.psg);
+  const AX = 304;
+  for (let f = 0; f < n; f++) { const x = colx(f); R(x, AX, 1, 3, f % 3 ? C.line : C.hint); if (f % 3 === 0 && x + 76 <= X + W - 1) { TC(String(f), x - 9, 18, AX + 4, C.hint, 1); TC(String(ms(f)), x - 12, 24, AX + 14, C.hint, 1); } }
+  TR("FRAME", 286, AX + 4, C.hint, 1); TR("MS", 286, AX + 14, C.hint, 1);
+  R(648, 307, 52, 20, C.psgD); TR(String(n), 696, 309, C.text, 2);
+}
+function psgPage() {
+  frame({ sel: 6, footer: "STEP 2/3: +4 AT 17 MS. DOUBLE CLICK: 0" });
+  R(233, 28, 487, 432, C.bg); R(232, 28, 1, 432, C.line);
+  pageTop(7, "Chip Arp*", "BANK 81", true);
+  envelope();
+  arp(242, 332, { steps: [0, 4, 7], loop: 0, hover: 1, tag: 1 });
+  T("SN76489 SQUARE", 534, 336, C.hint, 1);
+}
+// ---------- FM page ----------
+function fmPage() {
+  frame({ sel: 3, storeOver: 1, footer: "STORE: CH4 and its arp into bank 82" });
+  R(233, 28, 487, 432, C.bg); R(232, 28, 1, 432, C.line);
+  pageTop(4, "Brass Arp*", "GM 82", false);
+  arp(242, 82, { fm: 1, steps: [0, 12, 7, 3, 7, 12], loop: 2 });
+  // block: AMS 530/56, FMS 590/56, ARP 650/52
+  cell(530, 82, 56, "AMS", "0", 0, C.fmD); cell(590, 82, 56, "FMS", "0", 0, C.fmD);
+  R(650, 82, 52, 20, C.fm); T("ARP", 654, 88, C.text, 1); TR("6", 698, 85, C.text, 2);
+  // diagram stub
+  B(530, 106, 172, 78, C.cell);
+  const box = (x, y, on, s) => { if (on) R(x, y, 18, 18, C.fm); else B(x, y, 18, 18, C.fmL); TC(s, x, 18, y + 2, C.text, 2); };
+  R(564, 125, 30, 1, C.fmL); R(612, 125, 30, 1, C.fmL); R(660, 125, 1, 40, C.fmL); R(651, 165, 20, 1, C.fmL);
+  box(546, 116, 0, "1"); box(594, 116, 0, "2"); box(642, 116, 1, "4"); box(594, 140, 0, "3"); R(603, 134, 1, 6, C.fmL);
+  R(542, 108, 72, 13, C.bg); T("FB", 546, 111, C.label, 1); for (let k = 0; k < 7; k++) R(564 + k * 7, 110, 6, 9, k < 5 ? C.fm : C.cell);
+  for (let a = 0; a < 8; a++) { const on = a === 4; R(530 + a * 22, 190, 18, 16, on ? C.fm : C.cell); TC(String(a), 530 + a * 22, 18, 191, on ? C.text : C.label, 2); }
+  // operator columns, values only as filled bars
+  const X = [242, 358, 474, 590], rows = [["TL", 228], ["MUL", 253], ["AR", 281], ["DR", 306], ["SL", 331], ["SR", 356], ["RR", 381]];
+  const V = [[30, 1, 31, 10, 4, 0, 6], [8, 2, 28, 12, 6, 3, 7], [40, 1, 31, 8, 2, 0, 5], [2, 1, 31, 14, 7, 4, 8]];
+  const M = [127, 15, 31, 31, 15, 31, 15];
+  X.forEach((x, op) => {
+    const car = op === 3;
+    if (car) R(x, 212, 112, 14, C.fm); else B(x, 212, 112, 14, C.fmL);
+    T("OP" + (op + 1) + (car ? " CARRIER" : " MOD"), x + 4, 216, car ? C.text : C.fmL, 1);
+    B(x + 78, 213, 32, 12, C.line); T("SSG", x + 85, 216, C.line, 1);
+    rows.forEach(([l, y], r) => cell(x, y, 112, l, String(V[op][r]), V[op][r] / M[r], C.fmD));
+    [["DT", 409, 7, 3], ["RS", 434, 4, 0]].forEach(([l, y, k, on]) => {
+      R(x, y, 21, 22, C.cell); T(l, x + 4, y + 7, C.label, 1);
+      for (let s = 0; s < k; s++) R(x + 22 + s * 13, y, 12, 22, s === on ? C.fm : C.cell);
+    });
+    B(x + 74, 434, 38, 22, C.line); TC("AM", x + 74, 38, 441, C.label, 1);
+  });
+}
+
+use("psg", 720, 528); psgPage();
+use("fm", 720, 528); fmPage();
+const W = 282, H = 124;
+crop("s0", () => arp(0, 0, { steps: [], loop: -1, shadow: -1 }), 0, 0, W, H, 2);
+crop("s1", () => arp(0, 0, { steps: [12, 12, 7, 7, 5, 5, 3, 3, 0, 0, 0, 0], loop: -1, shadow: -1 }), 0, 0, W, H, 2);
+crop("s2", () => arp(0, 0, { steps: [0, 3, 7, 10, 12], loop: -1, shadow: 2, bodyOver: 0 }), 0, 0, W, H, 2);
+crop("s3", () => arp(0, 0, { steps: Array.from({ length: 32 }, (_, i) => [0, 4, 7, 12, 16, 19, 24, 19][i % 8] - (i > 15 ? 12 : 0)), loop: 16, tabDrag: 1 }), 0, 0, W, H, 2);
+crop("s4", () => arp(0, 0, { steps: [0, 7, -12, 0], loop: 0, hover: 2, tag: 2, drawing: 1 }), 0, 0, W, H, 2);
+crop("s5", () => arp(0, 0, { steps: [0, 4, 7], loop: 0, dim: 1 }), 0, 0, W, H, 2);
+</script>
+</body>
+</html>

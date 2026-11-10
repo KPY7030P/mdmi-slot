@@ -15,11 +15,17 @@
 // channel kept, start, end (255 for the envelope's end) and the envelope's name.
 // The channels' bases came with D31, as a block of their own: the FM voices, then the PSG envelopes.
 // The DAC samples came with D36, also as a block of their own, written only when there are any.
-enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4, BLOCK_ENVELOPES = 5, BLOCK_PSG = 6, BLOCK_LOOPS = 7, BLOCK_BASES = 8, BLOCK_DAC = 9 };
+// The arp rows came with stage 20 as one block of fixed length: the FM places, the PSG places, the
+// channels and the channels' bases, 36 bytes each: steps, loop step (255 none), loop switched off,
+// its shadow's step, 32 shifts. A bank file has the block too, its channels' rows empty and unread.
+enum { BLOCK_VALUES = 1, BLOCK_VIEW = 2, BLOCK_NAMES = 3, BLOCK_BANK = 4, BLOCK_ENVELOPES = 5, BLOCK_PSG = 6, BLOCK_LOOPS = 7, BLOCK_BASES = 8, BLOCK_DAC = 9, BLOCK_ARPS = 10 };
+#define PLACE_ARPS_BYTES (PATCH_BANK_SIZE * sizeof(patch_arp))
+#define ARPS_BYTES (2 * PLACE_ARPS_BYTES + PATCH_CHANNEL_ARPS_BYTES)
 #define LOOP_BYTES (3 + PATCH_NAME)
 #define LOOPS_BYTES (PATCH_NUM_PSG_CHANNELS * LOOP_BYTES)
 static_assert(sizeof(patch_instrument) == PATCH_NAME + PATCH_VOICE_PARAMS * 2, "a bank place has no padding");
 static_assert(sizeof(patch_envelope) == PATCH_NAME + PATCH_ENVELOPE_STEPS + 1, "an envelope has no padding");
+static_assert(sizeof(patch_arp) == 4 + PATCH_ARP_STEPS, "a row has no padding");
 
 static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
 {
@@ -31,7 +37,7 @@ static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
 uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 {
 	const size_t dac_bytes = view && view->dac ? dac_block_size(view->dac) : 0;
-	const size_t most = sizeof(uint32_t) + 9 * BLOCK_HEAD + patch_save_size() + 3 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + PATCH_BASES_BYTES + PLACES_BYTES + ENVELOPES_BYTES + dac_bytes;
+	const size_t most = sizeof(uint32_t) + 10 * BLOCK_HEAD + patch_save_size() + 3 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + PATCH_BASES_BYTES + PLACES_BYTES + ENVELOPES_BYTES + ARPS_BYTES + dac_bytes;
 	uint8_t *buffer = malloc(most);
 	if (!buffer) {
 		return NULL;
@@ -75,7 +81,18 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 	memcpy(out, bank->places, PLACES_BYTES);
 	out = put_block_head(out + PLACES_BYTES, BLOCK_ENVELOPES, ENVELOPES_BYTES);
 	memcpy(out, bank->envelopes, ENVELOPES_BYTES);
-	*size = (size_t)(out + ENVELOPES_BYTES - buffer);
+	out = put_block_head(out + ENVELOPES_BYTES, BLOCK_ARPS, ARPS_BYTES);
+	memcpy(out, bank->place_arps, PLACE_ARPS_BYTES);
+	memcpy(out + PLACE_ARPS_BYTES, bank->envelope_arps, PLACE_ARPS_BYTES);
+	if (view) {
+		patch_save_arps(patch_view(patch), out + 2 * PLACE_ARPS_BYTES);
+	} else {
+		const patch_arp none = PATCH_ARP_EMPTY;
+		for (int i = 0; i < 2 * PATCH_NUM_CHANNELS; i++) {
+			memcpy(out + 2 * PLACE_ARPS_BYTES + i * sizeof(patch_arp), &none, sizeof(none));
+		}
+	}
+	*size = (size_t)(out + ARPS_BYTES - buffer);
 	return buffer;
 }
 
@@ -92,7 +109,7 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 	if (version != STATE_VERSION) {
 		return false;
 	}
-	const uint8_t *values = NULL, *seen_view = NULL, *names = NULL, *bank = NULL, *envelopes = NULL, *psg = NULL, *loops = NULL, *bases = NULL, *samples = NULL;
+	const uint8_t *values = NULL, *seen_view = NULL, *names = NULL, *bank = NULL, *envelopes = NULL, *psg = NULL, *loops = NULL, *bases = NULL, *samples = NULL, *arps = NULL;
 	uint32_t values_length = 0, view_length = 0, samples_length = 0;
 	for (size_t at = sizeof(version); at + BLOCK_HEAD <= size;) {
 		uint32_t type, length;
@@ -120,6 +137,8 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 			loops = bytes + at;
 		} else if (type == BLOCK_BASES && length == PATCH_BASES_BYTES) {
 			bases = bytes + at;
+		} else if (type == BLOCK_ARPS && length == ARPS_BYTES) {
+			arps = bytes + at;
 		} else if (type == BLOCK_DAC) {
 			samples = bytes + at;
 			samples_length = length;
@@ -150,6 +169,11 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 		if (envelopes) {
 			memcpy(copy->envelopes, envelopes, ENVELOPES_BYTES);
 		}
+		// Without rows every place has none.
+		if (arps) {
+			memcpy(copy->place_arps, arps, PLACE_ARPS_BYTES);
+			memcpy(copy->envelope_arps, arps + PLACE_ARPS_BYTES, PLACE_ARPS_BYTES);
+		}
 		patch_load_bank(patch, copy);
 		free(copy);
 	}
@@ -165,7 +189,7 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 		if (psg) {
 			memcpy(channel_envelopes, psg, PSG_BYTES);
 		}
-		patch_load(patch, values, values_length, names ? (const char (*)[PATCH_NAME])copied : NULL, psg ? channel_envelopes : NULL, bases);
+		patch_load(patch, values, values_length, names ? (const char (*)[PATCH_NAME])copied : NULL, psg ? channel_envelopes : NULL, bases, arps ? arps + 2 * PLACE_ARPS_BYTES : NULL);
 		*knobs = true;
 	}
 	if (seen_view) {

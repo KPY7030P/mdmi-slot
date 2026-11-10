@@ -51,6 +51,9 @@
 #define ACTION_LOAD_X 536
 #define ACTION_SAVE_X 596
 #define ACTION_UNDO_X 656
+// STORE (stage 20) on EDITOR where ADD stands on BANK, their right edges together.
+#define ACTION_STORE_X 468
+#define ACTION_STORE_W 64
 #define NAME_X 288
 #define NAME_CHARS 23
 #define ENVELOPE_NAME_CHARS 20
@@ -138,13 +141,15 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define ENV_LANE_W 404
 #define ENV_LOOP_Y 106
 #define ENV_LOOP_H 14
+// Stage 20 gives 90 px to the arp row under it: a level 7 px, a pitch row 4 (arpeggio.md, 4).
 #define ENV_LEVEL_Y (ENV_LOOP_Y + 16)
-#define ENV_BASE_Y (ENV_LEVEL_Y + 150)
-#define ENV_LEVEL_BOTTOM (ENV_LEVEL_Y + 160)
-#define ENV_PITCH_Y (ENV_LEVEL_BOTTOM + 8)
-#define ENV_PITCH_ROW 6
+#define ENV_LEVEL_ROW 7
+#define ENV_BASE_Y (ENV_LEVEL_Y + 15 * ENV_LEVEL_ROW)
+#define ENV_LEVEL_BOTTOM (ENV_LEVEL_Y + 16 * ENV_LEVEL_ROW)
+#define ENV_PITCH_Y (ENV_LEVEL_BOTTOM + 6)
+#define ENV_PITCH_ROW 4
 #define ENV_PITCH_BOTTOM (ENV_PITCH_Y + 15 * ENV_PITCH_ROW)
-#define ENV_CENTRE_Y (ENV_PITCH_Y + 7 * ENV_PITCH_ROW + 3)
+#define ENV_CENTRE_Y (ENV_PITCH_Y + 7 * ENV_PITCH_ROW + 2)
 #define ENV_AXIS_Y (ENV_PITCH_BOTTOM + 4)
 #define ENV_LENGTH_X 648
 #define ENV_LENGTH_Y (ENV_AXIS_Y + 3)
@@ -154,6 +159,31 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 // Pixels of a vertical drag on the length per frame.
 #define ENV_LENGTH_PIXELS 2
 enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, ENV_LENGTH };
+
+// The arp row (stage 20, docs/design/arpeggio.md): one widget the graph's size on both pages, in the
+// graph's place on FM and under the envelope on PSG. Its lane holds -24..+24 at 2 px a semitone, the
+// loop's strip over it, a column of the length and labels at its right.
+#define ARP_W GRAPH_W
+#define ARP_H GRAPH_H
+#define ARP_PSG_Y 332
+#define ARP_LANE_DX 22
+#define ARP_LANE_W 200
+#define ARP_LANE_DY 15
+#define ARP_LANE_H 98
+#define ARP_STRIP_DY 2
+#define ARP_STRIP_H 12
+#define ARP_RIGHT_DX 228
+#define ARP_LENGTH_DY 16
+#define ARP_LENGTH_W 52
+// Pixels of a vertical drag on the length per step: 128 px for all 32.
+#define ARP_LENGTH_PIXELS 4
+// The ARP switch of the FM page, right of AMS and FMS: the graph or the row.
+#define ARP_SWITCH_X 650
+#define ARP_SWITCH_W 52
+// The column of the chip's lines right of the row on PSG.
+#define PSG_NOTE_X 534
+// What the mouse holds on the row. ARP_ZERO is a double click's 0, which waits for the mouse to go up.
+enum { ARP_NONE, ARP_LANE, ARP_TAB, ARP_BODY, ARP_SHADOW, ARP_SWITCH, ARP_LENGTH, ARP_ZERO };
 
 // The page is saved with the project: a new one goes last.
 enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK, PAGE_ALL };
@@ -167,7 +197,9 @@ enum { OP_TL, OP_MUL, OP_DT, OP_RS, OP_AR, OP_DR, OP_SR, OP_SL, OP_RR, OP_AM, OP
 #define ALL_PAN_X 474
 #define ALL_PAN_W 17
 #define ALL_SOURCE_X 536
-enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTIONS };
+enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTION_STORE, ACTIONS };
+static const int ACTION_X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X, ACTION_STORE_X};
+static const int ACTION_WIDTH[ACTIONS] = {ACTION_W, ACTION_W, ACTION_W, ACTION_W, ACTION_STORE_W};
 
 typedef struct {
 	IDropTarget iface;
@@ -302,6 +334,25 @@ struct mdmi_gui {
 	int env_start_y;
 	// The press on the loop's strip moved past DRAG_SLOP: the span moves, it is no click (stage 18b).
 	bool env_moved;
+
+	// The arp row being drawn (stage 20), the same way: what is held, the window's copy, the row before
+	// the gesture and at its start, the last step drawn. arp_handed stays after the gesture, so a
+	// double click's 0 joins the first click's undo step. arp_view: the FM page shows the row instead
+	// of the graph, one for the window, not in the project.
+	int arp_drag;
+	int arp_channel;
+	patch_arp arp_row;
+	patch_arp arp_before;
+	patch_arp arp_start;
+	bool arp_changed;
+	bool arp_handed;
+	bool arp_told;
+	bool arp_moved;
+	int arp_last_step;
+	int arp_last_value;
+	int arp_start_x;
+	int arp_start_y;
+	bool arp_view;
 
 	// The FM page (stage 11): the operator last edited by the mouse, the operator whose choice of SSG
 	// is open (-1 when closed), and whether ALL draws the FM rows' envelopes instead of diagrams. The
@@ -895,8 +946,9 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			}
 		}
 		if (channel_is_fm(channel)) {
-			add_cell(g, BLOCK_X, GRAPH_Y, 84, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_AMS), "AMS", CELL_ROW);
-			add_cell(g, BLOCK_X + 88, GRAPH_Y, 84, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_FMS), "FMS", CELL_ROW);
+			// AMS and FMS give the ARP switch its room (stage 20).
+			add_cell(g, BLOCK_X, GRAPH_Y, 56, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_AMS), "AMS", CELL_ROW);
+			add_cell(g, BLOCK_X + 60, GRAPH_Y, 56, CELL_H, PATCH_CHANNEL_ID(channel, PARAM_FMS), "FMS", CELL_ROW);
 			// FB sits in the diagram's corner over operator 1's loop: dragged, a click steps it.
 			add_cell(g, feedback_x(values->channels[channel][PARAM_ALGORITHM]), DIAGRAM_Y + 2, 72, 13, PATCH_CHANNEL_ID(channel, PARAM_FEEDBACK), "FB", CELL_ROW);
 			g->cells[g->cell_count - 1].look = LOOK_FEEDBACK;
@@ -1317,9 +1369,14 @@ static void shift_span(long *start, long *end, long delta, long low, long high)
 
 // Columns share the whole lane by the length (0.8.1), their edges rounded down, so the lane ends at
 // the page's right edge at every length and widths differ by a pixel at most.
+static int lane_column_x(int left, int width, int count, int column)
+{
+	return left + column * width / count;
+}
+
 static int column_x(int count, int column)
 {
-	return ENV_X + column * ENV_LANE_W / count;
+	return lane_column_x(ENV_X, ENV_LANE_W, count, column);
 }
 
 // The gap pixel before a frame, where the loop lines stand.
@@ -1329,24 +1386,34 @@ static int boundary_x(int count, int boundary)
 }
 
 // The boundary nearest to x, and the column under it (count past the lane's end, -1 before it).
-static int boundary_at(int count, int x)
+static int lane_boundary_at(int left, int width, int count, int x)
 {
 	int best = 0;
 	for (int b = 1; b <= count; b++) {
-		if (abs(column_x(count, b) - 1 - x) < abs(column_x(count, best) - 1 - x)) {
+		if (abs(lane_column_x(left, width, count, b) - 1 - x) < abs(lane_column_x(left, width, count, best) - 1 - x)) {
 			best = b;
 		}
 	}
 	return best;
 }
 
-static int column_at(int count, int x)
+static int boundary_at(int count, int x)
+{
+	return lane_boundary_at(ENV_X, ENV_LANE_W, count, x);
+}
+
+static int lane_column_at(int left, int width, int count, int x)
 {
 	int column = -1;
-	while (column < count && column_x(count, column + 1) <= x) {
+	while (column < count && lane_column_x(left, width, count, column + 1) <= x) {
 		column++;
 	}
 	return column;
+}
+
+static int column_at(int count, int x)
+{
+	return lane_column_at(ENV_X, ENV_LANE_W, count, x);
 }
 
 static int clamp(int value, int low, int high)
@@ -1459,7 +1526,7 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 	const int boundary = boundary_at(shape->count, x);
 	if (g->env_drag == ENV_LEVEL || g->env_drag == ENV_PITCH) {
 		const int step = clamp(column_at(shape->count, x), 0, shape->count - 1);
-		const int value = g->env_drag == ENV_LEVEL ? clamp((y - ENV_LEVEL_Y) / 10, 0, 15) : clamp((y - ENV_PITCH_Y) / ENV_PITCH_ROW, 0, 14);
+		const int value = g->env_drag == ENV_LEVEL ? clamp((y - ENV_LEVEL_Y) / ENV_LEVEL_ROW, 0, 15) : clamp((y - ENV_PITCH_Y) / ENV_PITCH_ROW, 0, 14);
 		// Columns the mouse jumped over get values on the line between.
 		const int from = g->env_last_step < 0 ? step : g->env_last_step;
 		const int last = g->env_last_step < 0 ? value : g->env_last_value;
@@ -1654,11 +1721,11 @@ static void fit_word(mdmi_gui *g, int x, int room, int y, const char *word, cons
 	}
 }
 
-// A value by the mouse, framed, so drawing needs no look down at the footer.
-static void value_tag(mdmi_gui *g, int centre, int y, const char *value)
+// A value by the mouse, framed, so drawing needs no look down at the footer; held inside its lane.
+static void value_tag(mdmi_gui *g, int centre, int y, const char *value, int left, int right)
 {
 	const int w = (int)strlen(value) * 6 + 5;
-	const int x = clamp(centre - w / 2, ENV_X, ENV_X + ENV_LANE_W - w);
+	const int x = clamp(centre - w / 2, left, right - w);
 	fill(g, x, y, w, 13, C_BG);
 	frame(g, x, y, w, 13, C_LABEL);
 	text(g, x + 3, y + 3, value, C_TEXT, 1);
@@ -1684,15 +1751,15 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	char buffer[64];
 
 	text_right(g, 292, ENV_LEVEL_Y, "0DB", C_HINT, 1, 20);
-	text_right(g, 292, ENV_LEVEL_Y + 70, "-14", C_HINT, 1, 20);
-	text_right(g, 292, ENV_LEVEL_Y + 140, "-28", C_HINT, 1, 20);
-	text_right(g, 292, ENV_BASE_Y + 2, "OFF", C_HINT, 1, 20);
+	text_right(g, 292, ENV_LEVEL_Y + 49, "-14", C_HINT, 1, 20);
+	text_right(g, 292, ENV_LEVEL_Y + 96, "-28", C_HINT, 1, 20);
+	text_right(g, 292, ENV_BASE_Y + 1, "OFF", C_HINT, 1, 20);
 	text(g, PAGE_X, ENV_PITCH_Y, "PITCH", noise ? C_LINE : C_LABEL, 1);
 	if (!noise) {
 		static const struct {
 			const char *label;
 			int y;
-		} PITCH_LABELS[] = {{"+5", 0}, {"+1", 24}, {"0", 42}, {"-1", 60}, {"-5", 84}};
+		} PITCH_LABELS[] = {{"+5", 0}, {"+1", 15}, {"0", 27}, {"-1", 39}, {"-5", 53}};
 		for (size_t i = 0; i < sizeof(PITCH_LABELS) / sizeof(*PITCH_LABELS); i++) {
 			text_right(g, 292, ENV_PITCH_Y + PITCH_LABELS[i].y, PITCH_LABELS[i].label, C_HINT, 1, 20);
 		}
@@ -1708,9 +1775,9 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		fill(g, x, ENV_LEVEL_Y, w, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
 		fill(g, x, ENV_PITCH_Y, w, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
 		for (int k = 1; k < 15; k++) {
-			fill(g, x, ENV_LEVEL_Y + 10 * k, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
+			fill(g, x, ENV_LEVEL_Y + ENV_LEVEL_ROW * k, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
 		}
-		const int level = shape->frames[i] & 15, top = ENV_LEVEL_Y + 10 * level;
+		const int level = shape->frames[i] & 15, top = ENV_LEVEL_Y + ENV_LEVEL_ROW * level;
 		if (level < 15) {
 			fill(g, x, top + 3, w - 1, ENV_BASE_Y - top - 3, C_PSG_DARK);
 			fill(g, x, top, w - 1, 3, C_PSG);
@@ -1803,8 +1870,6 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	if (full) {
 		text_right(g, ENV_LENGTH_X - 4, ENV_LENGTH_Y + 6, "MAX", C_AMBER, 1, 20);
 	}
-	snprintf(buffer, sizeof(buffer), "%d MS", frame_ms(count));
-	text_right(g, ENV_X + ENV_LANE_W, ENV_LENGTH_Y + CELL_H + 3, buffer, C_LABEL, 1, 60);
 
 	// The value by the mouse: the level over its bar, the loop's steps by a tab.
 	const int part = idle ? over : g->env_drag;
@@ -1814,11 +1879,11 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		const int centre = (column_x(count, step) + column_x(count, step + 1)) / 2;
 		snprintf(buffer, sizeof(buffer), level == 15 ? "OFF" : "%dDB", -2 * level);
 		// Over the bar, or inside it where the bar reaches the top.
-		const int above = ENV_LEVEL_Y + 10 * level - 16;
-		value_tag(g, centre, above >= ENV_LEVEL_Y ? above : ENV_LEVEL_Y + 10 * level + 5, buffer);
+		const int above = ENV_LEVEL_Y + ENV_LEVEL_ROW * level - 16;
+		value_tag(g, centre, above >= ENV_LEVEL_Y ? above : ENV_LEVEL_Y + ENV_LEVEL_ROW * level + 5, buffer, ENV_X, ENV_X + ENV_LANE_W);
 	} else if (loop && (part == ENV_LOOP_START || part == ENV_LOOP_END)) {
 		snprintf(buffer, sizeof(buffer), "%d-%d", shape->loop_start + 1, end);
-		value_tag(g, boundary_x(count, part == ENV_LOOP_START ? shape->loop_start : end), ENV_LEVEL_Y + 2, buffer);
+		value_tag(g, boundary_x(count, part == ENV_LOOP_START ? shape->loop_start : end), ENV_LEVEL_Y + 2, buffer, ENV_X, ENV_X + ENV_LANE_W);
 	}
 }
 
@@ -3181,6 +3246,451 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 	return true;
 }
 
+// The arp row is on the open page: a PSG channel's editor, or the FM page showing it.
+static bool arp_shown(const mdmi_gui *g)
+{
+	const int channel = *g->source.channel;
+	if (*g->source.page != PAGE_EDITOR) {
+		return false;
+	}
+	return !channel_is_fm(channel) || (g->arp_view && !is_dac(patch_view(g->source.patch), channel));
+}
+
+// The row's top left corner: the graph's on FM, under the envelope on PSG.
+static void arp_corner(const mdmi_gui *g, int *bx, int *by)
+{
+	const bool fm = channel_is_fm(*g->source.channel);
+	*bx = fm ? GRAPH_X : PAGE_X;
+	*by = fm ? GRAPH_Y : ARP_PSG_Y;
+}
+
+// What the row shows: the window's copy while a gesture lasts, the channel's row otherwise.
+static const patch_arp *shown_arp(mdmi_gui *g)
+{
+	const int channel = *g->source.channel;
+	if (g->arp_drag != ARP_NONE && g->arp_channel == channel) {
+		return &g->arp_row;
+	}
+	return patch_arp_view(g->source.patch, channel);
+}
+
+// A shift's 2 px band in the lane, +24 at the top.
+static int arp_y(int ly, int shift)
+{
+	return ly + 2 * (PATCH_ARP_SHIFT - shift);
+}
+
+static int arp_x(int lx, int count, int step)
+{
+	return lane_column_x(lx, ARP_LANE_W, count, step);
+}
+
+static void shift_text(int shift, char *out, size_t size)
+{
+	snprintf(out, size, shift > 0 ? "+%d" : "%d", shift);
+}
+
+// The length cell, the loop's tab, body or shadow, the switch, or the lane under the mouse. A dim row
+// takes no mouse; an empty one only its lane and length.
+static int arp_part_at(mdmi_gui *g, const patch_arp *row, int x, int y)
+{
+	if (!arp_shown(g) || !patch_arp_works(patch_view(g->source.patch), *g->source.channel)) {
+		return ARP_NONE;
+	}
+	int bx, by;
+	arp_corner(g, &bx, &by);
+	const int lx = bx + ARP_LANE_DX, ly = by + ARP_LANE_DY, end = lx + ARP_LANE_W, count = row->count;
+	if (in_box(x, y, bx + ARP_RIGHT_DX, by + ARP_LENGTH_DY, ARP_LENGTH_W, CELL_H)) {
+		return ARP_LENGTH;
+	}
+	if (y >= by + ARP_STRIP_DY && y < by + ARP_STRIP_DY + ARP_STRIP_H) {
+		if (!count) {
+			return ARP_NONE;
+		}
+		if (row->loop >= 0) {
+			const int ls = arp_x(lx, count, row->loop) - 1;
+			return x >= ls - 9 && x <= ls ? ARP_TAB : x > ls && x < end ? ARP_BODY : ARP_NONE;
+		}
+		if (row->shadow_kept) {
+			return x >= arp_x(lx, count, row->shadow) - 10 && x < end ? ARP_SHADOW : ARP_NONE;
+		}
+		return x >= lx && x < lx + ENV_LOOP_OFF_W ? ARP_SWITCH : ARP_NONE;
+	}
+	return x >= lx && x < end && y >= ly && y < ly + ARP_LANE_H ? ARP_LANE : ARP_NONE;
+}
+
+// The ARP switch of the FM page under the mouse.
+static bool over_arp_switch(const mdmi_gui *g, int x, int y)
+{
+	return *g->source.page == PAGE_EDITOR && takes_fm(patch_view(g->source.patch), *g->source.channel) && in_box(x, y, ARP_SWITCH_X, GRAPH_Y, ARP_SWITCH_W, CELL_H);
+}
+
+// The row (arpeggio.md, 1): the scale, a column per step sharing the lane by the row's length, bars
+// from the zero line, the loop's strip with one tab at its start, the length at the right.
+static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
+{
+	const int channel = *g->source.channel;
+	const bool fm = channel_is_fm(channel), dim = !patch_arp_works(values, channel);
+	const uint32_t ink = dim ? C_LINE : fm ? C_FM_LIGHT : C_PSG, dark = dim ? C_CELL : fm ? C_FM_DARK : C_PSG_DARK;
+	const patch_arp *row = shown_arp(g);
+	const int count = row->count, lx = bx + ARP_LANE_DX, ly = by + ARP_LANE_DY, rx = bx + ARP_RIGHT_DX, end = lx + ARP_LANE_W;
+	const int sy = by + ARP_STRIP_DY;
+	const bool idle = g->arp_drag == ARP_NONE;
+	const int over = idle && !g->dragging && !g->file_over ? arp_part_at(g, row, g->mouse_x, g->mouse_y) : ARP_NONE;
+	const int hover = over == ARP_LANE && count ? lane_column_at(lx, ARP_LANE_W, count, g->mouse_x) : -1;
+	const int lit = hover >= 0 ? hover : g->arp_drag == ARP_LANE || g->arp_drag == ARP_ZERO ? g->arp_last_step : -1;
+	char buffer[16];
+
+	fill(g, bx, by, ARP_W, ARP_H, C_BG);
+	frame(g, bx, by, ARP_W, ARP_H, C_CELL);
+	static const struct {
+		const char *label;
+		int y;
+	} SCALE[] = {{"+24", 0}, {"+12", 22}, {"0", 46}, {"-12", 70}, {"-24", 91}};
+	for (size_t i = 0; i < sizeof(SCALE) / sizeof(*SCALE); i++) {
+		text_right(g, bx + 20, ly + SCALE[i].y, SCALE[i].label, dim ? C_LINE : C_HINT, 1, 20);
+	}
+
+	// The ground: the loop lighter, the column under the mouse lighter still, the octaves' lines.
+	for (int i = 0; i < count; i++) {
+		const int x = arp_x(lx, count, i), w = arp_x(lx, count, i + 1) - x;
+		const bool in_loop = row->loop >= 0 && i >= row->loop;
+		fill(g, x, ly, w, ARP_LANE_H, i == hover ? C_LINE : in_loop ? C_CELL : C_BG);
+		fill(g, x, ly + 24, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
+		fill(g, x, ly + 72, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
+	}
+	if (!count) {
+		// Empty: the ghost of four columns where a drawing lands.
+		fill(g, lx, ly + 24, ARP_LANE_W, 1, C_CELL);
+		fill(g, lx, ly + 72, ARP_LANE_W, 1, C_CELL);
+		for (int k = 1; k < 4; k++) {
+			for (int y = ly; y < ly + ARP_LANE_H; y += 2) {
+				fill(g, lx + k * ARP_LANE_W / 4, y, 1, 1, C_CELL);
+			}
+		}
+		text(g, lx + (ARP_LANE_W - 65) / 2, ly + 30, "DRAW AN ARP", dim ? C_LINE : C_HINT, 1);
+	}
+	// The zero line reads stronger than the octaves'.
+	fill(g, lx, ly + 48, ARP_LANE_W, 2, C_LINE);
+	for (int i = 0; i < count; i++) {
+		const int x = arp_x(lx, count, i), w = arp_x(lx, count, i + 1) - x;
+		const int shift = row->steps[i], top = arp_y(ly, shift);
+		if (shift > 0) {
+			fill(g, x, top + 2, w - 1, ly + 48 - top - 2, dark);
+		} else if (shift < 0) {
+			fill(g, x, ly + 50, w - 1, top - ly - 50, dark);
+		}
+		// A step of 0 is a real step: its top on the zero line.
+		fill(g, x, top, w - 1, 2, ink);
+		if (w > 19) {
+			shift_text(shift, buffer, sizeof(buffer));
+			text(g, x + (w - 1 - ((int)strlen(buffer) * 6 - 1)) / 2, by + 114, buffer, dim ? C_LINE : i == lit ? C_TEXT : C_LABEL, 1);
+		}
+	}
+
+	// The loop's strip: one tab at the start, the loop runs to the last step.
+	if (count && row->loop >= 0) {
+		const int ls = arp_x(lx, count, row->loop) - 1;
+		const bool moved = g->arp_drag == ARP_BODY && g->arp_moved, held = moved || g->arp_drag == ARP_TAB;
+		fill(g, ls + 1, sy, end - ls - 1, ARP_STRIP_H, over == ARP_BODY ? C_LINE : C_CELL);
+		fit_word(g, ls + 1, end - ls - 1, sy + 3, "LOOP", NULL, true, moved ? C_AMBER : ink, true);
+		fill(g, ls, sy, 1, ly + ARP_LANE_H - sy, held ? C_AMBER : ink);
+		fill(g, ls - 8, sy, 8, ARP_STRIP_H, held ? C_AMBER : over == ARP_TAB ? C_TEXT : ink);
+	} else if (count && row->shadow_kept) {
+		// The loop switched off: an outline where it started, no tab, no line.
+		const int ss = arp_x(lx, count, row->shadow) - 1;
+		const bool moved = g->arp_drag == ARP_SHADOW && g->arp_moved;
+		const uint32_t color = moved ? C_AMBER : over == ARP_SHADOW ? C_TEXT : C_LINE;
+		frame(g, ss, sy, end - ss, ARP_STRIP_H, color);
+		fit_word(g, ss + 1, end - ss - 2, sy + 3, "LOOP", NULL, true, moved ? C_AMBER : over == ARP_SHADOW ? C_TEXT : dim ? C_LINE : C_LABEL, true);
+	} else if (count) {
+		frame(g, lx, sy, ENV_LOOP_OFF_W, ARP_STRIP_H, over == ARP_SWITCH ? C_TEXT : C_LINE);
+		text(g, lx + 3, sy + 3, "LOOP", over == ARP_SWITCH ? C_TEXT : dim ? C_LINE : C_LABEL, 1);
+		text(g, lx + 44, sy + 3, "ONCE, THEN HOLDS", C_HINT, 1);
+	}
+
+	// The column at the right: the length, dragged like the envelope's, and what it means.
+	text(g, rx, by + 4, "ARP", dim ? C_LINE : C_LABEL, 1);
+	const bool held = g->arp_drag == ARP_LENGTH, full = count >= PATCH_ARP_STEPS;
+	const int cy = by + ARP_LENGTH_DY;
+	fill(g, rx, cy, ARP_LENGTH_W, CELL_H, dim ? C_BG : held ? C_LINE : count ? dark : C_CELL);
+	if (dim || held || over == ARP_LENGTH) {
+		frame(g, rx, cy, ARP_LENGTH_W, CELL_H, dim ? C_CELL : held ? C_TEXT : C_LINE);
+	}
+	snprintf(buffer, sizeof(buffer), "%d", count);
+	text_right(g, rx + 48, cy + 3, buffer, dim ? C_LINE : full ? C_AMBER : count ? C_TEXT : C_LABEL, 2, ARP_LENGTH_W - 4);
+	text(g, rx, by + 39, full ? "MAX" : count ? "STEPS" : "NO ARP", full && !dim ? C_AMBER : C_HINT, 1);
+	if (count) {
+		snprintf(buffer, sizeof(buffer), "%d MS", frame_ms(count));
+		text(g, rx, by + 51, buffer, dim ? C_LINE : C_LABEL, 1);
+	}
+	text(g, rx, by + 100, "CONSOLE:", C_HINT, 1);
+	text(g, rx, by + 110, "UNTESTED", C_HINT, 1);
+
+	// The value by the mouse: over the top at 0 and up, under it below 0, the other side if no room.
+	if (!dim && lit >= 0 && lit < count) {
+		const int shift = row->steps[lit], top = arp_y(ly, shift);
+		int y = shift >= 0 ? top - 15 : top + 5;
+		if (y < ly || y + 13 > ly + ARP_LANE_H) {
+			y = shift >= 0 ? top + 5 : top - 15;
+		}
+		shift_text(shift, buffer, sizeof(buffer));
+		value_tag(g, (arp_x(lx, count, lit) + arp_x(lx, count, lit + 1)) / 2, y, buffer, lx, end);
+	}
+}
+
+// The FM page's switch between the graph and the row, with the row's length.
+static void draw_arp_switch(mdmi_gui *g, const patch_values *values)
+{
+	const int channel = *g->source.channel, count = patch_arp_view(g->source.patch, channel)->count;
+	const bool over = !g->dragging && !g->file_over && g->arp_drag == ARP_NONE && over_arp_switch(g, g->mouse_x, g->mouse_y);
+	fill(g, ARP_SWITCH_X, GRAPH_Y, ARP_SWITCH_W, CELL_H, g->arp_view ? C_FM : C_BG);
+	if (over || !g->arp_view) {
+		frame(g, ARP_SWITCH_X, GRAPH_Y, ARP_SWITCH_W, CELL_H, over ? C_TEXT : C_LINE);
+	}
+	text(g, ARP_SWITCH_X + 4, GRAPH_Y + 6, "ARP", g->arp_view ? C_TEXT : C_LABEL, 1);
+	char buffer[8];
+	snprintf(buffer, sizeof(buffer), count ? "%d" : "-", count);
+	text_right(g, ARP_SWITCH_X + 48, GRAPH_Y + 3, buffer, !count || !patch_arp_works(values, channel) ? C_LINE : C_TEXT, 2, 26);
+}
+
+// The channel's row becomes the window's copy, and what undo puts back.
+static void arp_take(mdmi_gui *g)
+{
+	g->arp_channel = *g->source.channel;
+	g->arp_before = *patch_arp_view(g->source.patch, g->arp_channel);
+	g->arp_row = g->arp_start = g->arp_before;
+	g->arp_changed = g->arp_handed = false;
+	g->arp_last_step = -1;
+}
+
+// The copy goes to the model as a drawn envelope does: at most once per window frame and at the
+// end of the gesture, the host told nothing (D19).
+static void arp_hand(mdmi_gui *g)
+{
+	if (!g->arp_changed) {
+		return;
+	}
+	patch_arp row = g->arp_row;
+	patch_arp_clean(&row);
+	files_draw_arp(g->source.files, g->arp_channel, g->arp_handed ? NULL : &g->arp_before, &row);
+	g->arp_handed = true;
+	g->arp_changed = false;
+	if (!g->arp_told) {
+		say(g, "Drawn arp plays from the next note", C_TEXT, MESSAGE_TICKS);
+		g->arp_told = true;
+	}
+}
+
+// An empty row starts as 4 steps of 0 looped from the first, its shadow gone (arpeggio.md, 2).
+static void arp_begin(patch_arp *row)
+{
+	*row = PATCH_ARP_EMPTY;
+	row->count = 4;
+	row->loop = 0;
+}
+
+static void arp_move(mdmi_gui *g, int x, int y)
+{
+	int bx, by;
+	arp_corner(g, &bx, &by);
+	const int lx = bx + ARP_LANE_DX, ly = by + ARP_LANE_DY;
+	patch_arp *row = &g->arp_row;
+	const patch_arp was = *row;
+	if (g->arp_drag == ARP_LANE) {
+		if (!row->count) {
+			arp_begin(row);
+		}
+		// Whole semitones by y, above the lane +24 and below it -24; jumped columns on the line between.
+		const int step = clamp(lane_column_at(lx, ARP_LANE_W, row->count, x), 0, row->count - 1);
+		const int value = clamp(PATCH_ARP_SHIFT - (y - ly) / 2, -PATCH_ARP_SHIFT, PATCH_ARP_SHIFT);
+		const int from = g->arp_last_step < 0 ? step : g->arp_last_step;
+		const int last = g->arp_last_step < 0 ? value : g->arp_last_value;
+		const int direction = step >= from ? 1 : -1;
+		for (int i = from;; i += direction) {
+			row->steps[i] = (int8_t)(step == from ? value : last + (value - last) * (i - from) / (step - from));
+			if (i == step) {
+				break;
+			}
+		}
+		g->arp_last_step = step;
+		g->arp_last_value = value;
+	} else if (g->arp_drag == ARP_TAB) {
+		row->loop = (int8_t)clamp(lane_boundary_at(lx, ARP_LANE_W, row->count, x), 0, row->count - 1);
+	} else if (g->arp_drag == ARP_BODY || g->arp_drag == ARP_SHADOW) {
+		// Held (18b): past DRAG_SLOP the loop's start, or the shadow, follows the mouse by boundaries;
+		// before, nothing. The loop ends at the last step, so its length changes.
+		g->arp_moved = g->arp_moved || abs(x - g->arp_start_x) >= DRAG_SLOP;
+		if (g->arp_moved) {
+			long start = g->arp_drag == ARP_BODY ? g->arp_start.loop : g->arp_start.shadow, end = start + 1;
+			shift_span(&start, &end, lane_boundary_at(lx, ARP_LANE_W, row->count, x) - lane_boundary_at(lx, ARP_LANE_W, row->count, g->arp_start_x), 0, row->count);
+			if (g->arp_drag == ARP_BODY) {
+				row->loop = (int8_t)start;
+			} else {
+				row->shadow = (uint8_t)start;
+			}
+		}
+	} else if (g->arp_drag == ARP_LENGTH) {
+		// Up is longer, from the gesture's start, so steps cut on the way come back; new steps copy
+		// the last. From empty the row starts looped from the first step, as a drawing does.
+		const int dy = g->arp_start_y - y;
+		*row = g->arp_start;
+		const int length = clamp(row->count + (abs(dy) < DRAG_SLOP ? 0 : dy / ARP_LENGTH_PIXELS), 0, PATCH_ARP_STEPS);
+		if (!row->count && length) {
+			arp_begin(row);
+			row->count = 0;
+		}
+		for (; row->count < length; row->count++) {
+			row->steps[row->count] = row->count ? row->steps[row->count - 1] : 0;
+		}
+		row->count = (uint8_t)length;
+		patch_arp_clean(row);
+	}
+	g->arp_changed |= memcmp(&was, row, sizeof(was)) != 0;
+}
+
+// A press on the row starts a gesture; on the strip's body, a shadow or the switch it changes
+// nothing until it moves or is let go (18b).
+static bool arp_down(mdmi_gui *g, int x, int y)
+{
+	const int part = arp_part_at(g, shown_arp(g), x, y);
+	if (part == ARP_NONE) {
+		return false;
+	}
+	arp_take(g);
+	g->arp_drag = part;
+	g->arp_start_x = x;
+	g->arp_start_y = y;
+	g->arp_moved = false;
+	if (g->window) {
+		SetCapture(g->window);
+	}
+	arp_move(g, x, y);
+	return true;
+}
+
+// A double click on a column: 0, in the undo step of the click before it, so undo gives back what
+// was there before the first press. False off a column.
+static bool arp_zero(mdmi_gui *g, int x, int y)
+{
+	const patch_arp *row = shown_arp(g);
+	if (arp_part_at(g, row, x, y) != ARP_LANE || !row->count) {
+		return false;
+	}
+	const bool again = g->arp_handed && g->arp_channel == *g->source.channel;
+	const patch_arp before = g->arp_before;
+	arp_take(g);
+	if (again) {
+		g->arp_before = before;
+		g->arp_handed = true;
+	}
+	int bx, by;
+	arp_corner(g, &bx, &by);
+	const int step = clamp(lane_column_at(bx + ARP_LANE_DX, ARP_LANE_W, g->arp_row.count, x), 0, g->arp_row.count - 1);
+	g->arp_changed = g->arp_row.steps[step] != 0;
+	g->arp_row.steps[step] = 0;
+	g->arp_last_step = step;
+	g->arp_drag = ARP_ZERO;
+	if (g->window) {
+		SetCapture(g->window);
+	}
+	return true;
+}
+
+// The mouse let go: a click within DRAG_SLOP on the body turns the loop off and keeps its shadow,
+// on the shadow turns it on there, on the switch loops the whole row.
+static void arp_up(mdmi_gui *g)
+{
+	patch_arp *row = &g->arp_row;
+	if (!g->arp_moved && g->arp_drag == ARP_BODY) {
+		row->shadow_kept = 1;
+		row->shadow = (uint8_t)row->loop;
+		row->loop = -1;
+		g->arp_changed = true;
+	} else if (!g->arp_moved && g->arp_drag == ARP_SHADOW) {
+		row->loop = (int8_t)row->shadow;
+		row->shadow_kept = 0;
+		g->arp_changed = true;
+	} else if (g->arp_drag == ARP_SWITCH) {
+		row->loop = 0;
+		g->arp_changed = true;
+	}
+	arp_hand(g);
+	g->arp_drag = ARP_NONE;
+	if (GetCapture() == g->window) {
+		ReleaseCapture();
+	}
+}
+
+// What the footer says about the row and the FM page's switch: the gesture under way, or what is
+// under the mouse.
+static bool arp_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	const int channel = *g->source.channel;
+	const int x = g->mouse_x, y = g->mouse_y;
+	if (g->arp_drag == ARP_NONE && over_arp_switch(g, x, y)) {
+		const int count = patch_arp_view(g->source.patch, channel)->count;
+		if (g->arp_view) {
+			snprintf(hint, size, "CLICK: BACK TO THE ENVELOPE GRAPH");
+		} else {
+			snprintf(hint, size, count ? "ARP %d STEPS. CLICK TO EDIT" : "NO ARP. CLICK TO DRAW ONE", count);
+		}
+		return true;
+	}
+	if (!arp_shown(g)) {
+		return false;
+	}
+	int bx, by;
+	arp_corner(g, &bx, &by);
+	if (!patch_arp_works(patch_view(g->source.patch), channel)) {
+		if (!in_box(x, y, bx, by, ARP_W, ARP_H)) {
+			return false;
+		}
+		snprintf(hint, size, channel == 2 ? "CH3 SPECIAL: ARP DOES NOTHING ON CH3" : "CH10: ARP WORKS ONLY WITH RATE TONE 3");
+		return true;
+	}
+	const patch_arp *row = shown_arp(g);
+	const int count = row->count;
+	const bool held = g->arp_drag != ARP_NONE;
+	const int part = held ? g->arp_drag : arp_part_at(g, row, x, y);
+	char shift[8];
+	if (part == ARP_LANE || part == ARP_ZERO) {
+		const int step = held ? g->arp_last_step : lane_column_at(bx + ARP_LANE_DX, ARP_LANE_W, count, x);
+		if (!count) {
+			snprintf(hint, size, "NO ARP: DRAW HERE FOR 4 LOOPED STEPS");
+			return true;
+		}
+		if (step < 0 || step >= count) {
+			return false;
+		}
+		shift_text(row->steps[step], shift, sizeof(shift));
+		if (held) {
+			snprintf(hint, size, "STEP %d/%d: %s SEMITONES", step + 1, count, shift);
+		} else {
+			snprintf(hint, size, "STEP %d/%d: %s AT %d MS. DOUBLE CLICK: 0", step + 1, count, shift, frame_ms(step));
+		}
+	} else if (part == ARP_LENGTH && held) {
+		snprintf(hint, size, count ? "ARP %d STEPS, %d MS" : "0 STEPS: NO ARP", count, frame_ms(count));
+	} else if (part == ARP_LENGTH) {
+		snprintf(hint, size, !count ? "NO ARP: DRAG UP TO ADD STEPS" : count >= PATCH_ARP_STEPS ? "MAX %d STEPS, %d MS: DRAG DOWN" : "ARP %d STEPS, %d MS: DRAG UP OR DOWN", count, frame_ms(count));
+	} else if (part == ARP_TAB && row->loop >= 0) {
+		if (held) {
+			snprintf(hint, size, "LOOP %d-%d: %d STEPS, %d MS", row->loop + 1, count, count - row->loop, frame_ms(count - row->loop));
+		} else {
+			snprintf(hint, size, "LOOP FROM STEP %d: DRAG BETWEEN STEPS", row->loop + 1);
+		}
+	} else if (part == ARP_BODY && row->loop >= 0) {
+		snprintf(hint, size, held && g->arp_moved ? "LOOP %d-%d: RELEASE TO KEEP" : "LOOP %d-%d: CLICK OFF, DRAG TO MOVE", row->loop + 1, count);
+	} else if (part == ARP_SHADOW && row->shadow_kept) {
+		snprintf(hint, size, "LOOP %d-%d IS OFF: CLICK TO TURN IT ON", row->shadow + 1, count);
+	} else if (part == ARP_SWITCH) {
+		snprintf(hint, size, "ONCE, HOLDS LAST STEP. CLICK: LOOP ALL");
+	} else {
+		return false;
+	}
+	return true;
+}
+
 static void replace_sample(mdmi_gui *g, int note);
 
 static void draw_page(mdmi_gui *g, const patch_values *values)
@@ -3197,14 +3707,16 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		frame(g, GRID_X[1], GRID_ROW1_Y, 60, CELL_H, C_CELL);
 		text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LINE, 1);
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
-		text(g, PAGE_X, 442, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
+		// The chip's lines in the column right of the arp row (stage 20).
+		text(g, PSG_NOTE_X, ARP_PSG_Y + 4, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
 		if (channel == PATCH_NUM_CHANNELS - 1) {
 			const bool kit = values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_KIT;
 			fill(g, 242, NOISE_ROW_Y, 32, CELL_H, C_CELL);
 			text(g, 246, NOISE_ROW_Y + 6, "TYPE", kit ? C_LINE : C_LABEL, 1);
 			fill(g, 402, NOISE_ROW_Y, 32, CELL_H, C_CELL);
 			text(g, 406, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
-			text(g, 332, 442, "TYPE AND RATE: NOT CHECKED ON CONSOLE", C_HINT, 1);
+			text(g, PSG_NOTE_X, ARP_PSG_Y + 18, "TYPE AND RATE:", C_HINT, 1);
+			text(g, PSG_NOTE_X, ARP_PSG_Y + 28, "NOT CHECKED ON CONSOLE", C_HINT, 1);
 			if (noise_without_pitch(values, channel)) {
 				// The places of TUNE, BEND, PORTA and TIME, dim like PAN's: no pitch off Tone 3.
 				static const struct {
@@ -3218,15 +3730,23 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 				}
 			}
 		} else if (noise_takes(values, channel)) {
-			text(g, 332, 442, "TAKEN BY CH10 NOISE (TONE 3, KIT): CH9 NOTES ARE SILENT", C_AMBER, 1);
+			text(g, PSG_NOTE_X, ARP_PSG_Y + 18, "TAKEN BY CH10 NOISE,", C_AMBER, 1);
+			text(g, PSG_NOTE_X, ARP_PSG_Y + 28, "TONE 3 OR KIT:", C_AMBER, 1);
+			text(g, PSG_NOTE_X, ARP_PSG_Y + 38, "CH9 NOTES ARE SILENT", C_AMBER, 1);
 		}
 		draw_envelope(g, values);
+		draw_arp(g, values, PAGE_X, ARP_PSG_Y);
 		return;
 	}
 	const int algorithm = value_of(g, values, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM));
 	draw_diagram(g, algorithm, value_of(g, values, PATCH_CHANNEL_ID(channel, PARAM_FEEDBACK)));
 	const int active = active_op(g);
-	draw_graph(g, values, channel, active);
+	if (g->arp_view) {
+		draw_arp(g, values, GRAPH_X, GRAPH_Y);
+	} else {
+		draw_graph(g, values, channel, active);
+	}
+	draw_arp_switch(g, values);
 	for (int op = 0; op < PATCH_OPS; op++) {
 		const int x = GRID_X[op];
 		const bool carrier = CARRIERS[algorithm] >> op & 1;
@@ -3296,15 +3816,20 @@ static int row_at(const mdmi_gui *g, int x, int y)
 	return rail_channel_at(x, y);
 }
 
+// STORE is there on EDITOR of a channel with a sound of its own: FM 1-6 and PSG 7-10, not the DAC.
+static bool shows_store(const mdmi_gui *g)
+{
+	return *g->source.page == PAGE_EDITOR && takes_files(patch_view(g->source.patch), *g->source.channel);
+}
+
 // ADD is there only on the bank page.
 static int action_at(const mdmi_gui *g, int x, int y)
 {
-	static const int X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X};
 	for (int action = 0; action < ACTIONS; action++) {
-		if (action == ACTION_ADD && *g->source.page != PAGE_BANK) {
+		if ((action == ACTION_ADD && *g->source.page != PAGE_BANK) || (action == ACTION_STORE && !shows_store(g))) {
 			continue;
 		}
-		if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H && x >= X[action] && x < X[action] + ACTION_W) {
+		if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H && x >= ACTION_X[action] && x < ACTION_X[action] + ACTION_WIDTH[action]) {
 			return action;
 		}
 	}
@@ -3334,6 +3859,16 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 		}
 	} else if (action == ACTION_LOAD) {
 		snprintf(hint, size, "LOAD: file to CH%d, bank or snapshot", channel + 1);
+	} else if (action == ACTION_STORE) {
+		const int place = (values->channels[channel][PARAM_PRESET] & (PATCH_BANK_SIZE - 1)) + 1;
+		if (!files_can_store(g->source.files, channel)) {
+			snprintf(hint, size, "STORE: nothing, CH%d is bank %d as is", channel + 1, place);
+		} else {
+			snprintf(hint, size, patch_arp_view(g->source.patch, channel)->count ? "STORE: CH%d and its arp into bank %d" : "STORE: CH%d into bank %d", channel + 1, place);
+		}
+	} else if (action == ACTION_SAVE && takes_files(values, channel) && patch_arp_view(g->source.patch, channel)->count) {
+		// Files have no row (D44): the footer says so before it is lost.
+		snprintf(hint, size, envelopes ? "SAVE: CH%d as EEF w/o arp, bank, snapshot" : "SAVE: CH%d as VGI w/o arp, bank, snapshot", channel + 1);
 	} else if (action == ACTION_SAVE) {
 		snprintf(hint, size, envelopes ? "SAVE: CH%d as EEF, the bank or a snapshot" : takes_fm(values, channel) ? "SAVE: CH%d as VGI, the bank or a snapshot" : "SAVE: the bank or a snapshot", channel + 1);
 	} else if (action == ACTION_UNDO && undo) {
@@ -3415,6 +3950,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->env_drag != ENV_NONE && envelope_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
+	} else if (g->arp_drag != ARP_NONE && arp_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
 	} else if (master_hint(g)) {
@@ -3424,6 +3961,8 @@ static void draw_footer(mdmi_gui *g)
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_AMBER);
 	} else if (envelope_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
+	} else if (arp_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else {
 		snprintf(buffer, sizeof(buffer), "UNDERRUNS %u +%u/S MIDI LOST %u BLOCK %u @ %u RUN %.1f WAIT %.1f MS RING %u SHORT %u BURST %u",
@@ -3853,13 +4392,14 @@ static void draw_status(mdmi_gui *g)
 }
 
 // Buttons that do something, drawn unlike the page switches.
-static void action_button(mdmi_gui *g, int action, int x, const char *label, bool enabled)
+static void action_button(mdmi_gui *g, int action, const char *label, bool enabled)
 {
 	const bool over = enabled && !g->file_over && action_at(g, g->mouse_x, g->mouse_y) == action;
-	fill(g, x, BUTTON_Y, ACTION_W, BUTTON_H, C_BG);
-	frame(g, x, BUTTON_Y, ACTION_W, BUTTON_H, !enabled ? C_CELL : over ? C_TEXT : C_LINE);
+	const int x = ACTION_X[action], w = ACTION_WIDTH[action];
+	fill(g, x, BUTTON_Y, w, BUTTON_H, C_BG);
+	frame(g, x, BUTTON_Y, w, BUTTON_H, !enabled ? C_CELL : over ? C_TEXT : C_LINE);
 	const int width = (int)strlen(label) * 12;
-	text(g, x + (ACTION_W - width) / 2, BUTTON_Y + 5, label, !enabled ? C_LINE : over ? C_TEXT : C_LABEL, 2);
+	text(g, x + (w - width) / 2, BUTTON_Y + 5, label, !enabled ? C_LINE : over ? C_TEXT : C_LABEL, 2);
 }
 
 static void render(mdmi_gui *g)
@@ -3874,11 +4414,14 @@ static void render(mdmi_gui *g)
 	button(g, BUTTON_BANK_X, BUTTON_W, "BANK", page == PAGE_BANK);
 	button(g, BUTTON_ROM_X, BUTTON_SMALL_W, "ROM", rom);
 	draw_status(g);
-	action_button(g, ACTION_LOAD, ACTION_LOAD_X, "LOAD", true);
-	action_button(g, ACTION_SAVE, ACTION_SAVE_X, "SAVE", true);
-	action_button(g, ACTION_UNDO, ACTION_UNDO_X, "UNDO", files_undo_text(g->source.files) != NULL);
+	action_button(g, ACTION_LOAD, "LOAD", true);
+	action_button(g, ACTION_SAVE, "SAVE", true);
+	action_button(g, ACTION_UNDO, "UNDO", files_undo_text(g->source.files) != NULL);
 	if (page == PAGE_BANK) {
-		action_button(g, ACTION_ADD, ACTION_ADD_X, "ADD", files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE);
+		action_button(g, ACTION_ADD, "ADD", files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE);
+	}
+	if (shows_store(g)) {
+		action_button(g, ACTION_STORE, "STORE", files_can_store(g->source.files, *g->source.channel));
 	}
 	if (rom) {
 		g->cell_count = 0;
@@ -4123,7 +4666,12 @@ static void on_action(mdmi_gui *g, int action)
 		}
 	} else if (action == ACTION_SAVE) {
 		save_dialog(g);
-	} else if (files_undo(g->source.files, message, sizeof(message))) {
+	} else if (action == ACTION_STORE) {
+		// Off when the channel is its place as it is: the mouse does nothing there.
+		if (files_can_store(g->source.files, *g->source.channel) && files_store(g->source.files, *g->source.channel, message, sizeof(message))) {
+			say(g, message, C_TEXT, MESSAGE_TICKS);
+		}
+	} else if (action == ACTION_UNDO && files_undo(g->source.files, message, sizeof(message))) {
 		say(g, message, C_TEXT, MESSAGE_TICKS);
 	}
 	refresh(g);
@@ -4235,7 +4783,12 @@ static void on_down(mdmi_gui *g, int x, int y)
 	}
 	g->mouse_x = x;
 	g->mouse_y = y;
-	if (is_envelope_page(g) && envelope_down(g, x, y)) {
+	if (over_arp_switch(g, x, y)) {
+		g->arp_view = !g->arp_view;
+		refresh(g);
+		return;
+	}
+	if (arp_down(g, x, y) || (is_envelope_page(g) && envelope_down(g, x, y))) {
 		refresh(g);
 		return;
 	}
@@ -4302,6 +4855,10 @@ static void on_move(mdmi_gui *g, int x, int y)
 		envelope_move(g, x, y);
 		return;
 	}
+	if (g->arp_drag != ARP_NONE) {
+		arp_move(g, x, y);
+		return;
+	}
 	if (!g->dragging) {
 		return;
 	}
@@ -4362,6 +4919,10 @@ static void on_up(mdmi_gui *g)
 		envelope_up(g);
 		return;
 	}
+	if (g->arp_drag != ARP_NONE) {
+		arp_up(g);
+		return;
+	}
 	if (!g->dragging) {
 		return;
 	}
@@ -4396,6 +4957,15 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		} else {
 			on_down(g, x, y);
 		}
+		return;
+	}
+	// On the arp row a column's second press sets 0; elsewhere on the row, and on the ARP switch, it
+	// is a press as the first was.
+	if (!globals && (over_arp_switch(g, x, y) || arp_part_at(g, shown_arp(g), x, y) != ARP_NONE)) {
+		if (!arp_zero(g, x, y)) {
+			on_down(g, x, y);
+		}
+		refresh(g);
 		return;
 	}
 	// A quick second press on the envelope draws as the first did.
@@ -4767,6 +5337,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		g->flash_ticks -= g->flash_ticks > 0;
 		if (g->env_drag != ENV_NONE) {
 			envelope_hand(g);
+		}
+		if (g->arp_drag != ARP_NONE) {
+			arp_hand(g);
 		}
 		refresh(g);
 		return 0;

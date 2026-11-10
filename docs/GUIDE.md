@@ -126,6 +126,17 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   mouse is down; on mouse up the sample is prepared once and goes into the running core. A double click puts a
   value back. The project keeps the file's sound (mono, 16 bits, up to 16 MB in all), the settings and
   the ROM's bytes, so an opened project plays the same bytes and the trim can still go back.
+- Arpeggio rows (stage 20, D50, `docs/design/arpeggio.md`, `docs/research/arpeggio.md`): `patch_arp`
+  (count 0-32, loop step or -1, the window's loop shadow, 32 shifts of ±24) belongs to each channel, each
+  base and each place of both bank lists. Our ROM keeps two RAM tables of 128 rows (FM, PSG), stored by
+  SysEx `0A 02` / `0A 03 <program> <loop|7F> <shift+64>... F7` (a clear is 0 shifts with 7F); a voice
+  copies its program's row at Note On and steps it once a frame in `midi_tick` while the key is held, the
+  shift added after bend and fine tune. A channel stays on its place's program number only if its row is
+  the place's; otherwise it takes a service number. Each row goes at its first use, so a Preset step
+  costs a Program Change as before. `files_draw_arp` hands a drawing like an envelope's; STORE
+  (`files_store`) writes the channel's sound and row into its place, one undo step. Project block 10
+  holds all rows; `.mdbank` the places', `.mdsnap` all. The row is dim (`patch_arp_works`) on channel 3
+  in Ch3 Special, channel 6 with the DAC and channel 10 off Tone 3.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square
   Lead on 81, 90 and 100, Plain elsewhere). On a PSG channel Preset, CC 3 and a clip's Pgm choose from
   it, and the BANK page lists it while a channel 7-10 is selected. An EEF works there as a TFI does on

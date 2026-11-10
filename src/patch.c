@@ -58,6 +58,12 @@
 #define STORE_PSG_PROGRAM 0x01
 #define SYSEX_LOAD_PSG_ENVELOPE 0x06
 #define SYSEX_STORE_PROGRAM 0x0A
+// Arp rows (stage 20, D50): 0A 02 <program> <loop> <step + 64>... for an FM program, 0A 03 for a PSG
+// one; loop 7F is none, no steps clears the row.
+#define STORE_FM_ARP 0x02
+#define STORE_PSG_ARP 0x03
+#define ARP_NO_LOOP 0x7F
+#define ARP_STEP_ZERO 64
 #define VOICE_BYTES 48
 #define PRESETS 128
 #define SNAPSHOT_INDEX 3u
@@ -266,8 +272,50 @@ int patch_preset_value(const patch_bank *bank, int channel, int param, int prese
 	return param == PARAM_PRESET ? preset : channel_params[param].default_value;
 }
 
+void patch_arp_clean(patch_arp *arp)
+{
+	if (arp->count > PATCH_ARP_STEPS) {
+		arp->count = PATCH_ARP_STEPS;
+	}
+	for (int i = 0; i < PATCH_ARP_STEPS; i++) {
+		const int shift = i < arp->count ? arp->steps[i] : 0;
+		arp->steps[i] = (int8_t)(shift < -PATCH_ARP_SHIFT ? -PATCH_ARP_SHIFT : shift > PATCH_ARP_SHIFT ? PATCH_ARP_SHIFT : shift);
+	}
+	if (arp->loop < 0 || arp->count == 0) {
+		arp->loop = -1;
+	} else if (arp->loop >= arp->count) {
+		arp->loop = (int8_t)(arp->count - 1);
+	}
+	if (arp->loop >= 0 || arp->count == 0 || !arp->shadow_kept) {
+		arp->shadow_kept = 0;
+		arp->shadow = 0;
+	} else {
+		arp->shadow_kept = 1;
+		arp->shadow = arp->shadow < arp->count ? arp->shadow : (uint8_t)(arp->count - 1);
+	}
+}
+
+bool patch_arp_same(const patch_arp *a, const patch_arp *b)
+{
+	return a->count == b->count && a->loop == b->loop && (a->count > PATCH_ARP_STEPS || !memcmp(a->steps, b->steps, a->count));
+}
+
+bool patch_arp_works(const patch_values *values, int channel)
+{
+	if (channel == 2 && values->globals[GLOBAL_CH3_MODE]) {
+		return false;
+	}
+	if (channel == PATCH_NUM_FM_CHANNELS - 1 && values->globals[GLOBAL_DAC]) {
+		return false;
+	}
+	return channel != PATCH_NUM_CHANNELS - 1 || values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_TONE3;
+}
+
 bool patch_sound_changed(const patch_values *values, const patch_envelope *envelope, int channel)
 {
+	if (!patch_arp_same(&values->arps[channel], &values->arp_bases[channel])) {
+		return true;
+	}
 	if (channel < PATCH_NUM_FM_CHANNELS) {
 		return memcmp(values->channels[channel] + PARAM_ALGORITHM, values->base[channel], sizeof(values->base[channel])) != 0;
 	}
@@ -324,6 +372,7 @@ void patch_bank_rom(patch_bank *bank)
 			instrument->voice[param - PARAM_ALGORITHM] = PRESETS_GM[place][preset_field(param)];
 		}
 		load_rom_envelope(&bank->envelopes[place], place);
+		bank->place_arps[place] = bank->envelope_arps[place] = PATCH_ARP_EMPTY;
 	}
 }
 
@@ -619,6 +668,13 @@ static void put_base(patch_values *values, int channel, const int16_t *voice, co
 	}
 }
 
+// The row a place of the bank has for a channel of its type.
+static const patch_arp *place_arp(const patch_bank *bank, int channel, int place)
+{
+	place &= PATCH_BANK_SIZE - 1;
+	return channel < PATCH_NUM_FM_CHANNELS ? &bank->place_arps[place] : &bank->envelope_arps[place];
+}
+
 // A place of the bank becomes the channel's sound and base, tweaks or its own envelope gone.
 static void load_place(const patch_bank *bank, patch_values *values, int channel, int place)
 {
@@ -629,12 +685,17 @@ static void load_place(const patch_bank *bank, patch_values *values, int channel
 		put_envelope(values, channel, &bank->envelopes[place]);
 	}
 	put_base(values, channel, bank->places[place].voice, &bank->envelopes[place]);
+	values->arps[channel] = values->arp_bases[channel] = *place_arp(bank, channel, place);
 }
 
-// A channel playing its place as it is: the place's voice and name, or envelope and name.
+// A channel playing its place as it is: the place's voice and name, or envelope and name, and the
+// place's row.
 static bool plays_place(const patch_values *values, const patch_bank *bank, int channel)
 {
 	const int place = values->channels[channel][PARAM_PRESET];
+	if (!patch_arp_same(&values->arps[channel], place_arp(bank, channel, place))) {
+		return false;
+	}
 	if (channel < PATCH_NUM_FM_CHANNELS) {
 		const patch_instrument *was = &bank->places[place];
 		return !memcmp(values->channels[channel] + PARAM_ALGORITHM, was->voice, sizeof(was->voice)) && !strcmp(values->names[channel], was->name);
@@ -661,6 +722,16 @@ static void default_values(const patch_bank *bank, patch_values *values)
 
 static void forget_envelopes(patch_receiver *receiver);
 
+// A booted or reset ROM holds no row under any number (stage 20).
+static void empty_arps(patch_receiver *receiver)
+{
+	for (int type = 0; type < 2; type++) {
+		for (int program = 0; program < PATCH_BANK_SIZE; program++) {
+			receiver->arps[type][program] = PATCH_ARP_EMPTY;
+		}
+	}
+}
+
 void patch_init(mdmi_patch *patch)
 {
 	memset(patch, 0, sizeof(*patch));
@@ -682,6 +753,7 @@ void patch_init(mdmi_patch *patch)
 		load_rom_preset(patch->rom.stored[i], FIRST_SERVICE_PROGRAM + i);
 	}
 	forget_envelopes(&patch->rom);
+	empty_arps(&patch->rom);
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		patch->rom.psg_programs[i] = patch->model.channels[PATCH_NUM_FM_CHANNELS + i][PARAM_PRESET];
 	}
@@ -978,7 +1050,8 @@ static void forget_envelopes(patch_receiver *receiver)
 }
 
 // After SysEx we can't read the service numbers hold what we don't know: an envelope always ends
-// in EEF_END at its last step, so zeros there match none and the next use stores it again.
+// in EEF_END at its last step, so zeros there match none and the next use stores it again. A row's
+// count of 0xFF (PATCH_ARP_UNKNOWN) matches none either.
 static void forget_everything(patch_receiver *receiver)
 {
 	memset(receiver, 0xFF, sizeof(*receiver));
@@ -1031,6 +1104,26 @@ static void send_whole_voice(const int16_t *model, patch_receiver *receiver, int
 	receiver->values.channels[channel][PARAM_PRESET] = model[PARAM_PRESET];
 }
 
+// The row the next note under a program plays (stage 20): the ROM copies it at Note On, so writing
+// it under the number the channel has is enough, and costs nothing when the ROM holds it already.
+static void sync_arp(patch_receiver *receiver, bool psg, int program, const patch_arp *arp, patch_emit_fn emit, void *context)
+{
+	if (program < 0 || program >= PATCH_BANK_SIZE) {
+		return;
+	}
+	patch_arp *held = &receiver->arps[psg][program];
+	if (patch_arp_same(held, arp)) {
+		return;
+	}
+	uint8_t sysex[9 + PATCH_ARP_STEPS] = {0xF0, 0x00, 0x22, 0x77, SYSEX_STORE_PROGRAM, psg ? STORE_PSG_ARP : STORE_FM_ARP, (uint8_t)program, arp->loop < 0 ? ARP_NO_LOOP : (uint8_t)arp->loop};
+	for (int i = 0; i < arp->count; i++) {
+		sysex[8 + i] = (uint8_t)(arp->steps[i] + ARP_STEP_ZERO);
+	}
+	sysex[8 + arp->count] = 0xF7;
+	emit(context, sysex, (size_t)(9 + arp->count));
+	*held = *arp;
+}
+
 // What the next note of a PSG channel plays after a program change to the number.
 static const uint8_t *envelope_under(const patch_receiver *receiver, int program)
 {
@@ -1052,16 +1145,22 @@ static void select_psg_program(patch_receiver *receiver, int channel, int progra
 // numbers is a program change, any other is stored under the service number it didn't use last.
 // The two keep the channel's last two envelopes, so going back to one costs nothing. A preset of
 // 121-128 is a place like any other: its number belongs to the service numbers of a channel.
-static void sync_envelope(const patch_values *model, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
+// A number below them holds its place's row and is the channel's only with that row (stage 20);
+// under a service number the row is the channel's.
+static void choose_envelope(const mdmi_patch *patch, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
 {
+	const patch_values *model = &patch->model;
 	const int psg = channel - PATCH_NUM_FM_CHANNELS;
 	const uint8_t *meant = model->psg[psg].steps;
 	const int preset = model->channels[channel][PARAM_PRESET];
 	const int program = receiver->psg_programs[psg];
-	if (program != PATCH_UNKNOWN && !memcmp(envelope_under(receiver, program), meant, PATCH_ENVELOPE_STEPS + 1)) {
+	const patch_arp *arp = &model->arps[channel];
+	if (program != PATCH_UNKNOWN && !memcmp(envelope_under(receiver, program), meant, PATCH_ENVELOPE_STEPS + 1)
+		&& (program >= FIRST_PSG_SERVICE_PROGRAM || patch_arp_same(arp, &patch->bank.envelope_arps[program]))) {
 		return;
 	}
-	if (preset < FIRST_PSG_SERVICE_PROGRAM && !memcmp(rom_envelope_steps(preset), meant, PATCH_ENVELOPE_STEPS + 1)) {
+	if (preset < FIRST_PSG_SERVICE_PROGRAM && !memcmp(rom_envelope_steps(preset), meant, PATCH_ENVELOPE_STEPS + 1)
+		&& patch_arp_same(arp, &patch->bank.envelope_arps[preset])) {
 		select_psg_program(receiver, channel, preset, emit, context);
 		return;
 	}
@@ -1085,6 +1184,12 @@ static void sync_envelope(const patch_values *model, patch_receiver *receiver, i
 	emit(context, sysex, (size_t)(8 + length * 2));
 	memcpy(receiver->psg_stored[service - FIRST_PSG_SERVICE_PROGRAM], meant, PATCH_ENVELOPE_STEPS + 1);
 	select_psg_program(receiver, channel, service, emit, context);
+}
+
+static void sync_envelope(const mdmi_patch *patch, patch_receiver *receiver, int channel, patch_emit_fn emit, void *context)
+{
+	choose_envelope(patch, receiver, channel, emit, context);
+	sync_arp(receiver, true, receiver->psg_programs[channel - PATCH_NUM_FM_CHANNELS], &patch->model.arps[channel], emit, context);
 }
 
 // The ROM's CC only reaches the first 16 sustain rates. Registers hold operators in the order 1, 3, 2, 4.
@@ -1170,7 +1275,11 @@ static void sync_voice(mdmi_patch *patch, const int16_t *model, patch_receiver *
 	}
 	bool new_preset = model[PARAM_PRESET] != rom[PARAM_PRESET];
 	int program = new_preset ? model[PARAM_PRESET] : receiver->programs[channel];
-	if ((new_preset && program >= FIRST_SERVICE_PROGRAM) || differences_after(receiver, model, meant, program) > WHOLE_VOICE_DIFFERENCES) {
+	// A place's number holds the place's row, so a channel with another row takes a service number,
+	// under which its row is its own (stage 20).
+	const patch_arp *arp = &patch->model.arps[channel];
+	const bool row_fits = program < 0 || program >= FIRST_SERVICE_PROGRAM || patch_arp_same(arp, &patch->bank.place_arps[program]);
+	if ((new_preset && program >= FIRST_SERVICE_PROGRAM) || !row_fits || differences_after(receiver, model, meant, program) > WHOLE_VOICE_DIFFERENCES) {
 		send_whole_voice(model, receiver, channel, emit, context);
 	} else if (new_preset) {
 		select_program(receiver, channel, model[PARAM_PRESET], emit, context);
@@ -1178,6 +1287,7 @@ static void sync_voice(mdmi_patch *patch, const int16_t *model, patch_receiver *
 	} else if (other_program) {
 		select_program(receiver, channel, receiver->programs[channel], emit, context);
 	}
+	sync_arp(receiver, false, receiver->programs[channel], arp, emit, context);
 	sync_voice_param(model, receiver, meant, PARAM_ALGORITHM, CC_ALGORITHM, 8, channel, emit, context);
 	sync_voice_param(model, receiver, meant, PARAM_FEEDBACK, CC_FEEDBACK, 8, channel, emit, context);
 	sync_voice_param(model, receiver, meant, PARAM_AMS, CC_AMS, 4, channel, emit, context);
@@ -1849,7 +1959,7 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		const int16_t *model = patch->model.channels[channel];
 		int16_t *rom = receiver->values.channels[channel];
 		if (channel >= PATCH_NUM_FM_CHANNELS) {
-			sync_envelope(&patch->model, receiver, channel, emit, context);
+			sync_envelope(patch, receiver, channel, emit, context);
 			rom[PARAM_PRESET] = model[PARAM_PRESET];
 		} else if (patch->waiting_count[channel]) {
 			// Retrigger Cut: the fastest release while the channel's notes wait (D41).
@@ -1931,6 +2041,7 @@ static void resend_everything(mdmi_patch *patch, bool reset, patch_emit_fn emit,
 	forget_everything(&patch->rom);
 	if (reset) {
 		forget_envelopes(&patch->rom);
+		empty_arps(&patch->rom);
 	}
 	// Every voice gets its own channel's whole sound again.
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
@@ -1968,8 +2079,9 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		return false;
 	}
 	if (bytes[0] == 0xF0 && length >= 5 && bytes[1] == 0x00 && bytes[2] == 0x22 && bytes[3] == 0x77
-		&& (bytes[4] == SYSEX_LOAD_PSG_ENVELOPE || (bytes[4] == SYSEX_STORE_PROGRAM && length >= 6 && bytes[5] == STORE_PSG_PROGRAM))) {
-		// Envelopes from a clip would play past the model, and 06 shadows every channel's (D28).
+		&& (bytes[4] == SYSEX_LOAD_PSG_ENVELOPE || (bytes[4] == SYSEX_STORE_PROGRAM && length >= 6 && (bytes[5] == STORE_PSG_PROGRAM || bytes[5] == STORE_FM_ARP || bytes[5] == STORE_PSG_ARP)))) {
+		// Envelopes and arp rows from a clip would play past the model, and 06 shadows every channel's
+		// (D28, stage 20).
 		return false;
 	}
 	if (bytes[0] == 0xF0 || bytes[0] == 0xFF) {
@@ -2077,6 +2189,8 @@ static void begin_incoming(mdmi_patch *patch)
 		expected = INCOMING_FREE;
 		if (__atomic_compare_exchange_n(&patch->incoming_state, &expected, INCOMING_WRITING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 			patch->incoming.parts = 0;
+			patch->incoming.arp_parts = 0;
+			patch->incoming.choose_again = 0;
 			return;
 		}
 		expected = INCOMING_READY;
@@ -2091,7 +2205,7 @@ static void end_incoming(mdmi_patch *patch)
 	__atomic_store_n(&patch->incoming_state, INCOMING_READY, __ATOMIC_RELEASE);
 }
 
-bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg, const void *bases)
+bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (*names)[PATCH_NAME], const patch_envelope *psg, const void *bases, const void *arps)
 {
 	if (size % SAVED_PAIR_BYTES) {
 		return false;
@@ -2152,8 +2266,19 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (
 			}
 		}
 	}
+	// A state from before stage 20 has no rows: every one is empty.
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		incoming.arps[channel] = incoming.arp_bases[channel] = PATCH_ARP_EMPTY;
+		if (arps) {
+			memcpy(&incoming.arps[channel], (const uint8_t *)arps + channel * sizeof(patch_arp), sizeof(patch_arp));
+			memcpy(&incoming.arp_bases[channel], (const uint8_t *)arps + (PATCH_NUM_CHANNELS + channel) * sizeof(patch_arp), sizeof(patch_arp));
+			patch_arp_clean(&incoming.arps[channel]);
+			patch_arp_clean(&incoming.arp_bases[channel]);
+		}
+	}
 	begin_incoming(patch);
-	// A loaded state replaces voices dropped before it.
+	// A loaded state replaces voices and rows dropped before it.
+	patch->incoming.arp_parts = 0;
 	patch->incoming.parts = (patch->incoming.parts & PATCH_INCOMING_BANK) | PATCH_INCOMING_VALUES;
 	patch->incoming.values = incoming;
 	end_incoming(patch);
@@ -2170,6 +2295,13 @@ void patch_save_bases(const patch_values *values, void *buffer)
 	uint8_t *out = buffer;
 	memcpy(out, values->base, sizeof(values->base));
 	memcpy(out + sizeof(values->base), values->psg_base, sizeof(values->psg_base));
+}
+
+void patch_save_arps(const patch_values *values, void *buffer)
+{
+	uint8_t *out = buffer;
+	memcpy(out, values->arps, sizeof(values->arps));
+	memcpy(out + sizeof(values->arps), values->arp_bases, sizeof(values->arp_bases));
 }
 
 // A bank place from a file holds only what the knobs can.
@@ -2195,23 +2327,35 @@ void patch_load_bank(mdmi_patch *patch, const patch_bank *bank)
 	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
 		clean_place(&patch->shown_bank.places[place]);
 		clean_envelope(&patch->shown_bank.envelopes[place]);
+		patch_arp_clean(&patch->shown_bank.place_arps[place]);
+		patch_arp_clean(&patch->shown_bank.envelope_arps[place]);
 	}
 	send_bank(patch);
 }
 
-void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *instrument)
+static void put_place_arp(patch_arp *at, const patch_arp *arp)
 {
-	patch_instrument *at = &patch->shown_bank.places[place & (PATCH_BANK_SIZE - 1)];
+	*at = arp ? *arp : PATCH_ARP_EMPTY;
+	patch_arp_clean(at);
+}
+
+void patch_load_place(mdmi_patch *patch, int place, const patch_instrument *instrument, const patch_arp *arp)
+{
+	place &= PATCH_BANK_SIZE - 1;
+	patch_instrument *at = &patch->shown_bank.places[place];
 	*at = *instrument;
 	clean_place(at);
+	put_place_arp(&patch->shown_bank.place_arps[place], arp);
 	send_bank(patch);
 }
 
-void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelope *envelope)
+void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelope *envelope, const patch_arp *arp)
 {
-	patch_envelope *at = &patch->shown_bank.envelopes[place & (PATCH_BANK_SIZE - 1)];
+	place &= PATCH_BANK_SIZE - 1;
+	patch_envelope *at = &patch->shown_bank.envelopes[place];
 	*at = *envelope;
 	clean_envelope(at);
+	put_place_arp(&patch->shown_bank.envelope_arps[place], arp);
 	send_bank(patch);
 }
 
@@ -2226,6 +2370,52 @@ void patch_base_view(mdmi_patch *patch, int channel, patch_instrument *voice, pa
 	} else {
 		*envelope = handed ? patch->incoming.psg_bases[channel - PATCH_NUM_FM_CHANNELS] : values->psg_base[channel - PATCH_NUM_FM_CHANNELS];
 	}
+}
+
+static bool arp_handed(mdmi_patch *patch, int channel, int part)
+{
+	uint32_t incoming = __atomic_load_n(&patch->incoming_state, __ATOMIC_ACQUIRE);
+	return (incoming == INCOMING_READY || incoming == INCOMING_TAKING) && patch->incoming.arp_parts & (1u << (part + channel));
+}
+
+const patch_arp *patch_arp_view(mdmi_patch *patch, int channel)
+{
+	if (arp_handed(patch, channel, 0)) {
+		return &patch->incoming.arps[channel];
+	}
+	return &patch_view(patch)->arps[channel];
+}
+
+void patch_arp_base_view(mdmi_patch *patch, int channel, patch_arp *base)
+{
+	*base = arp_handed(patch, channel, PATCH_INCOMING_ARP_BASE) ? patch->incoming.arp_bases[channel] : patch_view(patch)->arp_bases[channel];
+}
+
+void patch_load_arp(mdmi_patch *patch, int channel, const patch_arp *arp, const patch_arp *base)
+{
+	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
+		return;
+	}
+	begin_incoming(patch);
+	patch->incoming.arp_parts |= 1u << channel;
+	patch->incoming.arps[channel] = *arp;
+	patch_arp_clean(&patch->incoming.arps[channel]);
+	if (base) {
+		patch->incoming.arp_parts |= 1u << (PATCH_INCOMING_ARP_BASE + channel);
+		patch->incoming.arp_bases[channel] = *base;
+		patch_arp_clean(&patch->incoming.arp_bases[channel]);
+	}
+	end_incoming(patch);
+}
+
+void patch_choose_program_again(mdmi_patch *patch, int channel)
+{
+	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
+		return;
+	}
+	begin_incoming(patch);
+	patch->incoming.choose_again |= 1u << channel;
+	end_incoming(patch);
 }
 
 void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope, const patch_envelope *base)
@@ -2290,6 +2480,23 @@ bool patch_take_incoming(mdmi_patch *patch)
 		if (incoming->parts & PATCH_INCOMING_BASE << channel) {
 			const int psg = channel - PATCH_NUM_FM_CHANNELS;
 			put_base(&patch->model, channel, channel < PATCH_NUM_FM_CHANNELS ? incoming->bases[channel] : NULL, psg >= 0 ? &incoming->psg_bases[psg] : NULL);
+		}
+	}
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		if (incoming->arp_parts & 1u << channel) {
+			patch->model.arps[channel] = incoming->arps[channel];
+		}
+		if (incoming->arp_parts & 1u << (PATCH_INCOMING_ARP_BASE + channel)) {
+			patch->model.arp_bases[channel] = incoming->arp_bases[channel];
+		}
+		// As if the preset were new to the ROM: an FM channel chooses by its Preset, a PSG channel
+		// tries its place's number before the one it has.
+		if (incoming->choose_again & 1u << channel) {
+			if (channel < PATCH_NUM_FM_CHANNELS) {
+				patch->rom.values.channels[channel][PARAM_PRESET] = PATCH_UNKNOWN;
+			} else {
+				patch->rom.psg_programs[channel - PATCH_NUM_FM_CHANNELS] = PATCH_UNKNOWN;
+			}
 		}
 	}
 	patch->dirty = true;

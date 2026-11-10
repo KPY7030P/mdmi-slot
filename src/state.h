@@ -9,8 +9,8 @@
 
 // A project is a version, then blocks of type, length and data: the knobs, the window's view, the
 // names of the FM channels, the PSG channels' envelopes, the loops switched off, the channels' bases
-// (D31), the bank and its envelopes, the DAC samples (D36). A snapshot file is the same bytes, a bank file has only the
-// bank (D25). Main thread only.
+// (D31), the bank and its envelopes, the DAC samples (D36), the arp rows (stage 20, block 10). A snapshot file is the
+// same bytes, a bank file has only the bank and its places' rows (D25). Main thread only.
 // The DAC samples can fill the ROM image's room, with their sources (D38).
 #define STATE_READ_MAX (DAC_SOURCE_MAX + ROM_IMAGE_MAX + (1u << 20))
 

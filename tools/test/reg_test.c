@@ -1341,6 +1341,144 @@ static void test_loop_pan(void)
 	boot_image(rom, rom_size);
 }
 
+// Stage 20, item 3: a project without rows (block 10), an EEF and the ROM's envelopes send the
+// bytes 0.19 sent and leave every pitch where 0.19 left it. rows-off-0.19.bin holds what 0.19
+// (60bc925) sent for exactly these calls from a booted ROM after full_velocity: its patch.c and
+// instrument.c driven by the same calls without an engine. The registers: no row writes no pitch,
+// so a held note's frequency registers stay as they are, frame after frame.
+static uint8_t rows_sent[16384];
+static size_t rows_sent_bytes;
+
+static void emit_kept(void *context, const uint8_t *bytes, size_t length)
+{
+	if (rows_sent_bytes + length <= sizeof(rows_sent)) {
+		memcpy(rows_sent + rows_sent_bytes, bytes, length);
+	}
+	rows_sent_bytes += length;
+	emit(context, bytes, length);
+}
+
+static void midi_kept(uint8_t a, uint8_t b, uint8_t c)
+{
+	const uint8_t message[3] = {a, b, c};
+	patch_midi(patch, message, (a & 0xF0) == 0xC0 ? 2 : 3, emit_kept, NULL);
+	patch_flush(patch, emit_kept, NULL);
+}
+
+// The held notes' pitch registers: FM voices 1 and 2 (A4, A0), PSG tones 1-3.
+static void pitch_registers(uint16_t *out)
+{
+	for (int voice = 0; voice < 2; voice++) {
+		out[voice] = (uint16_t)(read_reg(voice, 0xA4, 0) << 8 | read_reg(voice, 0xA0, 0));
+	}
+	for (int i = 0; i < 3; i++) {
+		out[2 + i] = mdmi_engine_test_psg_tone(engine, (uint8_t)i);
+	}
+}
+
+// An envelope with no pitch step, whose tone stays.
+static bool no_pitch(const patch_envelope *envelope)
+{
+	for (int i = 0; i < PATCH_ENVELOPE_STEPS && envelope->steps[i] != PATCH_EEF_END; i++) {
+		if (envelope->steps[i] < PATCH_EEF_LOOP_END && envelope->steps[i] >> 4) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void test_rows_off(void)
+{
+	printf("Without rows, as 0.19\n");
+	rows_sent_bytes = 0;
+	static uint8_t fresh[PATCH_NUM_IDS * 6];
+	patch_publish(patch);
+	patch_save(patch_view(patch), fresh);
+	// A project's values: presets and a tweak on FM, the ROM's envelopes on PSG.
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 7);
+	patch_set(patch, PATCH_CHANNEL_ID(1, PARAM_PRESET), 40);
+	patch_set(patch, PATCH_CHANNEL_ID(1, PARAM_OP_BASE + F_TL), 20);
+	patch_set(patch, PATCH_CHANNEL_ID(6, PARAM_PRESET), 80);
+	patch_set(patch, PATCH_CHANNEL_ID(7, PARAM_PRESET), 5);
+	patch_publish(patch);
+	static uint8_t state[PATCH_NUM_IDS * 6];
+	patch_save(patch_view(patch), state);
+	patch_load(patch, state, sizeof(state), NULL, NULL, NULL, NULL);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit_kept, NULL);
+	render(SETTLE_BLOCKS);
+	// An EEF on channel 9.
+	uint8_t eef[256];
+	char path[512];
+	snprintf(path, sizeof(path), "%s/PSG Organ.eef", files_dir);
+	FILE *file = fopen(path, "rb");
+	const size_t eef_size = file ? fread(eef, 1, sizeof(eef), file) : 0;
+	if (file) {
+		fclose(file);
+	}
+	patch_envelope organ;
+	char error[96];
+	check(eef_size && instrument_parse_eef("PSG Organ.eef", eef, eef_size, &organ, error, sizeof(error)), "PSG Organ.eef reads");
+	patch_load_envelope(patch, 8, &organ, &organ);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit_kept, NULL);
+	render(SETTLE_BLOCKS);
+
+	midi_kept(0x90, 60, 127);
+	midi_kept(0x91, 64, 127);
+	midi_kept(0x96, 72, 127);
+	midi_kept(0x97, 67, 127);
+	midi_kept(0x98, 60, 127);
+	render(4);
+	uint16_t first[5], now[5];
+	pitch_registers(first);
+	bool held = true;
+	// 40 blocks of 5.3 ms: 12 frames.
+	for (int block = 0; block < 40; block++) {
+		render(1);
+		pitch_registers(now);
+		for (int i = 0; i < 5; i++) {
+			const bool psg_steady = i < 2 || no_pitch(&patch->model.psg[i - 2]);
+			held = held && (!psg_steady || now[i] == first[i]);
+		}
+	}
+	check(held && first[0] && first[1], "held notes keep their pitch registers frame after frame: no row, no pitch write");
+	midi_kept(0x80, 60, 0);
+	midi_kept(0x81, 64, 0);
+	midi_kept(0x86, 72, 0);
+	midi_kept(0x87, 67, 0);
+	midi_kept(0x88, 60, 0);
+	render(SETTLE_BLOCKS);
+	// Preset steps there and back, and a note on the new envelope.
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 9);
+	patch_sync(patch, &patch->rom, emit_kept, NULL);
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), 7);
+	patch_set(patch, PATCH_CHANNEL_ID(7, PARAM_PRESET), 89);
+	patch_sync(patch, &patch->rom, emit_kept, NULL);
+	midi_kept(0x97, 69, 100);
+	render(SETTLE_BLOCKS);
+	midi_kept(0x87, 69, 0);
+	render(SETTLE_BLOCKS);
+
+	bool rows = false;
+	for (size_t i = 0; i + 5 < rows_sent_bytes; i++) {
+		rows = rows || (rows_sent[i] == 0xF0 && rows_sent[i + 4] == 0x0A && (rows_sent[i + 5] == 0x02 || rows_sent[i + 5] == 0x03));
+	}
+	static uint8_t reference[sizeof(rows_sent)];
+	snprintf(path, sizeof(path), "%s/rows-off-0.19.bin", files_dir);
+	file = fopen(path, "rb");
+	const size_t reference_size = file ? fread(reference, 1, sizeof(reference), file) : 0;
+	if (file) {
+		fclose(file);
+	}
+	printf("    %d bytes sent, %d in 0.19's\n", (int)rows_sent_bytes, (int)reference_size);
+	check(!rows && reference_size && reference_size == rows_sent_bytes && !memcmp(reference, rows_sent, reference_size), "the same MIDI bytes as 0.19, no 0A 02 or 0A 03 among them");
+	// The tests after this one start from the defaults.
+	patch_load(patch, fresh, sizeof(fresh), NULL, NULL, NULL, NULL);
+	patch_take_incoming(patch);
+	sync_and_settle();
+}
+
 static void test_load(void)
 {
 	static uint8_t state[PATCH_NUM_IDS * 6];
@@ -1349,7 +1487,7 @@ static void test_load(void)
 	set_on(0, PARAM_PRESET, 99);
 	set_on(1, PARAM_OP_BASE + F_TL, 12);
 	set_on(5, PARAM_OP_BASE + F_SR, 30);
-	patch_load(patch, state, sizeof(state), NULL, NULL, NULL);
+	patch_load(patch, state, sizeof(state), NULL, NULL, NULL, NULL);
 	patch_take_incoming(patch);
 	sync_and_settle();
 	check_voices("a loaded state reaches the chip", 0, FM_CHANNELS - 1, -1);
@@ -2111,7 +2249,7 @@ static void test_bank_place(void)
 	if (!file_regs_of("Thunder Guitar 03.tyi", &expected) || !load_file("Thunder Guitar 03.tyi", &instrument)) {
 		return;
 	}
-	patch_load_place(patch, 20, &instrument);
+	patch_load_place(patch, 20, &instrument, NULL);
 	patch_take_incoming(patch);
 	midi(0xC0, 20, 0);
 	set_on(2, PARAM_PRESET, 20);
@@ -2131,7 +2269,7 @@ static void test_bank_place(void)
 	// A file dropped on the place a channel plays as it is: the channel takes it at once.
 	file_regs duck;
 	if (file_regs_of("Duck Guitar.tfi", &duck) && load_file("Duck Guitar.tfi", &instrument)) {
-		patch_load_place(patch, 20, &instrument);
+		patch_load_place(patch, 20, &instrument, NULL);
 		patch_take_incoming(patch);
 		patch_sync(patch, &patch->rom, emit, NULL);
 		play_each_channel();
@@ -2902,6 +3040,174 @@ static void test_reset(void)
 	check_voices("the ROM's reset: every voice comes back", 0, FM_CHANNELS - 1, -1);
 }
 
+// Stage 20, item 2: a row 0 +3 +4 +7 +12 looped from its first step, on C4, gives frame after frame
+// the pitch registers of C4, D#4, E4, G4, C5 played without a row, on FM (block and F-num) and on PSG
+// (tone); a chord of three on borrowed voices steps all three. The row comes through the model, as
+// the window hands it.
+#define ARP_TEST_STEPS 5
+static const int ARP_TEST[ARP_TEST_STEPS] = {0, 3, 4, 7, 12};
+#define ARP_POLL 16
+// A value counts once it holds a quarter of a frame: a step holds a frame, a pitch written in two
+// halves can show the half for a moment.
+#define ARP_HOLD 200
+#define ARP_SEEN 24
+
+static void arp_on(int channel, bool on)
+{
+	patch_arp row = PATCH_ARP_EMPTY;
+	if (on) {
+		row.count = ARP_TEST_STEPS;
+		row.loop = 0;
+		for (int i = 0; i < ARP_TEST_STEPS; i++) {
+			row.steps[i] = (int8_t)ARP_TEST[i];
+		}
+	}
+	patch_load_arp(patch, channel, &row, NULL);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	render(SETTLE_BLOCKS);
+}
+
+// A pitch register: an FM voice's A4 and A0 as one, or with a negative source PSG tone -1 - source.
+static uint16_t pitch_of(int source)
+{
+	return source >= 0 ? (uint16_t)(read_reg(source, 0xA4, 0) << 8 | read_reg(source, 0xA0, 0)) : mdmi_engine_test_psg_tone(engine, (uint8_t)(-1 - source));
+}
+
+// A held note's register without a row, read on the voice the note took.
+static uint16_t plain_pitch(int channel, int key)
+{
+	midi((uint8_t)(0x90 | channel), (uint8_t)key, 127);
+	render(SETTLE_BLOCKS);
+	int voices[FM_CHANNELS];
+	const uint16_t pitch = pitch_of(channel < FM_CHANNELS ? (voices_of(channel, voices) ? voices[0] : channel) : -1 - (channel - FM_CHANNELS));
+	midi((uint8_t)(0x80 | channel), (uint8_t)key, 0);
+	render(SETTLE_BLOCKS);
+	return pitch;
+}
+
+// The values each source's register takes for frames frames, in order, polled every 16 samples, each
+// with the sample it began at; a value counts once it held ARP_HOLD samples.
+static void poll_pitches(const int *sources, int count, int frames, uint16_t (*seen)[ARP_SEEN], int (*at)[ARP_SEEN], int *seen_count)
+{
+	uint16_t last[FM_CHANNELS];
+	int since[FM_CHANNELS];
+	for (int k = 0; k < count; k++) {
+		seen_count[k] = 0;
+		last[k] = pitch_of(sources[k]);
+		since[k] = 0;
+	}
+	for (int t = 1; t <= frames * RATE / 60 / ARP_POLL; t++) {
+		tick(ARP_POLL);
+		for (int k = 0; k < count; k++) {
+			const uint16_t pitch = pitch_of(sources[k]);
+			if (pitch != last[k]) {
+				last[k] = pitch;
+				since[k] = t * ARP_POLL;
+			} else if (t * ARP_POLL - since[k] >= ARP_HOLD && t * ARP_POLL - since[k] < ARP_HOLD + ARP_POLL
+				&& (!seen_count[k] || seen[k][seen_count[k] - 1] != pitch) && seen_count[k] < ARP_SEEN) {
+				at[k][seen_count[k]] = since[k];
+				seen[k][seen_count[k]++] = pitch;
+			}
+		}
+	}
+}
+
+// Two rounds of the row from the first value equal to the root, each value a frame (800 samples at
+// 60 Hz) after the one before; the first one starts at the note, inside a frame.
+static bool steps_like(const uint16_t *seen, const int *at, int count, const uint16_t *expected, const char *what)
+{
+	int first = 0;
+	while (first < count && seen[first] != expected[0]) {
+		first++;
+	}
+	bool same = first + 2 * ARP_TEST_STEPS <= count;
+	for (int j = 0; same && j < 2 * ARP_TEST_STEPS; j++) {
+		const int gap = j > 1 ? at[first + j] - at[first + j - 1] : 800;
+		same = seen[first + j] == expected[j % ARP_TEST_STEPS] && gap >= 600 && gap <= 1000;
+	}
+	if (!same) {
+		printf("    %s:", what);
+		for (int j = 0; j < count; j++) {
+			printf(" %04X@%d", seen[j], at[j]);
+		}
+		printf("; expected");
+		for (int j = 0; j < ARP_TEST_STEPS; j++) {
+			printf(" %04X", expected[j]);
+		}
+		printf("\n");
+	}
+	return same;
+}
+
+static void test_arp(void)
+{
+	printf("  arp rows\n");
+	static const int CHANNELS[2] = {0, FM_CHANNELS};
+	static const char *const NAMES[2] = {"FM channel 1", "PSG channel 7"};
+	patch_envelope plain;
+	steady(&plain, 0, 2);
+	draw_on(FM_CHANNELS, &plain);
+	for (int c = 0; c < 2; c++) {
+		const int channel = CHANNELS[c];
+		set_on(channel, PARAM_PORTA_ON, 0);
+		arp_on(channel, false);
+		uint16_t expected[ARP_TEST_STEPS];
+		for (int i = 0; i < ARP_TEST_STEPS; i++) {
+			expected[i] = plain_pitch(channel, 60 + ARP_TEST[i]);
+		}
+		arp_on(channel, true);
+		midi((uint8_t)(0x90 | channel), 60, 127);
+		const int source = c ? -1 : 0;
+		uint16_t seen[1][ARP_SEEN];
+		int at[1][ARP_SEEN], seen_count[1];
+		poll_pitches(&source, 1, 20, seen, at, seen_count);
+		midi((uint8_t)(0x80 | channel), 60, 0);
+		render(SETTLE_BLOCKS);
+		char what[96];
+		snprintf(what, sizeof(what), "%s: C4 with the row plays C4, D#4, E4, G4, C5 a frame each, round again", NAMES[c]);
+		check(steps_like(seen[0], at[0], seen_count[0], expected, NAMES[c]), what);
+		arp_on(channel, false);
+	}
+
+	// A chord of three on channel 4: its voices are borrowed, each steps from its own note.
+	static const int CHORD_KEYS[3] = {60, 64, 67};
+	const int channel = 3;
+	set_on(channel, PARAM_PORTA_ON, 0);
+	uint16_t expected[3][ARP_TEST_STEPS];
+	for (int n = 0; n < 3; n++) {
+		for (int i = 0; i < ARP_TEST_STEPS; i++) {
+			expected[n][i] = plain_pitch(channel, CHORD_KEYS[n] + ARP_TEST[i]);
+		}
+	}
+	arp_on(channel, true);
+	for (int n = 0; n < 3; n++) {
+		const uint8_t on[3] = {0x93, (uint8_t)CHORD_KEYS[n], 127};
+		patch_midi(patch, on, 3, emit, NULL);
+	}
+	patch_flush(patch, emit, NULL);
+	int voices[FM_CHANNELS];
+	const int count = voices_of(channel, voices);
+	uint16_t seen[FM_CHANNELS][ARP_SEEN];
+	int at[FM_CHANNELS][ARP_SEEN], seen_count[FM_CHANNELS];
+	poll_pitches(voices, count, 24, seen, at, seen_count);
+	int stepping = 0;
+	for (int k = 0; k < count; k++) {
+		for (int n = 0; n < 3; n++) {
+			if (patch->voices[voices[k]].key == CHORD_KEYS[n]) {
+				stepping += steps_like(seen[k], at[k], seen_count[k], expected[n], "chord voice");
+			}
+		}
+	}
+	for (int n = 0; n < 3; n++) {
+		midi(0x83, (uint8_t)CHORD_KEYS[n], 0);
+	}
+	render(SETTLE_BLOCKS);
+	printf("    the chord took %d voices, %d of them step\n", count, stepping);
+	check(count == 3 && stepping == 3, "a chord of three on borrowed voices: all three step from their own notes");
+	arp_on(channel, false);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -2928,6 +3234,8 @@ int main(int argc, char **argv)
 	full_velocity();
 	check_voices("a booted ROM holds the model's defaults", 0, FM_CHANNELS - 1, -1);
 	check_globals("and its LFO and Ch3 mode");
+	// First: its reference starts from a booted ROM after full_velocity.
+	test_rows_off();
 	test_every_preset();
 	test_values();
 	test_program_from_clip();
@@ -2960,6 +3268,8 @@ int main(int argc, char **argv)
 	test_outputs();
 	test_reset();
 	test_psg_level();
+	test_reset();
+	test_arp();
 	test_reset();
 	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

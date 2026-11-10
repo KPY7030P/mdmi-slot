@@ -18,6 +18,13 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - Chords on FM channels, played on the voices of silent channels (not with Porta On, Ch3 Special Mode or
   the DAC).
 - Instrument files: TFI, VGI and TYI for FM, EEF for PSG. Drop them from Explorer on a channel or a bank place.
+- Arpeggio rows (0.20): a sound can carry a row of up to 32 steps, one per frame (60 Hz), each a shift of
+  -24 to +24 semitones, with a loop. The ROM plays it, so it works on a console too. Draw it under the PSG
+  envelope or on the FM page (ARP). STORE puts the channel's sound with its row into its bank place; rows
+  live in the project, the bank file and snapshots, not in TFI, VGI, TYI or EEF files (a dropped file comes
+  without a row). The row doesn't act on the DAC, on channel 3 in Ch3 Special or on the noise channel
+  unless its rate is Tone 3. Not checked on a
+  real console yet.
 - DAC samples on channel 6: drop WAV files on notes or on the open note's wave, trim, tune and shape them.
   Up to four samples sound at once (SGDK's PCM4 driver, 0.19): a hat doesn't cut the kick. A fifth note takes
   the voice of the oldest; the same key again restarts its own. Velocity sets a sample's volume in 16 steps

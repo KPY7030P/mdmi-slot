@@ -57,12 +57,12 @@
 #define ENV_X 296
 #define ENV_RIGHT 700
 #define ENV_LEVEL_Y 122
-#define ENV_LEVEL_BOTTOM 282
+#define ENV_LEVEL_BOTTOM 234
 // In the bright top of a bar at level 0: below it the body is dark (4A).
 #define ENV_LOUD_Y 123
 #define ACTION_UNDO_X 684
 #define ENV_LENGTH_X 670
-#define ENV_LENGTH_Y 397
+#define ENV_LENGTH_Y 317
 #define ENV_LOOP_STRIP_Y 112
 #define COLOR_PSG 0x22CCEE
 #define COLOR_CELL 0x222222
@@ -116,6 +116,22 @@
 #define FOOTER_TOP 504
 // Stage 11: the FM page of v8. The operators' columns, the graph, the SSG button and its choice,
 // a row's y in each column, and the ids of channel 4's operator 3 AR and RS, operator 1 DT, RS, AM and SSG.
+// Stage 20, the arp row: its lane from x 264, 200 px wide, +24 at its top, 2 px a semitone; the
+// loop's strip 13 px above the lane, the length cell at the row's right. On PSG under the envelope,
+// on FM in the graph's place with the ARP switch right of FMS.
+#define ARP_LX 264
+#define ARP_PSG_LY 347
+#define ARP_FM_LY 97
+#define ARP_Y(ly, shift) ((ly) + 2 * (24 - (shift)))
+#define ARP_STRIP(ly) ((ly) - 7)
+#define ARP_LENGTH_X 495
+#define ARP_LENGTH(ly) ((ly) + 11)
+#define ARP_SWITCH_X 676
+#define ARP_SWITCH_Y 92
+#define ACTION_STORE_X 500
+#define COLOR_LINE 0x444444
+#define COLOR_HINT 0x666666
+
 static const int OP_X[4] = {242, 358, 474, 590};
 #define OP_RIGHT_W 112
 #define OP_AR_Y 291
@@ -360,6 +376,16 @@ static int first_of(int y, int left, int right, uint32_t color)
 		}
 	}
 	return -1;
+}
+
+// Runs of a colour on a row between left and right: the columns of a lane.
+static int runs_of(int y, int left, int right, uint32_t color)
+{
+	int runs = 0;
+	for (int x = left; x < right; x++) {
+		runs += (pixels[y * WIDTH + x] & 0xFFFFFF) == color && (pixels[y * WIDTH + x - 1] & 0xFFFFFF) != color;
+	}
+	return runs;
 }
 
 static int get_value(clap_id id)
@@ -899,6 +925,45 @@ int main(int argc, char **argv)
 		run_ms(100);
 		CHECK(first == 1 && get_value(LFO_RATE) == 0, "a click steps LFO Rate to the next value, eight clicks go round to the first");
 
+		// Stage 20: the ARP switch puts channel 4's row in the graph's place; a click on the empty row
+		// draws a step in light FM, telling the host nothing.
+		click(window, ARP_SWITCH_X, ARP_SWITCH_Y);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		const int fm_row_empty = count_color_in(GRAPH_LEFT, GRAPH_RIGHT, GRAPH_TOP, GRAPH_BOTTOM, COLOR_FM_DARK) + count_color_in(GRAPH_LEFT, GRAPH_RIGHT, GRAPH_TOP, GRAPH_BOTTOM, COLOR_FM_LIGHT);
+		const int fm_hint = count_color_in(ARP_LX, ARP_LX + 200, ARP_FM_LY + 30, ARP_FM_LY + 38, COLOR_HINT);
+		memset(pushed, 0, sizeof(pushed));
+		click(window, ARP_LX + 20, ARP_Y(ARP_FM_LY, 12));
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "fm-arp");
+		const int fm_step = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
+		CHECK(fm_row_empty == 0 && fm_hint > 50 && fm_step == 98 && pushed[0] + pushed[1] + pushed[2] == 0,
+			"ARP shows channel 4's empty row instead of the graph (%d px of hint), a click draws +12 in light FM (%d px), the host told nothing", fm_hint, fm_step);
+		// Channel 3: its row is dim in Ch3 Special and takes no mouse; it comes back as it was.
+		click(window, RAIL_X, RAIL_CH3_TOP + 20);
+		click(window, ARP_LX + 20, ARP_Y(ARP_FM_LY, 12));
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(300);
+		click(window, ARP_LX + 20, ARP_Y(ARP_FM_LY, 24));
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "fm-arp-dim");
+		const int special_light = count_color_in(GRAPH_LEFT, GRAPH_RIGHT, GRAPH_TOP, GRAPH_BOTTOM, COLOR_FM_LIGHT);
+		const int special_dim = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_LINE);
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(300);
+		capture(window);
+		CHECK(special_light == 0 && special_dim == 98 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT) == 98
+			&& count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 24), ARP_Y(ARP_FM_LY, 24) + 2, COLOR_FM_LIGHT) == 0,
+			"in Ch3 Special channel 3's row is dim (%d px light) and a click on it draws nothing; after it the row is back", special_light);
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		click(window, RAIL_X, RAIL_CH4_Y);
+		run_ms(100);
+
 		// The overview (stage 10): VOL on a row is one gesture on that row's channel, PAN a click,
 		// every FM row draws its algorithm and the sound opens the channel's page.
 		click(window, BUTTON_ALL_X, BUTTON_Y);
@@ -1095,6 +1160,95 @@ int main(int argc, char **argv)
 		const int wide = count_color_in(ENV_X, ENV_RIGHT, ENV_LOUD_Y, ENV_LOUD_Y + 1, COLOR_PSG);
 		CHECK(wide >= 403 && pushed[0] + pushed[1] + pushed[2] == 0, "a length of one frame draws one column of %d px, the host told nothing", wide);
 
+		// Stage 20, item 7: channel 8's arp row under the envelope. A click on the empty row makes four
+		// steps of 0 looped from the first and draws the one under the mouse; a drag draws on.
+		{
+			const int ly = ARP_PSG_LY, strip = ARP_STRIP(ARP_PSG_LY);
+			const int empty_hint = count_color_in(ARP_LX, ARP_LX + 200, ly + 30, ly + 38, COLOR_HINT);
+			click(window, ARP_LX + 20, ARP_Y(ly, 12));
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(ARP_LX + 70, ARP_Y(ly, 3)));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ARP_LX + 120, ARP_Y(ly, 4)));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ARP_LX + 170, ARP_Y(ly, 7)));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ARP_LX + 170, ARP_Y(ly, 7)));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp");
+			const int tops = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) + count_color_in(ARP_LX + 50, ARP_LX + 99, ARP_Y(ly, 3), ARP_Y(ly, 3) + 2, COLOR_PSG)
+				+ count_color_in(ARP_LX + 100, ARP_LX + 149, ARP_Y(ly, 4), ARP_Y(ly, 4) + 2, COLOR_PSG) + count_color_in(ARP_LX + 150, ARP_LX + 199, ARP_Y(ly, 7), ARP_Y(ly, 7) + 2, COLOR_PSG);
+			const int tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG);
+			CHECK(empty_hint > 50 && tops == 4 * 98 && tab == 8 * 12 && pushed[0] + pushed[1] + pushed[2] == 0,
+				"a click on the empty row makes 4 looped steps, a drag draws +3 +4 +7 after the +12 (%d px of tops), the loop's tab at the start (%d px), the host told nothing", tops, tab);
+			// The length up to the limit: 32 steps, the new ones copy the last, amber MAX; UNDO gives the 4 back.
+			drag(window, ARP_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) - 200);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp-long");
+			const int sevens = runs_of(ARP_Y(ly, 7), ARP_LX, ARP_LX + 200, COLOR_PSG);
+			const int max = count_color_in(ARP_LX + 206, ARP_LX + 258, ly + 1, ly + 32, COLOR_AMBER);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			CHECK(sevens == 29 && max > 30 && runs_of(ARP_Y(ly, 7), ARP_LX, ARP_LX + 200, COLOR_PSG) == 1,
+				"the length dragged up stops at 32 steps (%d new ones at +7), MAX in amber (%d px); UNDO gives back 4", sevens, max);
+			// The loop: a click on its body turns it off and leaves a shadow, a click on the shadow turns it
+			// on there; a drag on the body moves its start; UNDO puts it back.
+			click(window, ARP_LX + 130, strip);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp-loop-off");
+			const int off_tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG);
+			const int shadow_line = count_color_in(ARP_LX, ARP_LX + 200, strip - 6, strip - 5, COLOR_LINE);
+			click(window, ARP_LX + 130, strip);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			const int on_tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG);
+			CHECK(off_tab == 0 && shadow_line > 190 && on_tab == 8 * 12, "a click on the loop turns it off, its shadow outlined (%d px), a click on that turns it on again", shadow_line);
+			memset(pushed, 0, sizeof(pushed));
+			drag_x(window, ARP_LX + 36, strip, ARP_LX + 136);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp-loop-moved");
+			const int moved_tab = count_color_in(ARP_LX + 91, ARP_LX + 99, strip - 6, strip + 6, COLOR_PSG);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			CHECK(moved_tab == 8 * 12 && pushed[0] + pushed[1] + pushed[2] == 0 && count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG) == 8 * 12,
+				"a drag on the loop's body moves its start two steps on (%d px of tab there), the host told nothing; UNDO puts it back", moved_tab);
+			// A double click on the +12: the first press draws +5, the second sets 0; one UNDO gives +12 back.
+			click(window, ARP_LX + 20, ARP_Y(ly, 5));
+			SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(ARP_LX + 20, ARP_Y(ly, 5)));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ARP_LX + 20, ARP_Y(ly, 5)));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp-zero");
+			const int zero = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 0), ARP_Y(ly, 0) + 2, COLOR_PSG);
+			const int five = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			CHECK(zero == 98 && five == 0 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == 98,
+				"a double click on a step sets it to 0, and one UNDO gives back the +12 from before the first press");
+			// STORE: on with a row of the channel's own (its label grey), after it the channel is its place
+			// as it is and STORE is off (its label dim).
+			const int store_on = count_color_in(468, 532, 2, 26, COLOR_LABEL);
+			click(window, ACTION_STORE_X, BUTTON_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp-store");
+			const int store_off = count_color_in(468, 532, 2, 26, COLOR_LABEL);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			CHECK(store_on > 50 && store_off == 0 && count_color_in(468, 532, 2, 26, COLOR_LINE) > 50 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == 98,
+				"STORE is on for channel 8's own row (%d px), off once the row is in its place, the row stays", store_on);
+		}
+
 		// Stage 16 (D45): channel 10's page has the noise's TYPE and RATE; TONE 3 takes channel 9.
 		click(window, RAIL_X, RAIL_CH8_Y + 80);
 		run_ms(100);
@@ -1107,12 +1261,35 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "noise-taken");
-		CHECK(count_color_in(332, 662, 442, 449, COLOR_AMBER) > 100, "channel 9's page says in amber that the noise takes it");
+		CHECK(count_color_in(534, 708, 350, 377, COLOR_AMBER) > 100, "channel 9's page says in amber that the noise takes it");
 		click(window, RAIL_X, RAIL_CH8_Y + 80);
 		run_ms(100);
 		click(window, 550, 92);
 		run_ms(200);
 		CHECK(get_value(8) == 0, "HIGH puts the rate back");
+		// Stage 20: channel 10's row moves the noise only on Tone 3. Drawn there, at KIT it is dim and a
+		// click on it draws nothing; back on Tone 3 it is as it was.
+		click(window, 607, 92);
+		run_ms(200);
+		click(window, ARP_LX + 20, ARP_Y(ARP_PSG_LY, 12));
+		click(window, 674, 92);
+		run_ms(200);
+		click(window, ARP_LX + 20, ARP_Y(ARP_PSG_LY, 24));
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "arp-kit");
+		const int kit_psg = count_color_in(242, 524, ARP_PSG_LY - 15, ARP_PSG_LY + 109, COLOR_PSG);
+		const int kit_dim = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_PSG_LY, 12), ARP_Y(ARP_PSG_LY, 12) + 2, COLOR_LINE);
+		click(window, 607, 92);
+		run_ms(200);
+		capture(window);
+		CHECK(get_value(8) == 3 && kit_psg == 0 && kit_dim == 98 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_PSG_LY, 12), ARP_Y(ARP_PSG_LY, 12) + 2, COLOR_PSG) == 98
+			&& count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_PSG_LY, 24), ARP_Y(ARP_PSG_LY, 24) + 2, COLOR_PSG) == 0,
+			"at KIT channel 10's row is dim (%d px of PSG) and takes no drawing; on Tone 3 it is back", kit_psg);
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		click(window, 550, 92);
+		run_ms(200);
 
 		// Stage 12: with the DAC on, EDITOR of channel 6 is the grid of notes, BANK the list. A project
 		// with a sample restarts the engine, and CLEAR gives the note back to the ROM.
@@ -1125,6 +1302,8 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "dac");
 		const int mapped = count_color_in(242, 700, 96, 294, COLOR_DAC_DARK) + count_color_in(242, 700, 96, 294, COLOR_SHARP_ROM);
 		CHECK(mapped > 61 * 450 && count_color_in(242, 700, 96, 294, COLOR_DAC) < 200, "the grid has the ROM's 61 notes (%d px), no file yet", mapped);
+		// Stage 20: the window still shows FM rows instead of graphs, but channel 6 on the DAC has no row.
+		CHECK(count_color_in(242, 708, HEADER_H, 460, COLOR_FM_LIGHT) + count_color_in(242, 708, HEADER_H, 460, COLOR_FM_DARK) == 0, "the DAC's page draws no arp row");
 		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
 		clap_ostream_t out_stream = {NULL, project_write};
 		project_size = 0;

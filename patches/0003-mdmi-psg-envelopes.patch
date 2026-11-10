@@ -148,20 +148,75 @@ index a263bad..5fda09c 100644
 +WAV pcm_Triangle "samples/Triangle.wav" PCM4 15500
 +WAV pcm_VibraSlap "samples/VibraSlap.wav" PCM4 15500
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..dea5455 100644
+index 5145b6a..2828943 100644
 --- a/src/midi.c
 +++ b/src/midi.c
-@@ -120,6 +120,8 @@ static void reset(void)
+@@ -71,6 +71,9 @@ static const u16 portaTimeToInterval[128]
+ 
+ static DeviceChannel deviceChannels[DEV_CHANS];
+ static MidiChannel midiChannels[MIDI_CHANNELS];
++// MDMI plugin fork, stage 20: arpeggio rows per program, one table per type; a reset clears them.
++static ArpRow fmArpRows[MIDI_PROGRAMS];
++static ArpRow psgArpRows[MIDI_PROGRAMS];
+ static bool dynamicMode;
+ static void (*changeCallback)(MidiChangeEvent);
+ 
+@@ -120,7 +123,11 @@ static void reset(void)
  {
      midi_psg_reset();
      midi_fm_reset();
 +    // midi_fm_reset switched the DAC off: nothing of a sample is awaited any more (stage 18b).
 +    midi_dac_reset();
      midi_fm_sm_reset();
++    memset(fmArpRows, 0, sizeof(fmArpRows));
++    memset(psgArpRows, 0, sizeof(psgArpRows));
      config = (MidiConfig) {
          .mappingModePref = DEFAULT_MAPPING_MODE,
-@@ -403,6 +405,12 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+         .disableNonGeneralMidiCCs = false,
+@@ -179,6 +186,8 @@ static void init_device_channel(u8 devChan)
+     chan->cents = 0;
+     chan->pitchBend = DEFAULT_MIDI_PITCH_BEND;
+     chan->glideTargetPitch = 0;
++    chan->arp.count = 0;
++    chan->arpStep = 0;
+     update_device_channel_from_associated_midi_channel(chan);
+ }
  
+@@ -401,12 +410,49 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+     return findFreeChannel(midiChan);
+ }
+ 
++// MDMI plugin fork, stage 20: the voices an arpeggio row moves. Not the DAC, not channel 3 in Ch3
++// Special nor its operators, not the noise at KIT, where the key picks the drum.
++static bool arp_applies(DeviceChannel* devChan)
++{
++    if (devChan->ops == &FM_VTable) {
++        return !(devChan->num == CH3_SPECIAL_MODE && synth_global_parameters()->specialMode);
++    }
++    return devChan->ops == &PSG_VTable && !midi_psg_plays_key(devChan->num);
++}
++
++// The row's step is added after bend and fine tune. FM is held within the keys it can play; PSG
++// holds the tone itself, it only has to stay within a key byte.
++static PitchCents arp_shift(DeviceChannel* devChan, PitchCents pc)
++{
++    const s16 MAX_PSG_PITCH_CENTS = 127 * 100;
++
++    if (devChan->arp.count == 0 || !arp_applies(devChan)) {
++        return pc;
++    }
++    bool fm = devChan->ops == &FM_VTable;
++    s16 min = fm ? MIN_MIDI_PITCH * 100 : 0;
++    s16 max = fm ? MAX_MIDI_PITCH * 100 : MAX_PSG_PITCH_CENTS;
++    s16 total = pc.pitch * 100 + pc.cents + devChan->arp.steps[devChan->arpStep] * 100;
++    if (total < min) {
++        total = min;
++    } else if (total > max) {
++        total = max;
++    }
++    return (PitchCents) { .pitch = total / 100, .cents = total % 100 };
++}
++
  static PitchCents effectivePitchCents(DeviceChannel* devChan)
  {
 +    // MDMI plugin fork, stage 16 (D45): at rate KIT the key picks the drum, so bend and fine tune
@@ -173,7 +228,37 @@ index 5145b6a..dea5455 100644
      MidiChannel* midiChannel = &midiChannels[devChan->midiChannel];
      PitchCents pc
          = pc_bend(devChan->pitch, devChan->cents, devChan->pitchBend, midiChannel->pitchBendRange);
-@@ -446,6 +454,17 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+-    return pc_shift(pc, midiChannel->fineTune);
++    return arp_shift(devChan, pc_shift(pc, midiChannel->fineTune));
+ }
+ 
+ static void set_downstream_pitch(DeviceChannel* devChan)
+@@ -415,8 +461,24 @@ static void set_downstream_pitch(DeviceChannel* devChan)
+     devChan->ops->pitch(devChan->num, pc.pitch, pc.cents);
+ }
+ 
++// A new attack copies the row of the voice's program from the table of its type and starts at step 0.
++static void arp_start(DeviceChannel* devChan)
++{
++    devChan->arpStep = 0;
++    devChan->arp.count = 0;
++    if (!arp_applies(devChan)) {
++        return;
++    }
++    const ArpRow* row = devChan->ops == &FM_VTable ? &fmArpRows[devChan->program]
++                                                   : &psgArpRows[devChan->program];
++    if (row->count != 0) {
++        memcpy(&devChan->arp, row, sizeof(ArpRow));
++    }
++}
++
+ static void set_downstream_note_on(DeviceChannel* devChan, u8 velocity)
+ {
++    arp_start(devChan);
+     PitchCents pc = effectivePitchCents(devChan);
+     devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
+ }
+@@ -446,6 +508,17 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -191,7 +276,7 @@ index 5145b6a..dea5455 100644
      if (is_single_voice_channel(midiChan, false)) {
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
-@@ -483,6 +502,17 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,6 +556,17 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -209,7 +294,7 @@ index 5145b6a..dea5455 100644
      MidiChannel* midiChannel = &midiChannels[chan];
      note_priority_remove(&midiChannel->notePriority, pitch);
  
-@@ -491,7 +521,7 @@ void midi_note_off(u8 chan, u8 pitch)
+@@ -491,7 +575,7 @@ void midi_note_off(u8 chan, u8 pitch)
      bool singleVoice = is_single_voice_channel(chan, true);
  
      FOREACH_DEV_CHAN_WITH_MIDI(chan, devChan) {
@@ -218,7 +303,7 @@ index 5145b6a..dea5455 100644
              if (!handledRetrigger && singleVoice && nextMostRecentPitch != 0) {
                  if (midiChannel->portamento) {
                      note_priority_push(&midiChannel->notePriority, nextMostRecentPitch);
-@@ -606,9 +636,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +690,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -231,7 +316,7 @@ index 5145b6a..dea5455 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +682,42 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +736,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -250,6 +335,37 @@ index 5145b6a..dea5455 100644
 +    log_info("Prg %d: PSG envelope stored", program);
 +}
 +
++// MDMI plugin fork, stage 20: <loop> <step + 64>..., the number of steps is the length of the data.
++static void store_arp_row(bool fm, u8 program, const u8* data, u16 length)
++{
++    u16 count = length > 0 ? length - 1 : 0;
++    bool valid = length > 0 && count <= MAX_ARP_STEPS && program < MIDI_PROGRAMS
++        && (data[0] == ARP_NO_LOOP || data[0] < count);
++    for (u16 i = 1; valid && i < length; i++) {
++        valid = data[i] >= ARP_STEP_CENTRE - MAX_ARP_SHIFT
++            && data[i] <= ARP_STEP_CENTRE + MAX_ARP_SHIFT;
++    }
++    if (!valid) {
++        if (fm) {
++            log_warn("Prg %d: Invalid FM arpeggio", program);
++        } else {
++            log_warn("Prg %d: Invalid PSG arpeggio", program);
++        }
++        return;
++    }
++    ArpRow* row = fm ? &fmArpRows[program] : &psgArpRows[program];
++    row->count = count;
++    row->loop = data[0];
++    for (u16 i = 0; i < count; i++) {
++        row->steps[i] = data[i + 1] - ARP_STEP_CENTRE;
++    }
++    if (fm) {
++        log_info("Prg %d: FM arpeggio stored", program);
++    } else {
++        log_info("Prg %d: PSG arpeggio stored", program);
++    }
++}
++
  static void store_program(const u8* data, u16 length)
  {
 +    if (length < STORE_PROGRAM_HEADER_LENGTH) {
@@ -265,6 +381,11 @@ index 5145b6a..dea5455 100644
 +        store_psg_program(program, data + STORE_PROGRAM_HEADER_LENGTH,
 +            length - STORE_PROGRAM_HEADER_LENGTH);
 +        break;
++    case STORE_PROGRAM_TYPE_FM_ARP:
++    case STORE_PROGRAM_TYPE_PSG_ARP:
++        store_arp_row(type == STORE_PROGRAM_TYPE_FM_ARP, program,
++            data + STORE_PROGRAM_HEADER_LENGTH, length - STORE_PROGRAM_HEADER_LENGTH);
++        break;
      case STORE_PROGRAM_TYPE_FM: {
 +        if (length != STORE_PROGRAM_FM_LENGTH) {
 +            log_warn("Sysex %02X: Invalid length: %d (!= %d)", SYSEX_COMMAND_STORE_PROGRAM, length,
@@ -274,7 +395,7 @@ index 5145b6a..dea5455 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -841,7 +903,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +993,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -283,7 +404,7 @@ index 5145b6a..dea5455 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -1000,8 +1062,18 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -1000,8 +1152,18 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
  
  static void enable_dac(bool enable)
  {
@@ -303,7 +424,7 @@ index 5145b6a..dea5455 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1252,6 +1324,14 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1252,6 +1414,14 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_RESET_ALL_CONTROLLERS:
          resetAllControllers(ch);
          break;
@@ -318,16 +439,84 @@ index 5145b6a..dea5455 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1358,6 +1438,7 @@ static void process_portamento(void)
+@@ -1311,11 +1481,12 @@ void midi_reset(void)
+     reset();
+ }
+ 
+-static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
++// True when the glide moved the voice; the caller writes its pitch.
++static bool process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+ {
+     if (chan->glideTargetPitch == 0
+         || (chan->glideTargetPitch == chan->pitch && chan->cents == 0)) {
+-        return;
++        return false;
+     }
+ 
+     s16 effectiveIncrement = 0;
+@@ -1339,25 +1510,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+ 
+     chan->pitch = pc.pitch;
+     chan->cents = pc.cents;
+-    set_downstream_pitch(chan);
++    return true;
+ }
+ 
+-static void process_portamento(void)
++// MDMI plugin fork, stage 20: one step of the row per frame while the key is held. True when the
++// shift changed.
++static bool process_channel_arp(DeviceChannel* chan)
++{
++    ArpRow* arp = &chan->arp;
++    if (arp->count == 0 || !arp_applies(chan)) {
++        return false;
++    }
++    u8 next = chan->arpStep + 1;
++    if (next >= arp->count) {
++        if (arp->loop == ARP_NO_LOOP) {
++            return false;
++        }
++        next = arp->loop;
++    }
++    s8 before = arp->steps[chan->arpStep];
++    chan->arpStep = next;
++    return arp->steps[next] != before;
++}
++
++// Portamento and the arpeggio row write a voice's pitch at most once per frame between them.
++static void process_pitch(void)
+ {
+     FOREACH_DEV_CHAN(chan) {
+-        if (chan->midiChannel == UNASSIGNED_MIDI_CHANNEL) {
++        if (chan->midiChannel == UNASSIGNED_MIDI_CHANNEL || !chan->noteOn) {
+             continue;
+         }
+         MidiChannel* midiChannel = &midiChannels[chan->midiChannel];
+-        if (midiChannel->portamento && chan->noteOn) {
+-            process_channel_glide(chan, midiChannel->portamentoInterval);
++        bool changed = false;
++        if (midiChannel->portamento) {
++            changed = process_channel_glide(chan, midiChannel->portamentoInterval);
++        }
++        if (process_channel_arp(chan)) {
++            changed = true;
++        }
++        if (changed) {
++            set_downstream_pitch(chan);
+         }
+     }
+ }
+ 
  void midi_tick(u16 delta)
  {
-     process_portamento();
+-    process_portamento();
++    process_pitch();
 +    midi_dac_tick();
  }
  
  void midi_register_change_callback(void (*callback)(MidiChangeEvent))
 diff --git a/src/midi.h b/src/midi.h
-index 731aa8c..e18b744 100644
+index 731aa8c..9bdda76 100644
 --- a/src/midi.h
 +++ b/src/midi.h
 @@ -38,6 +38,10 @@
@@ -341,15 +530,42 @@ index 731aa8c..e18b744 100644
  #define CC_GENMDM_FM_ALGORITHM 14
  #define CC_GENMDM_FM_FEEDBACK 15
  #define CC_GENMDM_TOTAL_LEVEL_OP1 16
-@@ -135,6 +139,8 @@
+@@ -135,6 +139,25 @@
  
  #define STORE_PROGRAM_TYPE_FM 0x00
  #define STORE_PROGRAM_TYPE_PSG 0x01
++// MDMI plugin fork, stage 20: the arpeggio row of an FM or a PSG program,
++// F0 00 22 77 0A 02|03 <program> <loop> <step + 64>... F7. Loop 7F is none; no steps clears the row.
++#define STORE_PROGRAM_TYPE_FM_ARP 0x02
++#define STORE_PROGRAM_TYPE_PSG_ARP 0x03
 +#define STORE_PROGRAM_HEADER_LENGTH 2
 +#define STORE_PROGRAM_FM_LENGTH (STORE_PROGRAM_HEADER_LENGTH + 4 + (MAX_FM_OPERATORS * 11))
++
++#define MAX_ARP_STEPS 32
++#define ARP_NO_LOOP 0x7F
++#define ARP_STEP_CENTRE 64
++#define MAX_ARP_SHIFT 24
++
++// Semitone shifts, one step per frame from the Note On; past the last step the row goes back to its
++// loop step, or holds the last one without a loop. No steps means no arpeggio.
++typedef struct ArpRow {
++    u8 count;
++    u8 loop;
++    s8 steps[MAX_ARP_STEPS];
++} ArpRow;
  
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
+@@ -158,6 +181,9 @@ typedef struct DeviceChannel {
+     u16 pitchBend;
+     s8 cents;
+     u16 glideTargetPitch;
++    // Stage 20: a copy of the row taken at the Note On, so storing another can't change it.
++    ArpRow arp;
++    u8 arpStep;
+ } DeviceChannel;
+ 
+ typedef enum MidiChangeType {
 diff --git a/src/midi_dac.c b/src/midi_dac.c
 index 33ac142..54fabc9 100644
 --- a/src/midi_dac.c
@@ -1380,6 +1596,37 @@ index 0fd5ac6..ff2f83e 100644
  
  void _expect_psg_tone(u8 channel, u16 value, const char* const file, const int line);
  void _expect_psg_attenuation(u8 channel, u8 value, const char* const file, const int line);
+diff --git a/tests/mocks/mock_synth.c b/tests/mocks/mock_synth.c
+index 965d8a7..0e2611a 100644
+--- a/tests/mocks/mock_synth.c
++++ b/tests/mocks/mock_synth.c
+@@ -13,8 +13,12 @@ void mock_synth_enable_checks(void)
+     disableChecks = false;
+ }
+ 
++// Stage 20: midi.c asks whether channel 3 is in Ch3 Special, so the mock keeps that much of synth.
++static Global mockGlobal;
++
+ void __wrap_synth_init(const FmPreset* defaultPreset)
+ {
++    mockGlobal.specialMode = false;
+     if (disableChecks)
+         return;
+     check_expected(defaultPreset);
+@@ -203,11 +207,12 @@ const FmChannel* __wrap_synth_channel_parameters(u8 channel)
+ 
+ const Global* __wrap_synth_global_parameters()
+ {
+-    return NULL;
++    return &mockGlobal;
+ }
+ 
+ void __wrap_synth_set_special_mode(bool enable)
+ {
++    mockGlobal.specialMode = enable;
+     check_expected(enable);
+ }
+ 
 diff --git a/tests/system/test_e2e.c b/tests/system/test_e2e.c
 index d9cce30..bdb25d8 100644
 --- a/tests/system/test_e2e.c
@@ -1434,18 +1681,20 @@ index d9cce30..bdb25d8 100644
  
  void test_midi_last_note_played_priority_respected_on_fm(void** state)
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..3664fef 100644
+index d2449c4..a88c06c 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
-@@ -6,6 +6,7 @@
+@@ -5,7 +5,9 @@
+ #include "test_comm_demo.h"
  #include "test_log.h"
  #include "test_midi.h"
++#include "test_midi_arp.h"
  #include "test_midi_dac.h"
 +#include "test_midi_dac_marks.h"
  #include "test_midi_dynamic.h"
  #include "test_midi_finetune.h"
  #include "test_midi_fm.h"
-@@ -207,6 +208,12 @@ int main(void)
+@@ -207,6 +209,12 @@ int main(void)
          midi_test(test_midi_sysex_sets_mapping_mode_to_auto),
          midi_test(test_midi_sysex_disables_fm_parameter_CCs),
          midi_test(test_midi_sysex_loads_psg_envelope),
@@ -1458,7 +1707,7 @@ index d2449c4..3664fef 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +233,46 @@ int main(void)
+@@ -226,10 +234,46 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -1507,7 +1756,7 @@ index d2449c4..3664fef 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +292,8 @@ int main(void)
+@@ -249,6 +293,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -1516,6 +1765,485 @@ index d2449c4..3664fef 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
+@@ -441,6 +487,25 @@ int main(void)
+         midi_portamento_test(test_midi_portamento_default_portamento_time_set),
+         midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
+ 
++        midi_test(test_midi_arp_stores_fm_row),
++        midi_test(test_midi_arp_stores_psg_row),
++        midi_test(test_midi_arp_no_steps_clears_row),
++        midi_test(test_midi_arp_rejects_invalid_rows),
++        midi_test(test_midi_arp_program_selects_row_of_its_type),
++        midi_test(test_midi_arp_without_loop_holds_last_step),
++        midi_test(test_midi_arp_loop_returns_to_its_step),
++        midi_test(test_midi_arp_note_off_stops_steps),
++        midi_test(test_midi_arp_rewrite_keeps_sounding_row),
++        midi_test(test_midi_arp_reset_clears_rows),
++        midi_test(test_midi_arp_adds_to_bend_and_fine_tune),
++        midi_test(test_midi_arp_adds_to_portamento),
++        midi_test(test_midi_arp_fm_held_within_range),
++        midi_dac_test(test_midi_arp_dac_does_not_step),
++        midi_test(test_midi_arp_ch3_special_does_not_step),
++        midi_test(test_midi_arp_noise_kit_does_not_step),
++        midi_test(test_midi_arp_moves_noise_on_tone3),
++        midi_test(test_midi_arp_empty_row_writes_no_pitch),
++
+         midi_finetune_test(test_midi_finetune_max),
+         midi_finetune_test(test_midi_finetune_min),
+         midi_finetune_test(test_midi_finetune_with_pitchbend),
+diff --git a/tests/unit/test_midi_arp.c b/tests/unit/test_midi_arp.c
+new file mode 100644
+index 0000000..e4c9601
+--- /dev/null
++++ b/tests/unit/test_midi_arp.c
+@@ -0,0 +1,420 @@
++// MDMI plugin fork, stage 20: arpeggio rows of FM and PSG programs, SysEx 0A 02 and 0A 03.
++#include "test_midi_arp.h"
++#include "test_midi.h"
++#include "mocks/mock_sgdk.h"
++
++#define FM_MIDI_CHAN MIDI_CHANNEL_1
++#define CH3_MIDI_CHAN MIDI_CHANNEL_3
++#define DAC_MIDI_CHAN MIDI_CHANNEL_6
++#define PSG_MIDI_CHAN MIDI_CHANNEL_7
++#define NOISE_MIDI_CHAN GENERAL_MIDI_PERCUSSION_CHANNEL
++#define OP_MIDI_CHAN MIDI_CHANNEL_11
++#define NO_LOOP ARP_NO_LOOP
++
++// PSG tones of C4, D#4, E4, G4 and C5 (TONES_NTSC in midi_psg.c).
++#define TONE_C4 427
++#define TONE_DS4 359
++#define TONE_E4 339
++#define TONE_G4 285
++#define TONE_C5 213
++
++static void store_row_raw(u8 type, u8 program, u8 loop, const s8* steps, u16 count)
++{
++    u8 msg[7 + MAX_ARP_STEPS + 8];
++    u16 n = 0;
++    msg[n++] = SYSEX_MANU_EXTENDED;
++    msg[n++] = SYSEX_MANU_REGION;
++    msg[n++] = SYSEX_MANU_ID;
++    msg[n++] = SYSEX_COMMAND_STORE_PROGRAM;
++    msg[n++] = type;
++    msg[n++] = program;
++    msg[n++] = loop;
++    for (u16 i = 0; i < count; i++) {
++        msg[n++] = steps[i] + ARP_STEP_CENTRE;
++    }
++    __real_midi_sysex(msg, n);
++}
++
++static void store_fm_row(u8 program, u8 loop, const s8* steps, u16 count)
++{
++    store_row_raw(STORE_PROGRAM_TYPE_FM_ARP, program, loop, steps, count);
++}
++
++static void store_psg_row(u8 program, u8 loop, const s8* steps, u16 count)
++{
++    store_row_raw(STORE_PROGRAM_TYPE_PSG_ARP, program, loop, steps, count);
++}
++
++static void fm_note_on(u8 pitch, u8 octave, u16 freq)
++{
++    expect_synth_pitch(FM_CH1, octave, freq);
++    expect_synth_volume_any();
++    expect_synth_note_on(FM_CH1);
++    __real_midi_note_on(FM_MIDI_CHAN, pitch, MAX_MIDI_VOLUME);
++}
++
++static void fm_tick(u8 octave, u16 freq)
++{
++    expect_synth_pitch(FM_CH1, octave, freq);
++    midi_tick(1);
++}
++
++static void psg_note_on(u8 pitch, u16 tone)
++{
++    expect_psg_tone(PSG_CH1, tone);
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(PSG_MIDI_CHAN, pitch, MAX_MIDI_VOLUME);
++}
++
++static void psg_tick(u16 tone)
++{
++    expect_psg_tone(PSG_CH1, tone);
++    midi_tick(1);
++}
++
++// No expectation is set, so any pitch or tone write fails the test.
++static void ticks_without_writes(u16 count)
++{
++    for (u16 i = 0; i < count; i++) {
++        midi_tick(1);
++    }
++}
++
++void test_midi_arp_stores_fm_row(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 3, 4, 7, 12 };
++    mock_log_enable_checks();
++    expect_log_info("Prg %d: FM arpeggio stored");
++    store_fm_row(0, 0, steps, sizeof(steps));
++    mock_log_disable_checks();
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    fm_tick(4, SYNTH_NTSC_DS);
++    fm_tick(4, SYNTH_NTSC_E);
++    fm_tick(4, SYNTH_NTSC_G);
++    fm_tick(5, SYNTH_NTSC_C);
++    fm_tick(4, SYNTH_NTSC_C);
++    fm_tick(4, SYNTH_NTSC_DS);
++}
++
++void test_midi_arp_stores_psg_row(UNUSED void** state)
++{
++    const s8 steps[] = { 3, 4, 7, 12 };
++    mock_log_enable_checks();
++    expect_log_info("Prg %d: PSG arpeggio stored");
++    store_psg_row(0, NO_LOOP, steps, sizeof(steps));
++    mock_log_disable_checks();
++
++    psg_note_on(MIDI_PITCH_C4, TONE_DS4);
++    psg_tick(TONE_E4);
++    psg_tick(TONE_G4);
++    psg_tick(TONE_C5);
++    ticks_without_writes(10);
++}
++
++void test_midi_arp_no_steps_clears_row(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 7 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++    store_psg_row(0, 0, steps, sizeof(steps));
++
++    mock_log_enable_checks();
++    expect_log_info("Prg %d: FM arpeggio stored");
++    store_fm_row(0, NO_LOOP, NULL, 0);
++    expect_log_info("Prg %d: PSG arpeggio stored");
++    store_psg_row(0, NO_LOOP, NULL, 0);
++    mock_log_disable_checks();
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_C4);
++    ticks_without_writes(10);
++}
++
++void test_midi_arp_rejects_invalid_rows(UNUSED void** state)
++{
++    const s8 kept[] = { 12 };
++    store_fm_row(0, NO_LOOP, kept, sizeof(kept));
++    store_psg_row(0, NO_LOOP, kept, sizeof(kept));
++
++    s8 tooLong[MAX_ARP_STEPS + 1];
++    memset(tooLong, 7, sizeof(tooLong));
++    const s8 two[] = { 0, 7 };
++    const s8 tooHigh[] = { 0, MAX_ARP_SHIFT + 1 };
++    const s8 tooLow[] = { -MAX_ARP_SHIFT - 1 };
++    const u8 noLoopByte[] = { SYSEX_MANU_EXTENDED, SYSEX_MANU_REGION, SYSEX_MANU_ID,
++        SYSEX_COMMAND_STORE_PROGRAM, STORE_PROGRAM_TYPE_FM_ARP, 0 };
++
++    mock_log_enable_checks();
++    for (u8 type = STORE_PROGRAM_TYPE_FM_ARP; type <= STORE_PROGRAM_TYPE_PSG_ARP; type++) {
++        const char* warning = type == STORE_PROGRAM_TYPE_FM_ARP ? "Prg %d: Invalid FM arpeggio"
++                                                                : "Prg %d: Invalid PSG arpeggio";
++        expect_log_warn(warning);
++        store_row_raw(type, 0, NO_LOOP, tooLong, sizeof(tooLong));
++        expect_log_warn(warning);
++        store_row_raw(type, 0, 2, two, sizeof(two));
++        expect_log_warn(warning);
++        store_row_raw(type, 0, 0, NULL, 0);
++        expect_log_warn(warning);
++        store_row_raw(type, MIDI_PROGRAMS, NO_LOOP, two, sizeof(two));
++        expect_log_warn(warning);
++        store_row_raw(type, 0, NO_LOOP, tooHigh, sizeof(tooHigh));
++        expect_log_warn(warning);
++        store_row_raw(type, 0, NO_LOOP, tooLow, sizeof(tooLow));
++    }
++    expect_log_warn("Prg %d: Invalid FM arpeggio");
++    __real_midi_sysex(noLoopByte, sizeof(noLoopByte));
++    mock_log_disable_checks();
++
++    // The longest row and the widest shifts are taken.
++    s8 longest[MAX_ARP_STEPS];
++    memset(longest, 0, sizeof(longest));
++    longest[MAX_ARP_STEPS - 1] = MAX_ARP_SHIFT;
++    mock_log_enable_checks();
++    expect_log_info("Prg %d: FM arpeggio stored");
++    store_fm_row(1, MAX_ARP_STEPS - 1, longest, sizeof(longest));
++    const s8 widest[] = { -MAX_ARP_SHIFT, MAX_ARP_SHIFT };
++    expect_log_info("Prg %d: PSG arpeggio stored");
++    store_psg_row(1, NO_LOOP, widest, sizeof(widest));
++    mock_log_disable_checks();
++
++    // Program 0 still plays the rows stored before.
++    fm_note_on(MIDI_PITCH_C4, 5, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_C5);
++    ticks_without_writes(10);
++}
++
++void test_midi_arp_program_selects_row_of_its_type(UNUSED void** state)
++{
++    const s8 octave[] = { 12 };
++    const s8 fifth[] = { 7 };
++    store_fm_row(5, NO_LOOP, octave, sizeof(octave));
++    store_psg_row(5, NO_LOOP, fifth, sizeof(fifth));
++    // The test envelope of program 5 is silent: a loud one-step envelope in its place.
++    const u8 envelope[] = { SYSEX_MANU_EXTENDED, SYSEX_MANU_REGION, SYSEX_MANU_ID,
++        SYSEX_COMMAND_STORE_PROGRAM, STORE_PROGRAM_TYPE_PSG, 5, 0x0, 0x0 };
++    __real_midi_sysex(envelope, sizeof(envelope));
++
++    // Program 0 has no row of either type.
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_C4);
++    expect_synth_note_off(FM_CH1);
++    __real_midi_note_off(FM_MIDI_CHAN, MIDI_PITCH_C4);
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(PSG_MIDI_CHAN, MIDI_PITCH_C4);
++
++    mock_synth_disable_checks();
++    __real_midi_program(FM_MIDI_CHAN, 5);
++    mock_synth_enable_checks();
++    __real_midi_program(PSG_MIDI_CHAN, 5);
++
++    fm_note_on(MIDI_PITCH_C4, 5, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_G4);
++    ticks_without_writes(10);
++}
++
++void test_midi_arp_without_loop_holds_last_step(UNUSED void** state)
++{
++    const s8 steps[] = { 3, 4, 7 };
++    store_fm_row(0, NO_LOOP, steps, sizeof(steps));
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_DS);
++    fm_tick(4, SYNTH_NTSC_E);
++    fm_tick(4, SYNTH_NTSC_G);
++    ticks_without_writes(100);
++}
++
++void test_midi_arp_loop_returns_to_its_step(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 12, 4, 7 };
++    store_fm_row(0, 2, steps, sizeof(steps));
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    fm_tick(5, SYNTH_NTSC_C);
++    fm_tick(4, SYNTH_NTSC_E);
++    fm_tick(4, SYNTH_NTSC_G);
++    fm_tick(4, SYNTH_NTSC_E);
++    fm_tick(4, SYNTH_NTSC_G);
++    fm_tick(4, SYNTH_NTSC_E);
++}
++
++void test_midi_arp_note_off_stops_steps(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 12 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    fm_tick(5, SYNTH_NTSC_C);
++    expect_synth_note_off(FM_CH1);
++    __real_midi_note_off(FM_MIDI_CHAN, MIDI_PITCH_C4);
++    ticks_without_writes(100);
++}
++
++void test_midi_arp_rewrite_keeps_sounding_row(UNUSED void** state)
++{
++    const s8 fifth[] = { 0, 7 };
++    const s8 octave[] = { 0, 12 };
++    store_fm_row(0, 0, fifth, sizeof(fifth));
++    store_psg_row(0, 0, fifth, sizeof(fifth));
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_C4);
++    store_fm_row(0, 0, octave, sizeof(octave));
++    store_psg_row(0, 0, octave, sizeof(octave));
++
++    expect_synth_pitch(FM_CH1, 4, SYNTH_NTSC_G);
++    expect_psg_tone(PSG_CH1, TONE_G4);
++    midi_tick(1);
++    expect_synth_pitch(FM_CH1, 4, SYNTH_NTSC_C);
++    expect_psg_tone(PSG_CH1, TONE_C4);
++    midi_tick(1);
++
++    // A new attack takes the new row from its first step.
++    expect_synth_note_off(FM_CH1);
++    __real_midi_note_off(FM_MIDI_CHAN, MIDI_PITCH_C4);
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(PSG_MIDI_CHAN, MIDI_PITCH_C4);
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    // The PSG tone is C4 already, so only the attenuation is written.
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(PSG_MIDI_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_psg_tone(PSG_CH1, TONE_C5);
++    fm_tick(5, SYNTH_NTSC_C);
++}
++
++void test_midi_arp_reset_clears_rows(UNUSED void** state)
++{
++    const s8 steps[] = { 7, 12 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++    store_psg_row(0, 0, steps, sizeof(steps));
++
++    mock_synth_disable_checks();
++    __real_midi_reset();
++    mock_synth_enable_checks();
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_C4);
++    ticks_without_writes(10);
++}
++
++// Fine tune +50 cents, bend +1 semitone, the row +12: C#5 and 50 cents.
++void test_midi_arp_adds_to_bend_and_fine_tune(UNUSED void** state)
++{
++    const u16 HALF_C = SYNTH_NTSC_C + (SYNTH_NTSC_CS - SYNTH_NTSC_C) / 2;
++    const u16 HALF_CS = SYNTH_NTSC_CS + (SYNTH_NTSC_D - SYNTH_NTSC_CS) / 2;
++    const s8 steps[] = { 0, 12 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++    __real_midi_cc(FM_MIDI_CHAN, CC_FINE_TUNE, 64 + 50);
++
++    fm_note_on(MIDI_PITCH_C4, 4, HALF_C);
++    expect_synth_pitch(FM_CH1, 4, HALF_CS);
++    __real_midi_pitch_bend(FM_MIDI_CHAN, MIDI_PITCH_BEND_CENTRE + 0x1000);
++    fm_tick(5, HALF_CS);
++    fm_tick(4, HALF_CS);
++}
++
++// A legato note glides 47 cents a frame and the row goes on from where it was: one write a frame.
++void test_midi_arp_adds_to_portamento(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 4 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++    __real_midi_cc(FM_MIDI_CHAN, CC_PORTAMENTO_ENABLE, 127);
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    __real_midi_note_on(FM_MIDI_CHAN, MIDI_PITCH_C4 + 2, MAX_MIDI_VOLUME);
++
++    fm_tick(4, SYNTH_NTSC_E + (SYNTH_NTSC_F - SYNTH_NTSC_E) * 47 / 100);
++    fm_tick(4, SYNTH_NTSC_C + (SYNTH_NTSC_CS - SYNTH_NTSC_C) * 94 / 100);
++    fm_tick(4, SYNTH_NTSC_F + (SYNTH_NTSC_FS - SYNTH_NTSC_F) * 41 / 100);
++}
++
++void test_midi_arp_fm_held_within_range(UNUSED void** state)
++{
++    const s8 up[] = { MAX_ARP_SHIFT };
++    const s8 down[] = { -MAX_ARP_SHIFT };
++
++    store_fm_row(0, NO_LOOP, up, sizeof(up));
++    fm_note_on(100, 7, SYNTH_NTSC_AS);
++    expect_synth_note_off(FM_CH1);
++    __real_midi_note_off(FM_MIDI_CHAN, 100);
++
++    store_fm_row(0, NO_LOOP, down, sizeof(down));
++    fm_note_on(20, 0, SYNTH_NTSC_B);
++    ticks_without_writes(10);
++}
++
++// Runs with the DAC on (test_midi_dac_setup).
++void test_midi_arp_dac_does_not_step(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 12 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++
++    __real_midi_note_on(DAC_MIDI_CHAN, 36, MAX_MIDI_VOLUME);
++    ticks_without_writes(100);
++    assert_int_equal(__real_midi_channel_mappings()[DEV_CHAN_MAX_FM].arp.count, 0);
++}
++
++void test_midi_arp_ch3_special_does_not_step(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 12 };
++    store_fm_row(0, 0, steps, sizeof(steps));
++    expect_synth_set_special_mode(true);
++    __real_midi_cc(FM_MIDI_CHAN, CC_GENMDM_CH3_SPECIAL_MODE, 127);
++
++    expect_synth_pitch(FM_CH3, 4, SYNTH_NTSC_C);
++    expect_synth_volume_any();
++    expect_synth_note_on(FM_CH3);
++    __real_midi_note_on(CH3_MIDI_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++
++    expect_synth_special_mode_pitch(0, 4, SYNTH_NTSC_C);
++    expect_synth_special_mode_volume(0, MAX_MIDI_VOLUME);
++    __real_midi_note_on(OP_MIDI_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++
++    ticks_without_writes(100);
++}
++
++void test_midi_arp_noise_kit_does_not_step(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 12 };
++    store_psg_row(0, 0, steps, sizeof(steps));
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 96);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 127);
++
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    expect_psg_tone(PSG_CH3, 95);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, 36, MAX_MIDI_VOLUME);
++
++    ticks_without_writes(100);
++}
++
++// Key 36 sounds the tone of key 84 on tone 3; +12 moves it to key 96.
++void test_midi_arp_moves_noise_on_tone3(UNUSED void** state)
++{
++    const s8 steps[] = { 0, 12 };
++    store_psg_row(0, 0, steps, sizeof(steps));
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 96);
++
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    expect_psg_tone(PSG_CH3, 106);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, 36, MAX_MIDI_VOLUME);
++
++    expect_psg_tone(PSG_CH3, 53);
++    midi_tick(1);
++    expect_psg_tone(PSG_CH3, 106);
++    midi_tick(1);
++}
++
++void test_midi_arp_empty_row_writes_no_pitch(UNUSED void** state)
++{
++    // A row of another program does not count.
++    const s8 steps[] = { 0, 12 };
++    store_fm_row(1, 0, steps, sizeof(steps));
++    store_psg_row(1, 0, steps, sizeof(steps));
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    psg_note_on(MIDI_PITCH_C4, TONE_C4);
++    ticks_without_writes(100);
++}
+diff --git a/tests/unit/test_midi_arp.h b/tests/unit/test_midi_arp.h
+new file mode 100644
+index 0000000..a4c344b
+--- /dev/null
++++ b/tests/unit/test_midi_arp.h
+@@ -0,0 +1,21 @@
++#pragma once
++#include "cmocka_inc.h"
++
++void test_midi_arp_stores_fm_row(UNUSED void** state);
++void test_midi_arp_stores_psg_row(UNUSED void** state);
++void test_midi_arp_no_steps_clears_row(UNUSED void** state);
++void test_midi_arp_rejects_invalid_rows(UNUSED void** state);
++void test_midi_arp_program_selects_row_of_its_type(UNUSED void** state);
++void test_midi_arp_without_loop_holds_last_step(UNUSED void** state);
++void test_midi_arp_loop_returns_to_its_step(UNUSED void** state);
++void test_midi_arp_note_off_stops_steps(UNUSED void** state);
++void test_midi_arp_rewrite_keeps_sounding_row(UNUSED void** state);
++void test_midi_arp_reset_clears_rows(UNUSED void** state);
++void test_midi_arp_adds_to_bend_and_fine_tune(UNUSED void** state);
++void test_midi_arp_adds_to_portamento(UNUSED void** state);
++void test_midi_arp_fm_held_within_range(UNUSED void** state);
++void test_midi_arp_dac_does_not_step(UNUSED void** state);
++void test_midi_arp_ch3_special_does_not_step(UNUSED void** state);
++void test_midi_arp_noise_kit_does_not_step(UNUSED void** state);
++void test_midi_arp_moves_noise_on_tone3(UNUSED void** state);
++void test_midi_arp_empty_row_writes_no_pitch(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
 index 9650279..d6384ec 100644
 --- a/tests/unit/test_midi_dac.c
@@ -2576,7 +3304,7 @@ index bfb01a6..a164deb 100644
 +void test_midi_psg_noise_switched_to_kit_while_sounding(UNUSED void** state);
 +void test_midi_psg_noise_kit_ignores_bend_and_fine_tune(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
-index 9ce9691..5791105 100644
+index 9ce9691..a325b9e 100644
 --- a/tests/unit/test_midi_sysex.c
 +++ b/tests/unit/test_midi_sysex.c
 @@ -2,6 +2,7 @@
@@ -2608,7 +3336,7 @@ index 9ce9691..5791105 100644
  
      const u8 sequence[STORE_PROGRAM_MESSAGE_LENGTH] = { SYSEX_MANU_EXTENDED, SYSEX_MANU_REGION,
 -        SYSEX_MANU_ID, SYSEX_COMMAND_STORE_PROGRAM, 0x01, 0x05 };
-+        SYSEX_MANU_ID, SYSEX_COMMAND_STORE_PROGRAM, 0x02, 0x05 };
++        SYSEX_MANU_ID, SYSEX_COMMAND_STORE_PROGRAM, 0x04, 0x05 };
  
      expect_log_warn("Invalid store program type: %d");
      __real_midi_sysex(sequence, sizeof(sequence));
