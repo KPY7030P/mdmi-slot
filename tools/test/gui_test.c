@@ -1330,6 +1330,9 @@ int main(int argc, char **argv)
 		{
 			const int ly = ARP_PSG_LY, strip = ARP_STRIP(ARP_PSG_LY);
 			const int empty_hint = count_color_in(ARP_LX, ARP_LX + 200, ly + 30, ly + 38, COLOR_HINT);
+			// 0.22.0 divided by the zero steps here and took the host down: the mouse over the empty row.
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ARP_LX + 70, ARP_Y(ly, 3)));
+			run_ms(100);
 			click(window, ARP_LX + 20, ARP_Y(ly, 12));
 			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(ARP_LX + 70, ARP_Y(ly, 3)));
 			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ARP_LX + 120, ARP_Y(ly, 4)));

@@ -1523,7 +1523,8 @@ static int boundary_at(int count, int x)
 static int lane_column_at(int left, int width, int count, int x)
 {
 	int column = -1;
-	while (column < count && lane_column_x(left, width, count, column + 1) <= x) {
+	// No columns in an empty lane: the column edges divide by count.
+	while (count > 0 && column < count && lane_column_x(left, width, count, column + 1) <= x) {
 		column++;
 	}
 	return column;
