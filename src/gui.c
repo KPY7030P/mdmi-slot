@@ -240,6 +240,14 @@ struct mdmi_gui {
 	bool dragging;
 	bool drag_moved;
 	int drag_y;
+	// Parts of a wheel notch not yet spent on a cell (stage 22a), and the value the wheel last sent
+	// while the model hasn't taken it yet: edits reach the model through the writer's queue, so
+	// quick notches step from what was sent, not from what the model still shows.
+	int wheel_rest;
+	uint32_t wheel_rest_id;
+	bool wheel_pending;
+	uint32_t wheel_id;
+	int wheel_value;
 	int drag_start;
 	int drag_value;
 
@@ -2398,12 +2406,12 @@ static void shown_marks(const dac_sample *own, const dac_edit *edit, dac_marks *
 	dac_marks_of(own, &on, m);
 }
 
-// FADE does nothing to a loop that has no release: it never ends.
+// FADE does nothing to a loop that has no release, or plays past Note Off (stage 22a): it never ends.
 static bool fade_unused(const dac_sample *own, const dac_edit *edit)
 {
 	dac_marks m;
 	dac_marks_of(own, edit, &m);
-	return m.loops && !m.release;
+	return m.loops && (!m.release || edit->one_shot);
 }
 
 static int dac_control_at(const mdmi_gui *g, int x, int y)
@@ -2620,7 +2628,8 @@ static void draw_loop_row(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 	}
 	fit_word(g, ls + 1, le - ls - 2, DAC_LOOP_Y + 3, words, "LOOP", true, body_held ? C_AMBER : booted ? C_DAC : C_LINE, true);
 	if (m->release) {
-		fit_word(g, le + TRIM_TAB_W + 3, end - 2 - (le + TRIM_TAB_W + 3), DAC_LOOP_Y + 3, "RELEASE", "REL", false, C_LABEL, false);
+		// With ONE-SHOT the release isn't played (stage 22a): its word dim, kept for when it's off.
+		fit_word(g, le + TRIM_TAB_W + 3, end - 2 - (le + TRIM_TAB_W + 3), DAC_LOOP_Y + 3, "RELEASE", "REL", false, edit->one_shot ? C_LINE : C_LABEL, false);
 	}
 	// Hollow tabs, solid when the mouse is on them; the lines take their colour.
 	for (int which = 0; which < 2; which++) {
@@ -2675,13 +2684,14 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 	const double gain = edit ? pow(10.0, edit->gain / 200.0) : 1.0;
 	const int start = edit ? wave_x_of(own, edit->start) : WAVE_X, end = edit ? wave_x_of(own, edit->end) : WAVE_X + WAVE_W;
 	// With LOOP and no release the part after the last whole block isn't played: it reads as
-	// trimmed (stage 18). Too short to loop, it all reads dim.
+	// trimmed (stage 18); with ONE-SHOT too, all after the loop (stage 22a). Too short to loop, it
+	// all reads dim.
 	dac_marks marks = {0};
 	if (edit) {
 		shown_marks(own, edit, &marks);
 	}
 	const bool looping = edit && edit->loop, short_loop = looping && marks.too_short;
-	const int played = !edit ? end : short_loop ? start : looping ? wave_x_of(own, marks.frame_end) : end;
+	const int played = !edit ? end : short_loop ? start : looping ? wave_x_of(own, edit->one_shot ? marks.frame_loop_end : marks.frame_end) : end;
 	if (edit) {
 		fill(g, start, WAVE_Y, played - start, WAVE_H, C_CELL);
 	}
@@ -2853,12 +2863,10 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 		if (c == DACC_FADE) {
 			edit.fade = !edit.fade;
 		} else if (c == DACC_ONE_SHOT) {
-			// ONE-SHOT and LOOP exclude each other: a loop would never stop (stage 18).
+			// Together with LOOP it loops past Note Off (stage 22a, D53).
 			edit.one_shot = !edit.one_shot;
-			edit.loop = edit.loop && !edit.one_shot;
 		} else if (c == DACC_LOOP) {
 			edit.loop = !edit.loop;
-			edit.one_shot = edit.one_shot && !edit.loop;
 		} else {
 			edit.gain = (int16_t)dac_normalize_gain(own);
 		}
@@ -3012,16 +3020,24 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT -0.5", dac_normalize_gain(own) / 10.0);
 		break;
 	case DACC_FADE:
-		snprintf(out, size, fade_unused(own, edit) ? "FADE: NOT USED BY A LOOP WITHOUT RELEASE" : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
+		snprintf(out, size, fade_unused(own, edit) ? (edit->one_shot ? "FADE: NOT USED, ONE-SHOT LOOP NEVER ENDS" : "FADE: NOT USED BY A LOOP WITHOUT RELEASE") : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
 		break;
 	case DACC_LOOP_START:
 	case DACC_LOOP_END:
 	case DACC_LOOP_BODY:
 		loop_hint(own, edit, c, held && (c != DACC_LOOP_BODY || g->dac_moved), out, size);
 		break;
-	case DACC_ONE_SHOT:
-		snprintf(out, size, edit->loop ? "ONE-SHOT: PLAYS TO THE END, LOOP GOES OFF" : edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
+	case DACC_ONE_SHOT: {
+		dac_marks shot_marks;
+		dac_marks_of(own, edit, &shot_marks);
+		// Only a loop in effect goes on past Note Off: not one TOO SHORT.
+		if (edit->loop && shot_marks.loops) {
+			snprintf(out, size, edit->one_shot ? "ONE-SHOT: LOOP GOES ON PAST NOTE OFF" : "ONE-SHOT OFF. CLICK: LOOP PAST NOTE OFF");
+		} else {
+			snprintf(out, size, edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
+		}
 		break;
+	}
 	case DACC_LOOP: {
 		dac_marks m;
 		shown_marks(own, edit, &m);
@@ -3030,11 +3046,13 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		if (m.too_short) {
 			snprintf(out, size, edit->loop ? "TOO SHORT: %s MS KEPT, LOOP NEEDS %s" : "LOOP OFF: %s MS KEPT, NEEDS %s", a, b);
 		} else if (!edit->loop) {
-			snprintf(out, size, edit->one_shot ? "LOOP: REPEAT WHILE HELD, ONE-SHOT GOES OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
+			snprintf(out, size, edit->one_shot ? "LOOP OFF. CLICK: REPEAT PAST NOTE OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
 		} else {
 			ms_text(ms_of(own, m.frame_loop_end - m.frame_loop_start), a, sizeof(a));
 			ms_text(ms_of(own, m.frame_end - m.frame_loop_end), b, sizeof(b));
-			if (m.release) {
+			if (edit->one_shot) {
+				snprintf(out, size, "LOOP %s MS, PAST NOTE OFF. CLICK: OFF", a);
+			} else if (m.release) {
 				snprintf(out, size, "LOOP %s MS, RELEASE %s MS. CLICK: OFF", a, b);
 			} else {
 				snprintf(out, size, "LOOP %s MS. CLICK: OFF", a);
@@ -4761,10 +4779,15 @@ static void edit_once(mdmi_gui *g, uint32_t id, int value)
 }
 
 // How far the mouse moves for one step, so short ranges don't jump and long ones don't crawl.
-static int drag_value(int start, int max, int dy)
+// Channel 3's operator Semi and Fine take wider steps than their ranges give (stage 22a): a
+// semitone or a cent has to be hit exactly.
+static int drag_value(uint32_t id, int start, int max, int dy)
 {
 	int value;
-	if (max > 127) {
+	const int field = is_ch3_op_global(id) ? (int)(id - GLOBAL_CH3_OP_BASE) % PATCH_CH3_OP_FIELDS : -1;
+	if (field == PATCH_CH3_SEMI || field == PATCH_CH3_FINE) {
+		value = start + dy / (field == PATCH_CH3_SEMI ? 6 : 3);
+	} else if (max > 127) {
 		value = start + dy * 4;
 	} else {
 		int pixels = max + 1 <= 8 ? 12 : max + 1 <= 32 ? 6 : 2;
@@ -5169,7 +5192,7 @@ static void on_move(mdmi_gui *g, int x, int y)
 	if (!g->drag_moved) {
 		return;
 	}
-	int value = drag_value(g->drag_start, patch_param(g->drag_id)->max, dy);
+	int value = drag_value(g->drag_id, g->drag_start, patch_param(g->drag_id)->max, dy);
 	if (value != g->drag_value) {
 		g->drag_value = value;
 		edit(g, GUI_EDIT_SET, g->drag_id, value);
@@ -5205,7 +5228,6 @@ static void on_up(mdmi_gui *g)
 			// A click on the loop's row: the body turns LOOP off, the shadow on (stage 18b).
 			edit = g->dac_drag_from;
 			edit.loop = !edit.loop;
-			edit.one_shot = edit.one_shot && !edit.loop;
 		}
 		g->dac_drag = DACC_NONE;
 		if (GetCapture() == g->window) {
@@ -5627,6 +5649,38 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 	} else if (dac_bank(g, patch_view(g->source.patch)) && client.x / g->scale >= BANK_X) {
 		scroll_dac(g, g->dac_top - delta / WHEEL_DELTA * WHEEL_ROWS);
 		refresh(g);
+	} else if (!g->dragging) {
+		// Stage 22a: a notch over a numeric cell steps it by one, a whole change to the host each.
+		// Smooth wheels send parts of a notch; they add up to one.
+		g->mouse_x = client.x / g->scale;
+		g->mouse_y = client.y / g->scale;
+		const int index = hovered(g);
+		if (index < 0 || (g->cells[index].kind != CELL_ROW && g->cells[index].kind != CELL_COLUMN)) {
+			g->wheel_rest = 0;
+			return;
+		}
+		// Parts of a notch count for one cell only.
+		if (g->cells[index].id != g->wheel_rest_id) {
+			g->wheel_rest = 0;
+			g->wheel_rest_id = g->cells[index].id;
+		}
+		g->wheel_rest += delta;
+		const int notches = g->wheel_rest / WHEEL_DELTA;
+		g->wheel_rest -= notches * WHEEL_DELTA;
+		if (!notches) {
+			return;
+		}
+		const uint32_t id = g->cells[index].id;
+		const int max = patch_param(id)->max;
+		const int now = g->wheel_pending && g->wheel_id == id ? g->wheel_value : patch_get(g->source.patch, id);
+		const int value = now + notches < 0 ? 0 : now + notches > max ? max : now + notches;
+		if (value != now) {
+			edit_once(g, id, value);
+			g->wheel_pending = true;
+			g->wheel_id = id;
+			g->wheel_value = value;
+		}
+		refresh(g);
 	}
 }
 
@@ -5641,6 +5695,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	case WM_TIMER:
 		g->message_ticks -= g->message_ticks > 0;
 		g->flash_ticks -= g->flash_ticks > 0;
+		if (g->wheel_pending && patch_get(g->source.patch, g->wheel_id) == g->wheel_value) {
+			g->wheel_pending = false;
+		}
 		if (g->env_drag != ENV_NONE) {
 			envelope_hand(g);
 		}

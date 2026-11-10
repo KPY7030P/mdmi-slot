@@ -1810,8 +1810,8 @@ void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
 
 // Sends a dealt note's Note On. The ROM gives a note the free voice of its channel with the lowest
 // number, so the dealer's keys follow that. A voice taken off every channel (Retrigger Free) is
-// none of them.
-static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, patch_emit_fn emit, void *context)
+// none of them. A note played over on a Porta On channel only glides: no key-on follows.
+static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, bool glides, patch_emit_fn emit, void *context)
 {
 	int voice = note->channel;
 	if (!alone) {
@@ -1833,9 +1833,9 @@ static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, pa
 		voice = first;
 	}
 	// The DAC keys nothing on: its voice is channel 6's from the DAC's start on (patch_sync). Nor
-	// does CSM write 0x28 (stage 22): channel 3 plays alone on its own voice, which is its own at once.
+	// does CSM write 0x28 (stage 22), nor a glide (22a): the voice plays alone and is its own at once.
 	if (patch->owner && !is_dac_voice(patch, note->channel)) {
-		patch->owner(context, voice, note->channel, note->channel == 2 && patch_ch3_csm(&patch->model));
+		patch->owner(context, voice, note->channel, glides || (note->channel == 2 && patch_ch3_csm(&patch->model)));
 	}
 	emit_note(emit, context, 0x90, note->channel, note->key, note->velocity);
 }
@@ -1944,7 +1944,8 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 		if (dealt[i] == MUTED || patch->waiting_count[note->channel]) {
 			continue;
 		}
-		start_note(patch, note, dealt[i] == ALONE, emit, context);
+		const bool glides = dealt[i] == ALONE && !fresh[i] && patch->model.channels[note->channel][PARAM_PORTA_ON];
+		start_note(patch, note, dealt[i] == ALONE, glides, emit, context);
 	}
 	patch->pending_count = 0;
 	publish_voices(patch);
@@ -1968,7 +1969,8 @@ void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	patch_sync(patch, &patch->rom, emit, context);
 	patch->resync = false;
 	for (int i = 0; i < count; i++) {
-		start_note(patch, &due[i], plays_alone(patch, due[i].channel), emit, context);
+		// Only notes that aren't played over wait, so none of them glides.
+		start_note(patch, &due[i], plays_alone(patch, due[i].channel), false, emit, context);
 	}
 	publish_voices(patch);
 }

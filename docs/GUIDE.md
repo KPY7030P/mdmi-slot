@@ -35,7 +35,10 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 
 Every MIDI channel is an instrument of its own: its knobs always mean that channel, so lanes for several channels
 can run at once. There are 377 of them, too many for Live to fill its panel by itself: use Configure and touch a
-cell in the window. Choosing a channel in the window only changes the view, no knob or lane.
+cell in the window. Choosing a channel in the window only changes the view, no knob or lane. A cell with a
+number takes a vertical drag (`drag_value`: pixels a step by its range; channel 3's Semi 6 px, Fine 3 px, stage
+22a) or a wheel notch, one step and one gesture to the host each; parts of a notch from smooth wheels add up.
+The wheel scrolls the BANK and DAC lists where it did; the DAC page's own cells, envelope and arp bars take no wheel.
 
 - Global: Filter (3392 Hz matches the original console, top is off), LFO On, LFO Rate,
   Ch3 Special Mode, DAC Enable, Retrigger, Noise Type, Noise Rate, Master Volume, Ch3 Notes, LFO Reset, and
@@ -117,7 +120,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   bits 4-5 go once; its bits 7-6 and 0 are not taken. A driver load (DAC on or off) writes 0x27 from the
   shadow after SGDK's `YM2612_reset` cleared it, which leaves 0x24-0x26 alone; a ROM reset clears the
   shadow. The dealer gives voice 3 to channel 3 at once for a CSM note (`owner` with `at_once`): no 0x28
-  key-on marks it. Not checked on a console; the chip's TL in CSM differs from BlastEm's (stage 26).
+  key-on marks it. So does a glide note on any FM channel (stage 22a, `start_note` `glides`: a note dealt
+  alone over a held one with Porta On): it only moves the pitch, no key-on comes to settle a waiting owner;
+  the voice is the same channel's already, so nothing sounded wrong, but `reg_test` counted the owner as
+  missed. Not checked on a console; the chip's TL in CSM differs from BlastEm's (stage 26).
 - LFO Reset (id 11, CC 82: off, or MIDI 1-6 at the start of each seventh, value * 7 / 128 back): our ROM
   writes 0x22 without bit 3 and right after it 0x22 from its shadow before the 0x28 of every new attack on
   that channel's FM voices (a chord's note on another voice and a raised note of the stack too), not for
@@ -154,8 +160,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
   last 4 ms), ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads) and LOOP (stage 18: it repeats
   until Note Off, record flag 0x01 for the SGDK driver's own loop; the length is cut to whole 256-byte
-  blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP and ONE-SHOT
-  exclude each other; the project's head byte is 0 cut, 1 one-shot, 2 loop. A WAV dropped on the open
+  blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP with ONE-SHOT
+  (stage 22a, D53) loops past Note Off: both record flags, the ROM's release returns on ONE-SHOT first; the
+  tail stays in the image, drawn dim, and FADE is unused. The project's head byte is 0 cut, 1 one-shot,
+  2 loop, 3 loop with one-shot (0.22 reads 3 as one-shot). A WAV dropped on the open
   note's wave goes to that note. Loop marks (stage 18b, `docs/research/drv-pcm-loop-marks.md`): a row
   under the trim strip has the loop's own tabs; `dac_marks_of` snaps them to blocks from START, at least
   one block, and an intro only when start to loop end spans 5, 4, 3, 3, 2, 2 blocks by rate (the ROM moves

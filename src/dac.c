@@ -124,11 +124,13 @@ static double step_of(const dac_sample *sample, const dac_edit *edit)
 static void set_flags(dac_sample *sample, const dac_marks *marks)
 {
 	const uint32_t blocks = sample->sample.length / ROM_SAMPLE_BLOCK;
-	sample->sample.flags = marks->loops ? ROM_SAMPLE_LOOP : sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+	// LOOP with ONE-SHOT loops past Note Off (stage 22a, D53).
+	const uint8_t one_shot = sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+	sample->sample.flags = (marks->loops ? ROM_SAMPLE_LOOP : 0) | one_shot;
 	sample->sample.loop_start = sample->sample.loop_end = 0;
 	if (!sample->source_hz) {
 		// Bytes made otherwise (tests), with no rate to reckon the marks by: a loop is all of them.
-		sample->sample.flags = sample->edit.loop && blocks ? ROM_SAMPLE_LOOP : sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+		sample->sample.flags = (sample->edit.loop && blocks ? ROM_SAMPLE_LOOP : 0) | one_shot;
 		return;
 	}
 	if (marks->loops && (marks->loop_start || marks->loop_end != blocks)) {
@@ -578,8 +580,9 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 		put16(&out, (uint16_t)s->edit.gain);
 		*out++ = (uint8_t)s->edit.rate;
 		*out++ = s->edit.fade;
-		// How Note Off ends it: 0 cuts, 1 one-shot, 2 loop (stage 18; a build before reads 2 as one-shot).
-		*out++ = s->edit.loop ? 2 : s->edit.one_shot ? 1 : 0;
+		// How Note Off ends it: 0 cuts, 1 one-shot, 2 loop (stage 18; a build before reads 2 as one-shot),
+		// 3 loop past Note Off (stage 22a; 0.22 reads it as one-shot).
+		*out++ = (uint8_t)((s->edit.loop ? 2 : 0) | (s->edit.one_shot ? 1 : 0));
 		*out++ = s->sample.rate;
 		*out++ = s->clipped;
 		put32(&out, s->sample.length);
@@ -631,8 +634,8 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		s->edit.gain = (int16_t)get16(&h);
 		s->edit.rate = (int8_t)*h++;
 		s->edit.fade = *h++ != 0;
-		s->edit.loop = *h == 2;
-		s->edit.one_shot = *h != 0 && !s->edit.loop;
+		s->edit.loop = *h == 2 || *h == 3;
+		s->edit.one_shot = *h == 1 || *h == 3;
 		h++;
 		s->sample.rate = *h++;
 		s->clipped = *h++ != 0;

@@ -43,7 +43,10 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   Hz: within 8 cents, 5.4 at most in BlastEm); above it the timer's steps get coarse: note 81 (880 Hz) is
   13 cents flat, note 84 (1047 Hz) 3 flat, note 96 (2093 Hz) 31 sharp. The lowest note is MIDI 32 (52 Hz);
   every note below plays as note 32. A bend, portamento or the
-  arpeggio row moves the rate without a new attack. On the chip the operators' TL works differently in CSM
+  arpeggio row moves the rate without a new attack.
+  Portamento glides only between overlapping notes: with Porta On, a new note slides from the previous one
+  only while that one is still held.
+  On the chip the operators' TL works differently in CSM
   than in BlastEm: operators with a high TL may die away faster on a console. MIDI 11-13 do nothing in CSM.
   Not checked on a real console yet.
 - LFO RESET in the bottom strip (0.21): every new FM note of one chosen MIDI channel 1-6 restarts the chip's
@@ -61,6 +64,8 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   driver loads a volume table. Channel 6's Pan (CC 10) puts all four left, centre or right, also while they
   play. A sample with LOOP repeats while the key is held. Its loop has its own tabs on the wave: the part
   before it plays once, the part after it plays when the key is let go. Drag the loop's body to move it whole.
+  With ONE-SHOT on as well, the loop goes on past Note Off and the part after it doesn't play; the next note
+  of the same key, a fifth note or stopping the transport ends it.
   A loop is at least one block of the driver (256 bytes, about 17 ms). Not checked on a real console yet.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
   from silence.
@@ -103,7 +108,8 @@ To update, replace the files while the host is closed: Live locks the VST3 while
    other MIDI tracks to it on MIDI channels 2-10 (in Live: MIDI To the instrument's track, then the plugin
    and the channel). Each channel is an instrument of its own, with its own knobs.
 3. In the window, pick a channel on the left. EDITOR shows its sound, BANK the bank, ALL every channel at once.
-   Drag a value up or down to change it. Preset, a clip's Pgm, or Program Change choose a bank place.
+   Drag a value up or down to change it, or turn the mouse wheel over it for one step a notch. Preset, a
+   clip's Pgm, or Program Change choose a bank place.
 4. To automate a knob in Live, press Configure on the device and touch the cell in the window. The plugin
    has hundreds of knobs, too many for Live to list by itself.
 5. The project saves everything: knob values, the bank, dropped files, samples.

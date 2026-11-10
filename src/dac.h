@@ -32,7 +32,8 @@ typedef struct {
 	// Note Off doesn't stop it (ROM_SAMPLE_ONE_SHOT).
 	bool one_shot;
 	// It repeats until Note Off (ROM_SAMPLE_LOOP, stage 18): the length is cut to whole blocks, so
-	// the driver's repeat has no silence in it, and FADE doesn't apply. Never with one_shot.
+	// the driver's repeat has no silence in it, and FADE doesn't apply. With one_shot it repeats past
+	// Note Off until the key plays again, a fifth note takes it, or a stop (stage 22a, D53).
 	bool loop;
 	// Loop marks in source frames (stage 18b): the repeat runs [loop_start, loop_end), what follows
 	// loop_end plays after Note Off. loop_end 0 is no marks: the loop is all the kept part, as in 0.18.

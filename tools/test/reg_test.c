@@ -1059,6 +1059,39 @@ static void test_loop_marks(void)
 		sync_and_settle();
 		dac_clear(&set);
 	}
+	// Stage 22a (D53): LOOP with ONE-SHOT, the same three parts: after Note Off the loop goes on for a
+	// second with no quiet window and no release; CC 123 stops it.
+	{
+		static float long_peaks[1100];
+		static char long_letters[1101];
+		dac_set set = {0};
+		dac_sample *s = marked_sample(1, 1, 2, 2);
+		s->sample.flags |= ROM_SAMPLE_ONE_SHOT;
+		dac_put(&set, 50, s);
+		boot_set(&set);
+		midi(0x95, 50, 127);
+		mark_windows(long_peaks, 100);
+		float loud = 0;
+		for (int w = 0; w < 100; w++) {
+			loud = long_peaks[w] > loud ? long_peaks[w] : loud;
+		}
+		midi(0x85, 50, 0);
+		mark_windows(long_peaks, 1000);
+		mark_letters(long_peaks, 1000, loud, long_letters);
+		const bool loops_on = strspn(long_letters, "L?") == 1000 && !strchr(long_letters, 'Q') && !strchr(long_letters, 'R') && !strchr(long_letters, 'I');
+		if (!loops_on) {
+			printf("    loop with one-shot after Note Off: %.200s\n", long_letters);
+		}
+		midi(0xB5, 123, 0);
+		render(RATE / 20 / BLOCK);
+		const float stopped = loudest(RATE / 10 / BLOCK);
+		printf("    loop with one-shot: 1 s after Note Off %s, after CC 123 loudest %.4f\n", loops_on ? "loop only" : "FAILED", stopped);
+		check(loops_on, "LOOP with ONE-SHOT: the loop goes on 1 s past Note Off, no quiet window, no release");
+		check(stopped < 0.01f, "LOOP with ONE-SHOT: CC 123 stops it");
+		set_global(GLOBAL_DAC, 0);
+		sync_and_settle();
+		dac_clear(&set);
+	}
 	size_t rom_size;
 	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
 	boot_image(rom, rom_size);
@@ -4026,6 +4059,99 @@ static void test_csm(void)
 	render(SETTLE_BLOCKS);
 }
 
+// The formants' pitch registers of channel 3: A2/A6 for operator 4, A8-AA and AC-AE for 1-3.
+static uint64_t ch3_formant_regs(void)
+{
+	static const uint8_t REGS[8] = {0xA2, 0xA6, 0xA8, 0xA9, 0xAA, 0xAC, 0xAD, 0xAE};
+	uint64_t all = 0;
+	for (int i = 0; i < 8; i++) {
+		all = all << 8 | mdmi_engine_test_ym(engine, 0, REGS[i]);
+	}
+	return all;
+}
+
+// Operator 4's pitch as F-num times 2^block: grows with the frequency across octaves.
+static double ch3_op4_rate(void)
+{
+	const uint16_t pitch = pitch_of(2);
+	return (double)(pitch & 0x7FF) * (1 << (pitch >> 11 & 7));
+}
+
+// Stage 22a, item 3: Porta On, Porta Time 64, note 45 held, note 57 over it, 45 released halfway. In
+// CSM with Fixed on four formants NA climbs frame by frame from note 45's to note 57's; in ONE NOTE
+// without Fixed (the control) operator 4's F-num does the same. No key changes in either.
+static void test_csm_portamento(void)
+{
+	printf("  portamento in CSM\n");
+	static const int ONE[4] = {127, 127, 127, 10};
+	sine_voice(2, ONE, 8, 0);
+	patch_set(patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_TIME), 64);
+	set_on(2, PARAM_PORTA_ON, 1);
+	for (int mode = 0; mode < 2; mode++) {
+		const bool csm = mode == 0;
+		for (int op = 0; op < 4; op++) {
+			set_global(GLOBAL_CH3_OP(op, PATCH_CH3_FIXED), csm);
+		}
+		csm_mode(csm ? PATCH_CH3_CSM : PATCH_CH3_ONE_NOTE);
+		midi(0x92, 45, 127);
+		render(8);
+		const uint8_t keys = key_reg(), mode_reg = ch3_mode_reg();
+		const uint64_t formants = ch3_formant_regs();
+		const int na_start = csm_na_reg();
+		const double rate_start = ch3_op4_rate();
+		midi(0x92, 57, 127);
+		// 26 frames of 1/60 s glide; read every 64 samples for 700 ms.
+		int steps = 0, na_last = na_start, na_mid = -1;
+		double rate_last = rate_start, mid_hz = 0;
+		bool monotone = true, keys_kept = true, formants_kept = true;
+		for (int t = 0; t < RATE * 7 / 10 / 64; t++) {
+			if (t == RATE / 5 / 64) {
+				const int n = capture_output(2, RATE / 50);
+				na_mid = csm_na_reg();
+				mid_hz = csm ? fine_peak_hz(n, csm_hz(na_mid)) : fine_peak_hz(n, key_hz(51));
+				midi(0x82, 45, 0);
+			}
+			tick(64);
+			keys_kept = keys_kept && key_reg() == keys && ch3_mode_reg() == mode_reg;
+			if (csm) {
+				const int na = csm_na_reg();
+				monotone = monotone && na >= na_last;
+				steps += na != na_last;
+				na_last = na;
+				formants_kept = formants_kept && ch3_formant_regs() == formants;
+			} else {
+				const double rate = ch3_op4_rate();
+				monotone = monotone && rate >= rate_last;
+				steps += rate != rate_last;
+				rate_last = rate;
+			}
+		}
+		const bool between = mid_hz > key_hz(45) * 1.03 && mid_hz < key_hz(57) / 1.03;
+		if (csm) {
+			printf("    CSM: NA %d to %d in %d steps (notes 45 and 57: %d, %d); at 200 ms NA %d, output 3 at %.1f Hz\n", na_start, na_last, steps, csm_na(45), csm_na(57), na_mid, mid_hz);
+			checkf(na_start == csm_na(45) && na_last == csm_na(57) && monotone && steps >= 20,
+				"CSM, Porta On: NA climbs frame by frame from note 45's %d to note 57's %d and stays (%d steps)", csm_na(45), csm_na(57), steps);
+			checkf(keys_kept && formants_kept, "and during the glide 0x27 and 0x28 stay, the Fixed formants keep their pitch");
+			checkf(between, "the fundamental of output 3 at 200 ms lies between the two notes (%.1f Hz)", mid_hz);
+		} else {
+			printf("    ONE NOTE: operator 4 from %.0f to %.0f (x%.3f) in %d steps; at 200 ms %.1f Hz\n", rate_start, rate_last, rate_last / rate_start, steps, mid_hz);
+			checkf(fabs(rate_last / rate_start - 2) < 0.01 && monotone && steps >= 20 && keys_kept && between,
+				"ONE NOTE, Porta On (the control): operator 4 glides an octave frame by frame, 0x28 stays, the middle lies between the notes");
+		}
+		midi(0x82, 57, 0);
+		render(SETTLE_BLOCKS);
+	}
+	for (int op = 0; op < 4; op++) {
+		set_global(GLOBAL_CH3_OP(op, PATCH_CH3_FIXED), 0);
+	}
+	set_on(2, PARAM_PORTA_ON, 0);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	midi(0xC2, 0, 0);
+	render(SETTLE_BLOCKS);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -4102,6 +4228,8 @@ int main(int argc, char **argv)
 	test_lfo_reset();
 	test_reset();
 	test_csm();
+	test_reset();
+	test_csm_portamento();
 	test_reset();
 	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

@@ -368,6 +368,14 @@ static void drag(HWND window, int x, int y, int to_y)
 	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, to_y));
 }
 
+// A wheel turn over a point of the window: delta in 120ths of a notch, as Windows gives it.
+static void wheel(HWND window, int x, int y, int delta)
+{
+	POINT screen = {x, y};
+	ClientToScreen(window, &screen);
+	SendMessageA(window, WM_MOUSEWHEEL, MAKEWPARAM(0, (short)delta), MAKELPARAM(screen.x, screen.y));
+}
+
 // A sideways drag in four moves, as a hand makes it.
 static void drag_x(HWND window, int x, int y, int to_x)
 {
@@ -809,6 +817,23 @@ int main(int argc, char **argv)
 		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH4_OP1_TL && pushed_id[2] == CH4_OP1_TL, "a drag is one gesture on channel 4's Op1 TL");
 		CHECK(pushed[1] > 0 && pushed_id[1] == CH4_OP1_TL && (int)pushed_value == get_value(CH4_OP1_TL), "the host is told each value");
 		CHECK(get_value(CH4_OP1_TL) == ch4_before + 10 && get_value(CH3_OP1_TL) == ch3_before, "20 px up raises it by 10, from %d to %d, channel 3 untouched", ch4_before, get_value(CH4_OP1_TL));
+		// Stage 22a: the wheel on TL, a notch up and one down.
+		memset(pushed, 0, sizeof(pushed));
+		wheel(window, OP1_TL_X, OP1_TL_Y, 120);
+		run_ms(50);
+		const int tl_up = get_value(CH4_OP1_TL);
+		wheel(window, OP1_TL_X, OP1_TL_Y, -120);
+		run_ms(50);
+		CHECK(tl_up == ch4_before + 11 && get_value(CH4_OP1_TL) == ch4_before + 10 && pushed[0] == 2 && pushed[2] == 2 && pushed_id[0] == CH4_OP1_TL,
+			"a wheel notch up on TL gives +1, one down -1, a gesture each (%d gestures)", pushed[0]);
+		// Two notches quicker than the writer takes them: each steps from the one before.
+		wheel(window, OP1_TL_X, OP1_TL_Y, 120);
+		wheel(window, OP1_TL_X, OP1_TL_Y, 120);
+		run_ms(50);
+		const int quick = get_value(CH4_OP1_TL);
+		wheel(window, OP1_TL_X, OP1_TL_Y, -240);
+		run_ms(50);
+		CHECK(quick == ch4_before + 12 && get_value(CH4_OP1_TL) == ch4_before + 10, "two quick notches give +2 (%+d), two down back", quick - ch4_before - 10);
 		// Stage 10: TL now differs from what the channel got, its GM place (D31).
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
 		run_ms(100);
@@ -1069,8 +1094,8 @@ int main(int argc, char **argv)
 		capture(window);
 		const int frame_open = pitch_frame();
 		memset(pushed, 0, sizeof(pushed));
-		drag(window, PITCH_SEMI_X, PITCH_SEMI_Y, PITCH_SEMI_Y - 20);
-		drag(window, PITCH_SEMI_X, PITCH_FINE_Y, PITCH_FINE_Y + 10);
+		drag(window, PITCH_SEMI_X, PITCH_SEMI_Y, PITCH_SEMI_Y - 60);
+		drag(window, PITCH_SEMI_X, PITCH_FINE_Y, PITCH_FINE_Y + 30);
 		click(window, PITCH_FIX_X, PITCH_FIX_Y);
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(PITCH_SEMI_X, PITCH_SEMI_Y));
 		run_ms(100);
@@ -1078,9 +1103,22 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "ch3-pitch");
 		const int semi = get_value(CH3_OP2_SEMI), fine = get_value(CH3_OP2_FINE), fixed = get_value(CH3_OP2_FIXED);
 		const int tag_fixed = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_FM_LIGHT);
-		CHECK(frame_open == 114 && semi == 58 && fine == fine_before - 5 && fixed == 1 && pushed[0] == 3 && pushed_id[0] == CH3_OP2_FIXED,
-			"a click on operator 2's tag opens its editor (%d px); SEMI drags to %+d, FINE to %+d, FIX turns on, %d gestures", frame_open, semi - 48, fine - 63, pushed[0]);
+		// Stage 22a: 6 px a semitone, 3 px a cent.
+		CHECK(frame_open == 114 && semi == 58 && fine == fine_before - 10 && fixed == 1 && pushed[0] == 3 && pushed_id[0] == CH3_OP2_FIXED,
+			"a click on operator 2's tag opens its editor (%d px); 60 px drag SEMI to %+d, 30 px FINE to %+d, FIX turns on, %d gestures", frame_open, semi - 48, fine - 63, pushed[0]);
 		CHECK(tag_fixed > 300, "with FIX the tag is filled light FM (%d px)", tag_fixed);
+		// Stage 22a: a notch steps a cell by one, a gesture each; two half notches make one.
+		memset(pushed, 0, sizeof(pushed));
+		wheel(window, PITCH_SEMI_X, PITCH_SEMI_Y, 120);
+		wheel(window, PITCH_SEMI_X, PITCH_FINE_Y, -60);
+		const int half_fine = get_value(CH3_OP2_FINE);
+		wheel(window, PITCH_SEMI_X, PITCH_FINE_Y, -60);
+		run_ms(50);
+		CHECK(get_value(CH3_OP2_SEMI) == semi + 1 && half_fine == fine && get_value(CH3_OP2_FINE) == fine - 1 && pushed[0] == 2 && pushed[2] == 2,
+			"a notch up moves SEMI to %+d, two half notches down FINE to %+d, %d gestures", get_value(CH3_OP2_SEMI) - 48, get_value(CH3_OP2_FINE) - 63, pushed[0]);
+		wheel(window, PITCH_SEMI_X, PITCH_SEMI_Y, 120 * 60);
+		run_ms(50);
+		CHECK(get_value(CH3_OP2_SEMI) == 96, "60 notches at once stop SEMI at +48 (%+d)", get_value(CH3_OP2_SEMI) - 48);
 		double_click(window, PITCH_SEMI_X, PITCH_SEMI_Y);
 		double_click(window, PITCH_SEMI_X, PITCH_FINE_Y);
 		double_click(window, PITCH_FIX_X, PITCH_FIX_Y);
@@ -1195,6 +1233,19 @@ int main(int argc, char **argv)
 		CHECK(count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK) > 1000, "and lights its row");
 		CHECK(count_color_in(SCROLL_X, SCROLL_X + 6, SCROLL_TOP, SCROLL_BOTTOM, COLOR_FM_LIGHT) > 0, "the other channels' places are marked on the scroll track");
 		save_bmp(argv[2], "bank");
+		// Stage 22a: the wheel over the list still scrolls it, no knob moves: place 3's row goes up and out.
+		{
+			memset(pushed, 0, sizeof(pushed));
+			wheel(window, BANK_ROW_X, BANK_ROW3_Y, -120 * 2);
+			run_ms(50);
+			capture(window);
+			const int lit_there = count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK);
+			wheel(window, BANK_ROW_X, BANK_ROW3_Y, 120 * 2);
+			run_ms(50);
+			capture(window);
+			CHECK(lit_there < 1000 && count_color_in(BANK_ROW_X - 150, BANK_ROW_X + 290, BANK_ROW3_Y - 10, BANK_ROW3_Y + 9, COLOR_FM_DARK) > 1000 && pushed[0] + pushed[1] + pushed[2] == 0,
+				"the wheel over the bank list scrolls it (%d px lit after, back after up), no knob moves", lit_there);
+		}
 		// Arrows from the host's view (our clap-wrapper patch) step the place, each press one gesture,
 		// also when presses come faster than the model takes them; past the first place nothing moves.
 		typedef struct {
@@ -1218,6 +1269,22 @@ int main(int argc, char **argv)
 		// column it passed, tells the host nothing (D19), and UNDO puts the envelope back.
 		click(window, RAIL_X, RAIL_CH8_Y);
 		run_ms(100);
+		// Stage 22a: the wheel on a PSG knob, channel 8's VOL: a notch up +1, far down stops at 0, back.
+		{
+			const uint32_t ch8_volume = 1801;
+			const int vol_x = 242 + 50, vol_y = 56 + 10, /* VOL at x 242, the first row at y 56 */ was = get_value(ch8_volume);
+			memset(pushed, 0, sizeof(pushed));
+			wheel(window, vol_x, vol_y, -120);
+			run_ms(50);
+			const int down = get_value(ch8_volume);
+			wheel(window, vol_x, vol_y, -120 * 200);
+			run_ms(50);
+			const int vol_floor = get_value(ch8_volume);
+			wheel(window, vol_x, vol_y, 120 * was);
+			run_ms(50);
+			CHECK(was > 0 && down == was - 1 && vol_floor == 0 && get_value(ch8_volume) == was && pushed_id[0] == ch8_volume,
+				"the wheel on channel 8's VOL: a notch down %d to %d, far down stops at %d, back to %d", was, down, vol_floor, get_value(ch8_volume));
+		}
 		// The length cell dragged far up: the longest envelope, 3 or 4 px a column (0.8.1).
 		memset(pushed, 0, sizeof(pushed));
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y - 300);
@@ -1572,7 +1639,7 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "CLEAR gives note 40 the ROM's sample again, no restart (%ld ms)", reset_ms);
 		// Stage 18: a WAV dropped on the open note's wave replaces its sound, an FM file is refused
-		// there; LOOP and ONE-SHOT exclude each other.
+		// there; LOOP and ONE-SHOT go together (stage 22a: a loop past Note Off).
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(200);
 		click(window, GRID_NOTE40_X + 17, GRID_NOTE40_Y + 8);
@@ -1610,13 +1677,14 @@ int main(int argc, char **argv)
 		capture(window);
 		const int loop_off = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
 		const int shot_on = count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
-		CHECK(shot_on > 1000 && loop_off == 0, "ONE-SHOT turns LOOP off (%d px, LOOP %d px)", shot_on, loop_off);
-		click(window, 660, DAC_ROW_A_Y + 10);
+		save_bmp(argv[2], "dac-loop-one-shot");
+		CHECK(shot_on > 1000 && loop_off > 1000, "ONE-SHOT lights beside LOOP (%d px, LOOP %d px)", shot_on, loop_off);
+		click(window, 660, DAC_ROW_B_Y + 10);
 		wait_applied(window);
 		capture(window);
 		CHECK(count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0
 				&& count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000,
-			"and LOOP turns ONE-SHOT off");
+			"and ONE-SHOT goes off again, LOOP stays");
 		// Stage 18b: the loop's row. Its body (dark) runs from START to the last whole block; the end
 		// tab dragged left leaves a release, the body dragged moves the loop with its length and stops
 		// at the last whole block, a click turns LOOP off, a click on the shadow on again.
@@ -1667,6 +1735,17 @@ int main(int argc, char **argv)
 			const int l4 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s4);
 			CHECK(count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000 && abs(l4 - l3) <= 3 && abs(s4 - s3) <= 2,
 				"a click on the shadow turns LOOP on where it was (%d px at %d)", l4, s4);
+			// Stage 22a: with ONE-SHOT on as well, a click on the body turns only LOOP off.
+			click(window, 660, DAC_ROW_B_Y + 10);
+			wait_applied(window);
+			capture(window);
+			save_bmp(argv[2], "dac-loop-past-note-off");
+			const int both = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000;
+			click(window, s4 + l4 / 2, DAC_LOOP_Y + 6);
+			wait_applied(window);
+			capture(window);
+			CHECK(both && count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) == 0 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000,
+				"LOOP and ONE-SHOT on together; a click on the body turns LOOP off, ONE-SHOT stays");
 		}
 		DeleteFileA(wav_path);
 		DeleteFileA(tfi_path);

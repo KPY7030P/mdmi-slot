@@ -2883,7 +2883,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..65f7bec 100644
+index d2449c4..a7fc75d 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -2910,7 +2910,7 @@ index d2449c4..65f7bec 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +235,46 @@ int main(void)
+@@ -226,10 +235,49 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -2950,6 +2950,9 @@ index d2449c4..65f7bec 100644
 +        midi_dac_test(test_midi_dac_marks_release_survives_lost_write),
 +        midi_dac_test(test_midi_dac_marks_release_after_driver_stopped),
 +        midi_dac_test(test_midi_dac_marks_without_release_stop),
++        midi_dac_test(test_midi_dac_marks_one_shot_loops_past_note_off),
++        midi_dac_test(test_midi_dac_marks_one_shot_loops_without_marks),
++        midi_dac_test(test_midi_dac_marks_one_shot_loop_taken_and_switched_off),
 +        midi_dac_test(test_midi_dac_marks_forgotten_on_all_notes_off),
 +        midi_dac_test(test_midi_dac_marks_forgotten_on_dac_switch),
 +        midi_dac_test(test_midi_dac_marks_on_voice_3),
@@ -2959,7 +2962,7 @@ index d2449c4..65f7bec 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +294,8 @@ int main(void)
+@@ -249,6 +297,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -2968,7 +2971,7 @@ index d2449c4..65f7bec 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,6 +359,17 @@ int main(void)
+@@ -312,6 +362,17 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -2986,7 +2989,7 @@ index d2449c4..65f7bec 100644
          synth_test(test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded),
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
-@@ -441,6 +499,58 @@ int main(void)
+@@ -441,6 +502,60 @@ int main(void)
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
  
@@ -3031,6 +3034,8 @@ index d2449c4..65f7bec 100644
 +        midi_test(test_midi_ch3_csm_cents_between_notes),
 +        midi_test(test_midi_ch3_csm_pal_periods),
 +        midi_test(test_midi_ch3_csm_timer_holds_out_of_range),
++        midi_test(test_midi_ch3_csm_portamento_moves_timer_a),
++        midi_test(test_midi_ch3_one_note_portamento),
 +        midi_test(test_midi_ch3_csm_legato_keeps_note),
 +        midi_test(test_midi_ch3_csm_raised_note_of_stack),
 +        midi_test(test_midi_ch3_csm_ignores_operator_channels),
@@ -3536,10 +3541,10 @@ index 0000000..4e0d9ca
 +void test_midi_arp_empty_row_writes_no_pitch(UNUSED void** state);
 diff --git a/tests/unit/test_midi_ch3.c b/tests/unit/test_midi_ch3.c
 new file mode 100644
-index 0000000..df0b359
+index 0000000..ec3acdd
 --- /dev/null
 +++ b/tests/unit/test_midi_ch3.c
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,619 @@
 +// MDMI plugin fork, stage 21 (D51): channel 3 by operators. Ch3 Notes (CC 81), operator intervals
 +// (CC 102-104) and LFO Reset (CC 82). The bytes of 0x28 are checked in test_synth.c and test_e2e.c.
 +#include "test_midi_ch3.h"
@@ -4069,6 +4074,87 @@ index 0000000..df0b359
 +    fm_note_on(MIDI_CHANNEL_1, FM_CH2, MIDI_PITCH_C5);
 +}
 +
++// Stage 22a, item 3: portamento in CSM and, as the control, in ONE NOTE. Fixed on all four formants,
++// Porta On, Porta Time 64 (47 cents a frame); note 45 held, note 57 over it, note 45 released
++// halfway. Each frame writes the four formants at C4 and, in CSM, the NA of the glide's pitch, which
++// climbs from note 45's 540 to note 57's 782 and stays there. No key is written during the glide.
++#define GLIDE_FRAMES 26 // 1200 cents at 47 a frame
++
++static void fixed_formants_at_c4(void)
++{
++    for (u8 op = 0; op < 4; op++) {
++        expect_op_pitch(op, MIDI_PITCH_C4, 0);
++    }
++}
++
++static void glide_from_45_to_57(bool csm)
++{
++    special_mode(true);
++    ch3_notes(csm ? CSM : ONE_NOTE);
++    for (u8 op = 0; op < 3; op++) {
++        __real_midi_cc(OP1_MIDI + op, CC_CH3_OP_FIXED, 127);
++    }
++    __real_midi_cc(CH3_MIDI, CC_CH3_OP_FIXED, 127);
++    __real_midi_cc(CH3_MIDI, CC_PORTAMENTO_ENABLE, 127);
++    __real_midi_cc(CH3_MIDI, CC_PORTAMENTO_TIME_MSB, 64);
++
++    fixed_formants_at_c4();
++    if (csm) {
++        expect_synth_csm_timer(540);
++    }
++    expect_synth_volume_any();
++    if (csm) {
++        expect_synth_csm_note_on();
++    } else {
++        expect_synth_note_on(FM_CH3);
++    }
++    __real_midi_note_on(CH3_MIDI, 45, MAX_MIDI_VOLUME);
++    // The second note only sets the glide's target.
++    __real_midi_note_on(CH3_MIDI, 57, MAX_MIDI_VOLUME);
++
++    u16 last = 540;
++    for (u16 frame = 1; frame <= GLIDE_FRAMES; frame++) {
++        u16 total = 4500 + frame * 47;
++        if (total > 5700) {
++            total = 5700;
++        }
++        fixed_formants_at_c4();
++        if (csm) {
++            const u16 na = midi_fm_sm_csm_timer(total / 100, total % 100);
++            assert_true(na > last);
++            last = na;
++            expect_synth_csm_timer(na);
++        }
++        midi_tick(1);
++        if (frame == GLIDE_FRAMES / 2) {
++            __real_midi_note_off(CH3_MIDI, 45);
++        }
++    }
++    if (csm) {
++        assert_int_equal(last, 782);
++    }
++    // At the target the glide writes nothing more.
++    midi_tick(1);
++    midi_tick(1);
++
++    if (csm) {
++        expect_synth_csm_note_off();
++    } else {
++        expect_synth_note_off(FM_CH3);
++    }
++    __real_midi_note_off(CH3_MIDI, 57);
++}
++
++void test_midi_ch3_csm_portamento_moves_timer_a(UNUSED void** state)
++{
++    glide_from_45_to_57(true);
++}
++
++void test_midi_ch3_one_note_portamento(UNUSED void** state)
++{
++    glide_from_45_to_57(false);
++}
++
 +// A bent pitch past FM's keys reads the table's ends, never past them (review of stage 22).
 +void test_midi_ch3_csm_timer_holds_out_of_range(UNUSED void** state)
 +{
@@ -4080,10 +4166,10 @@ index 0000000..df0b359
 +}
 diff --git a/tests/unit/test_midi_ch3.h b/tests/unit/test_midi_ch3.h
 new file mode 100644
-index 0000000..fd97b84
+index 0000000..77ef1c1
 --- /dev/null
 +++ b/tests/unit/test_midi_ch3.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,36 @@
 +#pragma once
 +#include "cmocka_inc.h"
 +
@@ -4118,6 +4204,8 @@ index 0000000..fd97b84
 +void test_midi_lfo_reset_on_raised_note(UNUSED void** state);
 +void test_midi_lfo_reset_on_chord_note_of_other_voice(UNUSED void** state);
 +void test_midi_ch3_csm_timer_holds_out_of_range(UNUSED void** state);
++void test_midi_ch3_csm_portamento_moves_timer_a(UNUSED void** state);
++void test_midi_ch3_one_note_portamento(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
 index 9650279..1ae6a88 100644
 --- a/tests/unit/test_midi_dac.c
@@ -4547,10 +4635,10 @@ index 5e63f7b..de0bf95 100644
 +void test_midi_dac_repeated_enable_keeps_voices(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac_marks.c b/tests/unit/test_midi_dac_marks.c
 new file mode 100644
-index 0000000..50194c4
+index 0000000..f7c46ee
 --- /dev/null
 +++ b/tests/unit/test_midi_dac_marks.c
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,344 @@
 +#include "test_midi_dac_marks.h"
 +#include "test_midi.h"
 +#include "mocks/mock_midi.h"
@@ -4745,6 +4833,94 @@ index 0000000..50194c4
 +    done();
 +}
 +
++// Stage 22a (D53): LOOP with ONE-SHOT. Note Off neither releases nor stops: the loop goes on,
++// its loop bit set and its params as they were, until the key plays again.
++void test_midi_dac_marks_one_shot_loops_past_note_off(UNUSED void** state)
++{
++    static const PcmMarked endless
++        = { { markedData, sizeof(markedData), 1, PCM_LOOP | PCM_ONE_SHOT | PCM_MARKS }, 2, 6 };
++    use_marked(&endless);
++    __real_midi_note_on(dacChannel, key, 100);
++    driver_copies();
++    midi_dac_tick();
++    const int takes = mock_pcm_takes;
++    __real_midi_note_off(dacChannel, key);
++    assert_int_equal(mock_pcm_takes, takes);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 1);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), BLOCK0 + 2);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 4);
++    assert_int_equal(mock_pcm_waited_us, 0);
++    assert_tick_idle();
++    // The key again restarts its own voice from the start; All Notes Off stops it.
++    __real_midi_note_on(dacChannel, key, 100);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), BLOCK0);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 6);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND] & 0x0f, 1);
++    driver_copies();
++    midi_dac_tick();
++    __real_midi_cc(dacChannel, 123, 0);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 0);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 1, 0);
++    done();
++}
++
++// A fifth note takes the endless loop's voice when it is the oldest; switching the DAC off then
++// unloads the driver (synth_enable_dac false) with no voice left to wait for.
++void test_midi_dac_marks_one_shot_loop_taken_and_switched_off(UNUSED void** state)
++{
++    static const PcmMarked endless
++        = { { markedData, sizeof(markedData), 1, PCM_LOOP | PCM_ONE_SHOT | PCM_MARKS }, 2, 6 };
++    static const u8 otherData[256 * 2] __attribute__((aligned(256))) = { 0 };
++    static const PcmSample other = { otherData, sizeof(otherData), 1, PCM_ONE_SHOT };
++    const PcmSample* was[4];
++    for (u8 k = 1; k <= 4; k++) {
++        was[k - 1] = percussionPcmSample[key + k];
++        percussionPcmSample[key + k] = &other;
++    }
++    use_marked(&endless);
++    __real_midi_note_on(dacChannel, key, 100);
++    driver_copies();
++    midi_dac_tick();
++    __real_midi_note_off(dacChannel, key);
++    for (u8 k = 1; k <= 3; k++) {
++        __real_midi_note_on(dacChannel, key + k, 100);
++        mock_pcm_ram[PCM_DRV_COMMAND] &= ~(1 << k);
++        mock_pcm_ram[PCM_DRV_STATUS] |= 1 << k;
++    }
++    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 0x0f, 0x0f);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 1);
++    __real_midi_note_on(dacChannel, key + 4, 100);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND] & 0x0f, 1);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), (u16)((u32)(long)otherData >> 8));
++    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 0);
++    expect_value(__wrap_synth_enable_dac, enable, false);
++    expect_synth_special_mode_keys_off();
++    expect_synth_stereo(5, STEREO_MODE_CENTRE);
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
++    __real_midi_cc(0, 78, 0);
++    assert_tick_idle();
++    for (u8 k = 1; k <= 4; k++) {
++        percussionPcmSample[key + k] = was[k - 1];
++    }
++    done();
++}
++
++// Without marks: the whole kept part loops past Note Off the same way.
++void test_midi_dac_marks_one_shot_loops_without_marks(UNUSED void** state)
++{
++    static const PcmMarked whole = { { markedData, sizeof(markedData), 1, PCM_LOOP | PCM_ONE_SHOT }, 0, 0 };
++    use_marked(&whole);
++    __real_midi_note_on(dacChannel, key, 100);
++    driver_copies();
++    const int takes = mock_pcm_takes;
++    __real_midi_note_off(dacChannel, key);
++    assert_int_equal(mock_pcm_takes, takes);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 1);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 8);
++    assert_tick_idle();
++    done();
++}
++
 +void test_midi_dac_marks_forgotten_on_all_notes_off(UNUSED void** state)
 +{
 +    use_marked(&marked);
@@ -4809,10 +4985,10 @@ index 0000000..50194c4
 +}
 diff --git a/tests/unit/test_midi_dac_marks.h b/tests/unit/test_midi_dac_marks.h
 new file mode 100644
-index 0000000..001046d
+index 0000000..8682239
 --- /dev/null
 +++ b/tests/unit/test_midi_dac_marks.h
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,18 @@
 +#include "cmocka_inc.h"
 +
 +void test_midi_dac_marks_start_then_loop(UNUSED void** state);
@@ -4824,6 +5000,9 @@ index 0000000..001046d
 +void test_midi_dac_marks_release_survives_lost_write(UNUSED void** state);
 +void test_midi_dac_marks_release_after_driver_stopped(UNUSED void** state);
 +void test_midi_dac_marks_without_release_stop(UNUSED void** state);
++void test_midi_dac_marks_one_shot_loops_past_note_off(UNUSED void** state);
++void test_midi_dac_marks_one_shot_loops_without_marks(UNUSED void** state);
++void test_midi_dac_marks_one_shot_loop_taken_and_switched_off(UNUSED void** state);
 +void test_midi_dac_marks_forgotten_on_all_notes_off(UNUSED void** state);
 +void test_midi_dac_marks_forgotten_on_dac_switch(UNUSED void** state);
 +void test_midi_dac_marks_on_voice_3(UNUSED void** state);

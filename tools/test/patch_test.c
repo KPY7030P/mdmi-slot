@@ -1972,6 +1972,27 @@ static void test_dac_marks(void)
 		tail = abs(s->bytes[i]) > tail ? abs(s->bytes[i]) : tail;
 	}
 	CHECK(s->sample.length == rom_image_cost(m.length) && tail <= 8, "with a release, FADE ends it (last 3 bytes at most %d)", tail);
+	// Stage 22a (D53): with ONE-SHOT too, the record has all three flags, the same marks and bytes.
+	{
+		dac_sample *both = dac_copy(s);
+		dac_edit with = edit;
+		with.one_shot = true;
+		const bool made = dac_prepare(both, &with);
+		CHECK(made && both->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT | ROM_SAMPLE_MARKS) && both->sample.loop_start == 6 && both->sample.loop_end == 20
+				&& both->sample.length == s->sample.length,
+			"LOOP with ONE-SHOT and marks: flags 0x%02x, marks 6 and 20, %u bytes as without ONE-SHOT", both->sample.flags, both->sample.length);
+		dac_set one = {0}, back = {0};
+		dac_put(&one, 40, both);
+		const size_t one_size = dac_block_size(&one);
+		uint8_t *one_block = malloc(one_size);
+		dac_block_write(&one, one_block);
+		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[40]->edit.loop && back.notes[40]->edit.one_shot
+				&& back.notes[40]->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT | ROM_SAMPLE_MARKS),
+			"and the project reads it back with flags 0x07");
+		free(one_block);
+		dac_clear(&one);
+		dac_clear(&back);
+	}
 	// Into the image and back.
 	size_t rom_size, built;
 	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
@@ -2216,6 +2237,11 @@ static void test_dac_edit(void)
 		dac_marks_of(s, &loop, &marks);
 		CHECK(dac_prepare(s, &loop) && marks.too_short && s->sample.flags == 0 && marks.frame_end == loop.end,
 			"LOOP under one block: plays once, no flag");
+		loop.one_shot = true;
+		CHECK(dac_prepare(s, &loop) && s->sample.flags == ROM_SAMPLE_ONE_SHOT, "LOOP under one block with ONE-SHOT: only ONE-SHOT (stage 22a)");
+		loop.end = 22050;
+		CHECK(dac_prepare(s, &loop) && s->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT), "LOOP with ONE-SHOT: both flags");
+		loop.one_shot = false;
 		dac_set one = {0}, back = {0};
 		loop.end = 22050;
 		dac_prepare(s, &loop);
@@ -2229,7 +2255,22 @@ static void test_dac_edit(void)
 		const size_t mode_at = 3 + DAC_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1;
 		CHECK(one_block[mode_at] == 2, "LOOP is mode 2 in the head");
 		one_block[mode_at] = 1;
-		CHECK(dac_block_read(&back, one_block, one_size) && !back.notes[45]->edit.loop && back.notes[45]->edit.one_shot, "mode 1 reads as one-shot, as before stage 18");
+		CHECK(dac_block_read(&back, one_block, one_size) && !back.notes[45]->edit.loop && back.notes[45]->edit.one_shot && back.notes[45]->sample.flags == ROM_SAMPLE_ONE_SHOT,
+			"mode 1 reads as one-shot with its flag alone, as before stage 18");
+		// Stage 22a (D53): LOOP with ONE-SHOT, both flags in the record, mode 3 in the head.
+		one_block[mode_at] = 3;
+		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[45]->edit.loop && back.notes[45]->edit.one_shot
+				&& back.notes[45]->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT),
+			"mode 3 reads as LOOP with ONE-SHOT, both flags in the record (%u)", back.notes[45]->sample.flags);
+		{
+			dac_set again = {0};
+			dac_put(&again, 45, dac_copy(back.notes[45]));
+			uint8_t *again_block = malloc(dac_block_size(&again));
+			dac_block_write(&again, again_block);
+			CHECK(again_block[mode_at] == 3, "and writes back as mode 3");
+			free(again_block);
+			dac_clear(&again);
+		}
 		free(one_block);
 		dac_clear(&one);
 		dac_clear(&back);
