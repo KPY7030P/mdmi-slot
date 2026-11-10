@@ -23,6 +23,9 @@ extern const double ROM_SAMPLE_HZ[ROM_SAMPLE_RATES];
 // until Note Off (stage 18).
 #define ROM_SAMPLE_LOOP 0x01
 #define ROM_SAMPLE_ONE_SHOT 0x02
+// MARKS (stage 18b): the loop runs between two blocks, what follows it plays after Note Off. The
+// record then has the two block numbers at +10 and +12; records are 14 bytes apart for that.
+#define ROM_SAMPLE_MARKS 0x04
 
 // Signed 8-bit samples at a rate index, the length a whole number of blocks, and the record's flags.
 typedef struct {
@@ -30,6 +33,9 @@ typedef struct {
 	uint32_t length;
 	const int8_t *bytes;
 	uint8_t flags;
+	// With ROM_SAMPLE_MARKS, the loop's blocks [loop_start, loop_end).
+	uint16_t loop_start;
+	uint16_t loop_end;
 } rom_sample;
 
 // Whether the image has the sample table the plugin was built for.

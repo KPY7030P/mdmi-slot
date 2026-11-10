@@ -298,7 +298,10 @@ struct mdmi_gui {
 	int env_last_value;
 	// A drag on the length starts from these, so shortening and lengthening back keeps the frames.
 	patch_shape env_start;
+	int env_start_x;
 	int env_start_y;
+	// The press on the loop's strip moved past DRAG_SLOP: the span moves, it is no click (stage 18b).
+	bool env_moved;
 
 	// The FM page (stage 11): the operator last edited by the mouse, the operator whose choice of SSG
 	// is open (-1 when closed), and whether ALL draws the FM rows' envelopes instead of diagrams. The
@@ -1300,6 +1303,18 @@ static int loop_end_of(const patch_shape *shape)
 	return shape->loop_end < 0 ? shape->count : shape->loop_end;
 }
 
+// A loop's span [*start, *end) moved by delta with its length, held inside [low, high]: the one
+// gesture both loop editors share (stage 18b), in their own units.
+static void shift_span(long *start, long *end, long delta, long low, long high)
+{
+	const long length = *end - *start;
+	long to = *start + delta;
+	to = to > high - length ? high - length : to;
+	to = to < low ? low : to;
+	*start = to;
+	*end = to + length;
+}
+
 // Columns share the whole lane by the length (0.8.1), their edges rounded down, so the lane ends at
 // the page's right edge at every length and widths differ by a pixel at most.
 static int column_x(int count, int column)
@@ -1462,6 +1477,15 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 	} else if (g->env_drag == ENV_LOOP_END) {
 		const int end = clamp(boundary, shape->loop_start + 1, shape->count);
 		shape->loop_end = end >= shape->count ? -1 : end;
+	} else if (g->env_drag == ENV_LOOP) {
+		// The body held: past DRAG_SLOP the whole loop moves with its length; before, nothing.
+		g->env_moved = g->env_moved || abs(x - g->env_start_x) >= DRAG_SLOP;
+		if (g->env_moved && g->env_start.loop_start >= 0) {
+			long start = g->env_start.loop_start, end = loop_end_of(&g->env_start);
+			shift_span(&start, &end, boundary - boundary_at(shape->count, g->env_start_x), 0, shape->count);
+			shape->loop_start = (int)start;
+			shape->loop_end = end >= shape->count ? -1 : (int)end;
+		}
 	} else if (g->env_drag == ENV_LENGTH) {
 		// Up is longer, as on the other cells; from the gesture's start, so frames cut on the way come back.
 		const int dy = g->env_start_y - y;
@@ -1477,14 +1501,11 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 	g->env_changed |= memcmp(&was, shape, sizeof(was)) != 0;
 }
 
-// A press on the editor: the loop's switch, or the start of a gesture on a lane or a tab.
-static bool envelope_down(mdmi_gui *g, int x, int y)
+// A click on the loop's strip, the mouse let go within DRAG_SLOP: the loop's switch (4A).
+static void envelope_switch_loop(mdmi_gui *g)
 {
-	patch_shape scratch;
-	const int part = envelope_part_at(g, shown_shape(g, &scratch), x, y);
-	if (part == ENV_LOOP) {
-		envelope_take(g);
-		patch_shape *shape = &g->env_shape;
+	patch_shape *shape = &g->env_shape;
+	{
 		const int psg = g->env_channel - PATCH_NUM_FM_CHANNELS;
 		// The shadow belongs to the envelope it was switched off on.
 		if (strcmp(g->source.loop_shadows[psg].name, g->env_before.name) != 0) {
@@ -1510,16 +1531,24 @@ static bool envelope_down(mdmi_gui *g, int x, int y)
 		patch_envelope scratch;
 		patch_shape_to_envelope(shape, &scratch);
 		g->env_changed = true;
-		envelope_hand(g);
-		return true;
 	}
+}
+
+// A press on the editor: the start of a gesture on a lane, a tab or the loop's strip, which
+// changes nothing until it moves or is let go (stage 18b).
+static bool envelope_down(mdmi_gui *g, int x, int y)
+{
+	patch_shape scratch;
+	const int part = envelope_part_at(g, shown_shape(g, &scratch), x, y);
 	if (part == ENV_NONE) {
 		return false;
 	}
 	envelope_take(g);
 	g->env_drag = part;
 	g->env_start = g->env_shape;
+	g->env_start_x = x;
 	g->env_start_y = y;
+	g->env_moved = false;
 	if (g->window) {
 		SetCapture(g->window);
 	}
@@ -1529,6 +1558,9 @@ static bool envelope_down(mdmi_gui *g, int x, int y)
 
 static void envelope_up(mdmi_gui *g)
 {
+	if (g->env_drag == ENV_LOOP && !g->env_moved) {
+		envelope_switch_loop(g);
+	}
 	envelope_hand(g);
 	g->env_drag = ENV_NONE;
 	if (GetCapture() == g->window) {
@@ -1571,7 +1603,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	} else if (part == ENV_LENGTH) {
 		snprintf(hint, size, g->env_drag != ENV_NONE ? "LENGTH %d STEPS, %d MS" : "LENGTH %d STEPS, %d MS: DRAG UP OR DOWN", shape->count, frame_ms(shape->count));
 	} else if (part == ENV_LOOP && shape->loop_start >= 0) {
-		snprintf(hint, size, "LOOP %d-%d: CLICK TO TURN OFF", shape->loop_start + 1, loop_end_of(shape));
+		snprintf(hint, size, g->env_moved ? "LOOP %d-%d: RELEASE TO KEEP" : "LOOP %d-%d: CLICK OFF, DRAG TO MOVE", shape->loop_start + 1, loop_end_of(shape));
 	} else if (part == ENV_LOOP && shape->count >= room && parked_loop(g, shape, &kept_start, &kept_end)) {
 		snprintf(hint, size, "LOOP %d-%d: LAST STEPS CUT, MAX %d BYTES", kept_start + 1, kept_end, PATCH_ENVELOPE_STEPS);
 	} else if (part == ENV_LOOP && parked_loop(g, shape, &kept_start, &kept_end)) {
@@ -2023,9 +2055,12 @@ static void dac_short(const char *name, char *out, size_t size)
 #define TRIM_Y 295
 #define TRIM_H 14
 #define TRIM_TAB_W 8
-#define WAVE_Y 311
+// The loop's row under the trim strip (stage 18b, docs/design/dac-page.md): what repeats.
+#define DAC_LOOP_Y 310
+#define DAC_LOOP_H 12
+#define WAVE_Y 323
 #define WAVE_W DAC_WAVE_COLUMNS
-#define WAVE_H 44
+#define WAVE_H 32
 #define DAC_BUTTON_Y 358
 #define DAC_LINE1_Y 377
 #define DAC_LINE2_Y 387
@@ -2113,6 +2148,8 @@ static void dac_button(mdmi_gui *g, int x, const char *label, bool enabled)
 enum {
 	DACC_NONE = -1, DACC_START, DACC_END, DACC_PITCH, DACC_CENTS, DACC_GAIN, DACC_NORMALIZE, DACC_FADE, DACC_ONE_SHOT,
 	DACC_LOOP, DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
+	// The loop row's tabs and its body, or the shadow while LOOP is off (stage 18b).
+	DACC_LOOP_START, DACC_LOOP_END, DACC_LOOP_BODY,
 };
 #define DAC_ROW_A_Y 398
 #define DAC_ROW_B_Y 422
@@ -2171,6 +2208,22 @@ static int wave_x_of(const dac_sample *own, uint32_t frame)
 	return WAVE_X + (int)((uint64_t)frame * WAVE_W / own->source_frames);
 }
 
+// The marks the loop's row shows: those that play, or with LOOP off where they would (the shadow).
+static void shown_marks(const dac_sample *own, const dac_edit *edit, dac_marks *m)
+{
+	dac_edit on = *edit;
+	on.loop = true;
+	dac_marks_of(own, &on, m);
+}
+
+// FADE does nothing to a loop that has no release: it never ends.
+static bool fade_unused(const dac_sample *own, const dac_edit *edit)
+{
+	dac_marks m;
+	dac_marks_of(own, edit, &m);
+	return m.loops && !m.release;
+}
+
 static int dac_control_at(const mdmi_gui *g, int x, int y)
 {
 	const dac_sample *own = panel_sample(g, g->dac_selected);
@@ -2188,6 +2241,22 @@ static int dac_control_at(const mdmi_gui *g, int x, int y)
 		}
 		return DACC_NONE;
 	}
+	if (y >= DAC_LOOP_Y && y < DAC_LOOP_Y + DAC_LOOP_H) {
+		const dac_edit *edit = shown_edit(g, own);
+		dac_marks m;
+		shown_marks(own, edit, &m);
+		if (m.too_short) {
+			return edit->loop && x >= wave_x_of(own, edit->start) && x < wave_x_of(own, edit->end) ? DACC_LOOP_BODY : DACC_NONE;
+		}
+		const int ls = wave_x_of(own, m.frame_loop_start), le = wave_x_of(own, m.frame_loop_end);
+		if (edit->loop && x >= ls - TRIM_TAB_W && x < ls) {
+			return DACC_LOOP_START;
+		}
+		if (edit->loop && x >= le && x < le + TRIM_TAB_W) {
+			return DACC_LOOP_END;
+		}
+		return x >= ls && x < le ? DACC_LOOP_BODY : DACC_NONE;
+	}
 	if (y >= WAVE_Y && y < WAVE_Y + WAVE_H) {
 		const dac_edit *edit = shown_edit(g, own);
 		const int start = wave_x_of(own, edit->start), end = wave_x_of(own, edit->end);
@@ -2195,7 +2264,21 @@ static int dac_control_at(const mdmi_gui *g, int x, int y)
 		if (near_start && near_end) {
 			return x < (start + end) / 2 ? DACC_MARK_START : DACC_MARK_END;
 		}
-		return near_start ? DACC_MARK_START : near_end ? DACC_MARK_END : DACC_NONE;
+		if (near_start || near_end) {
+			return near_start ? DACC_MARK_START : DACC_MARK_END;
+		}
+		// The loop's lines, where no trim line is near.
+		dac_marks m;
+		dac_marks_of(own, edit, &m);
+		if (!m.loops) {
+			return DACC_NONE;
+		}
+		const int ls = wave_x_of(own, m.frame_loop_start), le = wave_x_of(own, m.frame_loop_end) - 1;
+		const bool near_ls = abs(x - ls) <= 4, near_le = abs(x - le) <= 4;
+		if (near_ls && near_le) {
+			return x < (ls + le) / 2 ? DACC_LOOP_START : DACC_LOOP_END;
+		}
+		return near_ls ? DACC_LOOP_START : near_le ? DACC_LOOP_END : DACC_NONE;
 	}
 	for (int c = 0; c < (int)(sizeof(DAC_CONTROLS) / sizeof(*DAC_CONTROLS)); c++) {
 		if (in_box(x, y, DAC_CONTROLS[c].x, DAC_CONTROLS[c].y, DAC_CONTROLS[c].w, DAC_CELL_H)) {
@@ -2270,13 +2353,18 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 	// FADE is on almost always (owner): a dim word, and NO FADE in amber when it isn't.
 	{
 		const int x = DAC_CONTROLS[DACC_FADE].x, y = DAC_CONTROLS[DACC_FADE].y, w = DAC_CONTROLS[DACC_FADE].w;
-		const bool over = booted && !edit->loop && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
+		const bool unused = fade_unused(own, edit);
+		const bool over = booted && !unused && g->dac_drag == DACC_NONE && in_box(g->mouse_x, g->mouse_y, x, y, w, DAC_CELL_H);
 		const char *word = edit->fade ? "FADE" : "NO FADE";
-		// A loop has no end to fade: the word stays, too dim to read as a choice (stage 18).
-		text(g, x + (w - (int)strlen(word) * 6) / 2, y + 7, word, edit->loop ? C_CELL : !booted ? C_LINE : over ? C_TEXT : edit->fade ? C_LINE : C_AMBER, 1);
+		// A loop with no release has no end to fade: the word stays, too dim to read as a choice
+		// (stage 18); with a release FADE is the release's end (18b).
+		text(g, x + (w - (int)strlen(word) * 6) / 2, y + 7, word, unused ? C_CELL : !booted ? C_LINE : over ? C_TEXT : edit->fade ? C_LINE : C_AMBER, 1);
 	}
 	switch_cell(g, DACC_ONE_SHOT, edit->one_shot, booted);
-	switch_cell(g, DACC_LOOP, edit->loop, booted);
+	dac_marks marks;
+	shown_marks(own, edit, &marks);
+	// Under one block there is nothing to repeat: LOOP is dim and takes no click (18b).
+	switch_cell(g, DACC_LOOP, edit->loop, booted && (edit->loop || !marks.too_short));
 	// RATE: the one chosen lit, AUTO's pick dark under it.
 	const int picked = dac_rate(own, edit);
 	for (int c = DACC_RATE_AUTO; c < DACC_RATE_END; c++) {
@@ -2324,6 +2412,59 @@ static void draw_wave_drop(mdmi_gui *g)
 	}
 }
 
+// The loop's row (stage 18b, docs/design/dac-page.md): hollow tabs outside the loop's ends, its body
+// with its length, RELEASE after it, solid lines in the row and dotted down the wave. With LOOP off,
+// an outline where it would be; too short, a word why.
+static void draw_loop_row(mdmi_gui *g, const dac_sample *own, const dac_edit *edit, const dac_marks *m, int over)
+{
+	const int start = wave_x_of(own, edit->start), end = wave_x_of(own, edit->end);
+	const bool booted = engine_booted(g);
+	const bool body_held = g->dac_drag == DACC_LOOP_BODY && g->dac_moved;
+	char a[16], words[32];
+	if (m->too_short) {
+		if (edit->loop) {
+			frame(g, start, DAC_LOOP_Y, end - start, DAC_LOOP_H, C_AMBER);
+			fit_word(g, start + 1, end - start - 2, DAC_LOOP_Y + 3, "TOO SHORT", NULL, true, C_AMBER, true);
+		} else {
+			text(g, WAVE_X, DAC_LOOP_Y + 3, "TOO SHORT TO LOOP", C_HINT, 1);
+		}
+		return;
+	}
+	const int ls = wave_x_of(own, m->frame_loop_start), le = wave_x_of(own, m->frame_loop_end);
+	ms_text(ms_of(own, m->frame_loop_end - m->frame_loop_start), a, sizeof(a));
+	snprintf(words, sizeof(words), "LOOP %s MS", a);
+	if (!edit->loop) {
+		const uint32_t ink = body_held ? C_AMBER : over == DACC_LOOP_BODY && booted ? C_TEXT : C_LINE;
+		frame(g, ls, DAC_LOOP_Y, le - ls, DAC_LOOP_H, ink);
+		fit_word(g, ls + 1, le - ls - 2, DAC_LOOP_Y + 3, "LOOP", NULL, true, ink == C_LINE ? C_LABEL : ink, true);
+		return;
+	}
+	fill(g, ls + 1, DAC_LOOP_Y, le - ls - 2, DAC_LOOP_H, booted ? C_DAC_DARK : C_CELL);
+	if (body_held || (over == DACC_LOOP_BODY && booted)) {
+		frame(g, ls + 1, DAC_LOOP_Y, le - ls - 2, DAC_LOOP_H, body_held ? C_AMBER : C_TEXT);
+	}
+	fit_word(g, ls + 1, le - ls - 2, DAC_LOOP_Y + 3, words, "LOOP", true, body_held ? C_AMBER : booted ? C_DAC : C_LINE, true);
+	if (m->release) {
+		fit_word(g, le + TRIM_TAB_W + 3, end - 2 - (le + TRIM_TAB_W + 3), DAC_LOOP_Y + 3, "RELEASE", "REL", false, C_LABEL, false);
+	}
+	// Hollow tabs, solid when the mouse is on them; the lines take their colour.
+	for (int which = 0; which < 2; which++) {
+		const int c = which ? DACC_LOOP_END : DACC_LOOP_START;
+		const int tab = which ? le : ls - TRIM_TAB_W, line = which ? le - 1 : ls;
+		const uint32_t ink = !booted ? C_LINE : g->dac_drag == c || body_held ? C_AMBER : over == c ? C_TEXT : C_DAC;
+		if (ink == C_DAC || ink == C_LINE) {
+			fill(g, tab, DAC_LOOP_Y, TRIM_TAB_W, DAC_LOOP_H, booted ? C_DAC_DARK : C_CELL);
+			frame(g, tab, DAC_LOOP_Y, TRIM_TAB_W, DAC_LOOP_H, ink);
+		} else {
+			fill(g, tab, DAC_LOOP_Y, TRIM_TAB_W, DAC_LOOP_H, ink);
+		}
+		fill(g, line, DAC_LOOP_Y, 1, DAC_LOOP_H, ink);
+		for (int y = WAVE_Y; y < WAVE_Y + WAVE_H; y += 2) {
+			fill(g, line, y, 1, 1, ink);
+		}
+	}
+}
+
 // The wave: a file's source whole, its kept part lit and the trim marks; the ROM's bytes as they are.
 static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac_sample *own, const dac_edit *edit)
 {
@@ -2358,9 +2499,14 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 	}
 	const double gain = edit ? pow(10.0, edit->gain / 200.0) : 1.0;
 	const int start = edit ? wave_x_of(own, edit->start) : WAVE_X, end = edit ? wave_x_of(own, edit->end) : WAVE_X + WAVE_W;
-	// With LOOP the part after the last whole block isn't played: it reads as trimmed (stage 18).
-	const bool short_loop = edit && dac_loop_short(own, edit);
-	const int played = !edit ? end : short_loop ? start : edit->loop ? wave_x_of(own, dac_loop_end(own, edit)) : end;
+	// With LOOP and no release the part after the last whole block isn't played: it reads as
+	// trimmed (stage 18). Too short to loop, it all reads dim.
+	dac_marks marks = {0};
+	if (edit) {
+		shown_marks(own, edit, &marks);
+	}
+	const bool looping = edit && edit->loop, short_loop = looping && marks.too_short;
+	const int played = !edit ? end : short_loop ? start : looping ? wave_x_of(own, marks.frame_end) : end;
 	if (edit) {
 		fill(g, start, WAVE_Y, played - start, WAVE_H, C_CELL);
 	}
@@ -2381,15 +2527,12 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 		const int over = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
 		char words[32], a[16];
 		fill(g, start, TRIM_Y, end - start, TRIM_H, C_CELL);
-		ms_text(ms_of(own, (edit->loop && !short_loop ? dac_loop_end(own, edit) : edit->end) - edit->start), a, sizeof(a));
-		snprintf(words, sizeof(words), short_loop ? "TOO SHORT" : edit->loop ? "LOOP %s MS" : "%s MS", a);
+		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
+		snprintf(words, sizeof(words), "%s MS", a);
 		if ((int)strlen(words) * 6 + 4 <= end - start) {
-			text(g, start + (end - start - (int)strlen(words) * 6) / 2, TRIM_Y + 4, words, short_loop ? C_AMBER : C_DAC, 1);
+			text(g, start + (end - start - (int)strlen(words) * 6) / 2, TRIM_Y + 4, words, C_DAC, 1);
 		}
-		if (edit->loop && !short_loop && played < end - 1) {
-			// Where the repeat goes back to the start: on the wave only, not through the strip.
-			fill(g, played, WAVE_Y, 1, WAVE_H, C_LABEL);
-		}
+		draw_loop_row(g, own, edit, &marks, over);
 		const uint32_t start_ink = g->dac_drag == DACC_MARK_START ? C_AMBER : over == DACC_MARK_START ? C_TEXT : C_DAC;
 		const uint32_t end_ink = g->dac_drag == DACC_MARK_END ? C_AMBER : over == DACC_MARK_END ? C_TEXT : C_DAC;
 		fill(g, start - TRIM_TAB_W, TRIM_Y, TRIM_TAB_W, TRIM_H, start_ink);
@@ -2448,6 +2591,39 @@ static void dac_drag_to(mdmi_gui *g, int x, int y)
 		work->end = (uint32_t)(frame > (long)own->source_frames ? (long)own->source_frames : frame < least ? least : frame);
 		break;
 	}
+	case DACC_LOOP_START:
+	case DACC_LOOP_END:
+	case DACC_LOOP_BODY: {
+		// From where the marks stood at the press; they snap to blocks as they are drawn (stage 18b).
+		dac_marks m, all;
+		shown_marks(own, from, &m);
+		dac_edit whole = *from;
+		whole.loop_start = whole.loop_end = 0;
+		shown_marks(own, &whole, &all);
+		long ls = m.frame_loop_start, le = m.frame_loop_end;
+		if (g->dac_drag == DACC_LOOP_BODY) {
+			shift_span(&ls, &le, shift, from->start, all.frame_loop_end);
+			// The length holds: where an intro isn't allowed yet, the loop stays at START.
+			dac_edit moved = *from;
+			moved.loop_start = (uint32_t)ls;
+			moved.loop_end = (uint32_t)le;
+			dac_marks after;
+			shown_marks(own, &moved, &after);
+			if (after.loop_end - after.loop_start != m.loop_end - m.loop_start) {
+				le = (long)from->start + (le - ls);
+				ls = from->start;
+			}
+		} else if (g->dac_drag == DACC_LOOP_START) {
+			ls += shift;
+			ls = ls < (long)from->start ? (long)from->start : ls >= le ? le - 1 : ls;
+		} else {
+			le += shift;
+			le = le > (long)from->end ? (long)from->end : le <= ls ? ls + 1 : le;
+		}
+		work->loop_start = (uint32_t)ls;
+		work->loop_end = (uint32_t)le;
+		break;
+	}
 	case DACC_PITCH: {
 		int s = semitones + dy / 2;
 		s = s < -24 ? -24 : s > 24 ? 24 : s;
@@ -2476,9 +2652,7 @@ static void dac_drag_to(mdmi_gui *g, int x, int y)
 static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
 {
 	const dac_sample *own = panel_sample(g, note);
-	if (!own || (edit->start == own->edit.start && edit->end == own->edit.end && edit->pitch == own->edit.pitch && edit->gain == own->edit.gain
-			&& edit->rate == own->edit.rate && edit->fade == own->edit.fade && edit->one_shot == own->edit.one_shot
-			&& edit->loop == own->edit.loop)) {
+	if (!own || dac_same_edit(edit, &own->edit)) {
 		return;
 	}
 	char message[FILES_MESSAGE];
@@ -2495,7 +2669,9 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 		return c != DACC_NONE;
 	}
 	dac_edit edit = own->edit;
-	if (c == DACC_FADE && edit.loop) {
+	dac_marks marks;
+	shown_marks(own, &edit, &marks);
+	if ((c == DACC_FADE && fade_unused(own, &edit)) || (c == DACC_LOOP && !edit.loop && marks.too_short)) {
 		return true;
 	}
 	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_LOOP || c == DACC_NORMALIZE || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
@@ -2554,6 +2730,17 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 	case DACC_MARK_END:
 		edit.end = own->source_frames;
 		break;
+	case DACC_LOOP_START:
+		// No intro.
+		edit.loop_start = 0;
+		break;
+	case DACC_LOOP_END:
+		// No release: the loop runs to the last whole block.
+		edit.loop_end = 0;
+		break;
+	case DACC_LOOP_BODY:
+		// Its first click switched the loop already.
+		return true;
 	case DACC_PITCH:
 		edit.pitch = (int16_t)cents;
 		break;
@@ -2568,6 +2755,50 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 	}
 	dac_apply(g, g->dac_selected, &edit);
 	return true;
+}
+
+// The footer over the loop's row: the tab's place, the loop's length, why a mark stops (stage 18b).
+static void loop_hint(const dac_sample *own, const dac_edit *edit, int c, bool held, char *out, size_t size)
+{
+	dac_marks m;
+	shown_marks(own, edit, &m);
+	char a[16], b[16];
+	const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_SAMPLE_HZ[dac_rate(own, edit)];
+	if (m.too_short) {
+		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
+		ms_text(block_ms, b, sizeof(b));
+		snprintf(out, size, "TOO SHORT: %s MS KEPT, LOOP NEEDS %s", a, b);
+		return;
+	}
+	const bool shortest = m.loop_end - m.loop_start == 1;
+	if (c == DACC_LOOP_START) {
+		// An intro wanted where the loop ends too early for the ROM to catch it.
+		const bool refused = edit->loop_start > edit->start && !m.loop_start && m.loop_end < m.least_with_intro && edit->loop_start >= edit->start + (m.frame_loop_end - edit->start) / (2 * m.loop_end);
+		ms_text(ms_of(own, m.frame_loop_start - edit->start), a, sizeof(a));
+		ms_text(block_ms * m.least_with_intro, b, sizeof(b));
+		if (held && refused) {
+			snprintf(out, size, "INTRO NEEDS LOOP END AT %s MS OR LATER", b);
+		} else if (held && shortest) {
+			snprintf(out, size, "LOOP: SHORTEST IS ONE BLOCK, %.1f MS", block_ms);
+		} else {
+			snprintf(out, size, held ? "LOOP START %s MS. RELEASE TO APPLY" : "LOOP START %s MS. DOUBLE CLICK: NO INTRO", a);
+		}
+	} else if (c == DACC_LOOP_END) {
+		ms_text(ms_of(own, m.frame_loop_end - edit->start), a, sizeof(a));
+		if (held && shortest) {
+			snprintf(out, size, "LOOP: SHORTEST IS ONE BLOCK, %.1f MS", block_ms);
+		} else {
+			snprintf(out, size, held ? "LOOP END %s MS. RELEASE TO APPLY" : "LOOP END %s MS. DOUBLE CLICK: NO RELEASE", a);
+		}
+	} else {
+		ms_text(ms_of(own, m.frame_loop_end - m.frame_loop_start), a, sizeof(a));
+		ms_text(ms_of(own, m.frame_loop_start - edit->start), b, sizeof(b));
+		if (held) {
+			snprintf(out, size, "LOOP %s MS AT %s MS. RELEASE TO APPLY", a, b);
+		} else {
+			snprintf(out, size, edit->loop ? "LOOP %s MS: CLICK OFF, DRAG TO MOVE" : "LOOP %s MS IS OFF. CLICK: ON, DRAG: MOVE", a);
+		}
+	}
 }
 
 // What the footer says about the panel under the mouse or the gesture.
@@ -2608,21 +2839,36 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT -0.5", dac_normalize_gain(own) / 10.0);
 		break;
 	case DACC_FADE:
-		snprintf(out, size, edit->loop ? "FADE: NOT USED WHILE LOOP IS ON" : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
+		snprintf(out, size, fade_unused(own, edit) ? "FADE: NOT USED BY A LOOP WITHOUT RELEASE" : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
+		break;
+	case DACC_LOOP_START:
+	case DACC_LOOP_END:
+	case DACC_LOOP_BODY:
+		loop_hint(own, edit, c, held && (c != DACC_LOOP_BODY || g->dac_moved), out, size);
 		break;
 	case DACC_ONE_SHOT:
 		snprintf(out, size, edit->loop ? "ONE-SHOT: PLAYS TO THE END, LOOP GOES OFF" : edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
 		break;
-	case DACC_LOOP:
-		if (!edit->loop) {
+	case DACC_LOOP: {
+		dac_marks m;
+		shown_marks(own, edit, &m);
+		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
+		ms_text(ROM_SAMPLE_BLOCK * 1000.0 / ROM_SAMPLE_HZ[dac_rate(own, edit)], b, sizeof(b));
+		if (m.too_short) {
+			snprintf(out, size, edit->loop ? "TOO SHORT: %s MS KEPT, LOOP NEEDS %s" : "LOOP OFF: %s MS KEPT, NEEDS %s", a, b);
+		} else if (!edit->loop) {
 			snprintf(out, size, edit->one_shot ? "LOOP: REPEAT WHILE HELD, ONE-SHOT GOES OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
-		} else if (dac_loop_short(own, edit)) {
-			snprintf(out, size, "LOOP: UNDER 256 BYTES, NOTHING TO REPEAT");
 		} else {
-			ms_text(ms_of(own, edit->end - dac_loop_end(own, edit)), a, sizeof(a));
-			snprintf(out, size, "LOOP %.2f S: END CUT %s MS TO A BLOCK", dac_cost(own, edit) / ROM_SAMPLE_HZ[dac_rate(own, edit)], a);
+			ms_text(ms_of(own, m.frame_loop_end - m.frame_loop_start), a, sizeof(a));
+			ms_text(ms_of(own, m.frame_end - m.frame_loop_end), b, sizeof(b));
+			if (m.release) {
+				snprintf(out, size, "LOOP %s MS, RELEASE %s MS. CLICK: OFF", a, b);
+			} else {
+				snprintf(out, size, "LOOP %s MS. CLICK: OFF", a);
+			}
 		}
 		break;
+	}
 	default: {
 		dac_edit other = *edit;
 		other.rate = (int8_t)(c - DACC_RATE_AUTO - 1);
@@ -2711,7 +2957,7 @@ static void draw_dac_grid(mdmi_gui *g, const patch_values *values)
 	const dac_sample *own = panel_sample(g, note);
 	const bool editable = own && own->source;
 	const dac_edit *edit = editable ? shown_edit(g, own) : NULL;
-	fill(g, BANK_X, TRIM_Y, WAVE_W, TRIM_H, C_BG);
+	fill(g, BANK_X, TRIM_Y, WAVE_W, WAVE_Y - TRIM_Y, C_BG);
 	draw_wave(g, note, has ? &sample : NULL, own, edit);
 	// The note's name big, its number first on the line below (owner, D37).
 	char key[8], rate[8];
@@ -4117,8 +4363,14 @@ static void on_up(mdmi_gui *g)
 		return;
 	}
 	if (g->dac_drag != DACC_NONE) {
-		const dac_edit edit = g->dac_work;
+		dac_edit edit = g->dac_work;
 		const int note = g->dac_drag_note;
+		if (g->dac_drag == DACC_LOOP_BODY && !g->dac_moved) {
+			// A click on the loop's row: the body turns LOOP off, the shadow on (stage 18b).
+			edit = g->dac_drag_from;
+			edit.loop = !edit.loop;
+			edit.one_shot = edit.one_shot && !edit.loop;
+		}
 		g->dac_drag = DACC_NONE;
 		if (GetCapture() == g->window) {
 			ReleaseCapture();
@@ -4595,7 +4847,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		// The trim marks are the window's one sideways drag.
 		if (LOWORD(lparam) == HTCLIENT && dac_editor(g, patch_view(g->source.patch))) {
 			const int c = g->dac_drag != DACC_NONE ? g->dac_drag : dac_control_at(g, g->mouse_x, g->mouse_y);
-			if (c == DACC_MARK_START || c == DACC_MARK_END) {
+			if (c == DACC_MARK_START || c == DACC_MARK_END || c == DACC_LOOP_START || c == DACC_LOOP_END) {
 				SetCursor(LoadCursor(NULL, IDC_SIZEWE));
 				return TRUE;
 			}

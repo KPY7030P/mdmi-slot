@@ -577,7 +577,7 @@ static dac_sample *ramp_sample(int rate, uint32_t length)
 		s->bytes[i] = (int8_t)((int)(i % 256) - 128);
 	}
 	snprintf(s->name, sizeof(s->name), "ramp");
-	s->sample = (rom_sample){(uint8_t)rate, length, s->bytes, 0};
+	s->sample = (rom_sample){(uint8_t)rate, length, s->bytes, 0, 0, 0};
 	return s;
 }
 
@@ -795,7 +795,7 @@ static dac_sample *square_sample(uint32_t length, int level)
 		s->bytes[i] = (int8_t)(i / 20 % 2 ? level : -level);
 	}
 	snprintf(s->name, sizeof(s->name), "square");
-	s->sample = (rom_sample){1, length, s->bytes, 0};
+	s->sample = (rom_sample){1, length, s->bytes, 0, 0, 0};
 	return s;
 }
 
@@ -887,6 +887,162 @@ static void test_live(void)
 	check(mdmi_engine_boots(engine) == boots + 1, "an image that differs outside the samples restarts the core");
 	free(other);
 	dac_clear(&set);
+	boot_image(rom, rom_size);
+}
+
+// Stage 18b: a sample of three parts told apart by their level, intro loud, loop quiet, release
+// between, a square of 32 bytes; the record's marks around the loop.
+static dac_sample *marked_sample(int rate, uint32_t intro, uint32_t loop, uint32_t release)
+{
+	const uint32_t length = (intro + loop + release) * ROM_SAMPLE_BLOCK;
+	dac_sample *s = calloc(1, sizeof(dac_sample));
+	s->bytes = malloc(length);
+	for (uint32_t i = 0; i < length; i++) {
+		const uint32_t block = i / ROM_SAMPLE_BLOCK;
+		const int level = block < intro ? 120 : block < intro + loop ? 40 : 80;
+		s->bytes[i] = (int8_t)(i / 16 % 2 ? level : -level);
+	}
+	snprintf(s->name, sizeof(s->name), "marked");
+	s->sample = (rom_sample){(uint8_t)rate, length, s->bytes, ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS, (uint16_t)intro, (uint16_t)(intro + loop)};
+	return s;
+}
+
+// 1 ms windows of output 6's left side as letters: I intro, L loop, R release, Q quiet, by the
+// window's peak against the loudest (the intro's).
+#define MARK_WINDOWS 400
+static int mark_windows(float *peaks, int count)
+{
+	const int window = RATE / 1000;
+	for (int w = 0; w < count; w++) {
+		tick(window);
+		float peak = 0;
+		for (int i = 0; i < window; i++) {
+			peak = fabsf(left[i]) > peak ? fabsf(left[i]) : peak;
+		}
+		peaks[w] = peak;
+	}
+	return count;
+}
+
+static void mark_letters(const float *peaks, int count, float loudest, char *out)
+{
+	for (int w = 0; w < count; w++) {
+		const float r = peaks[w] / loudest;
+		out[w] = r > 0.83f ? 'I' : r > 0.45f ? 'R' : r > 0.15f ? 'L' : r < 0.05f ? 'Q' : '?';
+	}
+	out[count] = '\0';
+}
+
+// Stage 18b: at every rate, a loop with the shortest intro the ROM allows goes back to the loop's
+// start, not the sample's, with no quiet window, whatever the Note On's place in the ROM's frame;
+// Note Off plays the loop out, then the release, then silence; Note Off in the intro plays the
+// intro, the loop once and the release; without a release Note Off cuts, as in 0.18.
+static void test_loop_marks(void)
+{
+	static const uint32_t LEAST[ROM_SAMPLE_RATES] = {5, 4, 3, 3, 2, 2};
+	float peaks[MARK_WINDOWS];
+	char held[MARK_WINDOWS + 1], after[MARK_WINDOWS + 1];
+	bool seams = true, releases = true, intros = true;
+	for (int rate = 0; rate < ROM_SAMPLE_RATES; rate++) {
+		const uint32_t intro = 1, loop = LEAST[rate] - 1 > 0 ? LEAST[rate] - 1 : 1, release = 2;
+		const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_SAMPLE_HZ[rate];
+		dac_set set = {0};
+		dac_put(&set, 50, marked_sample(rate, intro, loop, release));
+		boot_set(&set);
+		for (int phase = 0; phase < 6; phase++) {
+			// The Note On at six places a sixth of a ROM frame apart (16.69 ms, 801 samples at 48 kHz,
+			// counted from the test's own clock, which runs with the core's): one of them comes just
+			// after the ROM's frame tick, wherever that falls.
+			const uint64_t frame = 801, want = (uint64_t)phase * frame / 6;
+			uint64_t wait = (want + frame - clock_samples % frame) % frame + frame;
+			while (wait) {
+				const int step = wait > BLOCK ? BLOCK : (int)wait;
+				tick(step);
+				wait -= (uint64_t)step;
+			}
+			midi(0x95, 50, 127);
+			const int hold = (int)(20 + block_ms * (intro + 4 * loop));
+			mark_windows(peaks, hold);
+			float loudest = 0;
+			for (int w = 0; w < hold; w++) {
+				loudest = peaks[w] > loudest ? peaks[w] : loudest;
+			}
+			mark_letters(peaks, hold, loudest, held);
+			midi(0x85, 50, 0);
+			const int tail = (int)(90 + block_ms * (loop + release) + 40);
+			mark_windows(peaks, tail);
+			mark_letters(peaks, tail, loudest, after);
+			// Held: quiet until it sounds, the intro, then the loop only.
+			const char *sound = held + strspn(held, "Q");
+			const char *first_loop = strchr(sound, 'L');
+			// A window where the level steps reads in between: one at the onset and at the seam.
+			const char *body = sound + (*sound == 'R' || *sound == '?');
+			const char *loop_at = first_loop && first_loop > body && (first_loop[-1] == 'R' || first_loop[-1] == '?') ? first_loop - 1 : first_loop;
+			const bool seam = first_loop && (int)strspn(body, "I") == loop_at - body && strspn(first_loop, "L") == strlen(first_loop)
+				&& first_loop - sound <= block_ms * intro + 3;
+			// After Note Off: the loop plays out, the release, a window of its fall, then silence to the end.
+			const char *rel = after + strspn(after, "L?");
+			const size_t release_windows = strspn(rel, "R?");
+			const char *quiet = rel + release_windows + (rel[release_windows] == 'L');
+			const bool ends = release_windows >= block_ms * release - 3 && release_windows <= block_ms * release + 3
+				&& strspn(quiet, "Q") == strlen(quiet) && strlen(quiet) >= 20;
+			if (!seam || !ends) {
+				printf("    rate %d phase %d: held %s\n    after Note Off %s\n", rate, phase, held, after);
+			}
+			seams = seams && seam;
+			releases = releases && ends;
+		}
+		// Note Off at once: the intro, the loop once, the release.
+		for (int ms = 0; ms < 7; ms++) {
+			tick(RATE / 1000);
+		}
+		midi(0x95, 50, 127);
+		midi(0x85, 50, 0);
+		const int all = (int)(40 + block_ms * (intro + loop + release) + 40);
+		mark_windows(peaks, all);
+		float loudest = 0;
+		for (int w = 0; w < all; w++) {
+			loudest = peaks[w] > loudest ? peaks[w] : loudest;
+		}
+		mark_letters(peaks, all, loudest, held);
+		const char *at = held + strspn(held, "Q");
+		const size_t i_n = strspn(at, "I?");
+		const size_t l_n = strspn(at + i_n, "L?");
+		const size_t r_n = strspn(at + i_n + l_n, "R?");
+		const char *rest = at + i_n + l_n + r_n;
+		rest += *rest == 'L';
+		const bool once = i_n >= 1 && l_n >= block_ms * loop - 3 && l_n <= block_ms * loop + 3 && r_n >= block_ms * release - 3 && strspn(rest, "Q") == strlen(rest);
+		if (!once) {
+			printf("    rate %d, Note Off in the intro: %s\n", rate, held);
+		}
+		intros = intros && once;
+		printf("    rate %d: block %.1f ms, intro 1, loop %u, release 2 blocks: %s\n", rate, block_ms, loop, seams && releases && once ? "ok" : "FAILED");
+		set_global(GLOBAL_DAC, 0);
+		sync_and_settle();
+		dac_clear(&set);
+	}
+	check(seams, "a loop with the shortest intro goes back to the loop's start, no quiet window, at 6 rates and 6 places in the frame");
+	check(releases, "Note Off plays the loop out, then the release, then silence");
+	check(intros, "Note Off in the intro: the intro, the loop once, the release, silence");
+	// No release: Note Off cuts, as in 0.18.
+	{
+		dac_set set = {0};
+		dac_sample *s = marked_sample(1, 2, 4, 0);
+		dac_put(&set, 50, s);
+		boot_set(&set);
+		midi(0x95, 50, 127);
+		render(RATE / 10 / BLOCK);
+		midi(0x85, 50, 0);
+		render(RATE / 20 / BLOCK);
+		const float cut = loudest(RATE / 10 / BLOCK);
+		printf("    no release, 50 to 150 ms after Note Off: loudest %.4f\n", cut);
+		check(cut < 0.01f, "marks without a release: Note Off cuts, as in 0.18");
+		set_global(GLOBAL_DAC, 0);
+		sync_and_settle();
+		dac_clear(&set);
+	}
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
 	boot_image(rom, rom_size);
 }
 
@@ -2557,6 +2713,7 @@ int main(int argc, char **argv)
 	test_shaping();
 	test_live();
 	test_loop_pan();
+	test_loop_marks();
 	test_load();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);

@@ -8,10 +8,12 @@ const double ROM_SAMPLE_HZ[ROM_SAMPLE_RATES] = {
 };
 
 // A PcmSample in the image: the data's address, its length, the rate index and the flags (our ROM,
-// D38), big endian like everything the 68000 reads. The table holds 128 addresses of such records.
+// D38), big endian like everything the 68000 reads; with ROM_SAMPLE_MARKS two u16 of loop blocks
+// follow (stage 18b). The table holds 128 addresses of such records; ours are 14 bytes apart.
 #define RECORD_BYTES 10
+#define RECORD_ROOM 14
 #define RECORDS_AT ((ROM_USED_END + 1u) & ~1u)
-#define DATA_AT ((RECORDS_AT + ROM_IMAGE_NOTES * RECORD_BYTES + ROM_SAMPLE_BLOCK - 1) & ~(ROM_SAMPLE_BLOCK - 1))
+#define DATA_AT ((RECORDS_AT + ROM_IMAGE_NOTES * RECORD_ROOM + ROM_SAMPLE_BLOCK - 1) & ~(ROM_SAMPLE_BLOCK - 1))
 
 static uint32_t get32(const uint8_t *at)
 {
@@ -67,6 +69,11 @@ bool rom_image_sample(const uint8_t *rom, size_t size, int note, rom_sample *sam
 	sample->length = get32(rom + record + 4);
 	sample->rate = rom[record + 8];
 	sample->flags = rom[record + 9];
+	sample->loop_start = sample->loop_end = 0;
+	if (sample->flags & ROM_SAMPLE_MARKS && record + RECORD_ROOM <= size) {
+		sample->loop_start = (uint16_t)(rom[record + 10] << 8 | rom[record + 11]);
+		sample->loop_end = (uint16_t)(rom[record + 12] << 8 | rom[record + 13]);
+	}
 	return true;
 }
 
@@ -110,7 +117,7 @@ uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *cons
 		const rom_sample *sample = samples[note];
 		// Every note's record has its own place, so the ROM's pointer to a sounding note's record
 		// still means that note after another note changed (D39).
-		const uint32_t record = RECORDS_AT + (uint32_t)note * RECORD_BYTES;
+		const uint32_t record = RECORDS_AT + (uint32_t)note * RECORD_ROOM;
 		if (!sample) {
 			if (removed && removed[note]) {
 				put32(out + ROM_PCM_TABLE + note * 4, 0);
@@ -124,6 +131,12 @@ uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *cons
 		put32(out + record + 4, length);
 		out[record + 8] = sample->rate;
 		out[record + 9] = sample->flags;
+		if (sample->flags & ROM_SAMPLE_MARKS) {
+			out[record + 10] = (uint8_t)(sample->loop_start >> 8);
+			out[record + 11] = (uint8_t)sample->loop_start;
+			out[record + 12] = (uint8_t)(sample->loop_end >> 8);
+			out[record + 13] = (uint8_t)sample->loop_end;
+		}
 		put32(out + ROM_PCM_TABLE + note * 4, record);
 		data += length;
 	}

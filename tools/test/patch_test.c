@@ -1690,6 +1690,127 @@ static void test_dac_files(void)
 
 // Preparing a sample from its source (D38): trim, pitch, gain, rate, fade, one-shot, and the
 // project keeps it all.
+// The source frame of a block's start at the edit's rate, a little inside it so it rounds there.
+static uint32_t block_frame(const dac_sample *s, const dac_edit *edit, uint32_t block)
+{
+	const double step = s->source_hz / ROM_SAMPLE_HZ[dac_rate(s, edit)];
+	return edit->start + (uint32_t)(block * ROM_SAMPLE_BLOCK * step + step);
+}
+
+// Stage 18b: loop marks snap to blocks, keep the limits, go into the record and the project; a
+// project of 0.18 reads as before.
+static void test_dac_marks(void)
+{
+	printf("DAC loop marks\n");
+	size_t size;
+	uint8_t *wav = sine_wav(22050, 1, 16, false, 440, 1.0, 0.5, &size);
+	const char *error;
+	dac_sample *s = dac_from_wav(wav, size, "marks.wav", &error);
+	free(wav);
+	dac_edit edit = s->edit;
+	edit.loop = true;
+	edit.loop_start = block_frame(s, &edit, 6);
+	edit.loop_end = block_frame(s, &edit, 20);
+	dac_marks m;
+	dac_marks_of(s, &edit, &m);
+	CHECK(dac_prepare(s, &edit) && s->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS) && s->sample.loop_start == 6 && s->sample.loop_end == 20 && m.release,
+		"marks snap to blocks 6 and 20, the record says so, the rest is the release");
+	int tail = 0;
+	for (uint32_t i = m.length - 3; i < m.length; i++) {
+		tail = abs(s->bytes[i]) > tail ? abs(s->bytes[i]) : tail;
+	}
+	CHECK(s->sample.length == rom_image_cost(m.length) && tail <= 8, "with a release, FADE ends it (last 3 bytes at most %d)", tail);
+	// Into the image and back.
+	size_t rom_size, built;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	dac_set set = {0};
+	dac_put(&set, 40, dac_copy(s));
+	edit.loop_start = 0;
+	edit.loop_end = 0;
+	dac_sample *plain = dac_copy(s);
+	dac_prepare(plain, &edit);
+	dac_put(&set, 41, plain);
+	uint8_t *image = dac_image(&set, rom, rom_size, &built);
+	rom_sample back, back_plain;
+	CHECK(image && rom_image_sample(image, built, 40, &back) && back.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS) && back.loop_start == 6 && back.loop_end == 20,
+		"the image's record holds the marks at +10 and +12");
+	CHECK(image && rom_image_sample(image, built, 41, &back_plain) && back_plain.flags == ROM_SAMPLE_LOOP && back_plain.length % ROM_SAMPLE_BLOCK == 0,
+		"no marks: the record of stage 18, LOOP alone, whole blocks");
+	// An unmarked record's +10..+13 stay zero, as in 0.18's image.
+	uint32_t table, table_ram, records;
+	rom_image_zone(&table, &table_ram, &records);
+	const uint8_t *record41 = image ? image + records + 41 * 14 : NULL;
+	CHECK(record41 && !record41[10] && !record41[11] && !record41[12] && !record41[13], "an unmarked record has zeros where the marks would be");
+	free(image);
+	// The project keeps the marks; a head of 0.18, 8 bytes shorter, reads as no marks.
+	const size_t block_size = dac_block_size(&set);
+	uint8_t *block = malloc(block_size);
+	dac_block_write(&set, block);
+	dac_set read = {0};
+	CHECK(dac_block_read(&read, block, block_size) && dac_same(&set, &read) && read.notes[40]->sample.loop_end == 20, "the project keeps the marks");
+	uint16_t head;
+	memcpy(&head, block + 1, 2);
+	const size_t first = 3 + head + s->source_frames * 2 + s->sample.length;
+	uint8_t *old = malloc(block_size);
+	memcpy(old, block + first, 3);
+	const uint16_t old_head = (uint16_t)(head - 8);
+	memcpy(old + 1, &old_head, 2);
+	memcpy(old + 3, block + first + 3, old_head);
+	const size_t rest = block_size - first - 3 - head;
+	memcpy(old + 3 + old_head, block + first + 3 + head, rest);
+	dac_set from_old = {0};
+	const size_t old_size = 3 + old_head + rest;
+	CHECK(dac_block_read(&from_old, old, old_size) && from_old.notes[41] && from_old.notes[41]->sample.flags == ROM_SAMPLE_LOOP
+			&& from_old.notes[41]->sample.length == plain->sample.length && !memcmp(from_old.notes[41]->bytes, plain->bytes, plain->sample.length)
+			&& !from_old.notes[41]->edit.loop_end,
+		"a LOOP sample of a 0.18 project reads with the same bytes and flag, no marks");
+	{
+		// And makes the same record as when it was saved.
+		dac_set only_old = {0}, only_new = {0};
+		dac_put(&only_old, 41, dac_copy(from_old.notes[41]));
+		dac_put(&only_new, 41, dac_copy(plain));
+		size_t built_old, built_new;
+		uint8_t *image_old = dac_image(&only_old, rom, rom_size, &built_old), *image_new = dac_image(&only_new, rom, rom_size, &built_new);
+		CHECK(image_old && image_new && built_old == built_new && !memcmp(image_old, image_new, built_old), "the 0.18 project's sample builds the same image");
+		free(image_old);
+		free(image_new);
+		dac_clear(&only_old);
+		dac_clear(&only_new);
+	}
+	free(block);
+	free(old);
+	dac_clear(&read);
+	dac_clear(&from_old);
+	// Limits: one block at least, an intro only with the loop's end far enough, at every rate.
+	edit = s->edit;
+	edit.loop = true;
+	edit.loop_start = block_frame(s, &edit, 8);
+	edit.loop_end = block_frame(s, &edit, 8) + 10;
+	dac_marks_of(s, &edit, &m);
+	CHECK(m.loop_end - m.loop_start == 1, "a loop is never shorter than a block (%u..%u)", m.loop_start, m.loop_end);
+	bool intro_kept = true, intro_refused = true;
+	for (int rate = 0; rate < ROM_SAMPLE_RATES; rate++) {
+		edit.rate = (int8_t)rate;
+		dac_marks_of(s, &edit, &m);
+		const uint32_t least = m.least_with_intro;
+		edit.loop_start = block_frame(s, &edit, 1);
+		edit.loop_end = block_frame(s, &edit, least - 1);
+		dac_marks_of(s, &edit, &m);
+		intro_refused = intro_refused && (least < 3 || m.loop_start == 0);
+		edit.loop_end = block_frame(s, &edit, least);
+		dac_marks_of(s, &edit, &m);
+		intro_kept = intro_kept && m.loop_start == 1 && m.loop_end == least;
+	}
+	CHECK(intro_refused && intro_kept, "at every rate an intro needs its loop's end at the least blocks, else the loop starts at the start");
+	edit = s->edit;
+	edit.loop = true;
+	edit.end = 100;
+	dac_marks_of(s, &edit, &m);
+	CHECK(m.too_short && !m.loops && dac_prepare(s, &edit) && s->sample.flags == 0, "under one block: too short, it plays once");
+	dac_clear(&set);
+	dac_free(s);
+}
+
 static void test_dac_edit(void)
 {
 	printf("DAC samples prepared\n");
@@ -1757,10 +1878,13 @@ static void test_dac_edit(void)
 				&& dac_cost(s, &loop) == s->sample.length,
 			"LOOP: its flag, %u bytes of %u cut to whole blocks, the cost says so", s->sample.length, plain);
 		CHECK(end_peak > 80, "LOOP: no fade at the seam (last 20 samples peak %d)", end_peak);
-		const uint32_t seam = dac_loop_end(s, &loop);
-		CHECK(seam < loop.end && seam > loop.end - 300 && !dac_loop_short(s, &loop), "LOOP: the repeat goes back at frame %u of %u", seam, loop.end);
+		dac_marks marks;
+		dac_marks_of(s, &loop, &marks);
+		const uint32_t seam = marks.frame_end;
+		CHECK(seam < loop.end && seam > loop.end - 300 && !marks.too_short && !marks.release, "LOOP: the repeat goes back at frame %u of %u", seam, loop.end);
 		loop.end = 200;
-		CHECK(dac_prepare(s, &loop) && dac_loop_short(s, &loop) && s->sample.flags == 0 && dac_loop_end(s, &loop) == loop.end,
+		dac_marks_of(s, &loop, &marks);
+		CHECK(dac_prepare(s, &loop) && marks.too_short && s->sample.flags == 0 && marks.frame_end == loop.end,
 			"LOOP under one block: plays once, no flag");
 		dac_set one = {0}, back = {0};
 		loop.end = 22050;
@@ -1927,6 +2051,7 @@ int main(int argc, char **argv)
 	test_dac();
 	test_dac_files();
 	test_dac_edit();
+	test_dac_marks();
 	test_dac_moves();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);

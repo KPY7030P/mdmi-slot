@@ -104,7 +104,19 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   until Note Off, record flag 0x01 for the SGDK driver's own loop; the length is cut to whole 256-byte
   blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP and ONE-SHOT
   exclude each other; the project's head byte is 0 cut, 1 one-shot, 2 loop. A WAV dropped on the open
-  note's wave goes to that note. Nothing changes while the
+  note's wave goes to that note. Loop marks (stage 18b, `docs/research/drv-pcm-loop-marks.md`): a row
+  under the trim strip has the loop's own tabs; `dac_marks_of` snaps them to blocks from START, at least
+  one block, and an intro only when start to loop end spans 5, 4, 3, 3, 2, 2 blocks by rate (the ROM moves
+  on to the loop once a frame), else the loop starts at START. A loop end before the last whole block
+  leaves a release, which FADE ends; at it or past it there is none and the length is cut to blocks as in
+  18. The project's head ends with `loop_start` and `loop_end` in source frames, 0 is no marks (a 0.18
+  project reads so). The image's records are 14 bytes apart; with marks the flag 0x04 and two u16 blocks
+  follow at +10 and +12. Our ROM plays such a sample by writing the driver's params itself
+  (`pcm_driver.c`, `midi_dac.c`): start to loop end with the loop flag, then in `midi_tick` once
+  STATUS.0 says the driver copied them, the loop alone; Note Off clears the loop flag and moves IWAVLEN to
+  the release's end, checks it 600 us later and puts it right once. Without a release Note Off cuts. A
+  press on the loop's body, here and in the PSG editor, changes nothing until it moves 3 px (the loop
+  moves with its length) or is let go (a click: off, or on from the shadow). Nothing changes while the
   mouse is down; on mouse up the sample is prepared once and goes into the running core. A double click puts a
   value back. The project keeps the file's sound (mono, 16 bits, up to 16 MB in all), the settings and
   the ROM's bytes, so an opened project plays the same bytes and the trim can still go back.

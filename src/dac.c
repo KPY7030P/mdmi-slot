@@ -120,32 +120,81 @@ static double step_of(const dac_sample *sample, const dac_edit *edit)
 	return sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate_of(sample, edit)];
 }
 
-// The bytes a LOOP sample keeps of its length: whole blocks, or all of it under one block.
-static uint32_t loop_length(const dac_edit *edit, uint32_t length)
+// The record's flags and marks from the edit's marks; the marks only when they aren't the whole.
+static void set_flags(dac_sample *sample, const dac_marks *marks)
 {
-	return edit->loop && length >= ROM_SAMPLE_BLOCK ? length & ~(ROM_SAMPLE_BLOCK - 1) : length;
+	const uint32_t blocks = sample->sample.length / ROM_SAMPLE_BLOCK;
+	sample->sample.flags = marks->loops ? ROM_SAMPLE_LOOP : sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+	sample->sample.loop_start = sample->sample.loop_end = 0;
+	if (!sample->source_hz) {
+		// Bytes made otherwise (tests), with no rate to reckon the marks by: a loop is all of them.
+		sample->sample.flags = sample->edit.loop && blocks ? ROM_SAMPLE_LOOP : sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+		return;
+	}
+	if (marks->loops && (marks->loop_start || marks->loop_end != blocks)) {
+		sample->sample.flags |= ROM_SAMPLE_MARKS;
+		sample->sample.loop_start = (uint16_t)marks->loop_start;
+		sample->sample.loop_end = (uint16_t)marks->loop_end;
+	}
+}
+
+// The shortest span from the start to the loop's end, in blocks by rate, that lets a loop have an
+// intro: the ROM moves the driver on to the loop once a frame, before the first repeat
+// (docs/research/drv-pcm-loop-marks.md, section 3: NTSC with a frame to spare).
+static const uint32_t LEAST_WITH_INTRO[ROM_SAMPLE_RATES] = {5, 4, 3, 3, 2, 2};
+
+static uint32_t blocks_at(double bytes)
+{
+	return (uint32_t)lround(bytes / ROM_SAMPLE_BLOCK);
+}
+
+void dac_marks_of(const dac_sample *sample, const dac_edit *edit, dac_marks *m)
+{
+	const double step = step_of(sample, edit);
+	if (!(step > 0)) {
+		*m = (dac_marks){.frame_end = edit->end, .least_with_intro = LEAST_WITH_INTRO[rate_of(sample, edit)]};
+		return;
+	}
+	const double wanted = ceil((edit->end > edit->start ? edit->end - edit->start : 1) / step);
+	*m = (dac_marks){.length = wanted < ROM_IMAGE_MAX ? (uint32_t)wanted : ROM_IMAGE_MAX, .frame_end = edit->end,
+		.least_with_intro = LEAST_WITH_INTRO[rate_of(sample, edit)]};
+	if (!edit->loop) {
+		return;
+	}
+	const uint32_t whole = m->length / ROM_SAMPLE_BLOCK;
+	if (!whole) {
+		m->too_short = true;
+		return;
+	}
+	m->loops = true;
+	const double at_start = edit->loop_start > edit->start ? (edit->loop_start - edit->start) / step : 0;
+	const double at_end = edit->loop_end > edit->start ? (edit->loop_end - edit->start) / step : 0;
+	uint32_t end = edit->loop_end ? blocks_at(at_end) : whole;
+	end = end > whole ? whole : end < 1 ? 1 : end;
+	uint32_t start = blocks_at(at_start);
+	start = start >= end ? end - 1 : start;
+	if (start && end < m->least_with_intro) {
+		start = 0;
+	}
+	m->loop_start = start;
+	m->loop_end = end;
+	m->release = end < whole;
+	if (!m->release) {
+		// The repeat comes straight after the last whole block: no padding in between (stage 18).
+		m->length = whole * ROM_SAMPLE_BLOCK;
+	}
+	const double frame_start = edit->start + start * ROM_SAMPLE_BLOCK * step, frame_end = edit->start + end * ROM_SAMPLE_BLOCK * step;
+	m->frame_loop_start = frame_start < edit->end ? (uint32_t)frame_start : edit->end;
+	m->frame_loop_end = frame_end < edit->end ? (uint32_t)frame_end : edit->end;
+	const double played = edit->start + m->length * step;
+	m->frame_end = played < edit->end ? (uint32_t)played : edit->end;
 }
 
 uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit)
 {
-	const double length = ceil((edit->end > edit->start ? edit->end - edit->start : 1) / step_of(sample, edit));
-	return rom_image_cost(loop_length(edit, length < ROM_IMAGE_MAX ? (uint32_t)length : ROM_IMAGE_MAX));
-}
-
-bool dac_loop_short(const dac_sample *sample, const dac_edit *edit)
-{
-	return edit->loop && edit->end > edit->start && ceil((edit->end - edit->start) / step_of(sample, edit)) < ROM_SAMPLE_BLOCK;
-}
-
-uint32_t dac_loop_end(const dac_sample *sample, const dac_edit *edit)
-{
-	if (!edit->loop || edit->end <= edit->start || dac_loop_short(sample, edit)) {
-		return edit->end;
-	}
-	const double step = step_of(sample, edit);
-	const uint32_t kept = loop_length(edit, (uint32_t)ceil((edit->end - edit->start) / step));
-	const double end = edit->start + kept * step;
-	return end < edit->end ? (uint32_t)end : edit->end;
+	dac_marks m;
+	dac_marks_of(sample, edit, &m);
+	return rom_image_cost(m.length);
 }
 
 bool dac_prepare(dac_sample *sample, const dac_edit *edit)
@@ -157,7 +206,9 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 	const long frames = (long)(edit->end - edit->start);
 	const double step = sample->source_hz * pow(2.0, edit->pitch / 1200.0) / ROM_SAMPLE_HZ[rate];
 	const double length_wanted = ceil(frames / step);
-	if (length_wanted > ROM_IMAGE_MAX || rom_image_cost((uint32_t)length_wanted) > rom_image_room()) {
+	dac_marks marks;
+	dac_marks_of(sample, edit, &marks);
+	if (length_wanted > ROM_IMAGE_MAX || rom_image_cost(marks.length) > rom_image_room()) {
 		return false;
 	}
 	uint32_t length = (uint32_t)length_wanted, cost = rom_image_cost(length);
@@ -177,12 +228,12 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 		out[k] = source_at(sample->source + edit->start, frames, k * step, table, side) * gain;
 	}
 	free(table);
-	// A loop ends on a block's end and starts again at once: no padding, no fade (stage 18).
-	const bool loops = edit->loop && length >= ROM_SAMPLE_BLOCK;
-	if (loops) {
-		length = cost = loop_length(edit, length);
+	// A loop without a release ends on a block's end and starts again at once: no padding, no fade
+	// (stage 18). With a release FADE is the release's end.
+	if (marks.loops && !marks.release) {
+		length = cost = marks.length;
 	}
-	if (edit->fade && !loops) {
+	if (edit->fade && (!marks.loops || marks.release)) {
 		// The last few ms go down to silence, so the end doesn't click.
 		uint32_t fade = (uint32_t)lround(FADE_SECONDS * ROM_SAMPLE_HZ[rate]);
 		fade = fade < length ? fade : length;
@@ -204,7 +255,7 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit)
 	sample->sample.rate = (uint8_t)rate;
 	sample->sample.length = cost;
 	sample->sample.bytes = bytes;
-	sample->sample.flags = loops ? ROM_SAMPLE_LOOP : edit->one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+	set_flags(sample, &marks);
 	return true;
 }
 
@@ -353,7 +404,7 @@ dac_sample *dac_from_rom(const rom_sample *rom, const char *name)
 	s->source_frames = rom->length;
 	// Kept as the ROM had it: its rate, no fade, so the bytes stay the same until it is prepared.
 	s->edit = (dac_edit){.start = 0, .end = rom->length, .rate = (int8_t)rom->rate};
-	s->sample = (rom_sample){rom->rate, rom->length, bytes, 0};
+	s->sample = (rom_sample){rom->rate, rom->length, bytes, 0, 0, 0};
 	s->bytes = bytes;
 	return s;
 }
@@ -419,10 +470,10 @@ uint32_t dac_sources(const dac_set *set)
 	return used;
 }
 
-static bool same_edit(const dac_edit *a, const dac_edit *b)
+bool dac_same_edit(const dac_edit *a, const dac_edit *b)
 {
 	return a->start == b->start && a->end == b->end && a->pitch == b->pitch && a->gain == b->gain && a->rate == b->rate && a->fade == b->fade && a->one_shot == b->one_shot
-		&& a->loop == b->loop;
+		&& a->loop == b->loop && a->loop_start == b->loop_start && a->loop_end == b->loop_end;
 }
 
 bool dac_same(const dac_set *a, const dac_set *b)
@@ -432,7 +483,7 @@ bool dac_same(const dac_set *a, const dac_set *b)
 		if (!x != !y || a->removed[note] != b->removed[note]) {
 			return false;
 		}
-		if (x && (strcmp(x->name, y->name) || !same_edit(&x->edit, &y->edit) || x->source_hz != y->source_hz || x->source_frames != y->source_frames
+		if (x && (strcmp(x->name, y->name) || !dac_same_edit(&x->edit, &y->edit) || x->source_hz != y->source_hz || x->source_frames != y->source_frames
 				|| !x->source != !y->source || (x->source && memcmp(x->source, y->source, x->source_frames * sizeof(int16_t)))
 				|| x->sample.rate != y->sample.rate || x->sample.length != y->sample.length || x->sample.flags != y->sample.flags
 				|| memcmp(x->bytes, y->bytes, x->sample.length))) {
@@ -452,8 +503,9 @@ uint8_t *dac_image(const dac_set *set, const uint8_t *rom, size_t size, size_t *
 }
 
 // One sample's head in the project's block, little endian: name, source rate and frames, the edit
-// (start, end, pitch, gain, rate, fade, one-shot), the bytes' rate, clipped, and their length.
-#define HEAD_BYTES (DAC_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 4)
+// (start, end, pitch, gain, rate, fade, one-shot), the bytes' rate, clipped, their length, and the
+// loop marks (stage 18b; a head of 0.18 ends before them and reads them as 0, no marks).
+#define HEAD_BYTES (DAC_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 4)
 
 static void put32(uint8_t **at, uint32_t v)
 {
@@ -530,6 +582,8 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 		*out++ = s->sample.rate;
 		*out++ = s->clipped;
 		put32(&out, s->sample.length);
+		put32(&out, s->edit.loop_start);
+		put32(&out, s->edit.loop_end);
 		if (frames) {
 			memcpy(out, s->source, frames * sizeof(int16_t));
 			out += frames * sizeof(int16_t);
@@ -582,6 +636,8 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		s->sample.rate = *h++;
 		s->clipped = *h++ != 0;
 		const uint32_t bytes = get32(&h);
+		s->edit.loop_start = get32(&h);
+		s->edit.loop_end = get32(&h);
 		const uint64_t source_bytes = (uint64_t)frames * sizeof(int16_t);
 		if (!bytes && !frames && note < ROM_IMAGE_NOTES) {
 			dac_free(s);
@@ -610,9 +666,10 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		at += bytes;
 		s->sample.length = bytes;
 		s->sample.bytes = s->bytes;
-		// A loop kept less than one block plays once, as dac_prepare made it.
-		s->sample.flags = s->edit.loop && bytes % ROM_SAMPLE_BLOCK == 0 && !dac_loop_short(s, &s->edit) ? ROM_SAMPLE_LOOP
-			: s->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
+		// The flags and marks as dac_prepare made them with the bytes.
+		dac_marks marks;
+		dac_marks_of(s, &s->edit, &marks);
+		set_flags(s, &marks);
 		dac_put(set, note, s);
 	}
 	return true;

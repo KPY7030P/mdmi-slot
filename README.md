@@ -20,7 +20,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - Instrument files: TFI, VGI and TYI for FM, EEF for PSG. Drop them from Explorer on a channel or a bank place.
 - DAC samples on channel 6: drop WAV files on notes or on the open note's wave, trim, tune and shape them.
   Channel 6's Pan (CC 10) puts a sample left, centre or right, also while it plays. A sample with LOOP
-  repeats while the key is held. Not checked on a real console yet.
+  repeats while the key is held. Its loop has its own tabs on the wave: the part before it plays once, the
+  part after it plays when the key is let go. Drag the loop's body to move it whole. A loop is at least one
+  block of the driver (256 bytes, 8-32 ms by the rate). Not checked on a real console yet.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
   from silence.
 - PSG noise on channel 10: Noise Type (periodic or white) and Noise Rate (L M H, Tone 3, or Kit). On Tone 3
@@ -88,7 +90,8 @@ English; the other notes in `docs/` are in Russian).
 - **File names that are not in Latin letters** (for example Cyrillic) show as blanks in the window.
 - **Windows only.** There are no Mac or Linux builds.
 - The sound is BlastEm's emulation. A real console may sound different in places. The noise modes of 0.16 and the
-  DAC pan and loop of 0.18 are written the same way for both, but have not been checked on a console.
+  DAC pan and loop of 0.18 and the loop marks of 0.18.2 are written the same way for both, but have not been
+  checked on a console.
 
 ## Building from source
 

@@ -108,6 +108,7 @@
 #define DAC_ROW_A_Y 398
 #define DAC_ROW_B_Y 422
 #define DAC_TRIM_Y 295
+#define DAC_LOOP_Y 310
 #define DAC_GAIN_X 396
 #define CH2_PAN 1202
 #define COLOR_FM 0x4422EE
@@ -324,6 +325,41 @@ static void drag(HWND window, int x, int y, int to_y)
 		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, y + (to_y - y) * step / 4));
 	}
 	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, to_y));
+}
+
+// A sideways drag in four moves, as a hand makes it.
+static void drag_x(HWND window, int x, int y, int to_x)
+{
+	SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+	for (int step = 1; step <= 4; step++) {
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x + (to_x - x) * step / 4, y));
+	}
+	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(to_x, y));
+}
+
+// The longest run of a colour on a row between left and right: its first x and its length.
+static int longest_run(int y, int left, int right, uint32_t color, int *first)
+{
+	int best = 0, run = 0;
+	*first = -1;
+	for (int x = left; x < right; x++) {
+		run = (pixels[y * WIDTH + x] & 0xFFFFFF) == color ? run + 1 : 0;
+		if (run > best) {
+			best = run;
+			*first = x - run + 1;
+		}
+	}
+	return best;
+}
+
+static int first_of(int y, int left, int right, uint32_t color)
+{
+	for (int x = left; x < right; x++) {
+		if ((pixels[y * WIDTH + x] & 0xFFFFFF) == color) {
+			return x;
+		}
+	}
+	return -1;
 }
 
 static int get_value(clap_id id)
@@ -1030,6 +1066,25 @@ int main(int argc, char **argv)
 			&& count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG) == strip_before,
 			"a loop switched off and on comes back where it was (%d px of tabs, %d off, %d back)", strip_before, shadow,
 			count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG));
+		// Stage 18b: the loop's body dragged moves the loop with its length; the host is told nothing.
+		{
+			const int first_before = first_of(ENV_LOOP_STRIP_Y, ENV_X - 10, ENV_RIGHT + 10, COLOR_PSG);
+			const int to = first_before > ENV_X + 100 ? body_x - 80 : body_x + 80;
+			memset(pushed, 0, sizeof(pushed));
+			drag_x(window, body_x, ENV_LOOP_STRIP_Y, to);
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "envelope-loop-moved");
+			const int first_after = first_of(ENV_LOOP_STRIP_Y, ENV_X - 10, ENV_RIGHT + 10, COLOR_PSG);
+			const int strip_moved = count_color_in(ENV_X - 10, ENV_RIGHT + 10, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y + 8, COLOR_PSG);
+			CHECK(abs(first_after - first_before) > 40 && abs(strip_moved - strip_before) <= 14 && pushed[0] + pushed[1] + pushed[2] == 0,
+				"a drag on the loop's body moves the loop (tab %d to %d), its length kept (%d px of tabs, %d before)", first_before, first_after, strip_moved,
+				strip_before);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			CHECK(first_of(ENV_LOOP_STRIP_Y, ENV_X - 10, ENV_RIGHT + 10, COLOR_PSG) == first_before, "UNDO puts the loop back");
+		}
 		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
 		// would draw 402 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);
@@ -1215,6 +1270,57 @@ int main(int argc, char **argv)
 		CHECK(count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0
 				&& count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000,
 			"and LOOP turns ONE-SHOT off");
+		// Stage 18b: the loop's row. Its body (dark) runs from START to the last whole block; the end
+		// tab dragged left leaves a release, the body dragged moves the loop with its length and stops
+		// at the last whole block, a click turns LOOP off, a click on the shadow on again.
+		{
+			const int row = DAC_LOOP_Y + 1;
+			int s0, s1, s2, s3, s4;
+			const int l0 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s0);
+			drag_x(window, s0 + l0 + 5, DAC_LOOP_Y + 6, s0 + l0 + 5 - 200);
+			const long end_ms = wait_applied(window);
+			capture(window);
+			save_bmp(argv[2], "dac-loop-release");
+			const int l1 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s1);
+			CHECK(end_ms >= 0 && l1 < l0 - 170 && l1 > l0 - 230 && abs(s1 - s0) <= 2, "the loop's end tab dragged 200 px left: the body %d px, was %d", l1, l0);
+			drag_x(window, s1 + l1 / 2, DAC_LOOP_Y + 6, s1 + l1 / 2 + 80);
+			wait_applied(window);
+			capture(window);
+			const int l2 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s2);
+			CHECK(abs(l2 - l1) <= 3 && abs(s2 - s1 - 80) <= 12, "the body dragged 80 px moves the loop %d px, its length %d, was %d", s2 - s1, l2, l1);
+			drag_x(window, s2 + l2 / 2, DAC_LOOP_Y + 6, s2 + l2 / 2 + 400);
+			wait_applied(window);
+			capture(window);
+			save_bmp(argv[2], "dac-loop-moved");
+			const int l3 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s3);
+			CHECK(abs(l3 - l1) <= 3 && s3 + l3 <= s0 + l0 + 3, "dragged far right it stops at the last whole block (ends %d, the whole %d), length %d", s3 + l3,
+				s0 + l0, l3);
+			drag_x(window, s3 + l3 / 2, DAC_LOOP_Y + 6, s3 + l3 / 2 - 600);
+			wait_applied(window);
+			capture(window);
+			int s5;
+			const int l5 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s5);
+			CHECK(abs(l5 - l1) <= 3 && abs(s5 - s0) <= 2, "dragged far left it stops at START (%d, START %d), length %d", s5, s0, l5);
+			drag_x(window, s5 + l5 / 2, DAC_LOOP_Y + 6, s5 + l5 / 2 + (s3 - s5));
+			wait_applied(window);
+			capture(window);
+			longest_run(row, 242, 712, COLOR_DAC_DARK, &s3);
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(s3 + l3 / 2, DAC_LOOP_Y + 6));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(s3 + l3 / 2 + 2, DAC_LOOP_Y + 6));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(s3 + l3 / 2 + 2, DAC_LOOP_Y + 6));
+			wait_applied(window);
+			capture(window);
+			save_bmp(argv[2], "dac-loop-shadow");
+			const int off = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
+			const int shadow = longest_run(row, 242, 712, COLOR_DAC_DARK, &s4);
+			CHECK(off == 0 && shadow < 20, "a click within 3 px on the body turns LOOP off, the row shows its shadow");
+			click(window, s3 + l3 / 2, DAC_LOOP_Y + 6);
+			wait_applied(window);
+			capture(window);
+			const int l4 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s4);
+			CHECK(count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000 && abs(l4 - l3) <= 3 && abs(s4 - s3) <= 2,
+				"a click on the shadow turns LOOP on where it was (%d px at %d)", l4, s4);
+		}
 		DeleteFileA(wav_path);
 		DeleteFileA(tfi_path);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);

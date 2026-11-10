@@ -34,7 +34,34 @@ typedef struct {
 	// It repeats until Note Off (ROM_SAMPLE_LOOP, stage 18): the length is cut to whole blocks, so
 	// the driver's repeat has no silence in it, and FADE doesn't apply. Never with one_shot.
 	bool loop;
+	// Loop marks in source frames (stage 18b): the repeat runs [loop_start, loop_end), what follows
+	// loop_end plays after Note Off. loop_end 0 is no marks: the loop is all the kept part, as in 0.18.
+	// They stay while LOOP is off and snap to the driver's blocks only when prepared (dac_marks_of).
+	uint32_t loop_start;
+	uint32_t loop_end;
 } dac_edit;
+
+// What an edit's LOOP and marks come to at its rate, in the driver's 256-byte blocks from the kept
+// part's start (stage 18b).
+typedef struct {
+	// LOOP is on but the kept part is under one block: it plays once.
+	bool too_short;
+	// It plays as a loop.
+	bool loops;
+	// Something follows the loop and plays after Note Off.
+	bool release;
+	// The bytes' length before padding, and the blocks the loop runs.
+	uint32_t length;
+	uint32_t loop_start;
+	uint32_t loop_end;
+	// The same in source frames, for the window: where the loop starts, where it ends, where the
+	// played part ends.
+	uint32_t frame_loop_start;
+	uint32_t frame_loop_end;
+	uint32_t frame_end;
+	// The shortest span from the start to the loop's end that allows an intro, in blocks.
+	uint32_t least_with_intro;
+} dac_marks;
 
 typedef struct {
 	char name[DAC_NAME];
@@ -68,10 +95,13 @@ bool dac_prepare(dac_sample *sample, const dac_edit *edit);
 // The driver rate an edit gives, and what its bytes would take of the ROM, without preparing them.
 int dac_rate(const dac_sample *sample, const dac_edit *edit);
 uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit);
-// With LOOP, the source frame where the repeat goes back to the start; edit->end otherwise, or when
-// the sample is shorter than one block and so plays once (dac_loop_short).
-uint32_t dac_loop_end(const dac_sample *sample, const dac_edit *edit);
-bool dac_loop_short(const dac_sample *sample, const dac_edit *edit);
+// The marks as they play, worked out the same way for the bytes, the image and the window. The
+// loop is at least a block; an intro needs the start to the loop's end to span least_with_intro
+// blocks (the ROM moves on to the loop once a frame), else the loop starts at the start; a loop
+// end on the last whole block or later leaves no release, and the length is cut to whole blocks.
+void dac_marks_of(const dac_sample *sample, const dac_edit *edit, dac_marks *marks);
+// Whether two edits prepare the same bytes.
+bool dac_same_edit(const dac_edit *a, const dac_edit *b);
 // The gain that brings the kept part's peak just under full scale.
 int dac_normalize_gain(const dac_sample *sample);
 dac_sample *dac_copy(const dac_sample *sample);
