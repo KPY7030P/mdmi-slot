@@ -22,8 +22,24 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   -24 to +24 semitones, with a loop. The ROM plays it, so it works on a console too. Draw it under the PSG
   envelope or on the FM page (ARP). STORE puts the channel's sound with its row into its bank place; rows
   live in the project, the bank file and snapshots, not in TFI, VGI, TYI or EEF files (a dropped file comes
-  without a row). The row doesn't act on the DAC, on channel 3 in Ch3 Special or on the noise channel
-  unless its rate is Tone 3. Not checked on a
+  without a row). The row doesn't act on the DAC, on channel 3 in Ch3 Special with OPS or on the noise
+  channel unless its rate is Tone 3. Not checked on a
+  real console yet.
+- Channel 3 by operators (0.21): with CH3 SPECIAL on, CH3 NOTES in the window's bottom strip chooses how
+  channel 3 plays. OPS (the default): each operator has its own note with its own Note On and Note Off,
+  MIDI 11, 12 and 13 play operators 1-3 and MIDI 3 plays operator 4; a released operator dies away while
+  the others sound. 1 NOTE: a note on MIDI 3 plays all four. In both, each operator stands at its own
+  interval (SEMI, -48 to +48 semitones), detune (FINE, -63 to +63 cents) or, with FIX, a fixed pitch:
+  C4 moved by its SEMI and FINE, whatever the key. On channel 3's FM page each operator's header shows a tag of its
+  pitch; a click on it opens SEMI, FINE and FIX. Before 0.21 a MIDI 3 note keyed all four operators and
+  MIDI 11-13 notes only set pitches: in OPS that is gone; the closest to it is 1 NOTE with FIX on the
+  operators that stood still. The arpeggio row works on channel 3 in 1 NOTE. Switching CH3 NOTES, CH3
+  SPECIAL or the DAC releases channel 3's notes. The settings belong to the project, not to a sound, bank or file.
+- LFO RESET in the bottom strip (0.21): every new FM note of one chosen MIDI channel 1-6 restarts the chip's
+  LFO (DAC samples on channel 6 don't), so its vibrato and tremolo start the same way on each note. The chip has one LFO: the restart moves
+  the vibrato and AM of every channel that uses them. On a real console the start may still wander by up
+  to 1/128 of the LFO's cycle (about 2 ms at the slowest rate; BlastEm doesn't show this), and channels
+  with AM jump in level at each restart (up to about 12 dB at AMS 3), which may click. Not checked on a
   real console yet.
 - DAC samples on channel 6: drop WAV files on notes or on the open note's wave, trim, tune and shape them.
   Up to four samples sound at once (SGDK's PCM4 driver, 0.19): a hat doesn't cut the kick. A fifth note takes
@@ -102,8 +118,8 @@ English; the other notes in `docs/` are in Russian).
 - **File names that are not in Latin letters** (for example Cyrillic) show as blanks in the window.
 - **Windows only.** There are no Mac or Linux builds.
 - The sound is BlastEm's emulation. A real console may sound different in places. The noise modes of 0.16 and the
-  DAC pan and loop of 0.18, the loop marks of 0.18.2 and the four DAC voices of 0.19 are written the same way
-  for both, but have not been checked on a console.
+  DAC pan and loop of 0.18, the loop marks of 0.18.2, the four DAC voices of 0.19 and channel 3 by operators
+  and LFO RESET of 0.21 are written the same way for both, but have not been checked on a console.
 
 ## Building from source
 

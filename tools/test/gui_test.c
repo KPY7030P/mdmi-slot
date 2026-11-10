@@ -39,7 +39,7 @@
 #define CH3_OP1_TL 1311
 #define CH4_OP1_TL 1411
 // The LFO Rate cell among the global knobs, and its id.
-#define LFO_RATE_X 160
+#define LFO_RATE_X 100
 #define LFO_RATE_Y 484
 #define LFO_RATE 3
 // Master Volume at the strip's right end (stage 18a), and its id.
@@ -73,7 +73,7 @@
 #define ROW_H 40
 #define BAR_LEFT 54
 #define BAR_RIGHT 226
-#define CH3_SPECIAL_X 400
+#define CH3_SPECIAL_X 330
 #define CH3_SPECIAL_Y 480
 #define COLOR_LABEL 0xAAAAAA
 #define COLOR_FM_LIGHT 0x8888EE
@@ -131,6 +131,29 @@
 #define ACTION_STORE_X 500
 #define COLOR_LINE 0x444444
 #define COLOR_HINT 0x666666
+// Stage 21 (docs/design/ch3-ops.md): LFO and LFO RESET in the strip, the segments of CH3 NOTES,
+// operator 2's pitch tag in its header and its editor under it (SEMI, FINE, FIX), and the ids.
+#define LFO_ON_X 30
+#define LFO_RESET_X 190
+#define CH3_NOTES_ONE_X 459
+#define CH3_NOTES_Y 489
+#define TAG2_X 408
+#define TAG2_LEFT 384
+#define TAG_Y 219
+#define PITCH_LEFT 357
+#define PITCH_TOP 227
+#define PITCH_SEMI_X 414
+#define PITCH_SEMI_Y 239
+#define PITCH_FINE_Y 263
+#define PITCH_FIX_X 383
+#define PITCH_FIX_Y 287
+#define CH3_SPECIAL 4
+#define CH3_NOTES 10
+#define LFO_RESET 11
+#define CH3_OP2_SEMI 15
+#define CH3_OP2_FINE 16
+#define CH3_OP2_FIXED 17
+#define CH3_OP2_TL 1322
 
 static const int OP_X[4] = {242, 358, 474, 590};
 #define OP_RIGHT_W 112
@@ -386,6 +409,19 @@ static int runs_of(int y, int left, int right, uint32_t color)
 		runs += (pixels[y * WIDTH + x] & 0xFFFFFF) == color && (pixels[y * WIDTH + x - 1] & 0xFFFFFF) != color;
 	}
 	return runs;
+}
+
+static void double_click(HWND window, int x, int y)
+{
+	click(window, x, y);
+	SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(x, y));
+	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+}
+
+// The pitch editor's frame, its top line: all of it while the editor of operator 2 is open.
+static int pitch_frame(void)
+{
+	return count_color_in(PITCH_LEFT, PITCH_LEFT + 114, PITCH_TOP, PITCH_TOP + 1, COLOR_LABEL);
 }
 
 static int get_value(clap_id id)
@@ -960,6 +996,122 @@ int main(int argc, char **argv)
 		CHECK(special_light == 0 && special_dim == 98 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT) == 98
 			&& count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 24), ARP_Y(ARP_FM_LY, 24) + 2, COLOR_FM_LIGHT) == 0,
 			"in Ch3 Special channel 3's row is dim (%d px light) and a click on it draws nothing; after it the row is back", special_light);
+		// Stage 21: channel 3 by operators. The arp row is dim in Ch3 Special only with Ops.
+		const int row_lit = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
+		const int notes_dim_lit = count_color_in(376, 486, 480, 498, COLOR_FM);
+		click(window, CH3_NOTES_ONE_X, CH3_NOTES_Y);
+		click(window, TAG2_X, TAG_Y);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "ch3-off");
+		const int tag_dim_text = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_LINE);
+		CHECK(get_value(CH3_NOTES) == 0 && notes_dim_lit == 0 && pitch_frame() == 0 && tag_dim_text > 0,
+			"Ch3 Special off: CH3 NOTES is dim (%d px lit) and takes no click, the pitch tag is dim (%d px) and opens nothing", notes_dim_lit, tag_dim_text);
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(300);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		const int ops_dim_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
+		const int ops_lit = count_color_in(376, 430, 480, 498, COLOR_FM), special_on = count_color_in(298, 370, 480, 498, COLOR_FM_LIGHT);
+		click(window, CH3_NOTES_ONE_X, CH3_NOTES_Y);
+		run_ms(100);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "ch3-one-note");
+		const int one_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
+		const int one_lit = count_color_in(432, 486, 480, 498, COLOR_FM);
+		CHECK(special_on > 0 && ops_lit > 300 && get_value(CH3_NOTES) == 1 && one_lit > 300,
+			"CH3 SPECIAL On in light FM (%d px), OPS lit (%d px), a click on 1 NOTE sets One Note (%d px)", special_on, ops_lit, one_lit);
+		CHECK(row_lit == 98 && ops_dim_row == 0 && one_row == 98, "channel 3's arp row is dim with Ops (%d px light) and back with One Note (%d px)", ops_dim_row, one_row);
+		// The rail's column of the operators' notes only with Ops.
+		const int ops_column_x = 204, ops_top = RAIL_CH3_TOP + 2;
+		send_midi(0x92, 60, 100);
+		send_midi(0x9A, 64, 100);
+		run_ms(200);
+		capture(window);
+		const int one_column = count_color_in(ops_column_x, 226, ops_top + 9, ops_top + 17, COLOR_LABEL);
+		double_click(window, CH3_NOTES_ONE_X, CH3_NOTES_Y);
+		run_ms(200);
+		capture(window);
+		const int ops_column = count_color_in(ops_column_x, 226, ops_top + 9, ops_top + 17, COLOR_LABEL);
+		send_midi(0x82, 60, 0);
+		send_midi(0x8A, 64, 0);
+		CHECK(get_value(CH3_NOTES) == 0 && one_column == 0 && ops_column > 0,
+			"a double click on CH3 NOTES sets Ops; the rail shows operator 1's note with Ops (%d px), not with One Note (%d px)", ops_column, one_column);
+
+		// The pitch tag opens SEMI, FINE and FIX under its header; they exist only while it is open.
+		const int tl_op2 = get_value(CH3_OP2_TL), fine_before = get_value(CH3_OP2_FINE);
+		drag(window, PITCH_SEMI_X, PITCH_SEMI_Y, PITCH_SEMI_Y - 20);
+		run_ms(50);
+		const int closed_semi = get_value(CH3_OP2_SEMI), closed_tl = get_value(CH3_OP2_TL);
+		double_click(window, PITCH_SEMI_X, PITCH_SEMI_Y);
+		run_ms(50);
+		CHECK(closed_semi == 48 && closed_tl != tl_op2 && get_value(CH3_OP2_TL) == tl_op2,
+			"with the editor closed a drag there moves operator 2's TL (%d to %d), not SEMI", tl_op2, closed_tl);
+		click(window, TAG2_X, TAG_Y);
+		run_ms(50);
+		capture(window);
+		const int frame_open = pitch_frame();
+		memset(pushed, 0, sizeof(pushed));
+		drag(window, PITCH_SEMI_X, PITCH_SEMI_Y, PITCH_SEMI_Y - 20);
+		drag(window, PITCH_SEMI_X, PITCH_FINE_Y, PITCH_FINE_Y + 10);
+		click(window, PITCH_FIX_X, PITCH_FIX_Y);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(PITCH_SEMI_X, PITCH_SEMI_Y));
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "ch3-pitch");
+		const int semi = get_value(CH3_OP2_SEMI), fine = get_value(CH3_OP2_FINE), fixed = get_value(CH3_OP2_FIXED);
+		const int tag_fixed = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_FM_LIGHT);
+		CHECK(frame_open == 114 && semi == 58 && fine == fine_before - 5 && fixed == 1 && pushed[0] == 3 && pushed_id[0] == CH3_OP2_FIXED,
+			"a click on operator 2's tag opens its editor (%d px); SEMI drags to %+d, FINE to %+d, FIX turns on, %d gestures", frame_open, semi - 48, fine - 63, pushed[0]);
+		CHECK(tag_fixed > 300, "with FIX the tag is filled light FM (%d px)", tag_fixed);
+		double_click(window, PITCH_SEMI_X, PITCH_SEMI_Y);
+		double_click(window, PITCH_SEMI_X, PITCH_FINE_Y);
+		double_click(window, PITCH_FIX_X, PITCH_FIX_Y);
+		run_ms(100);
+		CHECK(get_value(CH3_OP2_SEMI) == 48 && get_value(CH3_OP2_FINE) == 63 && get_value(CH3_OP2_FIXED) == 0, "double clicks put SEMI, FINE and FIX back to 0, 0 and Off");
+		click(window, GRAPH_LEFT + 100, GRAPH_BOTTOM + 40);
+		run_ms(50);
+		capture(window);
+		CHECK(pitch_frame() == 0 && get_value(CH3_OP2_TL) == tl_op2, "a click elsewhere only closes the editor");
+		click(window, RAIL_X, RAIL_CH1_TOP + 20);
+		run_ms(50);
+		click(window, TAG2_X, TAG_Y);
+		run_ms(50);
+		capture(window);
+		save_bmp(argv[2], "ch3-ch1");
+		const int ch1_frame = pitch_frame();
+		drag(window, PITCH_SEMI_X, PITCH_SEMI_Y, PITCH_SEMI_Y - 20);
+		CHECK(ch1_frame == 0 && get_value(CH3_OP2_SEMI) == 48, "channel 1's page has no tag and no editor: the same click opens nothing, the drag moves no SEMI");
+		double_click(window, PITCH_SEMI_X, PITCH_SEMI_Y);
+		click(window, RAIL_X, RAIL_CH3_TOP + 20);
+		run_ms(50);
+
+		// LFO RESET: a click steps it, a double click puts Off back; with the LFO off it is dim and takes no click.
+		click(window, LFO_RESET_X, LFO_RATE_Y);
+		run_ms(50);
+		const int reset_one = get_value(LFO_RESET);
+		double_click(window, LFO_RESET_X, LFO_RATE_Y);
+		run_ms(50);
+		const int reset_off = get_value(LFO_RESET);
+		click(window, LFO_ON_X, LFO_RATE_Y);
+		run_ms(50);
+		click(window, LFO_RESET_X, LFO_RATE_Y);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(LFO_RESET_X, LFO_RATE_Y));
+		run_ms(50);
+		capture(window);
+		save_bmp(argv[2], "ch3-lfo-off");
+		const int reset_dim = get_value(LFO_RESET), dim_label = count_color_in(158, 222, 470, 477, COLOR_LINE);
+		click(window, LFO_ON_X, LFO_RATE_Y);
+		run_ms(50);
+		CHECK(reset_one == 1 && reset_off == 0 && reset_dim == 0 && dim_label > 20 && get_value(2) == 1,
+			"LFO RESET: a click is Ch 1, a double click Off; with the LFO off its label is dim (%d px) and a click does nothing", dim_label);
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(300);
+		CHECK(get_value(CH3_SPECIAL) == 0, "Ch3 Special off again");
 		click(window, ACTION_UNDO_X, BUTTON_Y);
 		click(window, RAIL_X, RAIL_CH4_Y);
 		run_ms(100);

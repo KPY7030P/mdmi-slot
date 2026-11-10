@@ -27,6 +27,21 @@
 #define CC_AMS 76
 #define CC_DAC 78
 #define CC_CH3_MODE 80
+// Stage 21 (D51): Ch3 Notes and LFO Reset on any channel, an operator's Semi, Fine and Fixed on its
+// own channel: MIDI 11-13 for operators 1-3, MIDI 3 for operator 4.
+#define CC_CH3_NOTES 81
+#define CC_LFO_RESET 82
+#define CC_CH3_OP_SEMI 102
+#define CC_CH3_OP_FINE 103
+#define CC_CH3_OP_FIXED 104
+// CC 81 is value * 3 / 128 in the ROM: 0 Ops, 1 One Note, 2 kept for CSM (stage 22).
+#define CH3_NOTES_CC_RANGE 3
+#define CH3_NOTES_CC_STEP 64
+#define CH3_NOTES_RESERVED 2
+// CC 82 is value * 7 / 128: off, then MIDI 1-6.
+#define LFO_RESET_CHANNELS 6
+#define LFO_RESET_CC_RANGE 7
+#define CH3_OP_MIDI_CHANNEL 10
 #define CC_POLYPHONY 84
 #define CC_FINE_TUNE 85
 #define CC_RPN_LSB 100
@@ -173,6 +188,17 @@ void patch_global_init(void)
 	define(&globals[GLOBAL_NOISE_TYPE], "Noise Type", PATCH_NOISE_WHITE, PATCH_NOISE_WHITE, true);
 	define(&globals[GLOBAL_NOISE_RATE], "Noise Rate", PATCH_NOISE_RATE_KIT, PATCH_NOISE_RATE_HIGH, true);
 	define(&globals[GLOBAL_MASTER], "Master Volume", PATCH_MASTER_MAX, PATCH_MASTER_UNITY, false);
+	define(&globals[GLOBAL_CH3_NOTES], "Ch3 Notes", PATCH_CH3_ONE_NOTE, PATCH_CH3_OPS, true);
+	define(&globals[GLOBAL_LFO_RESET], "LFO Reset", LFO_RESET_CHANNELS, 0, true);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		char name[24];
+		snprintf(name, sizeof(name), "Ch3 Op%d Semi", op + 1);
+		define(&globals[GLOBAL_CH3_OP(op, PATCH_CH3_SEMI)], name, 2 * PATCH_CH3_SEMI_MAX, PATCH_CH3_SEMI_MAX, true);
+		snprintf(name, sizeof(name), "Ch3 Op%d Fine", op + 1);
+		define(&globals[GLOBAL_CH3_OP(op, PATCH_CH3_FINE)], name, 2 * PATCH_CH3_FINE_MAX, PATCH_CH3_FINE_MAX, true);
+		snprintf(name, sizeof(name), "Ch3 Op%d Fixed", op + 1);
+		define(&globals[GLOBAL_CH3_OP(op, PATCH_CH3_FIXED)], name, 1, 0, true);
+	}
 
 	define(&channel_params[PARAM_PRESET], "Preset", PRESETS - 1, 0, true);
 	define(&channel_params[PARAM_VOLUME], "Volume", 127, 127, true);
@@ -210,6 +236,9 @@ void patch_global_init(void)
 	panel_order[position++] = GLOBAL_NOISE_TYPE;
 	panel_order[position++] = GLOBAL_NOISE_RATE;
 	panel_order[position++] = GLOBAL_MASTER;
+	for (int g = GLOBAL_CH3_NOTES; g < PATCH_NUM_GLOBALS; g++) {
+		panel_order[position++] = (uint32_t)g;
+	}
 }
 
 bool patch_channel_has(int channel, int param)
@@ -300,9 +329,15 @@ bool patch_arp_same(const patch_arp *a, const patch_arp *b)
 	return a->count == b->count && a->loop == b->loop && (a->count > PATCH_ARP_STEPS || !memcmp(a->steps, b->steps, a->count));
 }
 
+bool patch_ch3_ops(const patch_values *values)
+{
+	return values->globals[GLOBAL_CH3_MODE] && values->globals[GLOBAL_CH3_NOTES] == PATCH_CH3_OPS;
+}
+
 bool patch_arp_works(const patch_values *values, int channel)
 {
-	if (channel == 2 && values->globals[GLOBAL_CH3_MODE]) {
+	// In One Note the ROM steps channel 3's row and moves all four operators with it (stage 21).
+	if (channel == 2 && patch_ch3_ops(values)) {
 		return false;
 	}
 	if (channel == PATCH_NUM_FM_CHANNELS - 1 && values->globals[GLOBAL_DAC]) {
@@ -844,7 +879,28 @@ double patch_master_gain(int value)
 
 static void format_global(int global, int value, char *text, size_t size)
 {
+	if (global >= GLOBAL_CH3_OP_BASE && global < PATCH_NUM_GLOBALS) {
+		const int field = (global - GLOBAL_CH3_OP_BASE) % PATCH_CH3_OP_FIELDS;
+		if (field == PATCH_CH3_SEMI) {
+			snprintf(text, size, "%+d st", value - PATCH_CH3_SEMI_MAX);
+		} else if (field == PATCH_CH3_FINE) {
+			snprintf(text, size, "%+d ct", value - PATCH_CH3_FINE_MAX);
+		} else {
+			snprintf(text, size, "%s", value ? "On" : "Off");
+		}
+		return;
+	}
 	switch (global) {
+	case GLOBAL_CH3_NOTES:
+		snprintf(text, size, "%s", value == PATCH_CH3_ONE_NOTE ? "One Note" : "Ops");
+		break;
+	case GLOBAL_LFO_RESET:
+		if (value <= 0) {
+			snprintf(text, size, "Off");
+		} else {
+			snprintf(text, size, "Ch %d", value);
+		}
+		break;
 	case GLOBAL_FILTER:
 		if (value >= FILTER_MAX) {
 			snprintf(text, size, "Off");
@@ -1955,6 +2011,30 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		emit_cc(emit, context, NOISE_CC_CHANNEL, CC_NOISE_RATE, model_globals[GLOBAL_NOISE_RATE] * NOISE_RATE_CC_STEP);
 		rom_globals[GLOBAL_NOISE_RATE] = model_globals[GLOBAL_NOISE_RATE];
 	}
+	// Channel 3's operators (stage 21): in the ROM's RAM, so a driver swap doesn't touch them either.
+	if (model_globals[GLOBAL_CH3_NOTES] != rom_globals[GLOBAL_CH3_NOTES]) {
+		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_CH3_NOTES, model_globals[GLOBAL_CH3_NOTES] * CH3_NOTES_CC_STEP);
+		rom_globals[GLOBAL_CH3_NOTES] = model_globals[GLOBAL_CH3_NOTES];
+	}
+	if (model_globals[GLOBAL_LFO_RESET] != rom_globals[GLOBAL_LFO_RESET]) {
+		// The start of its range, rounded up: value * 7 / 128 gives the channel back.
+		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_RESET, (model_globals[GLOBAL_LFO_RESET] * 128 + LFO_RESET_CC_RANGE - 1) / LFO_RESET_CC_RANGE);
+		rom_globals[GLOBAL_LFO_RESET] = model_globals[GLOBAL_LFO_RESET];
+	}
+	for (int op = 0; op < PATCH_OPS; op++) {
+		const int channel = op < PATCH_OPS - 1 ? CH3_OP_MIDI_CHANNEL + op : 2;
+		static const uint8_t CCS[PATCH_CH3_OP_FIELDS] = {CC_CH3_OP_SEMI, CC_CH3_OP_FINE, CC_CH3_OP_FIXED};
+		for (int field = 0; field < PATCH_CH3_OP_FIELDS; field++) {
+			const int g = GLOBAL_CH3_OP(op, field);
+			if (model_globals[g] == rom_globals[g]) {
+				continue;
+			}
+			const int value = model_globals[g];
+			emit_cc(emit, context, channel, CCS[field],
+				field == PATCH_CH3_SEMI ? value - PATCH_CH3_SEMI_MAX + 64 : field == PATCH_CH3_FINE ? value - PATCH_CH3_FINE_MAX + 64 : value ? CC_ON : 0);
+			rom_globals[g] = model_globals[g];
+		}
+	}
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		const int16_t *model = patch->model.channels[channel];
 		int16_t *rom = receiver->values.channels[channel];
@@ -2064,8 +2144,8 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	bool fm = channel < PATCH_NUM_FM_CHANNELS;
 	bool changed = false, moved = false;
 	bool note = fm && (status == 0x90 || status == 0x80) && length >= 3;
-	// MIDI 11-13 play channel 3's operators in Ch3 Special Mode: on its voice, into its output.
-	if (patch->owner && patch->model.globals[GLOBAL_CH3_MODE] && status == 0x90 && length >= 3 && bytes[2] && channel >= 10 && channel <= 12) {
+	// MIDI 11-13 play channel 3's operators in Ch3 Special Mode with Ops: on its voice, into its output.
+	if (patch->owner && patch_ch3_ops(&patch->model) && status == 0x90 && length >= 3 && bytes[2] && channel >= 10 && channel <= 12) {
 		patch->owner(context, 2, 2, false);
 	}
 	if (note && status == 0x90 && bytes[2]) {
@@ -2135,6 +2215,32 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		} else if ((cc == CC_NOISE_TYPE || cc == CC_NOISE_RATE) && channel == NOISE_CC_CHANNEL) {
 			patch->model.globals[cc == CC_NOISE_TYPE ? GLOBAL_NOISE_TYPE : GLOBAL_NOISE_RATE] = (int16_t)(cc == CC_NOISE_TYPE ? value >= 64 : value * NOISE_RATES / 128);
 			changed = true;
+		} else if (cc == CC_CH3_NOTES) {
+			// Any channel, as CC 80. CSM's value has no place in this build: the ROM ignores it too.
+			const int mode = value * CH3_NOTES_CC_RANGE / 128;
+			if (mode != CH3_NOTES_RESERVED) {
+				patch->model.globals[GLOBAL_CH3_NOTES] = (int16_t)mode;
+				changed = true;
+			}
+		} else if (cc == CC_LFO_RESET) {
+			patch->model.globals[GLOBAL_LFO_RESET] = (int16_t)(value * LFO_RESET_CC_RANGE / 128);
+			changed = true;
+		} else if (cc == CC_CH3_OP_SEMI || cc == CC_CH3_OP_FINE || cc == CC_CH3_OP_FIXED) {
+			// Only on the operator's own channel; the ROM drops them elsewhere, and so do we.
+			const int op = channel == 2 ? PATCH_OPS - 1 : channel >= CH3_OP_MIDI_CHANNEL && channel < CH3_OP_MIDI_CHANNEL + PATCH_OPS - 1 ? channel - CH3_OP_MIDI_CHANNEL : -1;
+			if (op >= 0) {
+				int16_t *slot = &patch->model.globals[GLOBAL_CH3_OP(op, cc - CC_CH3_OP_SEMI)];
+				if (cc == CC_CH3_OP_SEMI) {
+					const int semi = value - 64;
+					*slot = (int16_t)((semi < -PATCH_CH3_SEMI_MAX ? -PATCH_CH3_SEMI_MAX : semi > PATCH_CH3_SEMI_MAX ? PATCH_CH3_SEMI_MAX : semi) + PATCH_CH3_SEMI_MAX);
+				} else if (cc == CC_CH3_OP_FINE) {
+					const int fine = value - 64;
+					*slot = (int16_t)((fine < -PATCH_CH3_FINE_MAX ? -PATCH_CH3_FINE_MAX : fine) + PATCH_CH3_FINE_MAX);
+				} else {
+					*slot = value >= 64;
+				}
+				changed = true;
+			}
 		} else if (cc_to_model(cc, value, &global, &param, &result)) {
 			if (global >= 0) {
 				patch->model.globals[global] = (int16_t)result;

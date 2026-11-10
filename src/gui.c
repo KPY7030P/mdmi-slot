@@ -207,8 +207,9 @@ typedef struct {
 } drop_target;
 // A row cell is dragged, a column cell is a global knob, a choice is one of a row of buttons (the
 // algorithm, pan L C R), the source is the Preset drawn as where the sound comes from.
-// SSG is the button that opens the choice of shapes over the graph (stage 11).
-enum { CELL_ROW, CELL_COLUMN, CELL_CHOICE, CELL_SOURCE, CELL_SSG };
+// SSG is the button that opens the choice of shapes over the graph (stage 11), PITCH the tag of a
+// channel 3 operator's pitch that opens its editor (stage 21).
+enum { CELL_ROW, CELL_COLUMN, CELL_CHOICE, CELL_SOURCE, CELL_SSG, CELL_PITCH };
 // How a cell looks, apart from what it does: a bar filled to its value, a segment of DT, RS or FB, a
 // switch button (AM, PORTA), an SSG shape.
 enum { LOOK_BAR, LOOK_SEGMENT, LOOK_SWITCH, LOOK_SHAPE, LOOK_FEEDBACK };
@@ -359,7 +360,10 @@ struct mdmi_gui {
 	// window's alone: no knob, no project.
 	int last_op;
 	int ssg_open;
-	// The last press only closed the choice of SSG: a double click's second press does nothing.
+	// The operator of channel 3 whose pitch editor is open (stage 21, docs/design/ch3-ops.md), -1
+	// when closed; at most one of it and the choice of SSG is open.
+	int pitch_open;
+	// The last press only closed the choice of SSG or the pitch editor: a double click's second press does nothing.
 	bool press_eaten;
 	// Each FM operator's envelope as the graph's columns, kept until its values change.
 	struct {
@@ -609,7 +613,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	if (dac) {
 		text(g, BAR_X, y + 5, "DAC Samples", INK(C_TEXT), 2);
 	} else {
-		snprintf(buffer, sizeof(buffer), "%.*s%s", special ? SPECIAL_NAME_CHARS : 13, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
+		snprintf(buffer, sizeof(buffer), "%.*s%s", special && patch_ch3_ops(values) ? SPECIAL_NAME_CHARS : 13, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
 		text(g, BAR_X, y + 5, buffer, INK(taken ? C_HINT : C_TEXT), 2);
 	}
 #undef INK
@@ -644,7 +648,8 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		}
 		return;
 	}
-	if (special) {
+	// Only with Ops (stage 21): in One Note MIDI 3 plays them all, a note as on any row.
+	if (special && patch_ch3_ops(values)) {
 		// A column at the right where other rows have their note: the lead (operator 4, channel 3
 		// itself) on top and green, operators 1-3 (MIDI 11-13) below it, dimmer. The bar stays as
 		// long as on a row with one note (owner's note on 0.9.0).
@@ -827,6 +832,70 @@ static int op_of(uint32_t id)
 	return (param - PARAM_OP_BASE) / PATCH_OP_PARAMS;
 }
 
+// Channel 3's operators in Ch3 Special (stage 21, docs/design/ch3-ops.md): a tag of each one's pitch
+// in its header, and under the header the editor of SEMI, FINE and FIX, where the choice of SSG opens.
+#define PITCH_TAG_X 26
+#define PITCH_TAG_W 48
+#define PITCH_EDIT_Y 227
+#define PITCH_EDIT_H 72
+#define PITCH_SEMI_Y 228
+#define PITCH_FINE_Y 252
+#define PITCH_FIX_Y 276
+#define PITCH_FIX_W 50
+// The strip's CH3 NOTES: its label on top, the segments under it.
+#define CH3_NOTES_X 374
+#define CH3_NOTES_W 114
+#define CH3_NOTES_LABEL_H 14
+#define CH3_NOTES_SEGMENT_Y (GLOBALS_Y + 20)
+#define CH3_NOTES_SEGMENT_H 18
+#define LFO_RESET_X 158
+#define LFO_RESET_W 64
+static const struct {
+	const char *label;
+	int x, w;
+} CH3_NOTES_SEGMENTS[2] = {{"OPS", 376, 54}, {"1 NOTE", 432, 54}};
+
+static bool is_ch3_op_global(uint32_t id)
+{
+	return id >= GLOBAL_CH3_OP_BASE && id < PATCH_NUM_GLOBALS;
+}
+
+static int ch3_field(int op, int field)
+{
+	return GLOBAL_CH3_OP(op, field);
+}
+
+// The mouse is in the open pitch editor, gaps between its cells included.
+static bool in_pitch_editor(const mdmi_gui *g, int x, int y)
+{
+	return g->pitch_open >= 0 && x >= GRID_X[g->pitch_open] - 1 && x < GRID_X[g->pitch_open] + OP_W + 1 && y >= PITCH_EDIT_Y && y < PITCH_EDIT_Y + PITCH_EDIT_H;
+}
+
+// The note an operator plays with Fixed: C4 and its Semi, kept where the ROM keeps every operator.
+static int ch3_fixed_key(const patch_values *values, int op)
+{
+	const int key = PATCH_CH3_FIXED_KEY + values->globals[ch3_field(op, PATCH_CH3_SEMI)] - PATCH_CH3_SEMI_MAX;
+	return key < PATCH_CH3_LOWEST_KEY ? PATCH_CH3_LOWEST_KEY : key > PATCH_CH3_HIGHEST_KEY ? PATCH_CH3_HIGHEST_KEY : key;
+}
+
+// The tag's text: "+7", "+7 +10", or with Fixed the note, "G-4 +10".
+static void ch3_pitch_text(const patch_values *values, int op, char *out, size_t size)
+{
+	const int semi = values->globals[ch3_field(op, PATCH_CH3_SEMI)] - PATCH_CH3_SEMI_MAX;
+	const int fine = values->globals[ch3_field(op, PATCH_CH3_FINE)] - PATCH_CH3_FINE_MAX;
+	char first[8];
+	if (values->globals[ch3_field(op, PATCH_CH3_FIXED)]) {
+		note_name(ch3_fixed_key(values, op), first, sizeof(first));
+	} else {
+		snprintf(first, sizeof(first), "%+d", semi);
+	}
+	if (fine) {
+		snprintf(out, size, "%s %+d", first, fine);
+	} else {
+		snprintf(out, size, "%s", first);
+	}
+}
+
 // The operator whose column the mouse is over, header included, or -1.
 static int op_column_at(int x, int y)
 {
@@ -844,6 +913,9 @@ static int active_op(const mdmi_gui *g)
 {
 	if (g->ssg_open >= 0) {
 		return g->ssg_open;
+	}
+	if (g->pitch_open >= 0) {
+		return g->pitch_open;
 	}
 	const int over = g->dragging || g->file_over ? -1 : op_column_at(g->mouse_x, g->mouse_y);
 	return over >= 0 ? over : g->last_op;
@@ -885,16 +957,31 @@ static void layout(mdmi_gui *g, const patch_values *values)
 	};
 	static const char *const PANS[3] = {"L", "C", "R"};
 	static const char *const DIGITS[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
+	// Each as wide as what it shows (stage 21): CH3 NOTES, its segments, comes after CH3 SPECIAL.
 	static const struct {
 		int global;
 		const char *label;
+		int x, w;
 	} GLOBAL_CELLS[] = {
-		{GLOBAL_LFO_ON, "LFO"}, {GLOBAL_LFO_RATE, "LFO RATE"},
-		{GLOBAL_FILTER, "FILTER"}, {GLOBAL_CH3_MODE, "CH3 SPECIAL"}, {GLOBAL_DAC, "DAC"}, {GLOBAL_RETRIGGER, "RETRIGGER"},
+		{GLOBAL_LFO_ON, "LFO", 8, 48}, {GLOBAL_LFO_RATE, "LFO RATE", 60, 94}, {GLOBAL_LFO_RESET, "LFO RESET", LFO_RESET_X, LFO_RESET_W},
+		{GLOBAL_FILTER, "FILTER", 226, 68}, {GLOBAL_CH3_MODE, "CH3 SPECIAL", 298, 72}, {GLOBAL_DAC, "DAC", 492, 48},
+		{GLOBAL_RETRIGGER, "RETRIGGER", 544, 60},
 	};
 	g->cell_count = 0;
 	const int channel = *g->source.channel;
 	const bool bank = *g->source.page == PAGE_BANK;
+	// The pitch editor belongs to channel 3's FM page in Ch3 Special, and closes with it.
+	if (channel != 2 || !is_special(values, channel) || *g->source.page != PAGE_EDITOR) {
+		g->pitch_open = -1;
+	}
+	// Ahead of the column's rows it lies over, as the choice of SSG.
+	if (g->pitch_open >= 0) {
+		const int x = GRID_X[g->pitch_open];
+		add_cell(g, x, PITCH_SEMI_Y, OP_W, OP_ROW_H, (uint32_t)ch3_field(g->pitch_open, PATCH_CH3_SEMI), "SEMI", CELL_ROW);
+		add_cell(g, x, PITCH_FINE_Y, OP_W, OP_ROW_H, (uint32_t)ch3_field(g->pitch_open, PATCH_CH3_FINE), "FINE", CELL_ROW);
+		add_cell(g, x, PITCH_FIX_Y, PITCH_FIX_W, OP_ROW_H, (uint32_t)ch3_field(g->pitch_open, PATCH_CH3_FIXED), "FIX", CELL_ROW);
+		g->cells[g->cell_count - 1].look = LOOK_SWITCH;
+	}
 	if (*g->source.page == PAGE_ALL) {
 		// Per row: VOL, PAN L C R on FM, the source dragged like the page's.
 		for (int c = 0; c < PATCH_NUM_CHANNELS; c++) {
@@ -958,6 +1045,10 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			for (int op = 0; op < PATCH_OPS; op++) {
 				const int x = GRID_X[op];
 				add_cell(g, x + SSG_BUTTON_X, SSG_BUTTON_Y, SSG_BUTTON_W, SSG_BUTTON_H, op_id(channel, op, OP_SSG), "SSG", CELL_SSG);
+				// Channel 3's pitch tag takes the mouse only in Ch3 Special; dim it is drawn alone (draw_page).
+				if (is_special(values, channel)) {
+					add_cell(g, x + PITCH_TAG_X, SSG_BUTTON_Y, PITCH_TAG_W, SSG_BUTTON_H, (uint32_t)ch3_field(op, PATCH_CH3_SEMI), "PITCH", CELL_PITCH);
+				}
 				for (size_t i = 0; i < sizeof(OP_BARS) / sizeof(*OP_BARS); i++) {
 					add_cell(g, x, OP_BARS[i].y, OP_W, OP_ROW_H, op_id(channel, op, OP_BARS[i].field), OP_BARS[i].label, CELL_ROW);
 				}
@@ -975,7 +1066,17 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		}
 	}
 	for (int i = 0; i < (int)(sizeof(GLOBAL_CELLS) / sizeof(*GLOBAL_CELLS)); i++) {
-		add_cell(g, 8 + i * 100, GLOBALS_Y + 6, 96, 32, (uint32_t)GLOBAL_CELLS[i].global, GLOBAL_CELLS[i].label, CELL_COLUMN);
+		// LFO RESET does nothing with the LFO off: dim, drawn alone, no mouse (draw_globals_dim).
+		if (GLOBAL_CELLS[i].global == GLOBAL_LFO_RESET && !values->globals[GLOBAL_LFO_ON]) {
+			continue;
+		}
+		add_cell(g, GLOBAL_CELLS[i].x, GLOBALS_Y + 6, GLOBAL_CELLS[i].w, 32, (uint32_t)GLOBAL_CELLS[i].global, GLOBAL_CELLS[i].label, CELL_COLUMN);
+	}
+	// CH3 NOTES only means something in Ch3 Special; off it is dim the same way.
+	if (values->globals[GLOBAL_CH3_MODE]) {
+		for (int i = 0; i < 2; i++) {
+			add_choice(g, CH3_NOTES_SEGMENTS[i].x, CH3_NOTES_SEGMENT_Y, CH3_NOTES_SEGMENTS[i].w, CH3_NOTES_SEGMENT_H, GLOBAL_CH3_NOTES, CH3_NOTES_SEGMENTS[i].label, i, LOOK_BAR);
+		}
 	}
 	// The plugin's output level (stage 18a) at the strip's right end, under SAVE and UNDO on every page.
 	add_cell(g, MASTER_X, GLOBALS_Y + 6, MASTER_W, 32, GLOBAL_MASTER, "MASTER", CELL_COLUMN);
@@ -1063,13 +1164,22 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			// At Kit the drums choose their type: TYPE is dim, its choice kept for later.
 			const bool dim = c->id == GLOBAL_NOISE_TYPE && values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_KIT;
 			const bool lit = on && !dim;
-			const int scale = !psg && (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
+			// CH3 NOTES keeps all its segments small: 1 NOTE has no room for the big font (stage 21).
+			const bool ch3_notes = c->id == GLOBAL_CH3_NOTES;
+			const int scale = !psg && !ch3_notes && (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
 			const int width = (int)strlen(c->label) * 6 * scale - scale;
 			fill(g, c->x, c->y, c->w, c->h, lit ? (pan ? C_TEXT : psg ? C_PSG : C_FM) : C_CELL);
-			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7 * scale) / 2, c->label, lit ? (pan || psg ? C_BG : C_TEXT) : dim ? (on ? C_HINT : C_LINE) : C_LABEL, scale);
+			text(g, c->x + (c->w - width) / 2, c->y + (ch3_notes ? 6 : (c->h - 7 * scale) / 2), c->label, lit ? (pan || psg ? C_BG : C_TEXT) : dim ? (on ? C_HINT : C_LINE) : C_LABEL, scale);
 		}
 		if (changed && c->choice == base) {
 			fill(g, c->x, c->y + c->h - 2, c->w, 2, C_AMBER);
+		}
+		return;
+	}
+	if (c->kind == CELL_PITCH) {
+		// Drawn with its header, dim or not (draw_pitch_tag); the frame says the editor is open.
+		if (g->pitch_open >= 0 && g->pitch_open == ((int)c->id - GLOBAL_CH3_OP_BASE) / PATCH_CH3_OP_FIELDS) {
+			frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 		}
 		return;
 	}
@@ -1130,7 +1240,9 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		return;
 	}
 	// The cell's own channel: ALL shows them all.
-	const bool fm = channel >= 0 && channel_is_fm(channel);
+	// Channel 3's operator pitch is FM's, though a global (stage 21).
+	const bool ch3_op = is_ch3_op_global(c->id);
+	const bool fm = (channel >= 0 && channel_is_fm(channel)) || ch3_op;
 	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
 	const uint32_t dark = held ? C_LINE : fm ? C_FM_DARK : C_PSG_DARK;
 	const int max = patch_param(c->id)->max > 0 ? patch_param(c->id)->max : 1;
@@ -1145,7 +1257,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		// A channel's cell is a bar filled up to its value, as in the mockup; TUNE from its middle.
 		fill(g, c->x, c->y, c->w, c->h, C_CELL);
 		const int at = c->w * value / max;
-		if (param == PARAM_FINE_TUNE) {
+		if ((channel >= 0 && param == PARAM_FINE_TUNE) || ch3_op) {
 			const int middle = c->w * patch_param(c->id)->default_value / max;
 			fill(g, c->x + (at < middle ? at : middle), c->y, at < middle ? middle - at : at - middle, c->h, dark);
 			fill(g, c->x + middle, c->y, 1, c->h, C_LINE);
@@ -1157,6 +1269,10 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	uint32_t shown = C_TEXT;
 	if (c->id == GLOBAL_DAC && value) {
 		shown = C_DAC;
+	}
+	// On in channel 3's light FM, as its row and number in the rail (stage 21).
+	if (c->id == GLOBAL_CH3_MODE && value) {
+		shown = C_FM_LIGHT;
 	}
 	// No limiter: above 0 dB the plugin can clip, so amber; silence is dim.
 	if (c->id == GLOBAL_MASTER) {
@@ -1197,7 +1313,8 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 {
 	draw_cell_body(g, c, values);
 	int channel, param;
-	if (!g->source.host_values || !patch_id_split(c->id, &channel, &param) || !__atomic_load_n(&g->source.host_values[GUI_HOST_SLOT(channel, param)], __ATOMIC_RELAXED)) {
+	// The pitch tag has no dot of its own: its editor's cells do (docs/design/ch3-ops.md).
+	if (c->kind == CELL_PITCH || !g->source.host_values || !patch_id_split(c->id, &channel, &param) || !__atomic_load_n(&g->source.host_values[GUI_HOST_SLOT(channel, param)], __ATOMIC_RELAXED)) {
 		return;
 	}
 	// A row of choices has its dot on its last button.
@@ -3646,7 +3763,7 @@ static bool arp_hint(mdmi_gui *g, char *hint, size_t size)
 		if (!in_box(x, y, bx, by, ARP_W, ARP_H)) {
 			return false;
 		}
-		snprintf(hint, size, channel == 2 ? "CH3 SPECIAL: ARP DOES NOTHING ON CH3" : "CH10: ARP WORKS ONLY WITH RATE TONE 3");
+		snprintf(hint, size, channel == 2 ? "OPS MODE: ARP DOES NOTHING ON CH3" : "CH10: ARP WORKS ONLY WITH RATE TONE 3");
 		return true;
 	}
 	const patch_arp *row = shown_arp(g);
@@ -3692,6 +3809,76 @@ static bool arp_hint(mdmi_gui *g, char *hint, size_t size)
 }
 
 static void replace_sample(mdmi_gui *g, int note);
+
+// Channel 3's pitch tag of an operator in its header (stage 21): what it plays against the key, or
+// the note it stays at with Fixed, lit then. Dim outside Ch3 Special.
+static void draw_pitch_tag(mdmi_gui *g, const patch_values *values, int op)
+{
+	const int x = GRID_X[op] + PITCH_TAG_X, y = SSG_BUTTON_Y;
+	const bool dim = !is_special(values, 2);
+	const bool fixed = values->globals[ch3_field(op, PATCH_CH3_FIXED)] != 0;
+	const bool zero = values->globals[ch3_field(op, PATCH_CH3_SEMI)] == PATCH_CH3_SEMI_MAX && values->globals[ch3_field(op, PATCH_CH3_FINE)] == PATCH_CH3_FINE_MAX;
+	char buffer[16];
+	ch3_pitch_text(values, op, buffer, sizeof(buffer));
+	uint32_t ground = C_BG, ink = zero ? C_HINT : C_TEXT;
+	if (fixed) {
+		ground = dim ? C_CELL : C_FM_LIGHT;
+		ink = dim ? C_HINT : C_BG;
+	} else if (dim) {
+		ink = C_LINE;
+	}
+	fill(g, x, y, PITCH_TAG_W, SSG_BUTTON_H, ground);
+	const int width = (int)strlen(buffer) * 6 - 1;
+	text(g, x + (PITCH_TAG_W - width) / 2, y + (SSG_BUTTON_H - 7) / 2, buffer, ink, 1);
+}
+
+// The open pitch editor over its column's rows, its cells drawn over it (stage 21).
+static void draw_pitch_editor(mdmi_gui *g, const patch_values *values)
+{
+	const int op = g->pitch_open, x = GRID_X[op];
+	fill(g, x - 1, PITCH_EDIT_Y, OP_W + 2, PITCH_EDIT_H, C_BG);
+	frame(g, x - 1, PITCH_EDIT_Y, OP_W + 2, PITCH_EDIT_H, C_LABEL);
+	for (int i = 0; i < g->cell_count; i++) {
+		if (is_ch3_op_global(g->cells[i].id) && g->cells[i].kind == CELL_ROW) {
+			draw_cell(g, &g->cells[i], values);
+		}
+	}
+	// What FIX gives: the note it stays at, or that the operator follows the key.
+	if (value_of(g, values, (uint32_t)ch3_field(op, PATCH_CH3_FIXED))) {
+		char buffer[8];
+		note_name(ch3_fixed_key(values, op), buffer, sizeof(buffer));
+		text_right(g, x + 108, PITCH_FIX_Y + (OP_ROW_H - 14) / 2, buffer, C_TEXT, 2, 54);
+	} else {
+		text(g, x + 54 + (58 - 47) / 2, PITCH_FIX_Y + (OP_ROW_H - 7) / 2, "FROM KEY", C_HINT, 1);
+	}
+}
+
+// The strip's cells that take no mouse while they mean nothing (stage 21): LFO RESET with the LFO
+// off, CH3 NOTES without Ch3 Special. Their values stay and show; the label of CH3 NOTES always.
+static void draw_globals_dim(mdmi_gui *g, const patch_values *values)
+{
+	const int y = GLOBALS_Y + 6;
+	char buffer[16];
+	if (!values->globals[GLOBAL_LFO_ON]) {
+		fill(g, LFO_RESET_X, y, LFO_RESET_W, 32, C_BG);
+		frame(g, LFO_RESET_X, y, LFO_RESET_W, 32, C_CELL);
+		text(g, LFO_RESET_X + 4, y + 4, "LFO RESET", C_LINE, 1);
+		patch_format(patch_bank_view(g->source.patch), GLOBAL_LFO_RESET, values->globals[GLOBAL_LFO_RESET], buffer, sizeof(buffer));
+		text(g, LFO_RESET_X + 4, y + 14, buffer, C_HINT, 2);
+	}
+	const bool dim = !values->globals[GLOBAL_CH3_MODE];
+	fill(g, CH3_NOTES_X, y, CH3_NOTES_W, CH3_NOTES_LABEL_H, C_CELL);
+	text(g, CH3_NOTES_X + 4, y + 4, "CH3 NOTES", dim ? C_LINE : C_LABEL, 1);
+	if (!dim) {
+		return;
+	}
+	for (int i = 0; i < 2; i++) {
+		const bool on = values->globals[GLOBAL_CH3_NOTES] == i;
+		const int width = (int)strlen(CH3_NOTES_SEGMENTS[i].label) * 6 - 1;
+		fill(g, CH3_NOTES_SEGMENTS[i].x, CH3_NOTES_SEGMENT_Y, CH3_NOTES_SEGMENTS[i].w, CH3_NOTES_SEGMENT_H, C_CELL);
+		text(g, CH3_NOTES_SEGMENTS[i].x + (CH3_NOTES_SEGMENTS[i].w - width) / 2, CH3_NOTES_SEGMENT_Y + 6, CH3_NOTES_SEGMENTS[i].label, on ? C_HINT : C_LINE, 1);
+	}
+}
 
 static void draw_page(mdmi_gui *g, const patch_values *values)
 {
@@ -3750,7 +3937,12 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 	for (int op = 0; op < PATCH_OPS; op++) {
 		const int x = GRID_X[op];
 		const bool carrier = CARRIERS[algorithm] >> op & 1;
-		snprintf(buffer, sizeof(buffer), "OP%d %s", op + 1, carrier ? "CARRIER" : "MOD");
+		// Channel 3's header gives its word to the pitch tag (stage 21): the carrier shows by its fill.
+		if (channel == 2) {
+			snprintf(buffer, sizeof(buffer), "OP%d", op + 1);
+		} else {
+			snprintf(buffer, sizeof(buffer), "OP%d %s", op + 1, carrier ? "CARRIER" : "MOD");
+		}
 		// The active operator's header framed white; no frame round the column (after 0.11.0).
 		if (carrier) {
 			fill(g, x, OP_HEADER_Y, OP_W, OP_HEADER_H, C_FM);
@@ -3761,6 +3953,9 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 			frame(g, x, OP_HEADER_Y, OP_W, OP_HEADER_H, C_TEXT);
 		}
 		text(g, x + 4, OP_HEADER_Y + 4, buffer, carrier || op == active ? C_TEXT : C_FM_LIGHT, 1);
+		if (channel == 2) {
+			draw_pitch_tag(g, values, op);
+		}
 		// The label fields of DT and RS, amber when the value differs from the base (D31).
 		static const struct {
 			const char *label;
@@ -3781,8 +3976,13 @@ static int hovered(const mdmi_gui *g)
 	// The open choice of SSG covers the rows under it, gaps between its cells included.
 	const bool in_choice = g->ssg_open >= 0 && g->mouse_x >= GRID_X[g->ssg_open] - 1 && g->mouse_x < GRID_X[g->ssg_open] + OP_W + 1
 		&& g->mouse_y >= SSG_PICK_Y && g->mouse_y < SSG_PICK_Y + SSG_PICK_H;
+	// So does the pitch editor (stage 21).
+	const bool in_pitch = in_pitch_editor(g, g->mouse_x, g->mouse_y);
 	for (int i = 0; i < g->cell_count; i++) {
 		if (in_choice && g->cells[i].look != LOOK_SHAPE) {
+			continue;
+		}
+		if (in_pitch && !(is_ch3_op_global(g->cells[i].id) && g->cells[i].kind == CELL_ROW)) {
 			continue;
 		}
 		const cell *c = &g->cells[i];
@@ -3912,6 +4112,85 @@ static bool master_hint(mdmi_gui *g)
 	return over >= 0 && g->cells[over].id == GLOBAL_MASTER;
 }
 
+// Stage 21's cells under the mouse, dim ones too (docs/design/ch3-ops.md, part 3).
+static bool ch3_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (g->file_over || g->dragging || *g->source.page == PAGE_ROM) {
+		return false;
+	}
+	const patch_values *values = patch_view(g->source.patch);
+	const int x = g->mouse_x, y = g->mouse_y;
+	if (in_box(x, y, CH3_NOTES_X, GLOBALS_Y + 6, CH3_NOTES_W, 32)) {
+		int mode = values->globals[GLOBAL_CH3_NOTES];
+		for (int i = 0; i < 2; i++) {
+			mode = in_box(x, y, CH3_NOTES_SEGMENTS[i].x, CH3_NOTES_SEGMENT_Y, CH3_NOTES_SEGMENTS[i].w, CH3_NOTES_SEGMENT_H) ? i : mode;
+		}
+		snprintf(hint, size, "%s", !values->globals[GLOBAL_CH3_MODE] ? "CH3 NOTES: ONLY WITH CH3 SPECIAL ON"
+			: mode == PATCH_CH3_ONE_NOTE ? "1 NOTE: MIDI 3 PLAYS ALL 4 OPERATORS" : "OPS: MIDI 11-13 AND 3 PLAY OPERATORS 1-4");
+		return true;
+	}
+	if (in_box(x, y, LFO_RESET_X, GLOBALS_Y + 6, LFO_RESET_W, 32)) {
+		const int reset = values->globals[GLOBAL_LFO_RESET];
+		if (!values->globals[GLOBAL_LFO_ON]) {
+			snprintf(hint, size, "LFO RESET: ONLY WITH LFO ON");
+		} else if (!reset) {
+			snprintf(hint, size, "LFO RESET OFF. CLICK: RESET ON CH1 NOTES");
+		} else {
+			snprintf(hint, size, "EACH CH%d NOTE RESTARTS THE SHARED LFO", reset);
+		}
+		return true;
+	}
+	if (*g->source.page != PAGE_EDITOR || *g->source.channel != 2) {
+		return false;
+	}
+	const int over = hovered(g);
+	const uint32_t id = over >= 0 ? g->cells[over].id : 0;
+	if (over >= 0 && is_ch3_op_global(id) && g->cells[over].kind == CELL_ROW) {
+		const int op = ((int)id - GLOBAL_CH3_OP_BASE) / PATCH_CH3_OP_FIELDS, field = ((int)id - GLOBAL_CH3_OP_BASE) % PATCH_CH3_OP_FIELDS;
+		char note[8];
+		note_name(ch3_fixed_key(values, op), note, sizeof(note));
+		if (field == PATCH_CH3_SEMI) {
+			snprintf(hint, size, "OP%d SEMI: -48 TO +48 ST, DOUBLE CLICK 0", op + 1);
+		} else if (field == PATCH_CH3_FINE) {
+			snprintf(hint, size, "OP%d FINE: -63 TO +63 CT, DOUBLE CLICK 0", op + 1);
+		} else if (values->globals[id]) {
+			snprintf(hint, size, "FIXED: OP%d STAYS AT %s ON ANY KEY", op + 1, note);
+		} else {
+			snprintf(hint, size, "OP%d FOLLOWS THE KEY. CLICK: FIX TO %s", op + 1, note);
+		}
+		return true;
+	}
+	// The tags, dim ones included: each in its header.
+	for (int op = 0; op < PATCH_OPS; op++) {
+		if (!in_box(x, y, GRID_X[op] + PITCH_TAG_X, SSG_BUTTON_Y, PITCH_TAG_W, SSG_BUTTON_H) || in_pitch_editor(g, x, y)) {
+			continue;
+		}
+		if (!values->globals[GLOBAL_CH3_MODE]) {
+			snprintf(hint, size, "OP PITCH: ONLY WITH CH3 SPECIAL ON");
+			return true;
+		}
+		const int semi = values->globals[ch3_field(op, PATCH_CH3_SEMI)] - PATCH_CH3_SEMI_MAX;
+		const int fine = values->globals[ch3_field(op, PATCH_CH3_FINE)] - PATCH_CH3_FINE_MAX;
+		const int midi = patch_ch3_ops(values) && op < PATCH_OPS - 1 ? 11 + op : 3;
+		char pitch[32], cents[16] = "";
+		if (fine) {
+			snprintf(cents, sizeof(cents), " %+d CT", fine);
+		}
+		if (values->globals[ch3_field(op, PATCH_CH3_FIXED)]) {
+			char note[8];
+			note_name(ch3_fixed_key(values, op), note, sizeof(note));
+			snprintf(pitch, sizeof(pitch), "FIXED %s%s", note, cents);
+		} else if (semi || !fine) {
+			snprintf(pitch, sizeof(pitch), "KEY %+d ST%s", semi, cents);
+		} else {
+			snprintf(pitch, sizeof(pitch), "KEY%s", cents);
+		}
+		snprintf(hint, size, "OP%d ON MIDI %d: %s", op + 1, midi, pitch);
+		return true;
+	}
+	return false;
+}
+
 // Where the build's version starts at the footer's right end; the rest of the line ends before it.
 static int version_x(const mdmi_gui *g)
 {
@@ -3956,6 +4235,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, g->message, g->message_color);
 	} else if (master_hint(g)) {
 		footer_text(g, "MASTER: PLUGIN ONLY, NOT ON THE CONSOLE", C_LABEL);
+	} else if (ch3_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (dac_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
@@ -4340,6 +4621,10 @@ static void draw_editor(mdmi_gui *g)
 			}
 		}
 	}
+	if (g->pitch_open >= 0) {
+		draw_pitch_editor(g, values);
+	}
+	draw_globals_dim(g, values);
 	// Hover last, so nothing covers it. ALL has no hover frames (owner after 0.11.0).
 	const bool all = *g->source.page == PAGE_ALL;
 	int over = g->dragging || g->file_over || all ? -1 : hovered(g);
@@ -4692,6 +4977,13 @@ static void on_down(mdmi_gui *g, int x, int y)
 		refresh(g);
 		return;
 	}
+	// The pitch editor open: its cells work as any, a click anywhere else only closes it (stage 21).
+	if (g->pitch_open >= 0 && !in_pitch_editor(g, x, y)) {
+		g->press_eaten = true;
+		g->pitch_open = -1;
+		refresh(g);
+		return;
+	}
 	if (action_at(g, x, y) >= 0) {
 		on_action(g, action_at(g, x, y));
 		return;
@@ -4812,6 +5104,11 @@ static void on_down(mdmi_gui *g, int x, int y)
 	const cell *c = &g->cells[index];
 	if (c->kind == CELL_SSG) {
 		g->ssg_open = g->last_op = op_of(c->id);
+		refresh(g);
+		return;
+	}
+	if (c->kind == CELL_PITCH) {
+		g->pitch_open = g->last_op = ((int)c->id - GLOBAL_CH3_OP_BASE) / PATCH_CH3_OP_FIELDS;
 		refresh(g);
 		return;
 	}
@@ -4981,8 +5278,14 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	}
 	int index = *g->source.page == PAGE_EDITOR || globals ? hovered(g) : -1;
 	// The choice of SSG and its button take a quick second click as a click.
-	if (g->ssg_open >= 0 || (index >= 0 && g->cells[index].kind == CELL_SSG)) {
+	if (g->ssg_open >= 0 || (index >= 0 && (g->cells[index].kind == CELL_SSG || g->cells[index].kind == CELL_PITCH))) {
 		on_down(g, x, y);
+		return;
+	}
+	// Stage 21's cells take a double click as their default on every page: CH3 NOTES OPS, LFO RESET
+	// Off, and SEMI, FINE, FIX of the pitch editor 0 and Off (docs/design/ch3-ops.md).
+	if (index >= 0 && (g->cells[index].id == GLOBAL_CH3_NOTES || g->cells[index].id == GLOBAL_LFO_RESET || is_ch3_op_global(g->cells[index].id))) {
+		edit_once(g, g->cells[index].id, patch_param(g->cells[index].id)->default_value);
 		return;
 	}
 	if (index < 0 || g->cells[index].kind == CELL_CHOICE) {
@@ -5433,6 +5736,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->mouse_x = g->mouse_y = -1;
 	g->key_channel = -1;
 	g->ssg_open = -1;
+	g->pitch_open = -1;
 	g->dac_selected = DAC_DEFAULT_NOTE;
 	g->dac_drag = DACC_NONE;
 	g->wave_note = -1;

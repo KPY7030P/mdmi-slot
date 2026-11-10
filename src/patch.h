@@ -34,8 +34,25 @@ enum {
 	GLOBAL_NOISE_RATE,
 	// The plugin's output level in tenths of dB, 0 silence (stage 18a): the plugin's, never sent to the ROM.
 	GLOBAL_MASTER,
-	PATCH_NUM_GLOBALS,
+	// Channel 3 in Ch3 Special Mode (stage 21, D51): each operator its own note (Ops) or one note
+	// on MIDI 3 for all four (One Note), and the MIDI channel whose notes reset the shared LFO. The
+	// console's, as the noise is: sent as CC 81 and 82, not part of any sound.
+	GLOBAL_CH3_NOTES,
+	GLOBAL_LFO_RESET,
+	// Each of channel 3's operators: Semi, Fine, Fixed, operator 1 first (GLOBAL_CH3_OP).
+	GLOBAL_CH3_OP_BASE,
+	PATCH_NUM_GLOBALS = GLOBAL_CH3_OP_BASE + 4 * 3,
 };
+enum { PATCH_CH3_SEMI, PATCH_CH3_FINE, PATCH_CH3_FIXED, PATCH_CH3_OP_FIELDS };
+#define GLOBAL_CH3_OP(op, field) (GLOBAL_CH3_OP_BASE + (op) * PATCH_CH3_OP_FIELDS + (field))
+enum { PATCH_CH3_OPS, PATCH_CH3_ONE_NOTE };
+// Semi -48..+48 and Fine -63..+63 are stored from 0, their middle the default.
+#define PATCH_CH3_SEMI_MAX 48
+#define PATCH_CH3_FINE_MAX 63
+// With Fixed an operator starts from C4, not from the key; the ROM keeps every operator's note in 11-106.
+#define PATCH_CH3_FIXED_KEY 60
+#define PATCH_CH3_LOWEST_KEY 11
+#define PATCH_CH3_HIGHEST_KEY 106
 #define PATCH_MASTER_MAX 720
 #define PATCH_MASTER_UNITY 600
 enum { PATCH_RETRIGGER_CHIP, PATCH_RETRIGGER_VOICE, PATCH_RETRIGGER_CUT };
@@ -335,9 +352,11 @@ int patch_base_value(const patch_values *values, int channel, int param);
 void patch_arp_clean(patch_arp *arp);
 // The two rows play the same: count, loop and steps; the shadow doesn't count.
 bool patch_arp_same(const patch_arp *a, const patch_arp *b);
-// The channel's row does something now: not channel 3 in Ch3 Special, channel 6 with the DAC, or
+// The channel's row does something now: not channel 3 in Ch3 Special with Ops, channel 6 with the DAC, or
 // channel 10 at a noise rate other than Tone 3 (the window dims the row then).
 bool patch_arp_works(const patch_values *values, int channel);
+// Channel 3 in Ch3 Special with each operator on its own note (stage 21): MIDI 11-13 play operators 1-3.
+bool patch_ch3_ops(const patch_values *values);
 
 void patch_init(mdmi_patch *patch);
 

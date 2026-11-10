@@ -4,6 +4,7 @@
 //
 //   reg_test [folder of the test instrument files]
 #include <math.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include "engine.h"
 #include "instrument.h"
 #include "patch.h"
+#include "ch3_off_clip.h"
 
 #define RATE 48000
 #define BLOCK 256
@@ -69,11 +71,13 @@ static void render_block(int frames)
 
 // The dealer's clock (D41), the way the plugin keeps it: notes that wait start when due.
 static uint64_t clock_samples;
+// Where the notes that start when due go: emit, or a recorder (stage 21, test_ch3_off).
+static patch_emit_fn due_emit = emit;
 
 static void tick(int frames)
 {
 	patch_set_now(patch, clock_samples, RATE);
-	patch_due(patch, emit, NULL);
+	patch_due(patch, due_emit, NULL);
 	render_block(frames);
 	clock_samples += (uint64_t)frames;
 	patch_set_now(patch, clock_samples, RATE);
@@ -1477,6 +1481,210 @@ static void test_rows_off(void)
 	patch_load(patch, fresh, sizeof(fresh), NULL, NULL, NULL, NULL);
 	patch_take_incoming(patch);
 	sync_and_settle();
+}
+
+// Stage 21, item 8: a 0.20 project with Ch3 Special off plays as in 0.20. The project and clip are
+// in ch3_off_clip.h. (a) Everything the plugin sends from the boot to the clip's end, stage 21's
+// controllers (CC 81, 82 on MIDI 7, CC 102-104 on MIDI 3 and 11-13) taken out, is byte for byte what
+// 0.20's patch.c sent: ch3-off-0.20.bin, made by gen_reference.c. Only those 14 come on top, all at
+// the boot. (b) The YM2612 and PSG registers, with the notes held and at the end, are those 0.20's
+// ROM held after the same clip: ch3-off-0.20-regs.bin. That one this test writes itself when run as
+//   reg_test <files> --ch3-off-ref <0.20's ROM> <output>
+// It then boots 0.20's ROM and keeps stage 21's controllers from it, so the ROM gets exactly
+// 0.20's bytes. 0.20's ROM: a worktree of third_party/mdmi at its commit (git -C third_party/mdmi
+// worktree add <dir> HEAD), `git show f94414f:patches/0003-mdmi-psg-envelopes.patch` applied there,
+// res/samples copied from third_party/mdmi, and out/rom.bin built in mdmi-rom-build as
+// tools/build_plugin.sh builds it (make release, BUILD=v1.34p).
+#define CH3_YM1 (0xB8 - 0x21)
+#define CH3_YM2 (0xB8 - 0x30)
+#define CH3_SNAPSHOT (CH3_YM1 + CH3_YM2 + 4 * 2 + 4)
+static uint8_t ch3_sent[16384], ch3_regs[2 * CH3_SNAPSHOT];
+static size_t ch3_sent_bytes;
+static int ch3_new_ccs;
+static bool ch3_keep_new_from_rom;
+static mdmi_patch ch3_model, ch3_scratch;
+
+// CC 81 and 82 on MIDI 7, CC 102-104 on MIDI 3 and 11-13: what stage 21 sends on top.
+static bool stage21_cc(const uint8_t *bytes, size_t length)
+{
+	if (length != 3 || (bytes[0] & 0xF0) != 0xB0) {
+		return false;
+	}
+	const int channel = bytes[0] & 0x0F;
+	return ((bytes[1] == 81 || bytes[1] == 82) && channel == 6) || (bytes[1] >= 102 && bytes[1] <= 104 && (channel == 2 || (channel >= 10 && channel <= 12)));
+}
+
+static void emit_ch3(void *context, const uint8_t *bytes, size_t length)
+{
+	if (stage21_cc(bytes, length)) {
+		ch3_new_ccs++;
+		if (!ch3_keep_new_from_rom) {
+			emit(context, bytes, length);
+		}
+		return;
+	}
+	if (ch3_sent_bytes + length <= sizeof(ch3_sent)) {
+		memcpy(ch3_sent + ch3_sent_bytes, bytes, length);
+	}
+	ch3_sent_bytes += length;
+	emit(context, bytes, length);
+}
+
+static void ch3_block(void)
+{
+	tick(BLOCK);
+}
+
+// YM part 1 0x21-0xB7, part 2 0x30-0xB7, PSG tones 1-3 and the noise (low byte first), volumes.
+static void ch3_snapshot(uint8_t *out)
+{
+	for (int reg = 0x21; reg < 0xB8; reg++) {
+		*out++ = mdmi_engine_test_ym(engine, 0, (uint8_t)reg);
+	}
+	for (int reg = 0x30; reg < 0xB8; reg++) {
+		*out++ = mdmi_engine_test_ym(engine, 1, (uint8_t)reg);
+	}
+	for (int i = 0; i < 4; i++) {
+		const uint16_t tone = mdmi_engine_test_psg_tone(engine, (uint8_t)i);
+		*out++ = (uint8_t)tone;
+		*out++ = (uint8_t)(tone >> 8);
+	}
+	for (int i = 0; i < 4; i++) {
+		*out++ = mdmi_engine_test_psg_volume(engine, (uint8_t)i);
+	}
+}
+
+static void ch3_held(void)
+{
+	ch3_snapshot(ch3_regs);
+}
+
+static void ch3_done(void)
+{
+	ch3_snapshot(ch3_regs + CH3_SNAPSHOT);
+}
+
+static void ch3_register_name(int at, char *name, size_t size)
+{
+	const char *when = at < CH3_SNAPSHOT ? "held" : "end";
+	at %= CH3_SNAPSHOT;
+	if (at < CH3_YM1) {
+		snprintf(name, size, "%s YM 1 %02X", when, 0x21 + at);
+	} else if (at < CH3_YM1 + CH3_YM2) {
+		snprintf(name, size, "%s YM 2 %02X", when, 0x30 + at - CH3_YM1);
+	} else if (at < CH3_YM1 + CH3_YM2 + 8) {
+		snprintf(name, size, "%s PSG tone %d", when, (at - CH3_YM1 - CH3_YM2) / 2 + 1);
+	} else {
+		snprintf(name, size, "%s PSG volume %d", when, at - CH3_YM1 - CH3_YM2 - 8 + 1);
+	}
+}
+
+static size_t read_reference(const char *name, uint8_t *buffer, size_t size)
+{
+	char path[512];
+	snprintf(path, sizeof(path), "%s/%s", files_dir, name);
+	FILE *file = fopen(path, "rb");
+	const size_t got = file ? fread(buffer, 1, size, file) : 0;
+	if (file) {
+		fclose(file);
+	}
+	return got;
+}
+
+// Boots the image with a fresh model holding the 0.20 project and plays the clip.
+static bool ch3_off_run(const uint8_t *image, size_t size)
+{
+	mdmi_patch *const before = patch;
+	if (!ch3_off_load(&ch3_model, &ch3_scratch)) {
+		return false;
+	}
+	ch3_model.owner = owner;
+	patch = &ch3_model;
+	const uint32_t boots = mdmi_engine_boots(engine);
+	mdmi_engine_set_rom(engine, image, size);
+	while (mdmi_engine_boots(engine) == boots) {
+		render(1);
+	}
+	// gen_reference's clock: the same, so the dealer sees the same moments.
+	if (clock_samples < CH3_OFF_CLOCK_START) {
+		clock_samples = CH3_OFF_CLOCK_START;
+	}
+	patch_set_now(patch, clock_samples, RATE);
+	ch3_sent_bytes = 0;
+	ch3_new_ccs = 0;
+	due_emit = emit_ch3;
+	ch3_off_play(patch, emit_ch3, NULL, ch3_block, ch3_held, ch3_done);
+	due_emit = emit;
+	patch = before;
+	return true;
+}
+
+static void test_ch3_off(void)
+{
+	printf("A 0.20 project with Ch3 Special off, as 0.20\n");
+	_Static_assert(CH3_OFF_RATE == RATE && CH3_OFF_BLOCK == BLOCK, "ch3_off_clip.h runs at reg_test's rate and block");
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	// The core runs the built-in image: one that differs in a byte of the header's name restarts it.
+	uint8_t *other = malloc(rom_size);
+	memcpy(other, rom, rom_size);
+	other[0x150] ^= 0x20;
+	const bool ran = ch3_off_run(other, rom_size);
+	free(other);
+	static uint8_t reference[sizeof(ch3_sent)], regs[sizeof(ch3_regs) + 1];
+	const size_t reference_size = read_reference("ch3-off-0.20.bin", reference, sizeof(reference));
+	printf("    %d bytes sent besides %d stage 21 controllers, %d in 0.20's\n", (int)ch3_sent_bytes, ch3_new_ccs, (int)reference_size);
+	check(ran && reference_size && reference_size == ch3_sent_bytes && !memcmp(reference, ch3_sent, reference_size),
+		"from the boot to the clip's end the plugin sends 0.20's bytes besides stage 21's controllers");
+	check(ch3_new_ccs == 14, "those are the 14, CC 81 and 82 and Semi, Fine, Fixed of four operators, no more");
+	const size_t regs_size = read_reference("ch3-off-0.20-regs.bin", regs, sizeof(regs));
+	int differ = 0;
+	for (size_t i = 0; regs_size == sizeof(ch3_regs) && i < sizeof(ch3_regs); i++) {
+		if (regs[i] != ch3_regs[i]) {
+			char name[40];
+			ch3_register_name((int)i, name, sizeof(name));
+			if (differ++ < 8) {
+				printf("    %s: %02X, 0.20 %02X\n", name, ch3_regs[i], regs[i]);
+			}
+		}
+	}
+	check(regs_size == sizeof(ch3_regs) && !differ, "with the notes held and at the end every YM and PSG register is as 0.20's ROM left it");
+	// Back on the built-in image with the model of the tests after this one.
+	boot_image(rom, rom_size);
+	check_voices("back on the built-in image every voice is as before", 0, FM_CHANNELS - 1, -1);
+}
+
+// reg_test <files> --ch3-off-ref <0.20's ROM> <output>: writes ch3-off-0.20-regs.bin.
+static int write_ch3_off_reference(const char *rom_path, const char *out_path)
+{
+	FILE *file = fopen(rom_path, "rb");
+	static uint8_t image[4 << 20];
+	const size_t size = file ? fread(image, 1, sizeof(image), file) : 0;
+	if (file) {
+		fclose(file);
+	}
+	if (!size) {
+		printf("FAIL: %s can't be read\n", rom_path);
+		return 1;
+	}
+	ch3_keep_new_from_rom = true;
+	if (!ch3_off_run(image, size)) {
+		printf("FAIL: the project doesn't load\n");
+		return 1;
+	}
+	static uint8_t reference[sizeof(ch3_sent)];
+	const size_t reference_size = read_reference("ch3-off-0.20.bin", reference, sizeof(reference));
+	if (reference_size != ch3_sent_bytes || memcmp(reference, ch3_sent, reference_size)) {
+		printf("FAIL: the bytes sent are not ch3-off-0.20.bin; make that first\n");
+		return 1;
+	}
+	file = fopen(out_path, "wb");
+	if (!file || fwrite(ch3_regs, 1, sizeof(ch3_regs), file) != sizeof(ch3_regs) || fclose(file)) {
+		printf("FAIL: can't write %s\n", out_path);
+		return 1;
+	}
+	printf("%s: %d bytes, 0.20's ROM got 0.20's %d bytes and none of stage 21's %d controllers\n", out_path, (int)sizeof(ch3_regs), (int)ch3_sent_bytes, ch3_new_ccs);
+	return 0;
 }
 
 static void test_load(void)
@@ -3122,9 +3330,13 @@ static bool steps_like(const uint16_t *seen, const int *at, int count, const uin
 		first++;
 	}
 	bool same = first + 2 * ARP_TEST_STEPS <= count;
+	// The first two steps aren't timed: the note starts inside a frame, and the ROM's frame handler
+	// runs from its main loop, which a chord's notes keep busy for a few ms (stage 21: one step of a
+	// borrowed voice was written 10 ms after its frame). From the third step on each lands on the
+	// frames' grid.
 	for (int j = 0; same && j < 2 * ARP_TEST_STEPS; j++) {
-		const int gap = j > 1 ? at[first + j] - at[first + j - 1] : 800;
-		same = seen[first + j] == expected[j % ARP_TEST_STEPS] && gap >= 600 && gap <= 1000;
+		const int off = j > 2 ? at[first + j] - at[first + 2] - (j - 2) * 800 : 0;
+		same = seen[first + j] == expected[j % ARP_TEST_STEPS] && off >= -200 && off <= 200;
 	}
 	if (!same) {
 		printf("    %s:", what);
@@ -3208,6 +3420,316 @@ static void test_arp(void)
 	arp_on(channel, false);
 }
 
+static void checkf(bool passed, const char *format, ...)
+{
+	char text[256];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(text, sizeof(text), format, args);
+	va_end(args);
+	check(passed, text);
+}
+
+// Stage 21 (D51): channel 3 by operators. The chip's 0x28 holds the last byte written there.
+#define CH3_CAPTURE (RATE / 2)
+static float ch3_wave[CH3_CAPTURE];
+
+// A plain sine voice on a channel: algorithm 7, every operator at MUL 1, AR 31, no decay, release
+// rr, at its own TL; FMS for the vibrato test.
+static void sine_voice(int channel, const int *tl, int rr, int fms)
+{
+	patch_set(patch, PATCH_CHANNEL_ID(channel, PARAM_ALGORITHM), 7);
+	patch_set(patch, PATCH_CHANNEL_ID(channel, PARAM_FEEDBACK), 0);
+	patch_set(patch, PATCH_CHANNEL_ID(channel, PARAM_AMS), 0);
+	patch_set(patch, PATCH_CHANNEL_ID(channel, PARAM_FMS), fms);
+	static const struct {
+		int field, value;
+	} PLAIN[] = {{F_MUL, 1}, {F_DT, 0}, {F_RS, 0}, {F_AR, 31}, {F_DR, 0}, {F_SR, 0}, {F_SL, 0}, {F_AM, 0}, {F_SSG, 0}};
+	for (int op = 0; op < PATCH_OPS; op++) {
+		const int first = PARAM_OP_BASE + op * PATCH_OP_PARAMS;
+		for (size_t i = 0; i < sizeof(PLAIN) / sizeof(*PLAIN); i++) {
+			patch_set(patch, PATCH_CHANNEL_ID(channel, first + PLAIN[i].field), PLAIN[i].value);
+		}
+		patch_set(patch, PATCH_CHANNEL_ID(channel, first + F_TL), tl[op]);
+		patch_set(patch, PATCH_CHANNEL_ID(channel, first + F_RR), rr);
+	}
+	sync_and_settle();
+}
+
+// An output's left side for some samples, at most CH3_CAPTURE.
+static int capture_output(int output, int samples)
+{
+	int n = 0;
+	while (n < samples) {
+		const int frames = samples - n < BLOCK ? samples - n : BLOCK;
+		tick(frames);
+		for (int i = 0; i < frames; i++) {
+			ch3_wave[n++] = outputs[2 * output][i];
+		}
+	}
+	return n;
+}
+
+// The level at a frequency over the captured samples, Hann window (Goertzel).
+static double level_at(int n, double hz)
+{
+	const double k = 2 * cos(2 * 3.14159265358979 * hz / RATE);
+	double s1 = 0, s2 = 0;
+	for (int i = 0; i < n; i++) {
+		const double w = 0.5 - 0.5 * cos(2 * 3.14159265358979 * i / (n - 1));
+		const double s0 = ch3_wave[i] * w + k * s1 - s2;
+		s2 = s1;
+		s1 = s0;
+	}
+	return sqrt(fmax(s1 * s1 + s2 * s2 - k * s1 * s2, 0)) / n;
+}
+
+static double key_hz(double key)
+{
+	return 440.0 * pow(2.0, (key - 69) / 12.0);
+}
+
+// Where the strongest partial near a key lies, in cents from it, searched 60 cents either side.
+static double peak_cents(int n, double key)
+{
+	double best = 0, best_level = -1;
+	for (double c = -60; c <= 60; c += 0.25) {
+		const double level = level_at(n, key_hz(key) * pow(2.0, c / 1200));
+		if (level > best_level) {
+			best_level = level;
+			best = c;
+		}
+	}
+	return best;
+}
+
+static double db(double level)
+{
+	return 20 * log10(level + 1e-12);
+}
+
+static uint8_t key_reg(void)
+{
+	return mdmi_engine_test_ym(engine, 0, 0x28);
+}
+
+// Items 5 and 1-3 through the plugin: the bytes of 0x28 on every event, a released operator dies
+// while the others sound.
+static void test_ch3_keys(void)
+{
+	printf("  channel 3 by operators\n");
+	static const int LOUD[4] = {10, 10, 10, 10};
+	// RR 8 is release rate 34 in BlastEm: about 300 dB a second, so 30 dB in about 100 ms.
+	const int rr = 8, release_ms = 100;
+	sine_voice(2, LOUD, rr, 0);
+	set_global(GLOBAL_CH3_MODE, 1);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	sync_and_settle();
+	uint8_t seen[8];
+	midi(0x9A, 60, 127);
+	render(4);
+	seen[0] = key_reg();
+	midi(0x92, 72, 127);
+	render(4);
+	seen[1] = key_reg();
+	midi(0x8A, 60, 0);
+	render(4);
+	seen[2] = key_reg();
+	midi(0x82, 72, 0);
+	render(4);
+	seen[3] = key_reg();
+	printf("    Ops: 0x28 %02X %02X %02X %02X\n", seen[0], seen[1], seen[2], seen[3]);
+	checkf(seen[0] == 0x12 && seen[1] == 0x92 && seen[2] == 0x82 && seen[3] == 0x02, "Ops: MIDI 11 on 0x12, MIDI 3 on 0x92, MIDI 11 off 0x82, MIDI 3 off 0x02");
+	midi(0x9A, 60, 127);
+	midi(0x9B, 64, 127);
+	render(4);
+	seen[0] = key_reg();
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+	sync_and_settle();
+	seen[1] = key_reg();
+	midi(0x8A, 60, 0);
+	midi(0x8B, 64, 0);
+	render(4);
+	checkf(seen[0] == 0x32 && seen[1] == 0x02, "Ch3 Notes changed while operators 1 and 2 are held (0x%02X): 0x28 0x%02X, all released", seen[0], seen[1]);
+
+	midi(0x92, 60, 127);
+	render(4);
+	seen[0] = key_reg();
+	const uint8_t a9 = mdmi_engine_test_ym(engine, 0, 0xA9), ad = mdmi_engine_test_ym(engine, 0, 0xAD);
+	midi(0x9A, 79, 127);
+	render(4);
+	seen[1] = key_reg();
+	const bool pitch_kept = mdmi_engine_test_ym(engine, 0, 0xA9) == a9 && mdmi_engine_test_ym(engine, 0, 0xAD) == ad;
+	midi(0x8A, 79, 0);
+	midi(0x82, 60, 0);
+	render(4);
+	seen[2] = key_reg();
+	checkf(seen[0] == 0xF2 && seen[1] == 0xF2 && pitch_kept && seen[2] == 0x02, "One Note: MIDI 3 on 0x%02X, a MIDI 11 note writes neither 0x28 nor A9/AD, off 0x%02X", seen[0], seen[2]);
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	const uint8_t a9_off = mdmi_engine_test_ym(engine, 0, 0xA9);
+	seen[0] = key_reg();
+	midi(0x9A, 84, 127);
+	render(4);
+	checkf(key_reg() == seen[0] && mdmi_engine_test_ym(engine, 0, 0xA9) == a9_off, "Ch3 Special off: a MIDI 11 note writes neither 0x28 nor A9");
+	midi(0x8A, 84, 0);
+
+	// Item 5: C4, E4, G4 on MIDI 11-13, C5 on MIDI 3; MIDI 12 off: E4 dies away within its release.
+	set_global(GLOBAL_CH3_MODE, 1);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	sync_and_settle();
+	static const int KEYS[4] = {60, 64, 67, 72};
+	static const uint8_t ON[4] = {0x9A, 0x9B, 0x9C, 0x92};
+	for (int op = 0; op < 4; op++) {
+		midi(ON[op], (uint8_t)KEYS[op], 127);
+	}
+	render(SETTLE_BLOCKS);
+	reset_energy();
+	int n = capture_output(2, RATE / 5);
+	double held[4], after[4];
+	for (int op = 0; op < 4; op++) {
+		held[op] = level_at(n, key_hz(KEYS[op]));
+	}
+	const int others = loud_outputs();
+	midi(0x8B, 64, 0);
+	render_ms(release_ms);
+	n = capture_output(2, RATE / 5);
+	bool steady = true;
+	for (int op = 0; op < 4; op++) {
+		after[op] = level_at(n, key_hz(KEYS[op]));
+		steady = steady && (op == 1 || fabs(db(after[op]) - db(held[op])) <= 1.0);
+	}
+	printf("    held %.1f %.1f %.1f %.1f dB, %d ms after MIDI 12's Note Off %.1f %.1f %.1f %.1f dB\n", db(held[0]), db(held[1]), db(held[2]), db(held[3]), release_ms,
+		db(after[0]), db(after[1]), db(after[2]), db(after[3]));
+	checkf(others == 1 << 2 && db(held[1]) - db(after[1]) >= 30 && steady, "algorithm 7: after MIDI 12's Note Off its E4 falls %.1f dB within RR, C4, G4, C5 stay within 1 dB, all in output 3",
+		db(held[1]) - db(after[1]));
+	for (int op = 0; op < 4; op++) {
+		midi((uint8_t)(ON[op] - 0x10), (uint8_t)KEYS[op], 0);
+	}
+	render(SETTLE_BLOCKS);
+
+	// Item 6: One Note, Semi 0 (Fixed), +4, +7, +12 on C4; a bend of +2 moves three, Fixed stays.
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+	static const int SEMI[4] = {0, 4, 7, 12};
+	for (int op = 0; op < 4; op++) {
+		set_global(GLOBAL_CH3_OP(op, PATCH_CH3_SEMI), PATCH_CH3_SEMI_MAX + SEMI[op]);
+	}
+	set_global(GLOBAL_CH3_OP(0, PATCH_CH3_FIXED), 1);
+	sync_and_settle();
+	midi(0x92, 60, 127);
+	render(SETTLE_BLOCKS);
+	n = capture_output(2, CH3_CAPTURE);
+	double plain[4], bent[4];
+	for (int op = 0; op < 4; op++) {
+		plain[op] = peak_cents(n, 60 + SEMI[op]);
+	}
+	midi(0xE2, 0x7F, 0x7F);
+	render(SETTLE_BLOCKS);
+	n = capture_output(2, CH3_CAPTURE);
+	bool in_tune = true, bend_right = true;
+	for (int op = 0; op < 4; op++) {
+		bent[op] = peak_cents(n, 60 + SEMI[op] + (op ? 2 : 0));
+		in_tune = in_tune && fabs(plain[op]) <= 5;
+		bend_right = bend_right && fabs(bent[op]) <= 5;
+	}
+	midi(0xE2, 0x00, 0x40);
+	midi(0x82, 60, 0);
+	render(SETTLE_BLOCKS);
+	printf("    One Note on C4: %+.2f %+.2f %+.2f %+.2f cents from C4 E4 G4 C5; bent +2: %+.2f %+.2f %+.2f %+.2f from C4 F#4 A4 D5\n", plain[0], plain[1], plain[2], plain[3],
+		bent[0], bent[1], bent[2], bent[3]);
+	checkf(in_tune && bend_right, "One Note: four partials on their intervals within 5 cents; a bend of +2 moves three, the Fixed one stays");
+	for (int op = 0; op < 4; op++) {
+		set_global(GLOBAL_CH3_OP(op, PATCH_CH3_SEMI), PATCH_CH3_SEMI_MAX);
+	}
+	set_global(GLOBAL_CH3_OP(0, PATCH_CH3_FIXED), 0);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	midi(0xC2, 0, 0);
+	render(SETTLE_BLOCKS);
+}
+
+// The vibrato of a note in the captured wave, from its start: the frequency over each 5 periods,
+// in cents from the key; how many it got.
+#define VIBRATO_WINDOWS 128
+static int vibrato_curve(int n, int key, double *cents)
+{
+	float peak = 0;
+	for (int i = 0; i < n; i++) {
+		peak = fabsf(ch3_wave[i]) > peak ? fabsf(ch3_wave[i]) : peak;
+	}
+	int onset = 0;
+	while (onset < n && fabsf(ch3_wave[onset]) < peak * 0.01f) {
+		onset++;
+	}
+	double crossings[1024];
+	int count = 0;
+	for (int i = onset + 1; i < n && count < 1024; i++) {
+		if (ch3_wave[i - 1] < 0 && ch3_wave[i] >= 0) {
+			crossings[count++] = i - 1 + ch3_wave[i - 1] / (ch3_wave[i - 1] - ch3_wave[i]);
+		}
+	}
+	int windows = 0;
+	for (int k = 0; k + 5 < count && windows < VIBRATO_WINDOWS && crossings[k + 5] - crossings[0] < RATE / 5; k += 5) {
+		const double hz = 5.0 * RATE / (crossings[k + 5] - crossings[k]);
+		cents[windows++] = 1200 * log2(hz / key_hz(key));
+	}
+	return windows;
+}
+
+// Item 7, the experiment before the work: FMS 7, five notes at random moments on MIDI 1. With LFO
+// Reset 1 the vibrato starts alike on every note; without it, it doesn't.
+static double vibrato_spread(int reset, double *range)
+{
+	set_global(GLOBAL_LFO_RESET, reset);
+	sync_and_settle();
+	static double curves[5][VIBRATO_WINDOWS];
+	int windows = VIBRATO_WINDOWS;
+	uint32_t seed = 0x2151u + (uint32_t)reset;
+	double spread = 0, low = 1e9, high = -1e9;
+	for (int note = 0; note < 5; note++) {
+		seed = seed * 1664525u + 1013904223u;
+		int wait = 300 * RATE / 1000 + (int)(seed >> 8) % (600 * RATE / 1000);
+		while (wait > 0) {
+			const int frames = wait < BLOCK ? wait : BLOCK;
+			tick(frames);
+			wait -= frames;
+		}
+		midi(0x90, 69, 127);
+		const int n = capture_output(0, RATE / 2);
+		midi(0x80, 69, 0);
+		const int got = vibrato_curve(n, 69, curves[note]);
+		windows = got < windows ? got : windows;
+	}
+	for (int j = 0; j < windows; j++) {
+		for (int note = 0; note < 5; note++) {
+			spread = fmax(spread, fabs(curves[note][j] - curves[0][j]));
+			low = fmin(low, curves[note][j]);
+			high = fmax(high, curves[note][j]);
+		}
+	}
+	printf("    LFO Reset %d: %d windows of 5 periods over 200 ms, the notes differ by %.2f cents at most; the vibrato spans %+.1f to %+.1f cents\n", reset, windows, spread, low, high);
+	*range = high - low;
+	return windows >= 15 ? spread : 1e9;
+}
+
+static void test_lfo_reset(void)
+{
+	static const int ONE[4] = {127, 127, 127, 0};
+	sine_voice(0, ONE, 15, 7);
+	set_global(GLOBAL_LFO_ON, 1);
+	set_global(GLOBAL_LFO_RATE, 0);
+	double range_reset, range_free;
+	const double with = vibrato_spread(1, &range_reset);
+	const double without = vibrato_spread(0, &range_free);
+	checkf(with <= 2.0 && range_reset > 20, "LFO Reset 1: five notes at random moments start the same vibrato within 2 cents (%.2f)", with);
+	checkf(without > 20.0, "without it they differ by more than 20 cents (%.1f)", without);
+	set_global(GLOBAL_LFO_RESET, 0);
+	sync_and_settle();
+	midi(0xC0, 0, 0);
+	render(SETTLE_BLOCKS);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -3231,6 +3753,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	render(SETTLE_BLOCKS);
+	if (argc == 5 && !strcmp(argv[2], "--ch3-off-ref")) {
+		return write_ch3_off_reference(argv[3], argv[4]);
+	}
 	full_velocity();
 	check_voices("a booted ROM holds the model's defaults", 0, FM_CHANNELS - 1, -1);
 	check_globals("and its LFO and Ch3 mode");
@@ -3249,6 +3774,7 @@ int main(int argc, char **argv)
 	test_loop_pan();
 	test_loop_marks();
 	test_four_voices();
+	test_ch3_off();
 	test_load();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);
@@ -3270,6 +3796,10 @@ int main(int argc, char **argv)
 	test_psg_level();
 	test_reset();
 	test_arp();
+	test_reset();
+	test_ch3_keys();
+	test_reset();
+	test_lfo_reset();
 	test_reset();
 	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

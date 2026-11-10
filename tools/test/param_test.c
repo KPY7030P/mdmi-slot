@@ -14,11 +14,15 @@
 #define BLOCK 256
 #define MAX_EVENTS 512
 #define FFT_SIZE 16384
-#define NUM_PARAMS 363
+#define NUM_PARAMS 377
 
 // Ids by D3: a global's id is its index, a channel's knob 1000 + channel number * 100 + param.
 // Id 0 held Polyphony until D20 and stays unused.
-enum { P_RETIRED, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC, P_RETRIGGER, P_NOISE_TYPE, P_NOISE_RATE, P_MASTER };
+enum { P_RETIRED, P_FILTER, P_LFO_ON, P_LFO_RATE, P_CH3, P_DAC, P_RETRIGGER, P_NOISE_TYPE, P_NOISE_RATE, P_MASTER, P_CH3_NOTES, P_LFO_RESET, P_CH3_OP };
+// Stage 21: Semi, Fine, Fixed of channel 3's operator op (0-3).
+#define P_CH3_SEMI(op) (P_CH3_OP + (op) * 3)
+#define P_CH3_FINE(op) (P_CH3_OP + (op) * 3 + 1)
+#define P_CH3_FIXED(op) (P_CH3_OP + (op) * 3 + 2)
 enum { Q_PRESET, Q_VOLUME, Q_PAN, Q_FINE, Q_BEND, Q_PORTA_ON, Q_PORTA_TIME, Q_ALG, Q_FB, Q_AMS, Q_FMS, Q_OP };
 #define ID(channel, param) (1000 + ((channel) + 1) * 100 + (param))
 #define OP_SR 6
@@ -303,7 +307,7 @@ static void test_listing(void)
 	printf("listing\n");
 	instance *in = create_instance();
 	uint32_t count = in->params->count(in->plugin);
-	CHECK(count == NUM_PARAMS, "%u parameters: 9 global, 55 on each FM channel, 6 on each PSG channel", count);
+	CHECK(count == NUM_PARAMS, "%u parameters: 23 global, 55 on each FM channel, 6 on each PSG channel", count);
 	static bool seen[MAX_ID];
 	bool ids_valid = true;
 	for (uint32_t i = 0; i < count; i++) {
@@ -613,6 +617,10 @@ static void test_state(void)
 	queue_param(a, P_FILTER, 800);
 	queue_param(a, ID(1, Q_PRESET), 81);
 	queue_param(a, ID(8, Q_VOLUME), 33);
+	queue_param(a, P_CH3_NOTES, 1);
+	queue_param(a, P_LFO_RESET, 3);
+	queue_param(a, P_CH3_SEMI(1), 60);
+	queue_param(a, P_CH3_FIXED(3), 1);
 	settle(a, 0.05);
 	float *original = play_note(a, 0, 48, 0.7);
 
@@ -648,6 +656,8 @@ static void test_state(void)
 	double sim = similarity(sa, sb);
 	CHECK(sim > 0.97, "restored sound matches: spectrum %.4f", sim);
 	CHECK(get_value(b, ID(1, Q_PRESET)) == 81 && get_value(b, ID(8, Q_VOLUME)) == 33, "other channels are restored too: preset %d", get_value(b, ID(1, Q_PRESET)));
+	CHECK(get_value(b, P_CH3_NOTES) == 1 && get_value(b, P_LFO_RESET) == 3 && get_value(b, P_CH3_SEMI(1)) == 60 && get_value(b, P_CH3_FIXED(3)) == 1,
+		"and channel 3's operator knobs (stage 21)");
 
 	// Loading into a running instance, with nothing else telling it to send anything.
 	instance *c = create_instance();
@@ -866,19 +876,27 @@ static void test_mode_knobs(void)
 	CHECK(similarity(ch1_spec, ch1_clip_spec) > 0.97, "CC78 from a clip recovers too, spectrum %.3f", similarity(ch1_spec, ch1_clip_spec));
 	destroy_instance(in);
 
-	// Channels 11-13 set the frequencies of Ch3's operators 1-3 in special mode, and do nothing otherwise.
-	double sims[2];
-	for (int mode = 0; mode < 2; mode++) {
+	// Stage 21 (D51): channels 11-13 do nothing with special mode off. In it with Ops they play
+	// operators 1-3 beside MIDI 3's operator 4; with One Note MIDI 3 plays all four at their Semi.
+	double sims[3];
+	for (int mode = 0; mode < 3; mode++) {
 		in = create_instance();
 		settle(in, 0.4);
-		queue_param(in, P_CH3, mode);
+		queue_param(in, P_CH3, mode > 0);
+		queue_param(in, P_CH3_NOTES, mode == 2);
 		settle(in, 0.05);
 		float *plain = play_note(in, 2, 60, 0.7);
 		double *plain_spec = spectrum(plain, 4000);
 		settle(in, 0.2);
-		queue_midi(in, 0x9A, 79, 127);
-		queue_midi(in, 0x9B, 84, 127);
-		queue_midi(in, 0x9C, 91, 127);
+		if (mode == 2) {
+			queue_param(in, P_CH3_SEMI(0), 48 + 19);
+			queue_param(in, P_CH3_SEMI(1), 48 + 24);
+			queue_param(in, P_CH3_SEMI(2), 48 + 31);
+		} else {
+			queue_midi(in, 0x9A, 79, 127);
+			queue_midi(in, 0x9B, 84, 127);
+			queue_midi(in, 0x9C, 91, 127);
+		}
 		settle(in, 0.05);
 		float *split = play_note(in, 2, 60, 0.7);
 		double *split_spec = spectrum(split, 4000);
@@ -886,7 +904,9 @@ static void test_mode_knobs(void)
 		destroy_instance(in);
 	}
 	CHECK(sims[0] > 0.97, "special mode off: channels 11-13 leave channel 3 alone, spectrum %.3f", sims[0]);
-	CHECK(sims[1] < 0.9, "special mode on: channels 11-13 retune channel 3's operators, spectrum %.3f", sims[1]);
+	// The GM piano's operators 1-3 modulate operator 4: keyed they change its partials, not all of them.
+	CHECK(sims[1] < 0.95, "special mode with Ops: notes on channels 11-13 add operators 1-3 to MIDI 3's operator 4, spectrum %.3f", sims[1]);
+	CHECK(sims[2] < 0.9, "special mode with One Note: Semi retunes operators 1-3 under MIDI 3's note, spectrum %.3f", sims[2]);
 
 	in = create_instance();
 	settle(in, 0.4);
@@ -901,6 +921,15 @@ static void test_mode_knobs(void)
 	settle(in, 0.05);
 	CHECK(get_value(in, P_FINE) == 100 && get_value(in, P_PORTA_TIME) == 30 && get_value(in, P_PORTA_ON) == 1, "knobs follow CC85, CC5, CC65");
 	CHECK(get_value(in, P_DAC) == 1 && get_value(in, P_CH3) == 1, "knobs follow CC78, CC80");
+	queue_midi(in, 0xB4, 81, 64);
+	queue_midi(in, 0xB0, 82, 110);
+	queue_midi(in, 0xBA, 102, 71);
+	queue_midi(in, 0xBB, 103, 54);
+	queue_midi(in, 0xB2, 104, 127);
+	queue_midi(in, 0xB1, 102, 20);
+	settle(in, 0.05);
+	CHECK(get_value(in, P_CH3_NOTES) == 1 && get_value(in, P_LFO_RESET) == 6 && get_value(in, P_CH3_SEMI(0)) == 55 && get_value(in, P_CH3_FINE(1)) == 53
+		&& get_value(in, P_CH3_FIXED(3)) == 1 && get_value(in, P_CH3_SEMI(1)) == 48, "knobs follow CC81, CC82, CC102-104 on MIDI 11, 12 and 3; CC102 on MIDI 2 moves nothing");
 	CHECK(get_value(in, P_BEND) == 7, "bend range knob follows RPN 0,0 to %d", get_value(in, P_BEND));
 	queue_midi(in, 0xB0, 101, 127);
 	queue_midi(in, 0xB0, 100, 127);

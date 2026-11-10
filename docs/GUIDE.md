@@ -34,11 +34,12 @@ emulated cartridge's EverDrive USB registers, with no network or virtual MIDI ca
 ## Knobs
 
 Every MIDI channel is an instrument of its own: its knobs always mean that channel, so lanes for several channels
-can run at once. There are 363 of them, too many for Live to fill its panel by itself: use Configure and touch a
+can run at once. There are 377 of them, too many for Live to fill its panel by itself: use Configure and touch a
 cell in the window. Choosing a channel in the window only changes the view, no knob or lane.
 
 - Global: Filter (3392 Hz matches the original console, top is off), LFO On, LFO Rate,
-  Ch3 Special Mode, DAC Enable, Retrigger, Noise Type, Noise Rate, Master Volume
+  Ch3 Special Mode, DAC Enable, Retrigger, Noise Type, Noise Rate, Master Volume, Ch3 Notes, LFO Reset, and
+  Semi, Fine, Fixed of each of channel 3's four operators (ids 10-23, last in the host's list)
 - Every channel: Preset, Volume, Fine Tune, Bend Range, Porta On, Porta Time
 - FM channels 1-6 also: Pan, Algorithm, Feedback, AMS, FMS, and for each of 4 operators TL, MUL, DT, RS, AR, DR,
   SR, SL, RR, AM, SSG
@@ -79,7 +80,32 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   Channel 9 is silent meanwhile: the ROM cuts its note and takes none of its events. At a fixed rate every
   key plays the noise, 0-44 too (before 0.16 they were dropped), and the envelope's pitch shift does nothing.
   Not checked on a console.
-- Ch3 Special Mode: notes on MIDI channels 11-13 set the frequencies of channel 3's operators 1-3.
+- Ch3 Special Mode (stage 21, D51, `docs/research/ch3-csm.md`, `docs/design/ch3-ops.md`): channel 3's
+  operators have pitches of their own, and Ch3 Notes (id 10, CC 81: 0 Ops, 64 One Note; the ROM reads
+  value * 3 / 128, 2 is kept for CSM and changes nothing) chooses how they play. Ops, the default: MIDI 11-13
+  play operators 1-3 and MIDI 3 operator 4, each with its own Note On and Note Off; our ROM keeps a shadow
+  of channel 3's four key bits and writes 0x28 once per event as `mask << 4 | 2` (operator k is bit
+  `0x10 << k`). One Note: a MIDI 3 note keys all four (0xF2), MIDI 11-13 notes write nothing. One pitch rule
+  for both: the source note + Semi + Fine, kept in 11-106; with Fixed the source is C4. The source is the
+  operator's own note in Ops (with its channel's bend and Fine Tune), MIDI 3's note in One Note (after bend,
+  Fine Tune, portamento and the arp row). Semi (value - 64, ±48), Fine (value - 64 cents) and Fixed (64-127
+  on) are CC 102-104 on the operator's channel only, MIDI 11, 12, 13 and 3; a sounding note moves at once.
+  The knobs are globals like the noise's (D45), ids 12-23 (Op1 Semi, Fine, Fixed, then Op2-Op4): not part of
+  a sound, the bank or files. `patch_sync` sends CC 81 and 82 on MIDI 7 and CC 102-104 on the operators'
+  channels; a ROM reset loses them, a driver swap doesn't (they are in the ROM's RAM). From a clip CC 81 and
+  82 move the knobs on any channel, CC 102-104 only on MIDI 3 and 11-13 and are dropped elsewhere. CC 80,
+  CC 81, a DAC switch and a reset release channel 3's keys in the ROM. Only a ROM reset brings Ops back:
+  a GM reset and CC 121 don't. Before 0.21 a MIDI 3 note keyed all four operators and MIDI 11-13 notes only
+  set pitches; One Note with Fixed is the closest to it. Channel 3 plays alone in both modes. Without Ch3
+  Special MIDI 11-13 notes write nothing.
+- LFO Reset (id 11, CC 82: off, or MIDI 1-6 at the start of each seventh, value * 7 / 128 back): our ROM
+  writes 0x22 without bit 3 and right after it 0x22 from its shadow before the 0x28 of every new attack on
+  that channel's FM voices (a chord's note on another voice and a raised note of the stack too), not for
+  legato with portamento, nothing with the LFO off. No pause of its own: BlastEm clears the LFO's step on a
+  timer tick (18.77 us) and SGDK's write already waits about 25 us. `reg_test`: five notes at random moments
+  with FMS 7 start their vibrato within 0.2 cents of each other, without the reset up to 160 cents apart.
+  The chip has one LFO: the reset moves every channel's vibrato and AM. On a console the prescaler isn't
+  reset (the start wanders by up to 1/128 of a cycle) and AM jumps to its step 0; README.
 - DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own. Since stage
   19 (D49, `docs/research/pcm4.md`) the driver is SGDK's PCM4: four voices mixed on the Z80 at one rate,
   `ROM_PCM4_HZ` 15236 Hz as BlastEm plays it (3579545 / 223 = 16052 on a console). Our ROM writes the
@@ -136,7 +162,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   costs a Program Change as before. `files_draw_arp` hands a drawing like an envelope's; STORE
   (`files_store`) writes the channel's sound and row into its place, one undo step. Project block 10
   holds all rows; `.mdbank` the places', `.mdsnap` all. The row is dim (`patch_arp_works`) on channel 3
-  in Ch3 Special, channel 6 with the DAC and channel 10 off Tone 3.
+  in Ch3 Special with Ops (in One Note the ROM steps it and moves all four operators), channel 6 with the DAC
+  and channel 10 off Tone 3.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square
   Lead on 81, 90 and 100, Plain elsewhere). On a PSG channel Preset, CC 3 and a clip's Pgm choose from
   it, and the BANK page lists it while a channel 7-10 is selected. An EEF works there as a TFI does on
@@ -170,7 +197,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   place empty. A rail row shows the name, a `*` when the bank place's sound was tweaked, and a bar of
   16 segments: the channel's volume (CC7), and green while a note is held, CC7 x velocity / 127,
   grey after. The ROM itself has no velocity curve; the bar shows what the plugin sent. In Ch3
-  Special Mode channel 3's row is light FM and shows four notes in a column at the right, its own
+  Special Mode channel 3's row is light FM; with Ops it shows four notes in a column at the right, its own
   on top; the bar keeps its length. The bank page's scroll track marks every
   channel's place.
 - A `*` means the sound is tweaked against its base (D31): what the channel last got whole, its
@@ -205,7 +232,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   Off at 1 s, where the active curve has its number. Each operator's SSG is a button at its
   header's right end, its shape or a dim SSG: a click opens OFF and the 8 shapes under the header,
   a click on one sets it as one gesture, any other click closes the choice. In Ch3 Special Mode
-  channel 3's number on the page is light FM, as in the rail.
+  channel 3's number on the page is light FM, as in the rail. On channel 3 (stage 21) each header says only
+  OP1-OP4 and has a tag of the operator's pitch (`+7 +10`, or the note with FIX, filled light FM); a click on
+  it opens SEMI, FINE and FIX where the choice of SSG opens, one of the two at a time; any other click,
+  another channel or Ch3 Special off closes it. Without Ch3 Special the tags are dim and take no mouse.
 
 - Outputs (stage 17, D46): Main and Ch 1 to Ch 10, one stereo port each, in this order and with these ids for
   good (Live keeps routing by them). The patched BlastEm hands over each of the chip's ten voices (FM 1-6, the
@@ -214,7 +244,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   for, queued with the note; the engine moves the voice to that channel's output at the voice's next key-on,
   so a release tail stays with its channel until another channel's note starts on the voice. A newer owner
   replaces one still waiting. The DAC's voice is channel 6's the moment the DAC switches on (the switch
-  resets the YM2612), MIDI 11-13 notes in Ch3 Special Mode give voice 3 to channel 3. Each voice has its
+  resets the YM2612), MIDI 11-13 notes in Ch3 Special Mode with Ops give voice 3 to channel 3. Each voice has its
   DC blocker before it goes to an output, so the YM2612's ladder offset of a silent voice doesn't step
   between outputs when the voice changes owner; one 20-channel resampler serves the outputs, and Main
   is their sum. The PSG's four voices go to their outputs 3 dB louder (x1.4125, D48), after the DC blocker;
@@ -229,6 +259,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   stays the outputs' sum and a lane has no steps. No limiter. In the window MASTER sits at the right end
   of the strip of globals, on every page but ROM; the footer says the console ignores it. A double click
   on any global cell puts its default back on every page.
+  The strip's cells are as wide as what they show (stage 21): LFO, LFO RATE, LFO RESET, FILTER, CH3 SPECIAL
+  (On in light FM), CH3 NOTES (segments OPS and 1 NOTE), DAC, RETRIGGER, MASTER. LFO RESET is dim and
+  takes no mouse with the LFO off, CH3 NOTES without Ch3 Special; a double click puts OPS and Off back,
+  and 0 and Off in the pitch editor.
 
 Toggling the DAC resets the YM2612 and the PSG, because the ROM swaps the Z80 driver: SGDK resets both chips,
 and the Z80's reset line also clears the YM2612. Sounding notes stop, `src/patch.c` reloads every FM
@@ -256,10 +290,12 @@ clip envelope or Live's CC Control. Values are 0-127 and scaled to the knob's ra
 | 51-54, 55-58, 59-62 | SR, SL, RR. SR above 15 only by knob, CC reaches 0-15 | 1-6 |
 | 70-73, 90-93 | AM, SSG | 1-6 |
 | 74, 1, 80, 78 | LFO On, LFO Rate, Ch3 Special Mode, DAC Enable | any |
+| 81, 82 | Ch3 Notes (value * 3 / 128: Ops, One Note; 2 changes nothing), LFO Reset (value * 7 / 128: Off, MIDI 1-6) | any |
+| 102, 103, 104 | Semi (value - 64, ±48), Fine (value - 64, ±63 cents), Fixed (64-127 on) of channel 3's operator 4 on MIDI 3, of operators 1-3 on MIDI 11-13 | 3, 11-13 |
 | 12, 13 | Noise Type (0-63 Periodic, 64-127 White), Noise Rate (value * 5 / 128: High, Mid, Low, Tone 3, Kit) | 10 |
 
 Notes, pitch bend and other controllers pass to the ROM. CC 121 is turned into what the standard means by it, centre
-bend and pedal up, because the ROM would also reset the channel's program and voices. CC 87 and CC 84 are dropped: one would make a program number mean another sound for good, the other lets the ROM give any note any voice, past the plugin.
+bend and pedal up, because the ROM would also reset the channel's program and voices. CC 102-104 on channels other than 3 and 11-13 are dropped, as the ROM drops them. CC 87 and CC 84 are dropped: one would make a program number mean another sound for good, the other lets the ROM give any note any voice, past the plugin.
 
 At the same moment, knob changes and controllers come before notes start, so a preset point exactly on a note's
 start is meant for that note.

@@ -2353,6 +2353,195 @@ static void test_dac_moves(void)
 	free(p);
 }
 
+// How many controllers cc went out, on any channel.
+static int count_cc(uint8_t cc)
+{
+	int count = 0;
+	for (size_t i = 0; i + 2 < sent_bytes; i++) {
+		count += (sent[i] & 0xF0) == 0xB0 && sent[i + 1] == cc;
+	}
+	return count;
+}
+
+static int count_ch3_ccs(void)
+{
+	return count_cc(81) + count_cc(82) + count_cc(102) + count_cc(103) + count_cc(104);
+}
+
+// Stage 21 (D51): Ch3 Notes, LFO Reset and Semi, Fine, Fixed of channel 3's four operators are
+// globals 10-23, last in the host's list. CC 81 and 82 go on MIDI 7 as the other globals, CC 102-104
+// on the operator's own channel: MIDI 11-13 for operators 1-3, MIDI 3 for operator 4.
+static void test_ch3_ops(void)
+{
+	printf("Channel 3 by operators\n");
+	static mdmi_patch patch, other;
+	patch_init(&patch);
+	char name[32], text[16];
+	bool ids = GLOBAL_CH3_NOTES == 10 && GLOBAL_LFO_RESET == 11 && GLOBAL_CH3_OP(0, PATCH_CH3_SEMI) == 12 && GLOBAL_CH3_OP(3, PATCH_CH3_FIXED) == 23 && PATCH_NUM_GLOBALS == 24;
+	patch_param_name(GLOBAL_CH3_NOTES, name, sizeof(name));
+	ids = ids && !strcmp(name, "Ch3 Notes") && patch_param(GLOBAL_CH3_NOTES)->max == 1 && patch_param(GLOBAL_CH3_NOTES)->default_value == PATCH_CH3_OPS;
+	patch_param_name(GLOBAL_LFO_RESET, name, sizeof(name));
+	ids = ids && !strcmp(name, "LFO Reset") && patch_param(GLOBAL_LFO_RESET)->max == 6 && patch_param(GLOBAL_LFO_RESET)->default_value == 0;
+	static const char *const FIELDS[3] = {"Semi", "Fine", "Fixed"};
+	static const int MAX[3] = {96, 126, 1}, DEFAULT[3] = {48, 63, 0};
+	for (int op = 0; op < PATCH_OPS; op++) {
+		for (int field = 0; field < 3; field++) {
+			const uint32_t id = (uint32_t)(12 + op * 3 + field);
+			char want[32];
+			snprintf(want, sizeof(want), "Ch3 Op%d %s", op + 1, FIELDS[field]);
+			patch_param_name(id, name, sizeof(name));
+			ids = ids && !strcmp(name, want) && patch_param(id)->max == MAX[field] && patch_param(id)->default_value == DEFAULT[field] && patch_param(id)->stepped;
+		}
+	}
+	CHECK(ids, "ids 10-23: Ch3 Notes, LFO Reset, then Semi, Fine, Fixed of operators 1-4, with their ranges and defaults");
+	CHECK(patch_param_id_at(PATCH_NUM_IDS - 15) == GLOBAL_MASTER && patch_param_id_at(PATCH_NUM_IDS - 14) == 10 && patch_param_id_at(PATCH_NUM_IDS - 1) == 23 && PATCH_NUM_IDS == 377,
+		"in the host's list after Master Volume, %d knobs", PATCH_NUM_IDS);
+	bool labels = true;
+	patch_format(&patch.bank, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE, text, sizeof(text));
+	labels = labels && !strcmp(text, "One Note");
+	patch_format(&patch.bank, GLOBAL_LFO_RESET, 3, text, sizeof(text));
+	labels = labels && !strcmp(text, "Ch 3");
+	patch_format(&patch.bank, GLOBAL_CH3_OP(1, PATCH_CH3_SEMI), 55, text, sizeof(text));
+	labels = labels && !strcmp(text, "+7 st");
+	patch_format(&patch.bank, GLOBAL_CH3_OP(1, PATCH_CH3_FINE), 53, text, sizeof(text));
+	labels = labels && !strcmp(text, "-10 ct");
+	int value = -1;
+	labels = labels && patch_parse(&patch.bank, GLOBAL_CH3_OP(0, PATCH_CH3_SEMI), "-12", &value) && value == 36;
+	CHECK(labels, "they read One Note, Ch 3, +7 st, -10 ct, and -12 is Semi 36");
+
+	clear();
+	sync(&patch);
+	CHECK(sent_bytes == 0, "the defaults are what the ROM starts with: nothing to send");
+	set(&patch, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+	CHECK(sent_bytes == 3 && sent_cc(0xB6, 81, 64), "One Note goes as CC 81 64 on MIDI 7");
+	bool resets = true;
+	for (int n = 1; n <= 6; n++) {
+		clear();
+		set(&patch, GLOBAL_LFO_RESET, n);
+		resets = resets && sent_bytes == 3 && sent[0] == 0xB6 && sent[1] == 82 && sent[2] * 7 / 128 == n;
+	}
+	CHECK(resets, "LFO Reset Ch 1-6 go as CC 82 that the ROM reads back as value * 7 / 128");
+	clear();
+	set(&patch, GLOBAL_CH3_OP(0, PATCH_CH3_SEMI), 48 + 7);
+	set(&patch, GLOBAL_CH3_OP(1, PATCH_CH3_FINE), 63 - 10);
+	set(&patch, GLOBAL_CH3_OP(2, PATCH_CH3_SEMI), 0);
+	set(&patch, GLOBAL_CH3_OP(3, PATCH_CH3_FIXED), 1);
+	set(&patch, GLOBAL_CH3_OP(3, PATCH_CH3_FINE), 126);
+	CHECK(sent_bytes == 15 && sent_cc(0xBA, 102, 71) && sent_cc(0xBB, 103, 54) && sent_cc(0xBC, 102, 16) && sent_cc(0xB2, 104, 127) && sent_cc(0xB2, 103, 127),
+		"Semi, Fine and Fixed go as CC 102-104, value + 64, on MIDI 11, 12, 13 and MIDI 3 for operator 4");
+	clear();
+	set(&patch, GLOBAL_DAC, 1);
+	CHECK(count_ch3_ccs() == 0, "a driver swap sends none of them: they are in the ROM's RAM");
+	set(&patch, GLOBAL_DAC, 0);
+	clear();
+	const uint8_t reset = 0xFF;
+	patch_midi(&patch, &reset, 1, record, NULL);
+	CHECK(count_cc(81) == 1 && count_cc(82) == 1 && count_cc(102) == 4 && count_cc(103) == 4 && count_cc(104) == 4, "after a reset all 14 go again");
+
+	// From a clip: CC 81 and 82 on any channel, CC 102-104 only on the operator's channel.
+	patch_values before = patch.model;
+	clear();
+	midi(&patch, 0xB4, 81, 127);
+	CHECK(sent_bytes == 0 && patch.model.globals[GLOBAL_CH3_NOTES] == PATCH_CH3_ONE_NOTE, "CC 81 127 (CSM, stage 22) changes nothing and goes nowhere");
+	midi(&patch, 0xB4, 81, 20);
+	CHECK(sent_bytes == 3 && sent_cc(0xB6, 81, 0) && patch.model.globals[GLOBAL_CH3_NOTES] == PATCH_CH3_OPS, "CC 81 20 on MIDI 5 is Ops, sent on MIDI 7");
+	clear();
+	midi(&patch, 0xB8, 82, 40);
+	CHECK(patch.model.globals[GLOBAL_LFO_RESET] == 2 && sent_bytes == 3 && sent[0] == 0xB6 && sent[1] == 82, "CC 82 40 on MIDI 9 is Ch 2");
+	clear();
+	midi(&patch, 0xBA, 102, 76);
+	midi(&patch, 0xBB, 103, 0);
+	midi(&patch, 0xBC, 102, 127);
+	midi(&patch, 0xB2, 104, 10);
+	const int16_t *g = patch.model.globals;
+	CHECK(g[GLOBAL_CH3_OP(0, PATCH_CH3_SEMI)] == 60 && g[GLOBAL_CH3_OP(1, PATCH_CH3_FINE)] == 0 && g[GLOBAL_CH3_OP(2, PATCH_CH3_SEMI)] == 96 && g[GLOBAL_CH3_OP(3, PATCH_CH3_FIXED)] == 0,
+		"CC 102-104 on MIDI 11-13 and 3 move their operator's knob: +12, Fine -64 kept at -63, Semi +63 kept at +48, Fixed off");
+	bool others = true;
+	for (int op = 0; op < PATCH_OPS; op++) {
+		for (int field = 0; field < 3; field++) {
+			const int id = GLOBAL_CH3_OP(op, field);
+			const bool touched = id == GLOBAL_CH3_OP(0, PATCH_CH3_SEMI) || id == GLOBAL_CH3_OP(1, PATCH_CH3_FINE) || id == GLOBAL_CH3_OP(2, PATCH_CH3_SEMI) || id == GLOBAL_CH3_OP(3, PATCH_CH3_FIXED);
+			others = others && (touched || g[id] == before.globals[id]);
+		}
+	}
+	CHECK(others && sent_bytes == 12 && sent_cc(0xBB, 103, 1), "the other operators' knobs stay; the ROM gets the kept values");
+	before = patch.model;
+	clear();
+	static const uint8_t ELSEWHERE[] = {0xB0, 0xB1, 0xB3, 0xB5, 0xB6, 0xB9, 0xBD, 0xBF};
+	for (size_t i = 0; i < sizeof(ELSEWHERE); i++) {
+		midi(&patch, ELSEWHERE[i], 102, 100);
+		midi(&patch, ELSEWHERE[i], 104, 127);
+	}
+	CHECK(sent_bytes == 0 && !memcmp(patch.model.globals, before.globals, sizeof(before.globals)), "CC 102-104 on MIDI 1, 2, 4, 6, 7, 10, 14, 16 move nothing and go nowhere");
+
+	// The project keeps them, a project from before has the defaults, a bank file doesn't touch them.
+	set(&patch, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+	patch_publish(&patch);
+	static uint8_t state[PATCH_NUM_IDS * 6], old[PATCH_NUM_IDS * 6];
+	patch_save(patch_view(&patch), state);
+	patch_init(&other);
+	CHECK(patch_load(&other, state, sizeof(state), NULL, NULL, NULL, NULL) && patch_take_incoming(&other) && !memcmp(other.model.globals, patch.model.globals, sizeof(patch.model.globals)),
+		"a saved state brings all 14 back");
+	size_t old_size = 0;
+	for (int i = 0; i < PATCH_NUM_IDS; i++) {
+		uint32_t id;
+		memcpy(&id, state + i * 6, 4);
+		if (id < GLOBAL_CH3_NOTES || id >= PATCH_NUM_GLOBALS) {
+			memcpy(old + old_size, state + i * 6, 6);
+			old_size += 6;
+		}
+	}
+	patch_init(&other);
+	bool defaults = old_size == sizeof(state) - 14 * 6 && patch_load(&other, old, old_size, NULL, NULL, NULL, NULL) && patch_take_incoming(&other);
+	for (int id = GLOBAL_CH3_NOTES; id < PATCH_NUM_GLOBALS; id++) {
+		defaults = defaults && other.model.globals[id] == patch_param((uint32_t)id)->default_value;
+	}
+	CHECK(defaults && other.model.globals[GLOBAL_LFO_RATE] == patch.model.globals[GLOBAL_LFO_RATE], "a project of 0.20, without ids 10-23, opens with their defaults");
+	clear();
+	patch_rom_booted(&other, record, NULL);
+	// That the rest is 0.20's bytes, byte for byte, reg_test's test_ch3_off checks against 0.20's patch.c.
+	CHECK(count_ch3_ccs() == 14, "a booted ROM gets all 14 controllers, at their defaults too (%d)", count_ch3_ccs());
+
+	mdmi_patch *files_model = &files_patch;
+	patch_init(files_model);
+	files_view = (state_view){0};
+	const files_host host = {files_model, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE], snap_path[MAX_PATH], bank_path[MAX_PATH];
+	path_in(snap_path, sizeof(snap_path), temp_dir, "ch3.mdsnap");
+	path_in(bank_path, sizeof(bank_path), temp_dir, "ch3.mdbank");
+	patch_set(files_model, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+	patch_set(files_model, GLOBAL_LFO_RESET, 4);
+	patch_set(files_model, GLOBAL_CH3_OP(2, PATCH_CH3_FINE), 99);
+	patch_publish(files_model);
+	static patch_values snapped;
+	snapped = files_model->model;
+	CHECK(files_save(&files, snap_path, FILES_SNAPSHOT, 0, message, sizeof(message)) && files_save(&files, bank_path, FILES_BANK, 0, message, sizeof(message)), "a snapshot and a bank saved: %s", message);
+	patch_init(files_model);
+	patch_set(files_model, GLOBAL_LFO_RESET, 1);
+	patch_publish(files_model);
+	CHECK(files_open(&files, bank_path, 0, message, sizeof(message)) && files_model->model.globals[GLOBAL_LFO_RESET] == 1 && files_model->model.globals[GLOBAL_CH3_NOTES] == PATCH_CH3_OPS,
+		"a bank file leaves them as they are: %s", message);
+	CHECK(files_open(&files, snap_path, 0, message, sizeof(message)) && !memcmp(files_model->model.globals, snapped.globals, sizeof(snapped.globals)), "an .mdsnap brings them back: %s", message);
+	files_free(&files);
+
+	// Channel 3 plays alone in Ch3 Special in both modes; MIDI 11-13 notes pass to the ROM as they are.
+	for (int mode = PATCH_CH3_OPS; mode <= PATCH_CH3_ONE_NOTE; mode++) {
+		patch_init(&patch);
+		set(&patch, GLOBAL_CH3_MODE, 1);
+		set(&patch, GLOBAL_CH3_NOTES, mode);
+		clear();
+		moment(&patch, 2, 60, 3, true);
+		midi(&patch, 0x9A, 64, 100);
+		const uint8_t op_note[3] = {0x9A, 64, 100};
+		CHECK(count_sysex(0x00) == 0 && patch.voices[2].channel == 2 && free_voices(&patch) == 5 && patch_muted_notes(&patch, 2) == 0 && count_status(0x90) == 4 && sent_bytes >= 3 && !memcmp(sent + sent_bytes - 3, op_note, 3),
+			"%s: a chord of 3 on MIDI 3 goes to the ROM on voice 3 alone, a MIDI 11 note goes through", mode ? "One Note" : "Ops");
+		moment(&patch, 2, 60, 3, false);
+		midi(&patch, 0x8A, 64, 0);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -2377,6 +2566,7 @@ int main(int argc, char **argv)
 	test_sound_changed();
 	test_bases();
 	test_arps();
+	test_ch3_ops();
 	test_cursor();
 	test_fm_envelope();
 	test_dac();
