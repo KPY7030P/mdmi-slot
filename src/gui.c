@@ -853,7 +853,8 @@ static int op_of(uint32_t id)
 static const struct {
 	const char *label;
 	int x, w;
-} CH3_NOTES_SEGMENTS[2] = {{"OPS", 376, 54}, {"1 NOTE", 432, 54}};
+} CH3_NOTES_SEGMENTS[3] = {{"OPS", 376, 34}, {"1 NOTE", 412, 38}, {"CSM", 452, 34}};
+#define CH3_NOTES_MODES 3
 
 static bool is_ch3_op_global(uint32_t id)
 {
@@ -1074,7 +1075,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 	}
 	// CH3 NOTES only means something in Ch3 Special; off it is dim the same way.
 	if (values->globals[GLOBAL_CH3_MODE]) {
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < CH3_NOTES_MODES; i++) {
 			add_choice(g, CH3_NOTES_SEGMENTS[i].x, CH3_NOTES_SEGMENT_Y, CH3_NOTES_SEGMENTS[i].w, CH3_NOTES_SEGMENT_H, GLOBAL_CH3_NOTES, CH3_NOTES_SEGMENTS[i].label, i, LOOK_BAR);
 		}
 	}
@@ -3872,7 +3873,7 @@ static void draw_globals_dim(mdmi_gui *g, const patch_values *values)
 	if (!dim) {
 		return;
 	}
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < CH3_NOTES_MODES; i++) {
 		const bool on = values->globals[GLOBAL_CH3_NOTES] == i;
 		const int width = (int)strlen(CH3_NOTES_SEGMENTS[i].label) * 6 - 1;
 		fill(g, CH3_NOTES_SEGMENTS[i].x, CH3_NOTES_SEGMENT_Y, CH3_NOTES_SEGMENTS[i].w, CH3_NOTES_SEGMENT_H, C_CELL);
@@ -4122,10 +4123,11 @@ static bool ch3_hint(mdmi_gui *g, char *hint, size_t size)
 	const int x = g->mouse_x, y = g->mouse_y;
 	if (in_box(x, y, CH3_NOTES_X, GLOBALS_Y + 6, CH3_NOTES_W, 32)) {
 		int mode = values->globals[GLOBAL_CH3_NOTES];
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < CH3_NOTES_MODES; i++) {
 			mode = in_box(x, y, CH3_NOTES_SEGMENTS[i].x, CH3_NOTES_SEGMENT_Y, CH3_NOTES_SEGMENTS[i].w, CH3_NOTES_SEGMENT_H) ? i : mode;
 		}
 		snprintf(hint, size, "%s", !values->globals[GLOBAL_CH3_MODE] ? "CH3 NOTES: ONLY WITH CH3 SPECIAL ON"
+			: mode == PATCH_CH3_CSM    ? "CSM: MIDI 3 SETS RATE, EXACT TO B-4"
 			: mode == PATCH_CH3_ONE_NOTE ? "1 NOTE: MIDI 3 PLAYS ALL 4 OPERATORS" : "OPS: MIDI 11-13 AND 3 PLAY OPERATORS 1-4");
 		return true;
 	}

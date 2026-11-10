@@ -930,6 +930,23 @@ static void test_mode_knobs(void)
 	settle(in, 0.05);
 	CHECK(get_value(in, P_CH3_NOTES) == 1 && get_value(in, P_LFO_RESET) == 6 && get_value(in, P_CH3_SEMI(0)) == 55 && get_value(in, P_CH3_FINE(1)) == 53
 		&& get_value(in, P_CH3_FIXED(3)) == 1 && get_value(in, P_CH3_SEMI(1)) == 48, "knobs follow CC81, CC82, CC102-104 on MIDI 11, 12 and 3; CC102 on MIDI 2 moves nothing");
+	// Stage 22 (D52): CSM is Ch3 Notes' third position, CC 81 127 and 86 from a clip.
+	clap_param_info_t notes_info;
+	bool notes_found = false;
+	for (uint32_t i = 0; i < in->params->count(in->plugin) && !notes_found; i++) {
+		in->params->get_info(in->plugin, i, &notes_info);
+		notes_found = notes_info.id == P_CH3_NOTES;
+	}
+	char notes_text[32] = "";
+	in->params->value_to_text(in->plugin, P_CH3_NOTES, 2, notes_text, sizeof(notes_text));
+	queue_midi(in, 0xB4, 81, 127);
+	settle(in, 0.05);
+	const int csm_127 = get_value(in, P_CH3_NOTES);
+	queue_midi(in, 0xB0, 81, 0);
+	queue_midi(in, 0xB0, 81, 86);
+	settle(in, 0.05);
+	CHECK(notes_found && notes_info.max_value == 2 && (notes_info.flags & CLAP_PARAM_IS_STEPPED) && !strcmp(notes_text, "CSM") && csm_127 == 2 && get_value(in, P_CH3_NOTES) == 2,
+		"Ch3 Notes is 0..2, 2 reads %s; CC 81 127 and 86 from a clip move it to CSM", notes_text);
 	CHECK(get_value(in, P_BEND) == 7, "bend range knob follows RPN 0,0 to %d", get_value(in, P_BEND));
 	queue_midi(in, 0xB0, 101, 127);
 	queue_midi(in, 0xB0, 100, 127);

@@ -135,7 +135,9 @@
 // operator 2's pitch tag in its header and its editor under it (SEMI, FINE, FIX), and the ids.
 #define LFO_ON_X 30
 #define LFO_RESET_X 190
-#define CH3_NOTES_ONE_X 459
+// Stage 22: three segments, OPS 376 w 34, 1 NOTE 412 w 38, CSM 452 w 34.
+#define CH3_NOTES_ONE_X 431
+#define CH3_NOTES_CSM_X 469
 #define CH3_NOTES_Y 489
 #define TAG2_X 408
 #define TAG2_LEFT 384
@@ -1014,7 +1016,7 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		const int ops_dim_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
-		const int ops_lit = count_color_in(376, 430, 480, 498, COLOR_FM), special_on = count_color_in(298, 370, 480, 498, COLOR_FM_LIGHT);
+		const int ops_lit = count_color_in(376, 410, 480, 498, COLOR_FM), special_on = count_color_in(298, 370, 480, 498, COLOR_FM_LIGHT);
 		click(window, CH3_NOTES_ONE_X, CH3_NOTES_Y);
 		run_ms(100);
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
@@ -1022,7 +1024,7 @@ int main(int argc, char **argv)
 		capture(window);
 		save_bmp(argv[2], "ch3-one-note");
 		const int one_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
-		const int one_lit = count_color_in(432, 486, 480, 498, COLOR_FM);
+		const int one_lit = count_color_in(412, 450, 480, 498, COLOR_FM);
 		CHECK(special_on > 0 && ops_lit > 300 && get_value(CH3_NOTES) == 1 && one_lit > 300,
 			"CH3 SPECIAL On in light FM (%d px), OPS lit (%d px), a click on 1 NOTE sets One Note (%d px)", special_on, ops_lit, one_lit);
 		CHECK(row_lit == 98 && ops_dim_row == 0 && one_row == 98, "channel 3's arp row is dim with Ops (%d px light) and back with One Note (%d px)", ops_dim_row, one_row);
@@ -1041,6 +1043,17 @@ int main(int argc, char **argv)
 		send_midi(0x8A, 64, 0);
 		CHECK(get_value(CH3_NOTES) == 0 && one_column == 0 && ops_column > 0,
 			"a double click on CH3 NOTES sets Ops; the rail shows operator 1's note with Ops (%d px), not with One Note (%d px)", ops_column, one_column);
+		// Stage 22: the third segment sets CSM, lit alone; a double click goes back to Ops.
+		click(window, CH3_NOTES_CSM_X, CH3_NOTES_Y);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "ch3-csm");
+		const int csm_lit = count_color_in(452, 486, 480, 498, COLOR_FM), csm_others = count_color_in(376, 450, 480, 498, COLOR_FM);
+		const int csm_value = get_value(CH3_NOTES);
+		double_click(window, CH3_NOTES_CSM_X, CH3_NOTES_Y);
+		run_ms(100);
+		CHECK(csm_value == 2 && csm_lit > 300 && csm_others == 0 && get_value(CH3_NOTES) == 0,
+			"a click on CSM sets CSM (%d), lit alone (%d px, the others %d), a double click Ops again", csm_value, csm_lit, csm_others);
 
 		// The pitch tag opens SEMI, FINE and FIX under its header; they exist only while it is open.
 		const int tl_op2 = get_value(CH3_OP2_TL), fine_before = get_value(CH3_OP2_FINE);

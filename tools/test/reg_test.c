@@ -1503,6 +1503,9 @@ static size_t ch3_sent_bytes;
 static int ch3_new_ccs;
 static bool ch3_keep_new_from_rom;
 static mdmi_patch ch3_model, ch3_scratch;
+// Stage 22, item 6: the same clip as a 0.21 project with Ch3 Special on in One Note, operator
+// intervals and the DAC, without CSM.
+static bool ch3_on_021;
 
 // CC 81 and 82 on MIDI 7, CC 102-104 on MIDI 3 and 11-13: what stage 21 sends on top.
 static bool stage21_cc(const uint8_t *bytes, size_t length)
@@ -1598,6 +1601,15 @@ static bool ch3_off_run(const uint8_t *image, size_t size)
 	if (!ch3_off_load(&ch3_model, &ch3_scratch)) {
 		return false;
 	}
+	if (ch3_on_021) {
+		patch_set(&ch3_model, GLOBAL_CH3_MODE, 1);
+		patch_set(&ch3_model, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+		patch_set(&ch3_model, GLOBAL_CH3_OP(0, PATCH_CH3_SEMI), PATCH_CH3_SEMI_MAX + 7);
+		patch_set(&ch3_model, GLOBAL_CH3_OP(1, PATCH_CH3_FINE), PATCH_CH3_FINE_MAX - 20);
+		patch_set(&ch3_model, GLOBAL_CH3_OP(3, PATCH_CH3_FIXED), 1);
+		patch_set(&ch3_model, GLOBAL_DAC, 1);
+		patch_publish(&ch3_model);
+	}
 	ch3_model.owner = owner;
 	patch = &ch3_model;
 	const uint32_t boots = mdmi_engine_boots(engine);
@@ -1684,6 +1696,63 @@ static int write_ch3_off_reference(const char *rom_path, const char *out_path)
 		return 1;
 	}
 	printf("%s: %d bytes, 0.20's ROM got 0.20's %d bytes and none of stage 21's %d controllers\n", out_path, (int)sizeof(ch3_regs), (int)ch3_sent_bytes, ch3_new_ccs);
+	return 0;
+}
+
+// Stage 22, item 6: the clip as a 0.21 project with Ch3 Special on and the DAC, no CSM: the
+// registers with the notes held and at the end are those 0.21's ROM held (ch3-on-0.21-regs.bin,
+// written by reg_test <files> --ch3-on-ref <0.21's ROM> <output>, 0.21's ROM built as above from
+// `git show d373f7b:patches/0003-mdmi-psg-envelopes.patch`). The plugin's bytes are 0.21's: patch.c
+// changed only for CSM.
+static void test_ch3_on(void)
+{
+	printf("A 0.21 project with Ch3 Special and the DAC, as 0.21\n");
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	uint8_t *other = malloc(rom_size);
+	memcpy(other, rom, rom_size);
+	other[0x150] ^= 0x20;
+	ch3_on_021 = true;
+	const bool ran = ch3_off_run(other, rom_size);
+	ch3_on_021 = false;
+	free(other);
+	static uint8_t regs[sizeof(ch3_regs) + 1];
+	const size_t regs_size = read_reference("ch3-on-0.21-regs.bin", regs, sizeof(regs));
+	int differ = 0;
+	for (size_t i = 0; regs_size == sizeof(ch3_regs) && i < sizeof(ch3_regs); i++) {
+		if (regs[i] != ch3_regs[i]) {
+			char name[40];
+			ch3_register_name((int)i, name, sizeof(name));
+			if (differ++ < 8) {
+				printf("    %s: %02X, 0.21 %02X\n", name, ch3_regs[i], regs[i]);
+			}
+		}
+	}
+	check(ran && regs_size == sizeof(ch3_regs) && !differ, "with the notes held and at the end every YM and PSG register is as 0.21's ROM left it");
+	boot_image(rom, rom_size);
+	check_voices("back on the built-in image every voice is as before", 0, FM_CHANNELS - 1, -1);
+}
+
+// reg_test <files> --ch3-on-ref <0.21's ROM> <output>: writes ch3-on-0.21-regs.bin.
+static int write_ch3_on_reference(const char *rom_path, const char *out_path)
+{
+	FILE *file = fopen(rom_path, "rb");
+	static uint8_t image[4 << 20];
+	const size_t size = file ? fread(image, 1, sizeof(image), file) : 0;
+	if (file) {
+		fclose(file);
+	}
+	ch3_on_021 = true;
+	if (!size || !ch3_off_run(image, size)) {
+		printf("FAIL: %s can't be read or the project doesn't load\n", rom_path);
+		return 1;
+	}
+	file = fopen(out_path, "wb");
+	if (!file || fwrite(ch3_regs, 1, sizeof(ch3_regs), file) != sizeof(ch3_regs) || fclose(file)) {
+		printf("FAIL: can't write %s\n", out_path);
+		return 1;
+	}
+	printf("%s: %d bytes after %d bytes sent\n", out_path, (int)sizeof(ch3_regs), (int)ch3_sent_bytes);
 	return 0;
 }
 
@@ -3730,6 +3799,233 @@ static void test_lfo_reset(void)
 	render(SETTLE_BLOCKS);
 }
 
+// Stage 22 (CSM): timer A keys channel 3's four operators 53267 / (1024 - NA) times a second.
+#define CSM_CLOCK 53267.04
+static void ym08(uint8_t reg, uint8_t value)
+{
+	const uint8_t sysex[10] = {0xF0, 0x00, 0x22, 0x77, 0x08, (uint8_t)(reg >> 4), (uint8_t)(reg & 15), (uint8_t)(value >> 4), (uint8_t)(value & 15), 0xF7};
+	raw(sysex, sizeof(sysex));
+}
+
+static int csm_na(int key)
+{
+	const long na = 1024 - lround(CSM_CLOCK / key_hz(key));
+	return na < 0 ? 0 : na > 1023 ? 1023 : (int)na;
+}
+
+static double csm_hz(int na)
+{
+	return CSM_CLOCK / (1024 - na);
+}
+
+// The strongest partial near hz, searched 80 cents either side, then to a fiftieth of a cent.
+static double fine_peak_hz(int n, double hz)
+{
+	double best = 0, best_level = -1;
+	for (double c = -80; c <= 80; c += 1) {
+		const double level = level_at(n, hz * pow(2.0, c / 1200));
+		if (level > best_level) {
+			best_level = level;
+			best = c;
+		}
+	}
+	const double around = best;
+	for (double c = around - 1; c <= around + 1; c += 0.02) {
+		const double level = level_at(n, hz * pow(2.0, c / 1200));
+		if (level > best_level) {
+			best_level = level;
+			best = c;
+		}
+	}
+	return hz * pow(2.0, best / 1200);
+}
+
+static double rms_of(int n)
+{
+	double sum = 0;
+	for (int i = 0; i < n; i++) {
+		sum += (double)ch3_wave[i] * ch3_wave[i];
+	}
+	return sqrt(sum / (n ? n : 1));
+}
+
+static void wait_frames(int frames)
+{
+	while (frames > 0) {
+		const int step = frames < BLOCK ? frames : BLOCK;
+		tick(step);
+		frames -= step;
+	}
+}
+
+// The NA timer A holds, from 0x24 and 0x25.
+static int csm_na_reg(void)
+{
+	return mdmi_engine_test_ym(engine, 0, 0x24) << 2 | (mdmi_engine_test_ym(engine, 0, 0x25) & 3);
+}
+
+static uint8_t ch3_mode_reg(void)
+{
+	return mdmi_engine_test_ym(engine, 0, 0x27);
+}
+
+// Output 3 after a CSM note's release: RR 15 ends in a few ms, the DC blocker's tail of the bursts
+// takes some 200 ms more to fall 60 dB.
+static double csm_tail(void)
+{
+	wait_frames(RATE / 5);
+	return rms_of(capture_output(2, RATE / 100));
+}
+
+static void csm_mode(int mode)
+{
+	set_global(GLOBAL_CH3_MODE, 1);
+	set_global(GLOBAL_CH3_NOTES, mode);
+	sync_and_settle();
+}
+
+// Stage 22 (D52), items 3-6: CSM through the plugin. Every operator at the note (Semi 0), only
+// operator 4 heard, AR 31.
+static void test_csm(void)
+{
+	printf("  CSM\n");
+	static const int ONE[4] = {127, 127, 127, 10};
+	sine_voice(2, ONE, 8, 0);
+	csm_mode(PATCH_CH3_CSM);
+	checkf(ch3_mode_reg() == 0x40, "CSM without a note: 0x27 = 0x%02X, mode 01 and timer A stopped", ch3_mode_reg());
+
+	// Item 3: the fundamental of output 3 against the note; NA as the formula has it.
+	double worst = 0, clock = 0;
+	bool na_right = true, alone = true, keys_kept = true;
+	const uint8_t keys = key_reg();
+	for (int key = 45; key <= 96; key++) {
+		if (key > 71 && key != 84 && key != 96) {
+			continue;
+		}
+		reset_energy();
+		midi(0x92, (uint8_t)key, 127);
+		render(8);
+		const int na = csm_na_reg();
+		na_right = na_right && na == csm_na(key) && ch3_mode_reg() == 0x81;
+		const int n = capture_output(2, CH3_CAPTURE);
+		const double got = fine_peak_hz(n, csm_hz(na));
+		const double cents = 1200 * log2(got / key_hz(key));
+		alone = alone && loud_outputs() == 1 << 2;
+		if (key <= 71) {
+			worst = fmax(worst, fabs(cents));
+		} else {
+			printf("    note %d: NA %d, %.2f Hz, %+.1f cents from the note\n", key, na, got, cents);
+		}
+		if (key == 69) {
+			clock = got * (1024 - na);
+		}
+		midi(0x82, (uint8_t)key, 0);
+		render(4);
+		na_right = na_right && ch3_mode_reg() == 0x40;
+		keys_kept = keys_kept && key_reg() == keys;
+	}
+	printf("    notes 45-71: %.2f cents at most from the note; timer A's clock from A4: %.1f Hz\n", worst, clock);
+	checkf(na_right, "each note writes NA = 1024 - round(53267 / f), 0x27 = 0x81 under it and 0x40 after it");
+	checkf(worst <= 8, "notes 45-71 (110-494 Hz) sound within 8 cents of the note (%.2f)", worst);
+	checkf(fabs(clock / CSM_CLOCK - 1) <= 0.001, "timer A runs at 53267 Hz within 0.1%% (%.1f)", clock);
+	checkf(alone && keys_kept, "CSM sounds on output 3 alone and writes no 0x28");
+
+	// Item 4: 200 Note Offs at random moments on note 96, RR 15.
+	sine_voice(2, ONE, 15, 0);
+	midi(0x92, 96, 127);
+	render(8);
+	const double sounding = rms_of(capture_output(2, RATE / 20));
+	midi(0x82, 96, 0);
+	double loudest = 0;
+	int hung = 0;
+	uint32_t seed = 0x2222u;
+	for (int trial = 0; trial < 200; trial++) {
+		midi(0x92, 96, 127);
+		seed = seed * 1664525u + 1013904223u;
+		wait_frames(RATE / 100 + (int)(seed >> 8) % (RATE / 50));
+		midi(0x82, 96, 0);
+		const double after = csm_tail();
+		loudest = fmax(loudest, after);
+		hung += after > sounding * 1e-3;
+	}
+	printf("    200 Note Offs on note 96: %d left output 3 above -60 dB, the loudest %.1f dB under the note\n", hung, db(sounding) - db(loudest));
+	checkf(hung == 0, "after each of 200 Note Offs at random moments output 3 falls 60 dB below the note");
+
+	// Item 5: CC 80 and the DAC under a sounding CSM note; 0x27 from the shadow after the driver's
+	// load, raw bits 1-3 kept.
+	midi(0x92, 69, 127);
+	render(8);
+	const double a4 = rms_of(capture_output(2, RATE / 20));
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	const double after_cc80 = csm_tail();
+	const uint8_t mode_off = ch3_mode_reg();
+	csm_mode(PATCH_CH3_CSM);
+	midi(0x82, 69, 0);
+	midi(0x92, 69, 127);
+	render(8);
+	const double again = rms_of(capture_output(2, RATE / 20));
+	ym08(0x27, 0x0A);
+	render(4);
+	const uint8_t raw = ch3_mode_reg();
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	const double after_dac_on = csm_tail();
+	const uint8_t mode_dac_on = ch3_mode_reg();
+	midi(0x82, 69, 0);
+	midi(0x92, 69, 127);
+	render(8);
+	const double with_dac = rms_of(capture_output(2, RATE / 20));
+	const uint8_t mode_note_dac = ch3_mode_reg();
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	const double after_dac_off = csm_tail();
+	const uint8_t mode_dac_off = ch3_mode_reg();
+	midi(0x82, 69, 0);
+	midi(0x92, 69, 127);
+	render(8);
+	const double after_all = rms_of(capture_output(2, RATE / 20));
+	midi(0x82, 69, 0);
+	ym08(0x27, 0x00);
+	render(4);
+	const uint8_t cleared = ch3_mode_reg();
+	printf("    under A4: CC 80 off %.1f dB, DAC on %.1f dB, DAC off %.1f dB below it; the next notes %+.1f, %+.1f, %+.1f dB; 0x27 %02X raw %02X DAC %02X %02X %02X\n",
+		db(a4) - db(after_cc80), db(a4) - db(after_dac_on), db(a4) - db(after_dac_off), db(again) - db(a4), db(with_dac) - db(a4), db(after_all) - db(a4), mode_off, raw, mode_dac_on,
+		mode_note_dac, mode_dac_off);
+	const double quiet_enough = a4 * 1e-3;
+	checkf(after_cc80 < quiet_enough && after_dac_on < quiet_enough && after_dac_off < quiet_enough, "CC 80 off, DAC on and DAC off silence a sounding CSM note");
+	checkf(again > a4 * 0.5 && with_dac > a4 * 0.5 && after_all > a4 * 0.5, "and the next CSM note sounds each time, within 6 dB");
+	checkf(mode_off == 0x00 && raw == 0x8B && mode_dac_on == 0x4A && mode_note_dac == 0x8B && mode_dac_off == 0x4A && cleared == 0x40,
+		"0x27: 00 with Ch3 Special off; a raw 0x0A under a note gives 8B and keeps bits 1-3 through both driver loads (4A); a raw 00 clears them");
+
+	// Item 6, the arp row: in CSM it moves the repeats' pitch, C4 D#4 E4 G4 C5.
+	arp_on(2, true);
+	midi(0x92, 60, 127);
+	bool seen[ARP_TEST_STEPS] = {false};
+	for (int i = 0; i < 300; i++) {
+		tick(64);
+		const int na = csm_na_reg();
+		for (int s = 0; s < ARP_TEST_STEPS; s++) {
+			seen[s] = seen[s] || na == csm_na(60 + ARP_TEST[s]);
+		}
+	}
+	midi(0x82, 60, 0);
+	arp_on(2, false);
+	bool all = true;
+	for (int s = 0; s < ARP_TEST_STEPS; s++) {
+		all = all && seen[s];
+	}
+	checkf(all, "an arp row 0 +3 +4 +7 +12 on C4 steps NA through the five notes");
+
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	midi(0xC2, 0, 0);
+	render(SETTLE_BLOCKS);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -3753,6 +4049,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	render(SETTLE_BLOCKS);
+	if (argc == 5 && !strcmp(argv[2], "--ch3-on-ref")) {
+		return write_ch3_on_reference(argv[3], argv[4]);
+	}
 	if (argc == 5 && !strcmp(argv[2], "--ch3-off-ref")) {
 		return write_ch3_off_reference(argv[3], argv[4]);
 	}
@@ -3775,6 +4074,7 @@ int main(int argc, char **argv)
 	test_loop_marks();
 	test_four_voices();
 	test_ch3_off();
+	test_ch3_on();
 	test_load();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);
@@ -3800,6 +4100,8 @@ int main(int argc, char **argv)
 	test_ch3_keys();
 	test_reset();
 	test_lfo_reset();
+	test_reset();
+	test_csm();
 	test_reset();
 	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

@@ -81,8 +81,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   key plays the noise, 0-44 too (before 0.16 they were dropped), and the envelope's pitch shift does nothing.
   Not checked on a console.
 - Ch3 Special Mode (stage 21, D51, `docs/research/ch3-csm.md`, `docs/design/ch3-ops.md`): channel 3's
-  operators have pitches of their own, and Ch3 Notes (id 10, CC 81: 0 Ops, 64 One Note; the ROM reads
-  value * 3 / 128, 2 is kept for CSM and changes nothing) chooses how they play. Ops, the default: MIDI 11-13
+  operators have pitches of their own, and Ch3 Notes (id 10, CC 81: 0 Ops, 64 One Note, 127 CSM; the ROM
+  reads value * 3 / 128) chooses how they play. Ops, the default: MIDI 11-13
   play operators 1-3 and MIDI 3 operator 4, each with its own Note On and Note Off; our ROM keeps a shadow
   of channel 3's four key bits and writes 0x28 once per event as `mask << 4 | 2` (operator k is bit
   `0x10 << k`). One Note: a MIDI 3 note keys all four (0xF2), MIDI 11-13 notes write nothing. One pitch rule
@@ -98,6 +98,26 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   a GM reset and CC 121 don't. Before 0.21 a MIDI 3 note keyed all four operators and MIDI 11-13 notes only
   set pitches; One Note with Fixed is the closest to it. Channel 3 plays alone in both modes. Without Ch3
   Special MIDI 11-13 notes write nothing.
+- CSM (stage 22, D52, `docs/research/ch3-csm.md`): Ch3 Notes' third position, only in Ch3 Special. A MIDI 3
+  note writes the formants as One Note does, then timer A's NA = 1024 - round(53267 / f) (52781 on PAL),
+  0x24 = NA >> 2 and 0x25 = NA & 3, then 0x27 = 0x81: the timer starts with an overflow at once, and every
+  overflow keys all four operators for one sample, 53267 / (1024 - NA) times a second. The table of periods
+  in `midi_fm_sm.c` runs over the notes, cents between neighbours as the F-num; notes below 32 are NA 0
+  (52.02 Hz). Our ROM writes no 0x28 for channel 3 in CSM: a key held there would hide the repeats. Note
+  Off goes back to mode 01 (0x27 = 0x40): stopping timer A alone leaves the operators keyed in BlastEm when
+  it lands just after an overflow (the stage's experiment: 7 of 200 stops at random moments, by the mode 0
+  of 200). A bend, portamento, the arp row, a note over the sounding one and a raised note of the stack write
+  only the formants and 0x24/0x25: the timer keeps its phase and takes the new NA at its next reload; a
+  reload between the two writes gives one period off by up to 3 ticks, accepted. CC 80, CC 81, a DAC switch
+  and All Notes Off end a CSM note by the mode too; MIDI 11-13 write nothing; 0x26 is never written. Velocity
+  as in One Note. `reg_test` measures in BlastEm: notes 45-71 within 5.4 cents of the note, note 84 -3.4,
+  96 +30.9; timer A's clock 53267.0 Hz. A CSM voice needs AR 31 (README). Every 0x27 comes from one shadow
+  in `synth.c`: bits 7-6 and 0 are the ROM's mode (Ch3 Special off 00; Ops and One Note 01; CSM 01 without
+  a note, 10 with timer A on with one), bits 1-3 only a raw SysEx `08` write of 0x27 sets, and that write's
+  bits 4-5 go once; its bits 7-6 and 0 are not taken. A driver load (DAC on or off) writes 0x27 from the
+  shadow after SGDK's `YM2612_reset` cleared it, which leaves 0x24-0x26 alone; a ROM reset clears the
+  shadow. The dealer gives voice 3 to channel 3 at once for a CSM note (`owner` with `at_once`): no 0x28
+  key-on marks it. Not checked on a console; the chip's TL in CSM differs from BlastEm's (stage 26).
 - LFO Reset (id 11, CC 82: off, or MIDI 1-6 at the start of each seventh, value * 7 / 128 back): our ROM
   writes 0x22 without bit 3 and right after it 0x22 from its shadow before the 0x28 of every new attack on
   that channel's FM voices (a chord's note on another voice and a raised note of the stack too), not for
@@ -260,7 +280,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   of the strip of globals, on every page but ROM; the footer says the console ignores it. A double click
   on any global cell puts its default back on every page.
   The strip's cells are as wide as what they show (stage 21): LFO, LFO RATE, LFO RESET, FILTER, CH3 SPECIAL
-  (On in light FM), CH3 NOTES (segments OPS and 1 NOTE), DAC, RETRIGGER, MASTER. LFO RESET is dim and
+  (On in light FM), CH3 NOTES (segments OPS, 1 NOTE and CSM, `docs/design/ch3-ops.md`), DAC, RETRIGGER, MASTER. LFO RESET is dim and
   takes no mouse with the LFO off, CH3 NOTES without Ch3 Special; a double click puts OPS and Off back,
   and 0 and Off in the pitch editor.
 
@@ -290,7 +310,7 @@ clip envelope or Live's CC Control. Values are 0-127 and scaled to the knob's ra
 | 51-54, 55-58, 59-62 | SR, SL, RR. SR above 15 only by knob, CC reaches 0-15 | 1-6 |
 | 70-73, 90-93 | AM, SSG | 1-6 |
 | 74, 1, 80, 78 | LFO On, LFO Rate, Ch3 Special Mode, DAC Enable | any |
-| 81, 82 | Ch3 Notes (value * 3 / 128: Ops, One Note; 2 changes nothing), LFO Reset (value * 7 / 128: Off, MIDI 1-6) | any |
+| 81, 82 | Ch3 Notes (value * 3 / 128: Ops, One Note, CSM), LFO Reset (value * 7 / 128: Off, MIDI 1-6) | any |
 | 102, 103, 104 | Semi (value - 64, ±48), Fine (value - 64, ±63 cents), Fixed (64-127 on) of channel 3's operator 4 on MIDI 3, of operators 1-3 on MIDI 11-13 | 3, 11-13 |
 | 12, 13 | Noise Type (0-63 Periodic, 64-127 White), Noise Rate (value * 5 / 128: High, Mid, Low, Tone 3, Kit) | 10 |
 

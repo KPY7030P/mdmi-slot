@@ -45,7 +45,8 @@ enum {
 };
 enum { PATCH_CH3_SEMI, PATCH_CH3_FINE, PATCH_CH3_FIXED, PATCH_CH3_OP_FIELDS };
 #define GLOBAL_CH3_OP(op, field) (GLOBAL_CH3_OP_BASE + (op) * PATCH_CH3_OP_FIELDS + (field))
-enum { PATCH_CH3_OPS, PATCH_CH3_ONE_NOTE };
+// Stage 22 (D52): CSM, timer A keys all four operators at the rate of MIDI 3's note.
+enum { PATCH_CH3_OPS, PATCH_CH3_ONE_NOTE, PATCH_CH3_CSM };
 // Semi -48..+48 and Fine -63..+63 are stored from 0, their middle the default.
 #define PATCH_CH3_SEMI_MAX 48
 #define PATCH_CH3_FINE_MAX 63
@@ -357,6 +358,8 @@ bool patch_arp_same(const patch_arp *a, const patch_arp *b);
 bool patch_arp_works(const patch_values *values, int channel);
 // Channel 3 in Ch3 Special with each operator on its own note (stage 21): MIDI 11-13 play operators 1-3.
 bool patch_ch3_ops(const patch_values *values);
+// Stage 22: channel 3 in Ch3 Special with CSM.
+bool patch_ch3_csm(const patch_values *values);
 
 void patch_init(mdmi_patch *patch);
 
