@@ -124,13 +124,12 @@ static double step_of(const dac_sample *sample, const dac_edit *edit)
 static void set_flags(dac_sample *sample, const dac_marks *marks)
 {
 	const uint32_t blocks = sample->sample.length / ROM_SAMPLE_BLOCK;
-	// LOOP with ONE-SHOT loops past Note Off (stage 22a, D53).
-	const uint8_t one_shot = sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
-	sample->sample.flags = (marks->loops ? ROM_SAMPLE_LOOP : 0) | one_shot;
+	// LOOP and ONE-SHOT exclude each other (stage 18; D54 cancels D53 of stage 22a).
+	sample->sample.flags = marks->loops ? ROM_SAMPLE_LOOP : sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
 	sample->sample.loop_start = sample->sample.loop_end = 0;
 	if (!sample->source_hz) {
 		// Bytes made otherwise (tests), with no rate to reckon the marks by: a loop is all of them.
-		sample->sample.flags = (sample->edit.loop && blocks ? ROM_SAMPLE_LOOP : 0) | one_shot;
+		sample->sample.flags = sample->edit.loop && blocks ? ROM_SAMPLE_LOOP : sample->edit.one_shot ? ROM_SAMPLE_ONE_SHOT : 0;
 		return;
 	}
 	if (marks->loops && (marks->loop_start || marks->loop_end != blocks)) {
@@ -180,16 +179,21 @@ void dac_marks_of(const dac_sample *sample, const dac_edit *edit, dac_marks *m)
 	}
 	m->loop_start = start;
 	m->loop_end = end;
-	m->release = end < whole;
+	m->tail = end < whole;
+	m->release = m->tail && !edit->stop;
+	const double tail_end = edit->start + (m->tail ? m->length : whole * ROM_SAMPLE_BLOCK) * step;
 	if (!m->release) {
 		// The repeat comes straight after the last whole block: no padding in between (stage 18).
-		m->length = whole * ROM_SAMPLE_BLOCK;
+		// With stop the bytes end on the loop's: the release isn't written (stage 22b, D54), and the
+		// ROM stops such a loop at Note Off, as one whose end is the last block.
+		m->length = (m->tail ? end : whole) * ROM_SAMPLE_BLOCK;
 	}
 	const double frame_start = edit->start + start * ROM_SAMPLE_BLOCK * step, frame_end = edit->start + end * ROM_SAMPLE_BLOCK * step;
 	m->frame_loop_start = frame_start < edit->end ? (uint32_t)frame_start : edit->end;
 	m->frame_loop_end = frame_end < edit->end ? (uint32_t)frame_end : edit->end;
 	const double played = edit->start + m->length * step;
 	m->frame_end = played < edit->end ? (uint32_t)played : edit->end;
+	m->frame_tail_end = tail_end < edit->end ? (uint32_t)tail_end : edit->end;
 }
 
 uint32_t dac_cost(const dac_sample *sample, const dac_edit *edit)
@@ -476,7 +480,7 @@ uint32_t dac_sources(const dac_set *set)
 bool dac_same_edit(const dac_edit *a, const dac_edit *b)
 {
 	return a->start == b->start && a->end == b->end && a->pitch == b->pitch && a->gain == b->gain && a->rate == b->rate && a->fade == b->fade && a->one_shot == b->one_shot
-		&& a->loop == b->loop && a->loop_start == b->loop_start && a->loop_end == b->loop_end;
+		&& a->loop == b->loop && a->stop == b->stop && a->loop_start == b->loop_start && a->loop_end == b->loop_end;
 }
 
 bool dac_same(const dac_set *a, const dac_set *b)
@@ -580,9 +584,10 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 		put16(&out, (uint16_t)s->edit.gain);
 		*out++ = (uint8_t)s->edit.rate;
 		*out++ = s->edit.fade;
-		// How Note Off ends it: 0 cuts, 1 one-shot, 2 loop (stage 18; a build before reads 2 as one-shot),
-		// 3 loop past Note Off (stage 22a; 0.22 reads it as one-shot).
-		*out++ = (uint8_t)((s->edit.loop ? 2 : 0) | (s->edit.one_shot ? 1 : 0));
+		// How Note Off ends it: 0 cuts, 1 one-shot, 2 loop with its release (stage 18; a build before
+		// reads 2 as one-shot), 4 loop that Note Off stops (stage 22b, D54; 0.22.x reads 4 as 0, no loop).
+		// 3 was LOOP with ONE-SHOT of 0.22.2 (D53, cancelled) and is read as 2.
+		*out++ = s->edit.loop ? (s->edit.stop ? 4 : 2) : s->edit.one_shot ? 1 : 0;
 		*out++ = s->sample.rate;
 		*out++ = s->clipped;
 		put32(&out, s->sample.length);
@@ -634,8 +639,9 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		s->edit.gain = (int16_t)get16(&h);
 		s->edit.rate = (int8_t)*h++;
 		s->edit.fade = *h++ != 0;
-		s->edit.loop = *h == 2 || *h == 3;
-		s->edit.one_shot = *h == 1 || *h == 3;
+		s->edit.loop = *h == 2 || *h == 3 || *h == 4;
+		s->edit.stop = *h == 4;
+		s->edit.one_shot = *h == 1;
 		h++;
 		s->sample.rate = *h++;
 		s->clipped = *h++ != 0;

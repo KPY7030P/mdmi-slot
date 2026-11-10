@@ -22,7 +22,8 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   -24 to +24 semitones, with a loop. The ROM plays it, so it works on a console too. Draw it under the PSG
   envelope or on the FM page (ARP). STORE puts the channel's sound with its row into its bank place; rows
   live in the project, the bank file and snapshots, not in TFI, VGI, TYI or EEF files (a dropped file comes
-  without a row). The row doesn't act on the DAC, on channel 3 in Ch3 Special with OPS or on the noise
+  without a row). ARP ON / ARP OFF at the row's right (0.22.3) switches it off without erasing it: off, it
+  plays as no row, its steps stay dim and editable. The row doesn't act on the DAC, on channel 3 in Ch3 Special with OPS or on the noise
   channel unless its rate is Tone 3. Not checked on a
   real console yet.
 - Channel 3 by operators (0.21): with CH3 SPECIAL on, CH3 NOTES in the window's bottom strip chooses how
@@ -38,8 +39,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - CSM (0.22), the third choice of CH3 NOTES: the chip's timer A keys all four operators of channel 3 over
   and over, as many times a second as the frequency of the note on MIDI 3. That gives buzzes, noise and
   vowel-like sounds; the operators' own pitches (SEMI, FINE, FIX, usually FIX) act as formants. Each key-on
-  lasts one sample of the chip, so give the CSM voice AR 31 on every operator: a slower attack hardly
-  sounds, and RR shapes each repeat. The repeat rate is exact to a few cents up to MIDI note 71 (B4, 494
+  lasts one sample of the chip, and only AR 31 attacks within it, so while channel 3 is in CSM the ROM
+  sets AR 31 on its four operators itself (0.22.3). The voice keeps its own AR and gets it back
+  when you leave CSM; RR shapes each repeat. The repeat rate is exact to a few cents up to MIDI note 71 (B4, 494
   Hz: within 8 cents, 5.4 at most in BlastEm); above it the timer's steps get coarse: note 81 (880 Hz) is
   13 cents flat, note 84 (1047 Hz) 3 flat, note 96 (2093 Hz) 31 sharp. The lowest note is MIDI 32 (52 Hz);
   every note below plays as note 32. A bend, portamento or the
@@ -63,10 +65,22 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   after its Note On, and switching the DAC on takes about 0.3 s, some 75 ms longer than in 0.18, because the
   driver loads a volume table. Channel 6's Pan (CC 10) puts all four left, centre or right, also while they
   play. A sample with LOOP repeats while the key is held. Its loop has its own tabs on the wave: the part
-  before it plays once, the part after it plays when the key is let go. Drag the loop's body to move it whole.
-  With ONE-SHOT on as well, the loop goes on past Note Off and the part after it doesn't play; the next note
-  of the same key, a fifth note or stopping the transport ends it.
+  before it plays once, the part after it (the release) plays when the key is let go. Drag the loop's body to
+  move it whole. A click on the loop's end tab, or on the row after it, chooses how Note Off ends the note:
+  RELEASE (the loop finishes its pass, then the release plays; a short note let go in the intro plays the loop
+  once and the release) or STOP (silence at once; the release isn't written to the ROM, its marks stay). A
+  double click on the end tab moves the loop's end to the last whole block: no release. Switching LOOP or
+  ONE-SHOT brings the loop back with its release. LOOP and ONE-SHOT exclude each other again (0.22.2 let them go
+  together, a loop past Note Off; such a project opens as LOOP with its release).
   A loop is at least one block of the driver (256 bytes, about 17 ms). Not checked on a real console yet.
+- A PSG envelope's loop ends a note the same way (0.22.3): with steps after the loop (a release), Note Off lets
+  the loop finish its pass and plays the release, also when the key is let go in the intro (the loop then plays
+  once); without them, or without a loop, Note Off silences at once. Before 0.22.3 a loop without a release
+  played out its pass and Note Off in the intro silenced: this changes how some EEF files and ROM envelopes end.
+  To keep a pass playing out, add a quiet release step. A click on the loop's end tab or the strip after it
+  chooses RELEASE or STOP; with STOP the envelope plays, saves (EEF), STOREs and goes to the ROM without its
+  release, which the project keeps, dim in the editor, until the release is chosen again. All Notes Off and
+  All Sound Off silence PSG notes at once, as the DAC's.
 - The Retrigger switch decides how a note right after another starts: as the chip does, on a free voice, or
   from silence.
 - PSG noise on channel 10: Noise Type (periodic or white) and Noise Rate (L M H, Tone 3, or Kit). On Tone 3

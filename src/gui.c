@@ -158,7 +158,8 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define ENV_LOOP_OFF_W 36
 // Pixels of a vertical drag on the length per frame.
 #define ENV_LENGTH_PIXELS 2
-enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, ENV_LENGTH };
+// ENV_TAIL: the loop strip after the loop's end tab, where a click chooses release or stop (stage 22b).
+enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, ENV_LENGTH, ENV_TAIL };
 
 // The arp row (stage 20, docs/design/arpeggio.md): one widget the graph's size on both pages, in the
 // graph's place on FM and under the envelope on PSG. Its lane holds -24..+24 at 2 px a semitone, the
@@ -183,7 +184,8 @@ enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, E
 // The column of the chip's lines right of the row on PSG.
 #define PSG_NOTE_X 534
 // What the mouse holds on the row. ARP_ZERO is a double click's 0, which waits for the mouse to go up.
-enum { ARP_NONE, ARP_LANE, ARP_TAB, ARP_BODY, ARP_SHADOW, ARP_SWITCH, ARP_LENGTH, ARP_ZERO };
+// ARP_ON_OFF is the row's own switch at the right (stage 22b, D55), ARP_SWITCH the loop's.
+enum { ARP_NONE, ARP_LANE, ARP_TAB, ARP_BODY, ARP_SHADOW, ARP_SWITCH, ARP_LENGTH, ARP_ZERO, ARP_ON_OFF };
 
 // The page is saved with the project: a new one goes last.
 enum { PAGE_EDITOR, PAGE_ROM, PAGE_BANK, PAGE_ALL };
@@ -272,6 +274,9 @@ struct mdmi_gui {
 	int dac_drag_y;
 	dac_edit dac_drag_from;
 	dac_edit dac_work;
+	// The last click on the loop's end switched release and stop (stage 22b): a double click puts
+	// that back and drops the release, in the click's undo step.
+	bool dac_tail_clicked;
 	// The mouse moved past DRAG_SLOP: before that a press changes nothing, so a double click resets.
 	bool dac_moved;
 	// A sample dragged on the grid (owner after 0.12.0): the note it came from (-1: none), whether
@@ -343,6 +348,9 @@ struct mdmi_gui {
 	int env_start_y;
 	// The press on the loop's strip moved past DRAG_SLOP: the span moves, it is no click (stage 18b).
 	bool env_moved;
+	// Note Off stops the loop and its release isn't played, the copy's choice while the gesture
+	// lasts (stage 22b, D54): env_shape holds the release after the loop all the same.
+	bool env_stop;
 
 	// The arp row being drawn (stage 20), the same way: what is held, the window's copy, the row before
 	// the gesture and at its start, the last step drawn. arp_handed stays after the gesture, so a
@@ -840,6 +848,14 @@ static int op_of(uint32_t id)
 	return (param - PARAM_OP_BASE) / PATCH_OP_PARAMS;
 }
 
+// Channel 3's AR in CSM: the ROM plays 31 whatever the voice holds (stage 22b, D57), so the cell is dim.
+static bool csm_ar(const patch_values *values, uint32_t id)
+{
+	int channel, param;
+	return patch_id_split(id, &channel, &param) && channel == 2 && param >= PARAM_OP_BASE
+		&& (param - PARAM_OP_BASE) % PATCH_OP_PARAMS == OP_AR && patch_ch3_csm(values);
+}
+
 // Channel 3's operators in Ch3 Special (stage 21, docs/design/ch3-ops.md): a tag of each one's pitch
 // in its header, and under the header the editor of SEMI, FINE and FIX, where the choice of SSG opens.
 #define PITCH_TAG_X 26
@@ -1054,7 +1070,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			for (int op = 0; op < PATCH_OPS; op++) {
 				const int x = GRID_X[op];
 				add_cell(g, x + SSG_BUTTON_X, SSG_BUTTON_Y, SSG_BUTTON_W, SSG_BUTTON_H, op_id(channel, op, OP_SSG), "SSG", CELL_SSG);
-				// Channel 3's pitch tag takes the mouse only in Ch3 Special; dim it is drawn alone (draw_page).
+				// Channel 3's pitch tag exists only in Ch3 Special (stage 22b).
 				if (is_special(values, channel)) {
 					add_cell(g, x + PITCH_TAG_X, SSG_BUTTON_Y, PITCH_TAG_W, SSG_BUTTON_H, (uint32_t)ch3_field(op, PATCH_CH3_SEMI), "PITCH", CELL_PITCH);
 				}
@@ -1253,7 +1269,9 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	const bool ch3_op = is_ch3_op_global(c->id);
 	const bool fm = (channel >= 0 && channel_is_fm(channel)) || ch3_op;
 	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
-	const uint32_t dark = held ? C_LINE : fm ? C_FM_DARK : C_PSG_DARK;
+	// Channel 3's AR in CSM: dim, still editable (stage 22b, D57).
+	const bool forced = csm_ar(values, c->id);
+	const uint32_t dark = held ? C_LINE : forced ? C_LINE : fm ? C_FM_DARK : C_PSG_DARK;
 	const int max = patch_param(c->id)->max > 0 ? patch_param(c->id)->max : 1;
 	if (c->id == GLOBAL_MASTER) {
 		// Grey, as it belongs to no chip: a bar from the left, a tick at 0 dB as TUNE marks its middle.
@@ -1274,8 +1292,8 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			fill(g, c->x, c->y, at, c->h, dark);
 		}
 	}
-	const uint32_t label = held ? C_TEXT : changed ? C_AMBER : C_LABEL;
-	uint32_t shown = C_TEXT;
+	const uint32_t label = held ? C_TEXT : forced ? C_LINE : changed ? C_AMBER : C_LABEL;
+	uint32_t shown = forced && !held ? C_HINT : C_TEXT;
 	if (c->id == GLOBAL_DAC && value) {
 		shown = C_DAC;
 	}
@@ -1558,6 +1576,39 @@ static bool is_envelope_page(const mdmi_gui *g)
 	return *g->source.page == PAGE_EDITOR && !channel_is_fm(*g->source.channel);
 }
 
+// A loop with steps after its end: a release that Note Off plays, or not with stop (stage 22b, D54).
+static bool has_tail(const patch_shape *shape)
+{
+	return shape->loop_start >= 0 && shape->loop_end >= 0 && shape->loop_end < shape->count;
+}
+
+// The channel's envelope as the editor shows it: while Note Off stops its loop, the release the
+// view keeps follows the loop's end (stage 22b), *stop then true. The envelope itself ends there.
+static void channel_shape(mdmi_gui *g, int channel, patch_shape *shape, bool *stop)
+{
+	const patch_envelope *envelope = patch_envelope_view(g->source.patch, channel);
+	patch_shape_of(envelope, shape);
+	*stop = false;
+	const int psg = channel - PATCH_NUM_FM_CHANNELS;
+	if (psg < 0 || !g->source.tails) {
+		return;
+	}
+	const state_tail *tail = &g->source.tails[psg];
+	if (!tail->stop || strcmp(tail->name, envelope->name) != 0 || shape->loop_start < 0 || shape->loop_end >= 0) {
+		return;
+	}
+	// The loop's end mark takes a step's room.
+	const int end = shape->count, room = PATCH_ENVELOPE_STEPS - 2;
+	const int count = tail->count < room - end ? tail->count : room - end;
+	if (count <= 0) {
+		return;
+	}
+	memcpy(shape->frames + end, tail->steps, (size_t)count);
+	shape->loop_end = end;
+	shape->count = end + count;
+	*stop = true;
+}
+
 // What the editor shows: the window's copy while a gesture lasts, the channel's envelope otherwise.
 static const patch_shape *shown_shape(mdmi_gui *g, patch_shape *scratch)
 {
@@ -1565,8 +1616,31 @@ static const patch_shape *shown_shape(mdmi_gui *g, patch_shape *scratch)
 	if (g->env_drag != ENV_NONE && g->env_channel == channel) {
 		return &g->env_shape;
 	}
-	patch_shape_of(patch_envelope_view(g->source.patch, channel), scratch);
+	bool stop;
+	channel_shape(g, channel, scratch, &stop);
 	return scratch;
+}
+
+// Whether the release the editor shows isn't played (stage 22b).
+static bool shown_stop(mdmi_gui *g, const patch_shape *shown)
+{
+	if (g->env_drag != ENV_NONE && g->env_channel == *g->source.channel) {
+		return g->env_stop && has_tail(shown);
+	}
+	patch_shape scratch;
+	bool stop;
+	channel_shape(g, *g->source.channel, &scratch, &stop);
+	return stop;
+}
+
+// What plays of a shape: with stop, it ends at the loop's end.
+static void played_shape(const patch_shape *shape, bool stop, patch_shape *played)
+{
+	*played = *shape;
+	if (stop && has_tail(shape)) {
+		played->count = shape->loop_end;
+		played->loop_end = -1;
+	}
 }
 
 // The loop switched off on this channel, fitted to the envelope's length now: false when the
@@ -1602,7 +1676,14 @@ static int envelope_part_at(mdmi_gui *g, const patch_shape *shape, int x, int y)
 			return x >= ENV_X && x < ENV_X + ENV_LOOP_OFF_W ? ENV_LOOP : ENV_NONE;
 		}
 		const int start = boundary_x(count, shape->loop_start), end = boundary_x(count, loop_end_of(shape));
-		return x >= start - 9 && x <= start ? ENV_LOOP_START : x >= end && x <= end + 9 ? ENV_LOOP_END : x > start && x < end ? ENV_LOOP : ENV_NONE;
+		if (x >= start - 9 && x <= start) {
+			return ENV_LOOP_START;
+		}
+		if (x >= end && x <= end + 9) {
+			return ENV_LOOP_END;
+		}
+		// After the end tab to the lane's end: the release's or stop's switch (stage 22b).
+		return x > start && x < end ? ENV_LOOP : has_tail(shape) && x > end + 9 && x < ENV_X + ENV_LANE_W ? ENV_TAIL : ENV_NONE;
 	}
 	if (x < ENV_X || x >= ENV_X + ENV_LANE_W) {
 		return ENV_NONE;
@@ -1623,7 +1704,7 @@ static void envelope_take(mdmi_gui *g)
 {
 	g->env_channel = *g->source.channel;
 	g->env_before = *patch_envelope_view(g->source.patch, g->env_channel);
-	patch_shape_of(&g->env_before, &g->env_shape);
+	channel_shape(g, g->env_channel, &g->env_shape, &g->env_stop);
 	g->env_changed = g->env_handed = false;
 	g->env_last_step = -1;
 }
@@ -1636,7 +1717,21 @@ static void envelope_hand(mdmi_gui *g)
 		return;
 	}
 	patch_envelope envelope = g->env_before;
-	patch_shape_to_envelope(&g->env_shape, &envelope);
+	// With stop the envelope ends at the loop's end and the view keeps the release (stage 22b): the
+	// ROM, an EEF, the bank and STORE get what plays. Anything else drops the stop.
+	patch_shape played;
+	const bool stop = g->env_stop && has_tail(&g->env_shape);
+	played_shape(&g->env_shape, stop, &played);
+	if (g->source.tails) {
+		state_tail *tail = &g->source.tails[g->env_channel - PATCH_NUM_FM_CHANNELS];
+		tail->stop = stop;
+		tail->count = stop ? g->env_shape.count - g->env_shape.loop_end : 0;
+		if (stop) {
+			memcpy(tail->steps, g->env_shape.frames + g->env_shape.loop_end, (size_t)tail->count);
+			snprintf(tail->name, sizeof(tail->name), "%s", g->env_before.name);
+		}
+	}
+	patch_shape_to_envelope(&played, &envelope);
 	files_draw_envelope(g->source.files, g->env_channel, g->env_handed ? NULL : &g->env_before, &envelope);
 	g->env_handed = true;
 	g->env_changed = false;
@@ -1666,11 +1761,16 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 		}
 		g->env_last_step = step;
 		g->env_last_value = value;
-	} else if (g->env_drag == ENV_LOOP_START) {
-		shape->loop_start = clamp(boundary, 0, loop_end_of(shape) - 1);
-	} else if (g->env_drag == ENV_LOOP_END) {
-		const int end = clamp(boundary, shape->loop_start + 1, shape->count);
-		shape->loop_end = end >= shape->count ? -1 : end;
+	} else if (g->env_drag == ENV_LOOP_START || g->env_drag == ENV_LOOP_END) {
+		// As the body: the press changes nothing, past DRAG_SLOP the tab follows the mouse, so a
+		// click on the end tab chooses release or stop without moving the loop (stage 22b).
+		g->env_moved = g->env_moved || abs(x - g->env_start_x) >= DRAG_SLOP;
+		if (g->env_moved && g->env_drag == ENV_LOOP_START) {
+			shape->loop_start = clamp(boundary, 0, loop_end_of(shape) - 1);
+		} else if (g->env_moved) {
+			const int end = clamp(boundary, shape->loop_start + 1, shape->count);
+			shape->loop_end = end >= shape->count ? -1 : end;
+		}
 	} else if (g->env_drag == ENV_LOOP) {
 		// The body held: past DRAG_SLOP the whole loop moves with its length; before, nothing.
 		g->env_moved = g->env_moved || abs(x - g->env_start_x) >= DRAG_SLOP;
@@ -1707,7 +1807,9 @@ static void envelope_switch_loop(mdmi_gui *g)
 		}
 		int start, end;
 		if (shape->loop_start >= 0) {
-			// Off: both marks go, the window keeps where they were.
+			// Off: both marks go, the window keeps where they were. The release plays on again
+			// as steps of the envelope: a loop always comes back with its release (stage 22b).
+			g->env_stop = false;
 			g->source.loop_shadows[psg].kept = true;
 			g->source.loop_shadows[psg].start = shape->loop_start;
 			g->source.loop_shadows[psg].end = shape->loop_end;
@@ -1755,6 +1857,12 @@ static void envelope_up(mdmi_gui *g)
 	if (g->env_drag == ENV_LOOP && !g->env_moved) {
 		envelope_switch_loop(g);
 	}
+	// A click on the end tab or the strip after it: release or stop (stage 22b, D54). Without a
+	// release there is nothing to choose.
+	if ((g->env_drag == ENV_TAIL || g->env_drag == ENV_LOOP_END) && !g->env_moved && has_tail(&g->env_shape)) {
+		g->env_stop = !g->env_stop;
+		g->env_changed = true;
+	}
 	envelope_hand(g);
 	g->env_drag = ENV_NONE;
 	if (GetCapture() == g->window) {
@@ -1775,9 +1883,16 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	const int step = g->env_drag != ENV_NONE ? g->env_last_step : column_at(shape->count, x);
 	int kept_start, kept_end;
 	char pitch[16];
+	// The release after the loop, played or not (stage 22b).
+	const bool tail = has_tail(shape), stop = tail && shown_stop(g, shape);
+	const int tail_ms = tail ? frame_ms(shape->count - shape->loop_end) : 0;
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && noise_without_pitch(patch_view(g->source.patch), *g->source.channel)) {
 			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH RATE TONE 3");
+			return true;
+		}
+		if (stop && step >= shape->loop_end) {
+			snprintf(hint, size, "STEP %d/%d NOT PLAYED: NOTE OFF STOPS", step + 1, shape->count);
 			return true;
 		}
 		const int level = shape->frames[step] & 15;
@@ -1787,11 +1902,17 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 		snprintf(hint, size, "STEP %d/%d  %d MS  LEVEL %s  PITCH %s", step + 1, shape->count, frame_ms(step), db, pitch);
 	} else if (part == ENV_LOOP_START || part == ENV_LOOP_END) {
 		const int end = loop_end_of(shape);
-		if (g->env_drag != ENV_NONE) {
+		if (g->env_drag != ENV_NONE && g->env_moved) {
 			snprintf(hint, size, "LOOP %d-%d: %d STEPS, %d MS", shape->loop_start + 1, end, end - shape->loop_start, frame_ms(end - shape->loop_start));
+		} else if (part == ENV_LOOP_START) {
+			snprintf(hint, size, "LOOP START: DRAG BETWEEN STEPS");
+		} else if (!tail) {
+			snprintf(hint, size, "LOOP END. NO RELEASE: ALWAYS STOP");
 		} else {
-			snprintf(hint, size, part == ENV_LOOP_START ? "LOOP START: DRAG BETWEEN STEPS" : "LOOP END: AFTER IT PLAYS ON NOTE OFF");
+			snprintf(hint, size, stop ? "LOOP END, STOP. CLICK: RELEASE %d MS" : "LOOP END, RELEASE %d MS. CLICK: STOP", tail_ms);
 		}
+	} else if (part == ENV_TAIL) {
+		snprintf(hint, size, stop ? "NOTE OFF: STOP. CLICK: RELEASE %d MS" : "NOTE OFF: RELEASE %d MS. CLICK: STOP", tail_ms);
 	} else if (part == ENV_LENGTH && shape->count >= room) {
 		snprintf(hint, size, "MAX %d BYTES, LOOP MARKS TAKE %d", PATCH_ENVELOPE_STEPS, PATCH_ENVELOPE_STEPS - room);
 	} else if (part == ENV_LENGTH) {
@@ -1831,9 +1952,19 @@ static void release_sign(mdmi_gui *g, int x, int y, uint32_t color)
 	fill(g, x, y + 6, 8, 1, color);
 }
 
-// A word in the room it has: the full word, the short one, the sign, then nothing (4A, v3 L1).
-static void fit_word(mdmi_gui *g, int x, int room, int y, const char *word, const char *shorter, bool loop, uint32_t color, bool centred)
+// Stop's sign (stage 22b): a 5x5 square in the middle of a 7x7 cell.
+static void stop_sign(mdmi_gui *g, int x, int y, uint32_t color)
 {
+	fill(g, x + 1, y + 1, 5, 5, color);
+}
+
+// The sign fit_word falls back to: true and false still mean loop and release.
+enum { SIGN_RELEASE, SIGN_LOOP, SIGN_STOP };
+
+// A word in the room it has: the full word, the short one, the sign, then nothing (4A, v3 L1).
+static void fit_word(mdmi_gui *g, int x, int room, int y, const char *word, const char *shorter, int sign, uint32_t color, bool centred)
+{
+	const bool loop = sign == SIGN_LOOP;
 	const char *fits = (int)strlen(word) * 6 + 4 <= room ? word : shorter && (int)strlen(shorter) * 6 + 4 <= room ? shorter : NULL;
 	if (fits) {
 		const int w = (int)strlen(fits) * 6 - 1;
@@ -1842,6 +1973,8 @@ static void fit_word(mdmi_gui *g, int x, int room, int y, const char *word, cons
 		const int left = centred ? x + (room - 7) / 2 : x;
 		if (loop) {
 			loop_sign(g, left, y, color);
+		} else if (sign == SIGN_STOP) {
+			stop_sign(g, left, y, color);
 		} else {
 			release_sign(g, left, y, color);
 		}
@@ -1868,10 +2001,16 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	if (g->source.loop_shadows[psg].kept && g->env_drag == ENV_NONE && strcmp(g->source.loop_shadows[psg].name, values->psg[psg].name) != 0) {
 		g->source.loop_shadows[psg].kept = false;
 	}
+	// So does the release kept while the loop stops (stage 22b).
+	if (g->source.tails && g->source.tails[psg].stop && g->env_drag == ENV_NONE && strcmp(g->source.tails[psg].name, values->psg[psg].name) != 0) {
+		g->source.tails[psg].stop = false;
+	}
 	patch_shape scratch;
 	const patch_shape *shape = shown_shape(g, &scratch);
 	const int room = patch_shape_room(shape), end = loop_end_of(shape), count = shape->count;
 	const bool loop = shape->loop_start >= 0, idle = g->env_drag == ENV_NONE;
+	// The release after the loop, dim while Note Off stops the loop.
+	const bool tail = has_tail(shape), stop = tail && shown_stop(g, shape);
 	const int over = idle ? envelope_part_at(g, shape, g->mouse_x, g->mouse_y) : ENV_NONE;
 	int kept_start, kept_end;
 	const bool kept = parked_loop(g, shape, &kept_start, &kept_end);
@@ -1898,6 +2037,8 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	for (int i = 0; i < count; i++) {
 		const int x = column_x(count, i), w = column_x(count, i + 1) - x;
 		const bool in_loop = loop && i >= shape->loop_start && i < end;
+		// A release not played (stage 22b): there, but as dim as can still be read.
+		const bool unplayed = stop && i >= end;
 		const uint32_t back = i == hover ? C_LINE : in_loop ? C_CELL : C_BG;
 		fill(g, x, ENV_LEVEL_Y, w, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
 		fill(g, x, ENV_PITCH_Y, w, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
@@ -1906,11 +2047,11 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		}
 		const int level = shape->frames[i] & 15, top = ENV_LEVEL_Y + ENV_LEVEL_ROW * level;
 		if (level < 15) {
-			fill(g, x, top + 3, w - 1, ENV_BASE_Y - top - 3, C_PSG_DARK);
-			fill(g, x, top, w - 1, 3, C_PSG);
+			fill(g, x, top + 3, w - 1, ENV_BASE_Y - top - 3, unplayed ? C_CELL : C_PSG_DARK);
+			fill(g, x, top, w - 1, 3, unplayed ? C_LINE : C_PSG);
 		}
 		const int row = pitch_row(shape->frames[i]), pitch_top = ENV_PITCH_Y + row * ENV_PITCH_ROW;
-		const uint32_t pitch_ink = noise ? C_LINE : C_PSG;
+		const uint32_t pitch_ink = noise || unplayed ? C_LINE : C_PSG;
 		if (row < 7) {
 			fill(g, x, pitch_top, w - 1, ENV_CENTRE_Y - pitch_top, pitch_ink);
 		} else if (row > 7) {
@@ -1919,8 +2060,10 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	}
 	fill(g, ENV_X, ENV_BASE_Y, ENV_LANE_W - 1, 1, C_LINE);
 	fill(g, ENV_X, ENV_CENTRE_Y, ENV_LANE_W - 1, 1, C_LINE);
-	// Where the note is, the same green line as on ALL, down both lanes.
-	const int playing = envelope_frame(g, shape, psg, mdmi_engine_get_stats(g->source.engine).sample_rate);
+	// Where the note is, the same green line as on ALL, down both lanes; never in a release not played.
+	patch_shape played;
+	played_shape(shape, stop, &played);
+	const int playing = envelope_frame(g, &played, psg, mdmi_engine_get_stats(g->source.engine).sample_rate);
 	if (playing >= 0 && playing < count) {
 		const int x = column_x(count, playing), w = column_x(count, playing + 1) - x;
 		fill(g, x + (w - 1) / 2, ENV_LEVEL_Y, 1, ENV_PITCH_BOTTOM - ENV_LEVEL_Y, C_PLAYING);
@@ -1933,14 +2076,22 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		const int body = end_x - start_x - 1;
 		fill(g, start_x + 1, ENV_LOOP_Y, body, ENV_LOOP_H, over == ENV_LOOP ? C_LINE : C_CELL);
 		fit_word(g, start_x + 1, body, ENV_LOOP_Y + 3, "LOOP", NULL, true, C_PSG, true);
-		if (shape->loop_end >= 0) {
-			const int tail_x = end_x + 12;
-			fit_word(g, tail_x, ENV_X + ENV_LANE_W - tail_x, ENV_LOOP_Y + 3, "RELEASE", "REL", false, C_LABEL, false);
+		if (tail) {
+			// The release's or stop's switch after the end tab (stage 22b, dac-page.md): stop has the
+			// shadow's outline, "lies there, isn't played".
+			const int rx = end_x + 9, rw = ENV_X + ENV_LANE_W - rx, tail_x = end_x + 12;
+			const bool on = over == ENV_TAIL;
+			if ((stop || on) && rw >= 3) {
+				frame(g, rx, ENV_LOOP_Y, rw, ENV_LOOP_H, on ? C_TEXT : C_LINE);
+			}
+			fit_word(g, tail_x, ENV_X + ENV_LANE_W - tail_x, ENV_LOOP_Y + 3, stop ? "STOP" : "RELEASE", stop ? NULL : "REL", stop ? SIGN_STOP : SIGN_RELEASE, on ? C_TEXT : C_LABEL, false);
 		}
 		fill(g, start_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
 		fill(g, end_x, ENV_LOOP_Y, 1, ENV_PITCH_BOTTOM - ENV_LOOP_Y, C_PSG);
-		fill(g, start_x - 8, ENV_LOOP_Y, 8, ENV_LOOP_H, g->env_drag == ENV_LOOP_START ? C_AMBER : over == ENV_LOOP_START ? C_TEXT : C_PSG);
-		fill(g, end_x + 1, ENV_LOOP_Y, 8, ENV_LOOP_H, g->env_drag == ENV_LOOP_END ? C_AMBER : over == ENV_LOOP_END ? C_TEXT : C_PSG);
+		// A held tab is amber once it moves; pressed for a click, it reads as under the mouse.
+		const int held = idle ? ENV_NONE : g->env_drag;
+		fill(g, start_x - 8, ENV_LOOP_Y, 8, ENV_LOOP_H, held == ENV_LOOP_START ? (g->env_moved ? C_AMBER : C_TEXT) : over == ENV_LOOP_START ? C_TEXT : C_PSG);
+		fill(g, end_x + 1, ENV_LOOP_Y, 8, ENV_LOOP_H, held == ENV_LOOP_END ? (g->env_moved ? C_AMBER : C_TEXT) : over == ENV_LOOP_END ? C_TEXT : C_PSG);
 	} else if (kept) {
 		// The shadow of the loop switched off: an outline where it was, no tabs and no lines down the
 		// lanes, the columns on the plain ground. A click puts it back.
@@ -2337,6 +2488,8 @@ enum {
 	DACC_LOOP, DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
 	// The loop row's tabs and its body, or the shadow while LOOP is off (stage 18b).
 	DACC_LOOP_START, DACC_LOOP_END, DACC_LOOP_BODY,
+	// The loop row after the loop's end, where a click chooses release or stop (stage 22b).
+	DACC_LOOP_TAIL,
 };
 #define DAC_ROW_A_Y 398
 // The rate's words in RATE's row (stage 19).
@@ -2406,12 +2559,20 @@ static void shown_marks(const dac_sample *own, const dac_edit *edit, dac_marks *
 	dac_marks_of(own, &on, m);
 }
 
-// FADE does nothing to a loop that has no release, or plays past Note Off (stage 22a): it never ends.
+// FADE does nothing to a loop that has no release, or one Note Off stops (stage 22b): it has no end.
 static bool fade_unused(const dac_sample *own, const dac_edit *edit)
 {
 	dac_marks m;
 	dac_marks_of(own, edit, &m);
-	return m.loops && (!m.release || edit->one_shot);
+	return m.loops && !m.release;
+}
+
+// Where a click chooses release or stop on the loop's row: from the loop's end to the release's,
+// at least 20 px wide, short of the page's edge (stage 22b, dac-page.md).
+static int tail_zone_end(int le, int end)
+{
+	const int right = end - 2 > le + 19 ? end - 2 : le + 19;
+	return right < 699 ? right : 699;
 }
 
 static int dac_control_at(const mdmi_gui *g, int x, int y)
@@ -2445,7 +2606,11 @@ static int dac_control_at(const mdmi_gui *g, int x, int y)
 		if (edit->loop && x >= le && x < le + TRIM_TAB_W) {
 			return DACC_LOOP_END;
 		}
-		return x >= ls && x < le ? DACC_LOOP_BODY : DACC_NONE;
+		if (x >= ls && x < le) {
+			return DACC_LOOP_BODY;
+		}
+		// Release or stop, only with something after the loop; LOADING takes no click there.
+		return edit->loop && m.tail && engine_booted(g) && x >= le && x <= tail_zone_end(le, wave_x_of(own, edit->end)) ? DACC_LOOP_TAIL : DACC_NONE;
 	}
 	if (y >= WAVE_Y && y < WAVE_Y + WAVE_H) {
 		const dac_edit *edit = shown_edit(g, own);
@@ -2627,15 +2792,23 @@ static void draw_loop_row(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 		frame(g, ls + 1, DAC_LOOP_Y, le - ls - 2, DAC_LOOP_H, body_held ? C_AMBER : C_TEXT);
 	}
 	fit_word(g, ls + 1, le - ls - 2, DAC_LOOP_Y + 3, words, "LOOP", true, body_held ? C_AMBER : booted ? C_DAC : C_LINE, true);
-	if (m->release) {
-		// With ONE-SHOT the release isn't played (stage 22a): its word dim, kept for when it's off.
-		fit_word(g, le + TRIM_TAB_W + 3, end - 2 - (le + TRIM_TAB_W + 3), DAC_LOOP_Y + 3, "RELEASE", "REL", false, edit->one_shot ? C_LINE : C_LABEL, false);
+	if (m->tail) {
+		// Release or stop (stage 22b): stop has the shadow's outline, "lies there, isn't played".
+		const bool stop = !m->release, on = over == DACC_LOOP_TAIL && booted;
+		const int rx = le + TRIM_TAB_W, rw = end - 2 - rx;
+		const uint32_t ink = !booted ? C_CELL : on ? C_TEXT : C_LINE;
+		if ((stop || on) && rw >= 3) {
+			frame(g, rx, DAC_LOOP_Y, rw, DAC_LOOP_H, ink);
+		}
+		fit_word(g, le + TRIM_TAB_W + 3, end - 2 - (le + TRIM_TAB_W + 3), DAC_LOOP_Y + 3, stop ? "STOP" : "RELEASE", stop ? NULL : "REL", stop ? SIGN_STOP : SIGN_RELEASE,
+			!booted ? C_LINE : on ? C_TEXT : C_LABEL, false);
 	}
 	// Hollow tabs, solid when the mouse is on them; the lines take their colour.
 	for (int which = 0; which < 2; which++) {
 		const int c = which ? DACC_LOOP_END : DACC_LOOP_START;
 		const int tab = which ? le : ls - TRIM_TAB_W, line = which ? le - 1 : ls;
-		const uint32_t ink = !booted ? C_LINE : g->dac_drag == c || body_held ? C_AMBER : over == c ? C_TEXT : C_DAC;
+		// A held tab is amber once it moves; pressed for a click, as under the mouse (stage 22b).
+		const uint32_t ink = !booted ? C_LINE : (g->dac_drag == c && g->dac_moved) || body_held ? C_AMBER : over == c ? C_TEXT : C_DAC;
 		if (ink == C_DAC || ink == C_LINE) {
 			fill(g, tab, DAC_LOOP_Y, TRIM_TAB_W, DAC_LOOP_H, booted ? C_DAC_DARK : C_CELL);
 			frame(g, tab, DAC_LOOP_Y, TRIM_TAB_W, DAC_LOOP_H, ink);
@@ -2684,14 +2857,14 @@ static void draw_wave(mdmi_gui *g, int note, const rom_sample *sample, const dac
 	const double gain = edit ? pow(10.0, edit->gain / 200.0) : 1.0;
 	const int start = edit ? wave_x_of(own, edit->start) : WAVE_X, end = edit ? wave_x_of(own, edit->end) : WAVE_X + WAVE_W;
 	// With LOOP and no release the part after the last whole block isn't played: it reads as
-	// trimmed (stage 18); with ONE-SHOT too, all after the loop (stage 22a). Too short to loop, it
-	// all reads dim.
+	// trimmed (stage 18); with stop too, all after the loop (stage 22b). Too short to loop, it all
+	// reads dim.
 	dac_marks marks = {0};
 	if (edit) {
 		shown_marks(own, edit, &marks);
 	}
 	const bool looping = edit && edit->loop, short_loop = looping && marks.too_short;
-	const int played = !edit ? end : short_loop ? start : looping ? wave_x_of(own, edit->one_shot ? marks.frame_loop_end : marks.frame_end) : end;
+	const int played = !edit ? end : short_loop ? start : looping ? wave_x_of(own, marks.frame_end) : end;
 	if (edit) {
 		fill(g, start, WAVE_Y, played - start, WAVE_H, C_CELL);
 	}
@@ -2834,15 +3007,20 @@ static void dac_drag_to(mdmi_gui *g, int x, int y)
 }
 
 // The edit goes to the sample: prepared once, the core restarts (D38).
-static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
+static void dac_apply_to(mdmi_gui *g, int note, const dac_edit *edit, bool join)
 {
 	const dac_sample *own = panel_sample(g, note);
 	if (!own || dac_same_edit(edit, &own->edit)) {
 		return;
 	}
 	char message[FILES_MESSAGE];
-	const bool done = files_edit_sample(g->source.files, note, edit, message, sizeof(message));
+	const bool done = files_edit_sample(g->source.files, note, edit, join, message, sizeof(message));
 	say(g, message, done ? C_AMBER : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
+}
+
+static void dac_apply(mdmi_gui *g, int note, const dac_edit *edit)
+{
+	dac_apply_to(g, note, edit, false);
 }
 
 // A press on the panel: a drag begins, or a switch, a rate or NORMALIZE applies at once.
@@ -2850,6 +3028,7 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 {
 	const int c = dac_control_at(g, x, y);
 	const dac_sample *own = panel_sample(g, g->dac_selected);
+	g->dac_tail_clicked = false;
 	if (c == DACC_NONE || !own || !engine_booted(g)) {
 		return c != DACC_NONE;
 	}
@@ -2863,10 +3042,15 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 		if (c == DACC_FADE) {
 			edit.fade = !edit.fade;
 		} else if (c == DACC_ONE_SHOT) {
-			// Together with LOOP it loops past Note Off (stage 22a, D53).
+			// ONE-SHOT and LOOP exclude each other: a loop would never stop (stage 18; D54 cancels
+			// D53). A loop always comes back with its release: either switch drops stop (22b).
 			edit.one_shot = !edit.one_shot;
+			edit.loop = edit.loop && !edit.one_shot;
+			edit.stop = false;
 		} else if (c == DACC_LOOP) {
 			edit.loop = !edit.loop;
+			edit.one_shot = edit.one_shot && !edit.loop;
+			edit.stop = false;
 		} else {
 			edit.gain = (int16_t)dac_normalize_gain(own);
 		}
@@ -2916,8 +3100,15 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 		edit.loop_start = 0;
 		break;
 	case DACC_LOOP_END:
-		// No release: the loop runs to the last whole block.
+		// No release: the loop runs to the last whole block. The first click switched release and
+		// stop; that goes back, and the change joins the click's undo step (stage 22b).
 		edit.loop_end = 0;
+		if (g->dac_tail_clicked) {
+			g->dac_tail_clicked = false;
+			edit.stop = !edit.stop;
+			dac_apply_to(g, g->dac_selected, &edit, true);
+			return true;
+		}
 		break;
 	case DACC_LOOP_BODY:
 		// Its first click switched the loop already.
@@ -2968,9 +3159,17 @@ static void loop_hint(const dac_sample *own, const dac_edit *edit, int c, bool h
 		ms_text(ms_of(own, m.frame_loop_end - edit->start), a, sizeof(a));
 		if (held && shortest) {
 			snprintf(out, size, "LOOP: SHORTEST IS ONE BLOCK, %.1f MS", block_ms);
+		} else if (held) {
+			snprintf(out, size, "LOOP END %s MS. RELEASE TO APPLY", a);
+		} else if (!m.tail) {
+			snprintf(out, size, "LOOP END %s MS, NO RELEASE: ALWAYS STOP", a);
 		} else {
-			snprintf(out, size, held ? "LOOP END %s MS. RELEASE TO APPLY" : "LOOP END %s MS. DOUBLE CLICK: NO RELEASE", a);
+			// Release or stop by a click (stage 22b); a double click's no release is in README.
+			snprintf(out, size, m.release ? "LOOP END %s MS, RELEASE. CLICK: STOP" : "LOOP END %s MS, STOP. CLICK: RELEASE", a);
 		}
+	} else if (c == DACC_LOOP_TAIL) {
+		ms_text(ms_of(own, m.frame_tail_end - m.frame_loop_end), a, sizeof(a));
+		snprintf(out, size, m.release ? "NOTE OFF: RELEASE %s MS. CLICK: STOP" : "NOTE OFF: STOP. CLICK: RELEASE %s MS", a);
 	} else {
 		ms_text(ms_of(own, m.frame_loop_end - m.frame_loop_start), a, sizeof(a));
 		ms_text(ms_of(own, m.frame_loop_start - edit->start), b, sizeof(b));
@@ -3019,25 +3218,23 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 	case DACC_NORMALIZE:
 		snprintf(out, size, "NORMALIZE: GAIN %+.1f DB, PEAK AT -0.5", dac_normalize_gain(own) / 10.0);
 		break;
-	case DACC_FADE:
-		snprintf(out, size, fade_unused(own, edit) ? (edit->one_shot ? "FADE: NOT USED, ONE-SHOT LOOP NEVER ENDS" : "FADE: NOT USED BY A LOOP WITHOUT RELEASE") : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
+	case DACC_FADE: {
+		dac_marks fade_marks;
+		dac_marks_of(own, edit, &fade_marks);
+		const char *unused = fade_marks.tail ? "FADE: NOT USED, LOOP STOPS AT NOTE OFF" : "FADE: NOT USED BY A LOOP WITHOUT RELEASE";
+		snprintf(out, size, "%s", fade_unused(own, edit) ? unused : edit->fade ? "FADE: LAST 4 MS FADE OUT. CLICK: OFF" : "NO FADE: THE END MAY CLICK. CLICK: ON");
 		break;
+	}
 	case DACC_LOOP_START:
 	case DACC_LOOP_END:
 	case DACC_LOOP_BODY:
-		loop_hint(own, edit, c, held && (c != DACC_LOOP_BODY || g->dac_moved), out, size);
+	case DACC_LOOP_TAIL:
+		// A tab pressed for a click says what the click does until it moves (stage 22b).
+		loop_hint(own, edit, c, held && g->dac_moved, out, size);
 		break;
-	case DACC_ONE_SHOT: {
-		dac_marks shot_marks;
-		dac_marks_of(own, edit, &shot_marks);
-		// Only a loop in effect goes on past Note Off: not one TOO SHORT.
-		if (edit->loop && shot_marks.loops) {
-			snprintf(out, size, edit->one_shot ? "ONE-SHOT: LOOP GOES ON PAST NOTE OFF" : "ONE-SHOT OFF. CLICK: LOOP PAST NOTE OFF");
-		} else {
-			snprintf(out, size, edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
-		}
+	case DACC_ONE_SHOT:
+		snprintf(out, size, edit->loop ? "ONE-SHOT: PLAYS TO THE END, LOOP GOES OFF" : edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
 		break;
-	}
 	case DACC_LOOP: {
 		dac_marks m;
 		shown_marks(own, edit, &m);
@@ -3046,12 +3243,12 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 		if (m.too_short) {
 			snprintf(out, size, edit->loop ? "TOO SHORT: %s MS KEPT, LOOP NEEDS %s" : "LOOP OFF: %s MS KEPT, NEEDS %s", a, b);
 		} else if (!edit->loop) {
-			snprintf(out, size, edit->one_shot ? "LOOP OFF. CLICK: REPEAT PAST NOTE OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
+			snprintf(out, size, edit->one_shot ? "LOOP: REPEAT WHILE HELD, ONE-SHOT GOES OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
 		} else {
 			ms_text(ms_of(own, m.frame_loop_end - m.frame_loop_start), a, sizeof(a));
 			ms_text(ms_of(own, m.frame_end - m.frame_loop_end), b, sizeof(b));
-			if (edit->one_shot) {
-				snprintf(out, size, "LOOP %s MS, PAST NOTE OFF. CLICK: OFF", a);
+			if (m.tail && !m.release) {
+				snprintf(out, size, "LOOP %s MS, STOP AT NOTE OFF. CLICK: OFF", a);
 			} else if (m.release) {
 				snprintf(out, size, "LOOP %s MS, RELEASE %s MS. CLICK: OFF", a, b);
 			} else {
@@ -3427,8 +3624,8 @@ static void shift_text(int shift, char *out, size_t size)
 	snprintf(out, size, shift > 0 ? "+%d" : "%d", shift);
 }
 
-// The length cell, the loop's tab, body or shadow, the switch, or the lane under the mouse. A dim row
-// takes no mouse; an empty one only its lane and length.
+// The length cell, the row's switch, the loop's tab, body or shadow, the loop's switch, or the lane
+// under the mouse. A dim row takes no mouse; an empty one only its lane and length.
 static int arp_part_at(mdmi_gui *g, const patch_arp *row, int x, int y)
 {
 	if (!arp_shown(g) || !patch_arp_works(patch_view(g->source.patch), *g->source.channel)) {
@@ -3439,6 +3636,9 @@ static int arp_part_at(mdmi_gui *g, const patch_arp *row, int x, int y)
 	const int lx = bx + ARP_LANE_DX, ly = by + ARP_LANE_DY, end = lx + ARP_LANE_W, count = row->count;
 	if (in_box(x, y, bx + ARP_RIGHT_DX, by + ARP_LENGTH_DY, ARP_LENGTH_W, CELL_H)) {
 		return ARP_LENGTH;
+	}
+	if (count && in_box(x, y, bx + ARP_RIGHT_DX, by + ARP_STRIP_DY, ARP_LENGTH_W, ARP_STRIP_H)) {
+		return ARP_ON_OFF;
 	}
 	if (y >= by + ARP_STRIP_DY && y < by + ARP_STRIP_DY + ARP_STRIP_H) {
 		if (!count) {
@@ -3476,6 +3676,9 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 	const int over = idle && !g->dragging && !g->file_over ? arp_part_at(g, row, g->mouse_x, g->mouse_y) : ARP_NONE;
 	const int hover = over == ARP_LANE && count ? lane_column_at(lx, ARP_LANE_W, count, g->mouse_x) : -1;
 	const int lit = hover >= 0 ? hover : g->arp_drag == ARP_LANE || g->arp_drag == ARP_ZERO ? g->arp_last_step : -1;
+	// Switched off (D55): dim but alive, every part takes the mouse as always. A row dim because the
+	// channel can't play it stays that.
+	const bool off = !dim && count && row->off;
 	char buffer[16];
 
 	fill(g, bx, by, ARP_W, ARP_H, C_BG);
@@ -3491,8 +3694,8 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 	// The ground: the loop lighter, the column under the mouse lighter still, the octaves' lines.
 	for (int i = 0; i < count; i++) {
 		const int x = arp_x(lx, count, i), w = arp_x(lx, count, i + 1) - x;
-		const bool in_loop = row->loop >= 0 && i >= row->loop;
-		fill(g, x, ly, w, ARP_LANE_H, i == hover ? C_LINE : in_loop ? C_CELL : C_BG);
+		const bool in_loop = !off && row->loop >= 0 && i >= row->loop;
+		fill(g, x, ly, w, ARP_LANE_H, off ? (i == lit ? C_CELL : C_BG) : i == hover ? C_LINE : in_loop ? C_CELL : C_BG);
 		fill(g, x, ly + 24, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
 		fill(g, x, ly + 72, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
 	}
@@ -3513,15 +3716,15 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 		const int x = arp_x(lx, count, i), w = arp_x(lx, count, i + 1) - x;
 		const int shift = row->steps[i], top = arp_y(ly, shift);
 		if (shift > 0) {
-			fill(g, x, top + 2, w - 1, ly + 48 - top - 2, dark);
+			fill(g, x, top + 2, w - 1, ly + 48 - top - 2, off ? C_CELL : dark);
 		} else if (shift < 0) {
-			fill(g, x, ly + 50, w - 1, top - ly - 50, dark);
+			fill(g, x, ly + 50, w - 1, top - ly - 50, off ? C_CELL : dark);
 		}
 		// A step of 0 is a real step: its top on the zero line.
-		fill(g, x, top, w - 1, 2, ink);
+		fill(g, x, top, w - 1, 2, off ? (i == lit ? C_LABEL : C_HINT) : ink);
 		if (w > 19) {
 			shift_text(shift, buffer, sizeof(buffer));
-			text(g, x + (w - 1 - ((int)strlen(buffer) * 6 - 1)) / 2, by + 114, buffer, dim ? C_LINE : i == lit ? C_TEXT : C_LABEL, 1);
+			text(g, x + (w - 1 - ((int)strlen(buffer) * 6 - 1)) / 2, by + 114, buffer, dim ? C_LINE : i == lit ? C_TEXT : off ? C_HINT : C_LABEL, 1);
 		}
 	}
 
@@ -3529,10 +3732,11 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 	if (count && row->loop >= 0) {
 		const int ls = arp_x(lx, count, row->loop) - 1;
 		const bool moved = g->arp_drag == ARP_BODY && g->arp_moved, held = moved || g->arp_drag == ARP_TAB;
+		const uint32_t loop_ink = off ? C_HINT : ink;
 		fill(g, ls + 1, sy, end - ls - 1, ARP_STRIP_H, over == ARP_BODY ? C_LINE : C_CELL);
-		fit_word(g, ls + 1, end - ls - 1, sy + 3, "LOOP", NULL, true, moved ? C_AMBER : ink, true);
-		fill(g, ls, sy, 1, ly + ARP_LANE_H - sy, held ? C_AMBER : ink);
-		fill(g, ls - 8, sy, 8, ARP_STRIP_H, held ? C_AMBER : over == ARP_TAB ? C_TEXT : ink);
+		fit_word(g, ls + 1, end - ls - 1, sy + 3, "LOOP", NULL, true, moved ? C_AMBER : loop_ink, true);
+		fill(g, ls, sy, 1, ly + ARP_LANE_H - sy, held ? C_AMBER : loop_ink);
+		fill(g, ls - 8, sy, 8, ARP_STRIP_H, held ? C_AMBER : over == ARP_TAB ? C_TEXT : loop_ink);
 	} else if (count && row->shadow_kept) {
 		// The loop switched off: an outline where it started, no tab, no line.
 		const int ss = arp_x(lx, count, row->shadow) - 1;
@@ -3546,8 +3750,16 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 		text(g, lx + 44, sy + 3, "ONCE, THEN HOLDS", C_HINT, 1);
 	}
 
-	// The column at the right: the length, dragged like the envelope's, and what it means.
-	text(g, rx, by + 4, "ARP", dim ? C_LINE : C_LABEL, 1);
+	// The column at the right: the row's switch, or ARP when it is empty; the length, dragged like the
+	// envelope's, and what it means.
+	if (count) {
+		const bool on = !row->off, lit_switch = over == ARP_ON_OFF;
+		fill(g, rx, sy, ARP_LENGTH_W, ARP_STRIP_H, on && !dim ? dark : C_BG);
+		frame(g, rx, sy, ARP_LENGTH_W, ARP_STRIP_H, dim ? C_CELL : lit_switch ? C_TEXT : on ? ink : C_LINE);
+		text(g, rx + 3, by + 5, on ? "ARP ON" : "ARP OFF", dim ? C_LINE : on ? C_TEXT : C_LABEL, 1);
+	} else {
+		text(g, rx, by + 4, "ARP", dim ? C_LINE : C_LABEL, 1);
+	}
 	const bool held = g->arp_drag == ARP_LENGTH, full = count >= PATCH_ARP_STEPS;
 	const int cy = by + ARP_LENGTH_DY;
 	fill(g, rx, cy, ARP_LENGTH_W, CELL_H, dim ? C_BG : held ? C_LINE : count ? dark : C_CELL);
@@ -3579,7 +3791,8 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 // The FM page's switch between the graph and the row, with the row's length.
 static void draw_arp_switch(mdmi_gui *g, const patch_values *values)
 {
-	const int channel = *g->source.channel, count = patch_arp_view(g->source.patch, channel)->count;
+	const patch_arp *row = patch_arp_view(g->source.patch, *g->source.channel);
+	const int channel = *g->source.channel, count = row->count;
 	const bool over = !g->dragging && !g->file_over && g->arp_drag == ARP_NONE && over_arp_switch(g, g->mouse_x, g->mouse_y);
 	fill(g, ARP_SWITCH_X, GRAPH_Y, ARP_SWITCH_W, CELL_H, g->arp_view ? C_FM : C_BG);
 	if (over || !g->arp_view) {
@@ -3588,7 +3801,7 @@ static void draw_arp_switch(mdmi_gui *g, const patch_values *values)
 	text(g, ARP_SWITCH_X + 4, GRAPH_Y + 6, "ARP", g->arp_view ? C_TEXT : C_LABEL, 1);
 	char buffer[8];
 	snprintf(buffer, sizeof(buffer), count ? "%d" : "-", count);
-	text_right(g, ARP_SWITCH_X + 48, GRAPH_Y + 3, buffer, !count || !patch_arp_works(values, channel) ? C_LINE : C_TEXT, 2, 26);
+	text_right(g, ARP_SWITCH_X + 48, GRAPH_Y + 3, buffer, !count || row->off || !patch_arp_works(values, channel) ? C_LINE : C_TEXT, 2, 26);
 }
 
 // The channel's row becomes the window's copy, and what undo puts back.
@@ -3735,7 +3948,8 @@ static bool arp_zero(mdmi_gui *g, int x, int y)
 }
 
 // The mouse let go: a click within DRAG_SLOP on the body turns the loop off and keeps its shadow,
-// on the shadow turns it on there, on the switch loops the whole row.
+// on the shadow turns it on there, on the loop's switch loops the whole row; the row's switch
+// turns the row off or on.
 static void arp_up(mdmi_gui *g)
 {
 	patch_arp *row = &g->arp_row;
@@ -3750,6 +3964,10 @@ static void arp_up(mdmi_gui *g)
 		g->arp_changed = true;
 	} else if (g->arp_drag == ARP_SWITCH) {
 		row->loop = 0;
+		g->arp_changed = true;
+	} else if (g->arp_drag == ARP_ON_OFF) {
+		// The row's switch (D55): its steps stay, one undo step.
+		row->off = row->off ? 0 : 1;
 		g->arp_changed = true;
 	}
 	arp_hand(g);
@@ -3766,11 +3984,12 @@ static bool arp_hint(mdmi_gui *g, char *hint, size_t size)
 	const int channel = *g->source.channel;
 	const int x = g->mouse_x, y = g->mouse_y;
 	if (g->arp_drag == ARP_NONE && over_arp_switch(g, x, y)) {
-		const int count = patch_arp_view(g->source.patch, channel)->count;
+		const patch_arp *view = patch_arp_view(g->source.patch, channel);
+		const int count = view->count;
 		if (g->arp_view) {
 			snprintf(hint, size, "CLICK: BACK TO THE ENVELOPE GRAPH");
 		} else {
-			snprintf(hint, size, count ? "ARP %d STEPS. CLICK TO EDIT" : "NO ARP. CLICK TO DRAW ONE", count);
+			snprintf(hint, size, !count ? "NO ARP. CLICK TO DRAW ONE" : view->off ? "ARP %d STEPS, OFF. CLICK TO EDIT" : "ARP %d STEPS. CLICK TO EDIT", count);
 		}
 		return true;
 	}
@@ -3802,10 +4021,14 @@ static bool arp_hint(mdmi_gui *g, char *hint, size_t size)
 		}
 		shift_text(row->steps[step], shift, sizeof(shift));
 		if (held) {
-			snprintf(hint, size, "STEP %d/%d: %s SEMITONES", step + 1, count, shift);
+			snprintf(hint, size, row->off ? "STEP %d/%d: %s SEMITONES, ARP OFF" : "STEP %d/%d: %s SEMITONES", step + 1, count, shift);
+		} else if (row->off) {
+			snprintf(hint, size, "STEP %d/%d: %s, ARP OFF. DOUBLE CLICK: 0", step + 1, count, shift);
 		} else {
 			snprintf(hint, size, "STEP %d/%d: %s AT %d MS. DOUBLE CLICK: 0", step + 1, count, shift, frame_ms(step));
 		}
+	} else if (part == ARP_ON_OFF && count) {
+		snprintf(hint, size, row->off ? "ARP OFF: PLAYS AS NO ARP. CLICK: ON" : "ARP ON. CLICK: OFF, STEPS STAY HERE");
 	} else if (part == ARP_LENGTH && held) {
 		snprintf(hint, size, count ? "ARP %d STEPS, %d MS" : "0 STEPS: NO ARP", count, frame_ms(count));
 	} else if (part == ARP_LENGTH) {
@@ -3973,7 +4196,8 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 			frame(g, x, OP_HEADER_Y, OP_W, OP_HEADER_H, C_TEXT);
 		}
 		text(g, x + 4, OP_HEADER_Y + 4, buffer, carrier || op == active ? C_TEXT : C_FM_LIGHT, 1);
-		if (channel == 2) {
+		// Channel 3's pitch tags only in Ch3 Special (stage 22b): off, its header is as the others'.
+		if (channel == 2 && values->globals[GLOBAL_CH3_MODE]) {
 			draw_pitch_tag(g, values, op);
 		}
 		// The label fields of DT and RS, amber when the value differs from the base (D31).
@@ -4112,6 +4336,13 @@ static bool base_hint(mdmi_gui *g, char *hint, size_t size)
 		return false;
 	}
 	const patch_values *values = patch_view(g->source.patch);
+	// Stage 22b (D57): channel 3's AR is the ROM's 31 in CSM; the voice keeps its own for later.
+	if (csm_ar(values, c->id)) {
+		char kept[24];
+		patch_format(patch_bank_view(g->source.patch), c->id, value_of(g, values, c->id), kept, sizeof(kept));
+		snprintf(hint, size, "AR 31 IN CSM, THE VOICE KEEPS %s", kept);
+		return true;
+	}
 	const int base = patch_base_value(values, channel, param), value = value_of(g, values, c->id);
 	if (base < 0 || base == value) {
 		return false;
@@ -4181,14 +4412,10 @@ static bool ch3_hint(mdmi_gui *g, char *hint, size_t size)
 		}
 		return true;
 	}
-	// The tags, dim ones included: each in its header.
-	for (int op = 0; op < PATCH_OPS; op++) {
+	// The tags, each in its header; with Ch3 Special off there are none (stage 22b).
+	for (int op = 0; op < PATCH_OPS && values->globals[GLOBAL_CH3_MODE]; op++) {
 		if (!in_box(x, y, GRID_X[op] + PITCH_TAG_X, SSG_BUTTON_Y, PITCH_TAG_W, SSG_BUTTON_H) || in_pitch_editor(g, x, y)) {
 			continue;
-		}
-		if (!values->globals[GLOBAL_CH3_MODE]) {
-			snprintf(hint, size, "OP PITCH: ONLY WITH CH3 SPECIAL ON");
-			return true;
 		}
 		const int semi = values->globals[ch3_field(op, PATCH_CH3_SEMI)] - PATCH_CH3_SEMI_MAX;
 		const int fine = values->globals[ch3_field(op, PATCH_CH3_FINE)] - PATCH_CH3_FINE_MAX;
@@ -5225,9 +5452,25 @@ static void on_up(mdmi_gui *g)
 		dac_edit edit = g->dac_work;
 		const int note = g->dac_drag_note;
 		if (g->dac_drag == DACC_LOOP_BODY && !g->dac_moved) {
-			// A click on the loop's row: the body turns LOOP off, the shadow on (stage 18b).
+			// A click on the loop's row: the body turns LOOP off, the shadow on (stage 18b), which
+			// takes ONE-SHOT off (stage 18) and comes back with the release (22b).
 			edit = g->dac_drag_from;
 			edit.loop = !edit.loop;
+			edit.one_shot = edit.one_shot && !edit.loop;
+			edit.stop = false;
+		} else if ((g->dac_drag == DACC_LOOP_END || g->dac_drag == DACC_LOOP_TAIL) && !g->dac_moved) {
+			// On the loop's end tab or after it: release or stop (stage 22b, D54); nothing to choose
+			// without a release.
+			const dac_sample *own = panel_sample(g, note);
+			dac_marks m = {0};
+			if (own) {
+				dac_marks_of(own, &g->dac_drag_from, &m);
+			}
+			edit = g->dac_drag_from;
+			if (m.tail) {
+				edit.stop = !edit.stop;
+				g->dac_tail_clicked = true;
+			}
 		}
 		g->dac_drag = DACC_NONE;
 		if (GetCapture() == g->window) {

@@ -63,7 +63,8 @@ art-director, 2026-11-10. Определение этапа в ROADMAP, «Эта
 
 ## 2. Страница FM канала 3: ярлык высоты и правка
 
-Только канал 3, при любом CH3 SPECIAL (при Off тусклые). На каналах 1, 2, 4-6 ничего не меняется.
+Только канал 3 и только при CH3 SPECIAL On (этап 22b, по проверке владельца: при Off ярлыков нет совсем, заголовок
+как у каналов 1, 2, 4-6; раньше были тусклые). На каналах 1, 2, 4-6 ничего не меняется.
 
 **Заголовок оператора** (`x = GRID_X[op]`, y 212, 112x14): на канале 3 текст только `OP1` … `OP4` в `x+4`, цвет как
 сейчас; слово `CARRIER` / `MOD` уходит: несущего и так видно по заливке `C_FM` и по схеме. Ярлык:
@@ -117,7 +118,7 @@ art-director, 2026-11-10. Определение этапа в ROADMAP, «Эта
 | LFO RESET тусклая | `LFO RESET: ONLY WITH LFO ON` |
 | Ярлык, OPS | `OP1 ON MIDI 11: KEY +7 ST +10 CT`; FIX `OP1 ON MIDI 11: FIXED G-4 +10 CT` (32) |
 | Ярлык, 1 NOTE | `OP1 ON MIDI 3: KEY +7 ST +10 CT`; FIX `OP1 ON MIDI 3: FIXED G-4 +10 CT` |
-| Ярлык тусклый | `OP PITCH: ONLY WITH CH3 SPECIAL ON` |
+| Ярлык тусклый | нет с этапа 22b: при CH3 SPECIAL Off ярлыка нет |
 | SEMI | `OP1 SEMI: -48 TO +48 ST, DOUBLE CLICK 0` (39) |
 | FINE | `OP1 FINE: -63 TO +63 CT, DOUBLE CLICK 0` (39) |
 | FIX выкл. | `OP1 FOLLOWS THE KEY. CLICK: FIX TO G-4` (38) |

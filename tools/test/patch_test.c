@@ -1157,6 +1157,64 @@ static void test_drawing(void)
 		&& opened.loops[3].kept && opened.loops[3].start == 0 && opened.loops[3].end == 7 && !strcmp(opened.loops[3].name, "Drawn"),
 		"a project keeps the loops switched off, where they were");
 	free(state);
+
+	// Stage 22b (D54): with stop the window hands the envelope without its release, so the ROM, SAVE
+	// and STORE get what plays; the view keeps the release, block 11.
+	patch_shape cut;
+	patch_shape_of(&drawn, &cut);
+	const int released = cut.count - cut.loop_end;
+	CHECK(cut.loop_start >= 0 && cut.loop_end >= 0 && released > 0, "the drawing has a loop and a release of %d steps", released);
+	kept.tails[1] = (state_tail){.stop = true, .count = released};
+	memcpy(kept.tails[1].steps, cut.frames + cut.loop_end, (size_t)released);
+	snprintf(kept.tails[1].name, sizeof(kept.tails[1].name), "%s", drawn.name);
+	cut.count = cut.loop_end;
+	cut.loop_end = -1;
+	patch_envelope stopped = drawn;
+	patch_shape_to_envelope(&cut, &stopped);
+	files_draw_envelope(&files, 7, &drawn, &stopped);
+	clear();
+	sync(patch);
+	CHECK(stored_envelope(&program, &length) && length == 8 + 2 * (size_t)patch_envelope_length(&stopped) && patch_envelope_length(&stopped) == patch_envelope_length(&drawn) - released - 1,
+		"stop sends the ROM the envelope without its release and its loop end mark (%d of %d bytes)", patch_envelope_length(&stopped), patch_envelope_length(&drawn));
+	path_in(eef_path, sizeof(eef_path), temp_dir, "stopped.eef");
+	uint8_t eef[PATCH_ENVELOPE_STEPS + 2] = {0};
+	size_t eef_size = 0;
+	if (files_save(&files, eef_path, FILES_ENVELOPE, 7, message, sizeof(message))) {
+		FILE *f = fopen(eef_path, "rb");
+		eef_size = f ? fread(eef, 1, sizeof(eef), f) : 0;
+		if (f) {
+			fclose(f);
+		}
+	}
+	CHECK(eef_size == (size_t)patch_envelope_length(&stopped) + 1 && !memcmp(eef, stopped.steps, eef_size), "SAVE writes it as EEF, %zu bytes", eef_size);
+	const int stored_place = patch->model.channels[7][PARAM_PRESET] & (PATCH_BANK_SIZE - 1);
+	CHECK(files_store(&files, 7, message, sizeof(message)) && !memcmp(patch_bank_view(patch)->envelopes[stored_place].steps, stopped.steps, sizeof(stopped.steps)),
+		"STORE puts it into the bank: %s", message);
+	state = state_build(patch, &kept, &size);
+	memset(&opened, 0, sizeof(opened));
+	opened.tails[0].stop = true;
+	CHECK(state && state_read(patch, state, size, &opened, &knobs) && !opened.tails[0].stop && opened.tails[1].stop && opened.tails[1].count == released
+			&& !memcmp(opened.tails[1].steps, kept.tails[1].steps, (size_t)released) && !strcmp(opened.tails[1].name, drawn.name) && !opened.tails[2].stop,
+		"a project keeps the release while the loop stops");
+	// A project of 0.22.2, without block 11, opens as it did, with no release kept.
+	size_t at = sizeof(uint32_t), cut_size = size;
+	while (at + 8 <= cut_size) {
+		uint32_t type, block_length;
+		memcpy(&type, state + at, 4);
+		memcpy(&block_length, state + at + 4, 4);
+		if (type == 11) {
+			memmove(state + at, state + at + 8 + block_length, cut_size - at - 8 - block_length);
+			cut_size -= 8 + block_length;
+			break;
+		}
+		at += 8 + block_length;
+	}
+	memset(&opened, 0, sizeof(opened));
+	opened.tails[1].stop = true;
+	CHECK(cut_size < size && state_read(patch, state, cut_size, &opened, &knobs) && !opened.tails[1].stop && opened.loops[2].kept && opened.loops[3].kept
+			&& !memcmp(&patch->model.psg[1], &stopped, sizeof(stopped)),
+		"a project without block 11 opens with its envelopes and loops, no release kept");
+	free(state);
 	files_free(&files);
 }
 
@@ -1472,6 +1530,59 @@ static void test_arps(void)
 	CHECK(patch->model.arps[8].count == 0 && patch->model.arp_bases[8].count == 0, "a dropped EEF brings an empty row");
 	files_undo(&files, message, sizeof(message));
 
+	// Stage 22b (D55): a row switched off plays and compares as empty and keeps its steps. Bit 1 of
+	// the row's third byte holds it.
+	patch_arp chord_off = chord;
+	chord_off.off = 1;
+	CHECK(((const uint8_t *)&chord_off)[2] == 2 && patch_arp_same(&chord_off, &none) && !patch_arp_same(&chord_off, &chord) && patch_arp_played(&chord_off)->count == 0,
+		"the switch is bit 1 of the third byte (%d); an off row is the same as an empty one", ((const uint8_t *)&chord_off)[2]);
+	patch_arp cleaned = none;
+	cleaned.off = 1;
+	patch_arp_clean(&cleaned);
+	patch_arp spare = chord;
+	((uint8_t *)&spare)[2] = 0xFD;
+	patch_arp_clean(&spare);
+	CHECK(!cleaned.off && ((const uint8_t *)&spare)[2] == 0 && spare.count == 3, "an empty row is never off; a loop's row keeps neither a shadow nor the other bits");
+	// Channel 5 on place 31, which has no row: its own row switched off keeps it on the place's number.
+	set(patch, PRESET_ID(4), 30);
+	clear();
+	sync(patch);
+	files_draw_arp(&files, 4, &none, &chord_off);
+	clear();
+	sync(patch);
+	CHECK(patch->rom.programs[4] == 30 && sent_bytes == 0 && !patch_sound_changed(&patch->model, NULL, 4) && !files_can_store(&files, 4) && patch->model.arps[4].count == 3 && patch->model.arps[4].off,
+		"channel 5 with its row off stays on number 30 (%d), sends nothing (%d bytes), no * and nothing to STORE; the steps are kept", patch->rom.programs[4], (int)sent_bytes);
+	// Switched on: its own row takes a service number with it; undo switches it off again.
+	files_draw_arp(&files, 4, &chord_off, &chord);
+	clear();
+	sync(patch);
+	const int on_service = last_program(4);
+	row = sent_row(0x02, on_service, &length);
+	CHECK(on_service >= 116 && row && length == 12 && row[8] == 64 && row[9] == 68 && row[10] == 71 && patch_sound_changed(&patch->model, NULL, 4), "switched on, the row goes under service number %d before the next note", on_service);
+	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.arps[4], &chord_off, sizeof(chord_off)), "one undo switches it off again with its steps");
+	clear();
+	sync(patch);
+	CHECK(patch->rom.programs[4] == on_service && patch->rom.arps[0][on_service].count == 0, "and the service number it stays on gets 0 steps");
+	// On place 11, whose row is the chord: switched off, it takes a service number with 0 steps.
+	set(patch, PRESET_ID(4), 10);
+	clear();
+	sync(patch);
+	files_draw_arp(&files, 4, &chord, &chord_off);
+	clear();
+	sync(patch);
+	const int off_service = last_program(4);
+	row = sent_row(0x02, off_service, &length);
+	CHECK(off_service >= 116 && (!row || (length == 9 && row[7] == 0x7F)) && patch->rom.arps[0][off_service].count == 0 && patch_sound_changed(&patch->model, NULL, 4) && files_can_store(&files, 4),
+		"switched off on a place with a row: service number %d, which holds 0 steps, the * on", off_service);
+	// STORE takes the switch into the place: the channel is back on 10, which now holds no steps.
+	CHECK(files_store(&files, 4, message, sizeof(message)) && patch->bank.place_arps[10].off && patch->bank.place_arps[10].count == 3, "STORE puts the row off into place 11: %s", message);
+	clear();
+	sync(patch);
+	row = sent_row(0x02, 10, &length);
+	CHECK(last_program(4) == 10 && row && length == 9 && row[7] == 0x7F && !patch_sound_changed(&patch->model, NULL, 4), "the channel is on number 10 again, which gets 0 steps");
+	CHECK(files_undo(&files, message, sizeof(message)) && !patch->bank.place_arps[10].off && patch->model.arps[4].off && patch->model.arps[4].count == 3,
+		"undo of STORE: the place's row is on again, the channel's stays off");
+
 	// A project, a bank file and a snapshot keep the rows and a loop's shadow.
 	patch_arp shadowed = make_arp(4, -1, shifts);
 	shadowed.shadow_kept = 1;
@@ -1481,8 +1592,14 @@ static void test_arps(void)
 	patch_load_place(patch, 50, &place, &shadowed);
 	patch_envelope envelope = patch_bank_view(patch)->envelopes[60];
 	patch_load_envelope_place(patch, 60, &envelope, &longest);
+	// Stage 22b: rows switched off, on channel 5 (above), on place 52 and on PSG place 62.
+	place = patch_bank_view(patch)->places[51];
+	patch_load_place(patch, 51, &place, &chord_off);
+	envelope = patch_bank_view(patch)->envelopes[61];
+	patch_load_envelope_place(patch, 61, &envelope, &chord_off);
 	patch_take_incoming(patch);
 	CHECK(patch->model.arps[3].shadow_kept && patch->model.arps[3].shadow == 2 && patch->bank.place_arps[50].shadow_kept, "a row keeps its loop's shadow");
+	CHECK(patch->model.arps[4].off && patch->bank.place_arps[51].off && patch->bank.envelope_arps[61].off && !patch->model.arps[3].off, "rows switched off on a channel and two places");
 	static patch_values saved;
 	static patch_bank saved_bank;
 	saved = patch->model;
@@ -1497,6 +1614,9 @@ static void test_arps(void)
 		&& same_rows(other.model.arp_bases, saved.arp_bases, PATCH_NUM_CHANNELS) && same_rows(other.bank.place_arps, saved_bank.place_arps, PATCH_BANK_SIZE)
 		&& same_rows(other.bank.envelope_arps, saved_bank.envelope_arps, PATCH_BANK_SIZE) && other.model.arps[3].shadow_kept && other.model.arps[3].shadow == 2,
 		"a project reads back with every row and the shadow");
+	// The third byte as 0.22 wrote it (1 for a kept shadow) reads as a row switched on.
+	CHECK(other.model.arps[4].off && other.model.arps[4].count == 3 && other.bank.place_arps[51].off && other.bank.envelope_arps[61].off && !other.model.arps[3].off && !other.model.arps[5].off,
+		"block 10 keeps the switch, its length the same; a row of 0.22 is on");
 	size_t old_size;
 	uint8_t *old = without_block(state, size, 10, &old_size);
 	patch_init(&other);
@@ -1515,9 +1635,11 @@ static void test_arps(void)
 	CHECK(files_open(&files, bank_path, 0, message, sizeof(message)) && same_rows(patch->bank.place_arps, saved_bank.place_arps, PATCH_BANK_SIZE)
 		&& same_rows(patch->bank.envelope_arps, saved_bank.envelope_arps, PATCH_BANK_SIZE) && patch_arp_same(&patch->model.arps[5], &octave) && !patch->model.arps[3].shadow_kept,
 		"an .mdbank brings the places' rows, not the channels' own; a channel on place 1 follows it: %s", message);
+	CHECK(patch->bank.place_arps[51].off && patch->bank.envelope_arps[61].off && patch->bank.place_arps[51].count == 3 && !patch->model.arps[4].off, "the .mdbank keeps the places' switches");
 	patch_init(patch);
 	CHECK(files_open(&files, snap_path, 0, message, sizeof(message)) && same_rows(patch->model.arps, saved.arps, PATCH_NUM_CHANNELS) && same_rows(patch->model.arp_bases, saved.arp_bases, PATCH_NUM_CHANNELS)
 		&& same_rows(patch->bank.place_arps, saved_bank.place_arps, PATCH_BANK_SIZE), "an .mdsnap brings every row: %s", message);
+	CHECK(patch->model.arps[4].off && patch->model.arps[4].count == 3 && patch->bank.place_arps[51].off, "the .mdsnap keeps the switches");
 	files_free(&files);
 }
 
@@ -1569,9 +1691,20 @@ static void walk_tick(rom_walk *w)
 	walk_apply(w);
 }
 
+// As midi_psg_note_off since stage 22b (D54): a loop with steps after its end releases, in its
+// intro too; anything else stops at once.
 static void walk_note_off(rom_walk *w)
 {
-	if (w->loop >= 0) {
+	bool looped = false, release = false;
+	for (int i = 0; w->steps[i] != PATCH_EEF_END; i++) {
+		if (w->steps[i] == PATCH_EEF_LOOP_START) {
+			looped = true;
+		} else if (w->steps[i] == PATCH_EEF_LOOP_END && looped) {
+			release = w->steps[i + 1] != PATCH_EEF_END;
+			break;
+		}
+	}
+	if (release) {
 		w->released = true;
 	} else {
 		w->on = false;
@@ -1645,7 +1778,10 @@ static void test_cursor(void)
 	patch_shape organ = {{0}, 11, 3, 4};
 	CHECK(patch_shape_position(&organ, 2, -1) == 2 && patch_shape_position(&organ, 7, -1) == 3 && patch_shape_position(&organ, 7, 2) == 5 && patch_shape_position(&organ, 7, 8) == -1,
 		"PSG Organ: frame 3, round frame 4 while held, on after Note Off, silent past the end");
-	CHECK(patch_shape_position(&organ, 2, 0) == -1, "Note Off before the loop began is silent at once, as the ROM does");
+	// Stage 22b (D54): a loop with a release releases in its intro too; one without stops at once.
+	patch_shape no_release = {{0}, 11, 3, -1};
+	CHECK(patch_shape_position(&organ, 2, 0) == 2 && patch_shape_position(&organ, 2, 3) == 5 && patch_shape_position(&no_release, 7, 0) == -1 && patch_shape_position(&no_release, 2, 0) == -1,
+		"Note Off in the intro plays on through the loop once and the release; a loop without a release is silent at once, as the ROM does");
 }
 
 // Stage 11: the FM graph's envelope, against hardware-specialist's facts about the chip.
@@ -1972,23 +2108,28 @@ static void test_dac_marks(void)
 		tail = abs(s->bytes[i]) > tail ? abs(s->bytes[i]) : tail;
 	}
 	CHECK(s->sample.length == rom_image_cost(m.length) && tail <= 8, "with a release, FADE ends it (last 3 bytes at most %d)", tail);
-	// Stage 22a (D53): with ONE-SHOT too, the record has all three flags, the same marks and bytes.
+	// Stage 22b (D54): with stop the bytes end on the loop's last block, the release isn't written,
+	// the record is the one of a loop ending at END; the marks stay in the edit and the project.
 	{
-		dac_sample *both = dac_copy(s);
+		dac_sample *stopped = dac_copy(s);
 		dac_edit with = edit;
-		with.one_shot = true;
-		const bool made = dac_prepare(both, &with);
-		CHECK(made && both->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT | ROM_SAMPLE_MARKS) && both->sample.loop_start == 6 && both->sample.loop_end == 20
-				&& both->sample.length == s->sample.length,
-			"LOOP with ONE-SHOT and marks: flags 0x%02x, marks 6 and 20, %u bytes as without ONE-SHOT", both->sample.flags, both->sample.length);
+		with.stop = true;
+		dac_marks sm;
+		dac_marks_of(stopped, &with, &sm);
+		const bool made = dac_prepare(stopped, &with);
+		CHECK(made && sm.tail && !sm.release && stopped->sample.length == 20 * ROM_SAMPLE_BLOCK && stopped->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS)
+				&& stopped->sample.loop_start == 6 && stopped->sample.loop_end == 20 && stopped->sample.length < s->sample.length && sm.frame_end == sm.frame_loop_end
+				&& sm.frame_tail_end == m.frame_end && dac_cost(stopped, &with) < dac_cost(s, &edit),
+			"stop: %u bytes, the loop's 20 blocks without the release of %u, flags 0x%02x, marks 6 and 20 kept", stopped->sample.length, s->sample.length - stopped->sample.length, stopped->sample.flags);
+		CHECK(!dac_same_edit(&with, &edit), "stop is part of the edit");
 		dac_set one = {0}, back = {0};
-		dac_put(&one, 40, both);
+		dac_put(&one, 40, stopped);
 		const size_t one_size = dac_block_size(&one);
 		uint8_t *one_block = malloc(one_size);
 		dac_block_write(&one, one_block);
-		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[40]->edit.loop && back.notes[40]->edit.one_shot
-				&& back.notes[40]->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT | ROM_SAMPLE_MARKS),
-			"and the project reads it back with flags 0x07");
+		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[40]->edit.loop && back.notes[40]->edit.stop && !back.notes[40]->edit.one_shot
+				&& back.notes[40]->edit.loop_end == with.loop_end && back.notes[40]->sample.length == 20 * ROM_SAMPLE_BLOCK && dac_same(&one, &back),
+			"and the project reads stop back with its marks");
 		free(one_block);
 		dac_clear(&one);
 		dac_clear(&back);
@@ -2238,9 +2379,10 @@ static void test_dac_edit(void)
 		CHECK(dac_prepare(s, &loop) && marks.too_short && s->sample.flags == 0 && marks.frame_end == loop.end,
 			"LOOP under one block: plays once, no flag");
 		loop.one_shot = true;
-		CHECK(dac_prepare(s, &loop) && s->sample.flags == ROM_SAMPLE_ONE_SHOT, "LOOP under one block with ONE-SHOT: only ONE-SHOT (stage 22a)");
+		CHECK(dac_prepare(s, &loop) && s->sample.flags == ROM_SAMPLE_ONE_SHOT, "LOOP under one block with ONE-SHOT: only ONE-SHOT");
 		loop.end = 22050;
-		CHECK(dac_prepare(s, &loop) && s->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT), "LOOP with ONE-SHOT: both flags");
+		// Stage 22b (D54 cancels D53): the two never go together in the record.
+		CHECK(dac_prepare(s, &loop) && s->sample.flags == ROM_SAMPLE_LOOP, "an edit with LOOP and ONE-SHOT gets LOOP alone (0x%02x)", s->sample.flags);
 		loop.one_shot = false;
 		dac_set one = {0}, back = {0};
 		loop.end = 22050;
@@ -2257,19 +2399,49 @@ static void test_dac_edit(void)
 		one_block[mode_at] = 1;
 		CHECK(dac_block_read(&back, one_block, one_size) && !back.notes[45]->edit.loop && back.notes[45]->edit.one_shot && back.notes[45]->sample.flags == ROM_SAMPLE_ONE_SHOT,
 			"mode 1 reads as one-shot with its flag alone, as before stage 18");
-		// Stage 22a (D53): LOOP with ONE-SHOT, both flags in the record, mode 3 in the head.
-		one_block[mode_at] = 3;
-		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[45]->edit.loop && back.notes[45]->edit.one_shot
-				&& back.notes[45]->sample.flags == (ROM_SAMPLE_LOOP | ROM_SAMPLE_ONE_SHOT),
-			"mode 3 reads as LOOP with ONE-SHOT, both flags in the record (%u)", back.notes[45]->sample.flags);
+		// Stage 22b (D54): the modes as each reads and writes back. 0-2 as in 0.22; 3, LOOP with
+		// ONE-SHOT of 0.22.2, is LOOP with its release; 4 is LOOP that Note Off stops.
 		{
-			dac_set again = {0};
-			dac_put(&again, 45, dac_copy(back.notes[45]));
-			uint8_t *again_block = malloc(dac_block_size(&again));
-			dac_block_write(&again, again_block);
-			CHECK(again_block[mode_at] == 3, "and writes back as mode 3");
-			free(again_block);
-			dac_clear(&again);
+			static const struct {
+				uint8_t mode, written, flags;
+				bool loop, one_shot, stop;
+			} MODES[] = {
+				{0, 0, 0, false, false, false},
+				{1, 1, ROM_SAMPLE_ONE_SHOT, false, true, false},
+				{2, 2, ROM_SAMPLE_LOOP, true, false, false},
+				{3, 2, ROM_SAMPLE_LOOP, true, false, false},
+				{4, 4, ROM_SAMPLE_LOOP, true, false, true},
+			};
+			for (size_t i = 0; i < sizeof(MODES) / sizeof(*MODES); i++) {
+				one_block[mode_at] = MODES[i].mode;
+				const bool read_back = dac_block_read(&back, one_block, one_size);
+				const dac_edit *e = read_back ? &back.notes[45]->edit : NULL;
+				uint8_t written = 255;
+				if (read_back) {
+					uint8_t *again_block = malloc(dac_block_size(&back));
+					dac_block_write(&back, again_block);
+					written = again_block[mode_at];
+					// 0-2 give what 0.22 prepared from the same edit: bytes, flags and record.
+					if (MODES[i].mode <= 2) {
+						dac_sample *expected = dac_copy(s);
+						dac_edit as_022 = loop;
+						as_022.loop = MODES[i].loop;
+						as_022.one_shot = MODES[i].one_shot;
+						const bool same = dac_prepare(expected, &as_022) && expected->sample.length == back.notes[45]->sample.length
+							&& expected->sample.flags == back.notes[45]->sample.flags && !memcmp(expected->bytes, back.notes[45]->bytes, expected->sample.length);
+						CHECK(same, "mode %u prepares the bytes and record of 0.22", MODES[i].mode);
+						dac_free(expected);
+					}
+					if (MODES[i].mode == 2) {
+						CHECK(!memcmp(again_block, one_block, one_size), "mode 2 writes back the very block");
+					}
+					free(again_block);
+				}
+				CHECK(e && e->loop == MODES[i].loop && e->one_shot == MODES[i].one_shot && e->stop == MODES[i].stop && back.notes[45]->sample.flags == MODES[i].flags
+						&& written == MODES[i].written,
+					"mode %u reads as loop %d, one-shot %d, stop %d, flags 0x%02x, and is written as %u", MODES[i].mode, MODES[i].loop, MODES[i].one_shot, MODES[i].stop, MODES[i].flags,
+					written);
+			}
 		}
 		free(one_block);
 		dac_clear(&one);
@@ -2329,9 +2501,9 @@ static void test_dac_edit(void)
 	edit = set.notes[45]->edit;
 	edit.pitch = -1200;
 	const uint32_t version = set.version;
-	CHECK(files_edit_sample(&files, 45, &edit, message, sizeof(message)) && set.notes[45]->edit.pitch == -1200 && set.version != version, "an edit goes in: %s", message);
+	CHECK(files_edit_sample(&files, 45, &edit, false, message, sizeof(message)) && set.notes[45]->edit.pitch == -1200 && set.version != version, "an edit goes in: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[45]->edit.pitch == 300, "undo puts the edit before back");
-	CHECK(!files_edit_sample(&files, 100, &edit, message, sizeof(message)), "an empty note has nothing to edit");
+	CHECK(!files_edit_sample(&files, 100, &edit, false, message, sizeof(message)), "an empty note has nothing to edit");
 	files_free(&files);
 	dac_clear(&set);
 	dac_clear(&read);
@@ -2385,7 +2557,7 @@ static void test_dac_moves(void)
 	rom_sample kick;
 	rom_image_sample(rom, rom_size, 34, &kick);
 	dac_edit louder = {.start = 0, .end = kick.length, .gain = 30, .rate = (int8_t)kick.rate};
-	CHECK(!set.notes[34] && files_edit_sample(&files, 34, &louder, message, sizeof(message)) && set.notes[34] && set.notes[34]->edit.gain == 30
+	CHECK(!set.notes[34] && files_edit_sample(&files, 34, &louder, false, message, sizeof(message)) && set.notes[34] && set.notes[34]->edit.gain == 30
 		&& !strcmp(set.notes[34]->name, "StdKick"), "a ROM sample changed becomes the project's: %s", message);
 	CHECK(files_reset_sample(&files, 34, message, sizeof(message)) && !set.notes[34] && !set.removed[34], "and CLEAR gives the ROM's back");
 	files_free(&files);

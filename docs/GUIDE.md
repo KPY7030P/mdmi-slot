@@ -114,7 +114,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   reload between the two writes gives one period off by up to 3 ticks, accepted. CC 80, CC 81, a DAC switch
   and All Notes Off end a CSM note by the mode too; MIDI 11-13 write nothing; 0x26 is never written. Velocity
   as in One Note. `reg_test` measures in BlastEm: notes 45-71 within 5.4 cents of the note, note 84 -3.4,
-  96 +30.9; timer A's clock 53267.0 Hz. A CSM voice needs AR 31 (README). Every 0x27 comes from one shadow
+  96 +30.9; timer A's clock 53267.0 Hz. AR 31 in CSM (stage 22b, D57): while `global.specialMode && csm`,
+  `synth.c` writes AR 31 with the voice's RS to channel 3's four operators (`effective_attack_rate`, as
+  `effective_total_level` puts the volume into TL); `synth_set_csm` and `synth_set_special_mode` rewrite the
+  four AR registers when that condition changes, a note writes none. The stored voice, the model and
+  `synth_extract_preset` keep the voice's AR; a raw SysEx `08` to 0x50-0x5E stays raw. Every 0x27 comes from one shadow
   in `synth.c`: bits 7-6 and 0 are the ROM's mode (Ch3 Special off 00; Ops and One Note 01; CSM 01 without
   a note, 10 with timer A on with one), bits 1-3 only a raw SysEx `08` write of 0x27 sets, and that write's
   bits 4-5 go once; its bits 7-6 and 0 are not taken. A driver load (DAC on or off) writes 0x27 from the
@@ -124,6 +128,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   alone over a held one with Porta On): it only moves the pitch, no key-on comes to settle a waiting owner;
   the voice is the same channel's already, so nothing sounded wrong, but `reg_test` counted the owner as
   missed. Not checked on a console; the chip's TL in CSM differs from BlastEm's (stage 26).
+- Note stack (stage 22b): `midi_note_off` reads the next note with `note_priority_peek` and leaves it on the
+  stack, so the stack holds exactly the held keys. Upstream MDMI popped it and pushed it back only when the
+  raised key was the sounding one with Porta On: raising another key lost the sounding note, and the next note
+  of a Porta legato chain struck instead of gliding. Without Porta the raised top key strikes the one below,
+  as before.
 - LFO Reset (id 11, CC 82: off, or MIDI 1-6 at the start of each seventh, value * 7 / 128 back): our ROM
   writes 0x22 without bit 3 and right after it 0x22 from its shadow before the 0x28 of every new attack on
   that channel's FM voices (a chord's note on another voice and a raised note of the stack too), not for
@@ -160,10 +169,13 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
   last 4 ms), ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads) and LOOP (stage 18: it repeats
   until Note Off, record flag 0x01 for the SGDK driver's own loop; the length is cut to whole 256-byte
-  blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP with ONE-SHOT
-  (stage 22a, D53) loops past Note Off: both record flags, the ROM's release returns on ONE-SHOT first; the
-  tail stays in the image, drawn dim, and FADE is unused. The project's head byte is 0 cut, 1 one-shot,
-  2 loop, 3 loop with one-shot (0.22 reads 3 as one-shot). A WAV dropped on the open
+  blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP and ONE-SHOT
+  exclude each other (stage 18; 22a's loop past Note Off, D53, is cancelled by D54). `dac_edit.stop`
+  (stage 22b, D54): Note Off stops a loop that has a release; `dac_marks_of` then ends the bytes on the
+  loop's last block (`tail` says a release exists, `release` that it plays, `frame_tail_end` where it
+  ends), so the image is the one of a loop ending at END, which the ROM already cuts at Note Off; the marks
+  stay. Switching LOOP or ONE-SHOT drops stop. The project's head byte is 0 cut, 1 one-shot, 2 loop with
+  its release, 4 loop that stops; 3 (0.22.2's loop with one-shot) reads as 2. A WAV dropped on the open
   note's wave goes to that note. Loop marks (stage 18b, `docs/research/drv-pcm-loop-marks.md`): a row
   under the trim strip has the loop's own tabs; `dac_marks_of` snaps them to blocks from START, at least
   one block, and an intro only when start to loop end spans 5, 4, 3, 3, 2, 2 blocks by rate (the ROM moves
@@ -175,8 +187,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   (`pcm_driver.c`, `midi_dac.c`): start to loop end with the loop flag, then in `midi_tick` once
   STATUS.0 says the driver copied them, the loop alone; Note Off clears the loop flag and moves IWAVLEN to
   the release's end, checks it 600 us later and puts it right once. Without a release Note Off cuts. A
-  press on the loop's body, here and in the PSG editor, changes nothing until it moves 3 px (the loop
-  moves with its length) or is let go (a click: off, or on from the shadow). Nothing changes while the
+  press on the loop's body or a tab, here and in the PSG editor, changes nothing until it moves 3 px (the
+  loop or the tab moves) or is let go (a click: the body off, or on from the shadow; the end tab or the
+  row after it, `DACC_LOOP_TAIL` / `ENV_TAIL`, release or stop, stage 22b). A double click on the DAC's
+  end tab undoes its click and drops the release, joined to the click's undo step
+  (`files_edit_sample(join)`). Nothing changes while the
   mouse is down; on mouse up the sample is prepared once and goes into the running core. A double click puts a
   value back. The project keeps the file's sound (mono, 16 bits, up to 16 MB in all), the settings and
   the ROM's bytes, so an opened project plays the same bytes and the trim can still go back.
@@ -191,7 +206,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   (`files_store`) writes the channel's sound and row into its place, one undo step. Project block 10
   holds all rows; `.mdbank` the places', `.mdsnap` all. The row is dim (`patch_arp_works`) on channel 3
   in Ch3 Special with Ops (in One Note the ROM steps it and moves all four operators), channel 6 with the DAC
-  and channel 10 off Tone 3.
+  and channel 10 off Tone 3. Stage 22b (D55): `patch_arp.off`, bit 1 of the row's third byte (bit 0 is the
+  shadow), switches a row off without erasing it. `patch_arp_played` gives an off row as an empty one, and
+  `patch_arp_same` and `sync_arp` see only that, so an off row compares as empty for the place's number, `*`
+  and STORE, and the ROM gets 0 steps. `patch_arp_clean` keeps `off` only with steps. The flag travels with
+  the row everywhere it goes; in the window it is `ARP_ON_OFF` at the row's right, one undo step.
 - PSG envelopes (D28): the bank's second list, 128 places, at first the ROM's two envelopes (Square
   Lead on 81, 90 and 100, Plain elsewhere). On a PSG channel Preset, CC 3 and a clip's Pgm choose from
   it, and the BANK page lists it while a channel 7-10 is selected. An EEF works there as a TFI does on
@@ -209,7 +228,13 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   where it was, and a click on the shadow turns it on there again. An EEF has no switched-off
   loop, so the shadow (`state_loop`) is part of the view and the project's block 7 (D30); it goes
   when the editor sees the channel's envelope under another name. Without a shadow the switch at the strip's start
-  loops the whole envelope. LOOP and RELEASE name the loop and the tail after it. The number at the axis' end is the length,
+  loops the whole envelope. LOOP and RELEASE name the loop and the tail after it. With STOP (stage 22b,
+  D54) the channel's envelope ends at the loop's end; the release lives in the view as `state_tail`,
+  project block 11 (stop, the steps, the envelope's name), and goes as the loop's shadow does. The editor's
+  copy (`channel_shape`, `env_shape`) holds the release after the loop, drawn dim; `envelope_hand` hands
+  the model what plays (`played_shape`), so the ROM, EEF, the bank and STORE get it. The loop switched off
+  drops stop: its steps play as the envelope's. The ROM (`midi_psg_note_off`) releases a loop with steps
+  after its end also from the intro and stops any other note at once; All Notes Off stops at once. The number at the axis' end is the length,
   set by a vertical drag, 124 bytes at most with the loop marks (amber MAX at the limit),
   and the columns share the lane, which reaches the page's right edge at every length: 3 or 4 px at 124 frames, wider when shorter (0.8.1). A drawing is the channel's
   own envelope, as a dropped EEF: the Preset and the bank stay, the next preset step wipes it, SAVE

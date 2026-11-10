@@ -148,7 +148,7 @@ index a263bad..5fda09c 100644
 +WAV pcm_Triangle "samples/Triangle.wav" PCM4 15500
 +WAV pcm_VibraSlap "samples/VibraSlap.wav" PCM4 15500
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..fad5a59 100644
+index 5145b6a..fc1880c 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -71,7 +71,12 @@ static const u16 portaTimeToInterval[128]
@@ -285,7 +285,7 @@ index 5145b6a..fad5a59 100644
      if (is_single_voice_channel(midiChan, false)) {
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
-@@ -483,6 +564,17 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,19 +564,37 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -303,7 +303,12 @@ index 5145b6a..fad5a59 100644
      MidiChannel* midiChannel = &midiChannels[chan];
      note_priority_remove(&midiChannel->notePriority, pitch);
  
-@@ -491,11 +583,16 @@ void midi_note_off(u8 chan, u8 pitch)
+-    u8 nextMostRecentPitch = note_priority_pop(&midiChannel->notePriority);
++    // MDMI plugin fork, stage 22b: read the top without taking it, so the stack keeps exactly the
++    // held keys. A pop here lost the sounding note whenever another key was raised, and the next
++    // note of a PORTA legato chain then struck instead of gliding.
++    u8 nextMostRecentPitch = note_priority_peek(&midiChannel->notePriority);
+     bool handledRetrigger = false;
      bool singleVoice = is_single_voice_channel(chan, true);
  
      FOREACH_DEV_CHAN_WITH_MIDI(chan, devChan) {
@@ -311,7 +316,7 @@ index 5145b6a..fad5a59 100644
 +        if (devChan->ops != &DAC_VTable && isChannelPlayingNote(devChan, pitch)) {
              if (!handledRetrigger && singleVoice && nextMostRecentPitch != 0) {
                  if (midiChannel->portamento) {
-                     note_priority_push(&midiChannel->notePriority, nextMostRecentPitch);
+-                    note_priority_push(&midiChannel->notePriority, nextMostRecentPitch);
                      devChan->glideTargetPitch = nextMostRecentPitch;
 +                } else if (devChan->ops == &SpecialMode_VTable) {
 +                    // Stage 21: an operator takes the raised key's pitch, its key stays on.
@@ -321,7 +326,7 @@ index 5145b6a..fad5a59 100644
                  } else {
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
-@@ -606,9 +703,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +705,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -334,7 +339,7 @@ index 5145b6a..fad5a59 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +749,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +751,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -413,7 +418,7 @@ index 5145b6a..fad5a59 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -841,7 +1006,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1008,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -422,7 +427,7 @@ index 5145b6a..fad5a59 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1163,85 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1165,85 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -509,7 +514,7 @@ index 5145b6a..fad5a59 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1247,11 +1487,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1489,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -541,7 +546,7 @@ index 5145b6a..fad5a59 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1571,12 @@ void midi_reset(void)
+@@ -1311,11 +1573,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -556,7 +561,7 @@ index 5145b6a..fad5a59 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1600,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1602,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
@@ -1319,7 +1324,7 @@ index c1b1091..b1e782e 100644
  void midi_fm_sm_program(u8 chan, u8 program);
 -void midi_fm_sm_all_notes_off(u8 chan);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..673d14d 100644
+index 82a5655..60d50cb 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
 @@ -11,6 +11,28 @@
@@ -1351,7 +1356,15 @@ index 82a5655..673d14d 100644
  
  static const u16 TONES_NTSC[NUM_TONES] = { 1016, 959, 905, 855, 807, 761, 719, 678, 640, 604, 570,
      538, 508, 479, 452, 427, 403, 380, 359, 339, 320, 302, 285, 269, 254, 239, 226, 213, 201, 190,
-@@ -48,7 +70,16 @@ typedef struct MidiPsgChannel {
+@@ -42,13 +64,24 @@ typedef struct MidiPsgChannel {
+     u8 envelope;
+     const u8* envelopeStep;
+     const u8* envelopeLoopStart;
++    // MDMI plugin fork, stage 22b (D54): the first step of the envelope the note plays.
++    const u8* envelopeFirst;
+     bool noteReleased;
+ } MidiPsgChannel;
+ 
  static u8 userDefinedEnvelope[256];
  static u8* userDefinedEnvelopePtr;
  static const u8** envelopes;
@@ -1368,7 +1381,7 @@ index 82a5655..673d14d 100644
  
  static u16 tone_for_midi_key(u8 midiKey);
  static MidiPsgChannel* psg_channel(u8 psgChan);
-@@ -67,6 +98,9 @@ void midi_psg_init(const u8** defaultEnvelopes)
+@@ -67,6 +100,9 @@ void midi_psg_init(const u8** defaultEnvelopes)
  void midi_psg_reset(void)
  {
      userDefinedEnvelopePtr = NULL;
@@ -1378,7 +1391,7 @@ index 82a5655..673d14d 100644
      for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
          MidiPsgChannel* psgChan = psg_channel(chan);
          psgChan->attenuation = PSG_ATTENUATION_SILENCE;
-@@ -76,7 +110,7 @@ void midi_psg_reset(void)
+@@ -76,7 +112,7 @@ void midi_psg_reset(void)
          psgChan->velocity = MAX_MIDI_VOLUME;
          psgChan->envelope = 0;
          psgChan->noteReleased = false;
@@ -1387,7 +1400,7 @@ index 82a5655..673d14d 100644
          psgChan->pitch = 0;
          psgChan->cents = 0;
          init_envelope(psgChan);
-@@ -85,8 +119,18 @@ void midi_psg_reset(void)
+@@ -85,11 +121,37 @@ void midi_psg_reset(void)
  
  static void init_envelope(MidiPsgChannel* psgChan)
  {
@@ -1405,10 +1418,29 @@ index 82a5655..673d14d 100644
 +        psgChan->envelopeStep
 +            = userDefinedEnvelopePtr != NULL ? userDefinedEnvelopePtr : envelopes[psgChan->envelope];
 +    }
++    psgChan->envelopeFirst = psgChan->envelopeStep;
      psgChan->envelopeLoopStart = NULL;
  }
  
-@@ -116,9 +160,29 @@ static u16 tone_from_pitch_cents(PitchCents pc)
++// MDMI plugin fork, stage 22b (D54): whether an envelope has a loop with steps after its end, the
++// release that Note Off plays.
++static bool has_release(const u8* step)
++{
++    bool looped = false;
++    for (; *step != EEF_END; step++) {
++        if (*step == EEF_LOOP_START) {
++            looped = true;
++        } else if (*step == EEF_LOOP_END && looped) {
++            return step[1] != EEF_END;
++        }
++    }
++    return false;
++}
++
+ static u8 effective_attenuation(MidiPsgChannel* psgChan)
+ {
+     u8 att = ATTENUATIONS[(psgChan->volume * psgChan->velocity) / MAX_MIDI_VOLUME];
+@@ -116,9 +178,29 @@ static u16 tone_from_pitch_cents(PitchCents pc)
      return tone + (((tone_for_midi_key(pc.pitch + 1) - tone) * pc.cents) / 100);
  }
  
@@ -1438,7 +1470,7 @@ index 82a5655..673d14d 100644
      u8 shift = *psgChan->envelopeStep >> 4;
      switch (shift) {
      case 0:
-@@ -169,16 +233,52 @@ static u16 envelope_tone(MidiPsgChannel* psgChan)
+@@ -169,16 +251,52 @@ static u16 envelope_tone(MidiPsgChannel* psgChan)
      return tone_from_pitch_cents(pc);
  }
  
@@ -1492,7 +1524,7 @@ index 82a5655..673d14d 100644
      if (newAtt != psgChan->attenuation) {
          PSG_setEnvelope(psgChan->chanNum, newAtt);
          psgChan->attenuation = newAtt;
-@@ -209,12 +309,41 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
+@@ -209,12 +327,41 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
      apply_attenuation(psgChan, effective_attenuation(psgChan));
  }
  
@@ -1535,7 +1567,34 @@ index 82a5655..673d14d 100644
      psgChan->noteReleased = false;
      psgChan->pitch = pitch;
      psgChan->cents = cents;
-@@ -293,6 +422,15 @@ void midi_psg_load_envelope(const u8* eef)
+@@ -228,7 +375,9 @@ void midi_psg_note_off(u8 chan, u8 pitch)
+ {
+     MidiPsgChannel* psgChan = psg_channel(chan);
+     if (psgChan->noteOn) {
+-        if (psgChan->envelopeLoopStart != NULL) {
++        // MDMI plugin fork, stage 22b (D54): a loop with a release releases even in its intro: the
++        // intro's rest, the loop once, the release. A loop with none, or no loop, stops at once.
++        if (has_release(psgChan->envelopeFirst)) {
+             psgChan->noteReleased = true;
+         } else {
+             note_off(psgChan);
+@@ -236,9 +385,14 @@ void midi_psg_note_off(u8 chan, u8 pitch)
+     }
+ }
+ 
++// MDMI plugin fork, stage 22b (D54): the panic stops the note at once, as the DAC's does: a release
++// would play on after the stop button now that a loop with one releases from its intro too.
+ void midi_psg_all_notes_off(u8 chan)
+ {
+-    midi_psg_note_off(chan, psg_channel(chan)->pitch);
++    MidiPsgChannel* psgChan = psg_channel(chan);
++    if (psgChan->noteOn) {
++        note_off(psgChan);
++    }
+ }
+ 
+ void midi_psg_channel_volume(u8 chan, u8 volume)
+@@ -293,6 +447,15 @@ void midi_psg_load_envelope(const u8* eef)
      userDefinedEnvelopePtr = userDefinedEnvelope;
  }
  
@@ -1551,7 +1610,7 @@ index 82a5655..673d14d 100644
  static u16 tone_for_midi_key(u8 midiKey)
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
-@@ -310,6 +448,53 @@ static MidiPsgChannel* psg_channel(u8 chan)
+@@ -310,6 +473,53 @@ static MidiPsgChannel* psg_channel(u8 chan)
      return &psgChannels[chan];
  }
  
@@ -1635,6 +1694,39 @@ index e5bb02e..dcd7bc6 100644
 +void midi_psg_noise_type(u8 white);
 +void midi_psg_noise_rate(u8 rate);
 +bool midi_psg_plays_key(u8 chan);
+diff --git a/src/note_priority.c b/src/note_priority.c
+index e5b3c90..d3154d7 100644
+--- a/src/note_priority.c
++++ b/src/note_priority.c
+@@ -25,6 +25,16 @@ u8 note_priority_pop(NotePriorityStack* notePriority)
+     return notePriority->slot[notePriority->top--];
+ }
+ 
++// MDMI plugin fork, stage 22b: the most recent pitch, left on the stack; 0 when it is empty.
++u8 note_priority_peek(NotePriorityStack* notePriority)
++{
++    if (notePriority->top == -1) {
++        return 0;
++    }
++
++    return notePriority->slot[notePriority->top];
++}
++
+ void note_priority_remove(NotePriorityStack* notePriority, u8 pitch)
+ {
+     s16 writeCursor = -1;
+diff --git a/src/note_priority.h b/src/note_priority.h
+index 56d03c4..db0dfba 100644
+--- a/src/note_priority.h
++++ b/src/note_priority.h
+@@ -11,6 +11,7 @@ typedef struct NotePriorityStack {
+ void note_priority_init(NotePriorityStack* notePriority);
+ void note_priority_push(NotePriorityStack* notePriority, u8 pitch);
+ u8 note_priority_pop(NotePriorityStack* notePriority);
++u8 note_priority_peek(NotePriorityStack* notePriority);
+ void note_priority_remove(NotePriorityStack* notePriority, u8 pitch);
+ bool note_priority_isFull(NotePriorityStack* notePriority);
+ u8 note_priority_count(NotePriorityStack* notePriority);
 diff --git a/src/pcm_driver.c b/src/pcm_driver.c
 new file mode 100644
 index 0000000..64e2787
@@ -1895,7 +1987,7 @@ index df535e9..a6089c0 100644
 +
  extern const PcmSample* percussionPcmSample[128];
 diff --git a/src/synth.c b/src/synth.c
-index eec5dcc..b973383 100644
+index eec5dcc..b2b37cc 100644
 --- a/src/synth.c
 +++ b/src/synth.c
 @@ -5,6 +5,21 @@
@@ -1920,7 +2012,7 @@ index eec5dcc..b973383 100644
  
  static ParameterUpdatedCallback* parameterUpdatedCallback = NULL;
  
-@@ -33,7 +48,7 @@ static void write_stereo_ams_fms(u8 channel);
+@@ -33,10 +48,13 @@ static void write_stereo_ams_fms(u8 channel);
  static void write_channel_reg(u8 channel, u8 baseReg, u8 data);
  static void write_operator_reg(u8 channel, u8 op, u8 baseReg, u8 data);
  static void write_octave_and_frequency(u8 channel);
@@ -1929,7 +2021,13 @@ index eec5dcc..b973383 100644
  static u8 key_on_off_reg_offset(u8 channel);
  static Operator* get_operator(u8 channel, u8 operator);
  static u8 effective_total_level(u8 channel, u8 operator, u8 totalLevel);
-@@ -61,8 +76,8 @@ static void preset_to_channel(FmChannel* channel, const FmPreset* preset)
++static u8 effective_attack_rate(u8 channel, u8 attackRate);
++static bool csm_attack_override(void);
++static void write_ch3_attack_rates(void);
+ static bool is_output_operator(u8 algorithm, u8 op);
+ static u8 volume_adjusted_total_level(u8 channel, u8 totalLevel);
+ static void channel_parameter_updated(u8 channel);
+@@ -61,8 +79,8 @@ static void preset_to_channel(FmChannel* channel, const FmPreset* preset)
  void synth_init(const FmPreset* initialPreset)
  {
      init_global();
@@ -1939,7 +2037,7 @@ index eec5dcc..b973383 100644
      for (u8 chan = 0; chan < MAX_FM_CHANS; chan++) {
          volumes[chan] = MAX_VOLUME;
          synth_note_off(chan);
-@@ -96,18 +111,119 @@ static void init_global(void)
+@@ -96,18 +114,123 @@ static void init_global(void)
      global.lfoFrequency = 0;
      global.specialMode = false;
      global.dacEnable = false;
@@ -2013,8 +2111,12 @@ index eec5dcc..b973383 100644
 +    if (csm == enable) {
 +        return;
 +    }
++    bool override = csm_attack_override();
 +    csm = enable;
 +    csmNote = false;
++    if (override != csm_attack_override()) {
++        write_ch3_attack_rates();
++    }
 +    write_ch3_mode_reg(0);
 +}
 +
@@ -2059,7 +2161,37 @@ index eec5dcc..b973383 100644
  void synth_pitch(u8 channel, u8 octave, u16 freqNumber)
  {
      FmChannel* chan = &fmChannels[channel];
-@@ -428,15 +544,11 @@ void synth_set_parameter_update_callback(ParameterUpdatedCallback* cb)
+@@ -355,7 +478,28 @@ static void write_operator_rate_scaling_and_attack_rate(u8 channel, u8 operator)
+ {
+     Operator* op = get_operator(channel, operator);
+     write_operator_reg(channel, operator, YM_BASE_ATTACK_RATE_SCALING_RATE,
+-        op->attackRate + (op->rateScaling << 6));
++        effective_attack_rate(channel, op->attackRate) + (op->rateScaling << 6));
++}
++
++// Stage 22b (D57): in CSM timer A keys channel 3's operators for one sample, and only AR 31 attacks
++// within it; a lower AR sounds or not by note and timer phase. While channel 3 is in CSM the chip
++// gets AR 31, the way the volume goes into TL; the stored voice keeps its AR, leaving CSM restores
++// it. The condition is the chosen mode, not the sounding note, so notes write no AR.
++static bool csm_attack_override(void)
++{
++    return global.specialMode && csm;
++}
++
++static u8 effective_attack_rate(u8 channel, u8 attackRate)
++{
++    return channel == CH3_SPECIAL_MODE && csm_attack_override() ? 31 : attackRate;
++}
++
++static void write_ch3_attack_rates(void)
++{
++    for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++        write_operator_rate_scaling_and_attack_rate(CH3_SPECIAL_MODE, op);
++    }
+ }
+ 
+ static void write_operator_amplitude_modulation_and_decay_rate(u8 channel, u8 operator)
+@@ -428,15 +572,15 @@ void synth_set_parameter_update_callback(ParameterUpdatedCallback* cb)
      parameterUpdatedCallback = cb;
  }
  
@@ -2070,14 +2202,18 @@ index eec5dcc..b973383 100644
 -
  void synth_set_special_mode(bool enable)
  {
++    bool override = csm_attack_override();
      global.specialMode = enable;
 -    write_special_mode_reg();
 +    csmNote = false;
++    if (override != csm_attack_override()) {
++        write_ch3_attack_rates();
++    }
 +    write_ch3_mode_reg(0);
      other_parameter_updated(0, SpecialMode);
  }
  
-@@ -463,21 +575,34 @@ void synth_special_mode_volume(u8 operator, u8 volume)
+@@ -463,21 +607,34 @@ void synth_special_mode_volume(u8 operator, u8 volume)
          effective_total_level(CH3_SPECIAL_MODE, operator, newTotalLevel));
  }
  
@@ -2507,7 +2643,7 @@ index 8dd9ef6..b196d60 100644
          e2e_test(test_plays_pcm_sample),
          e2e_test(test_midi_last_note_played_priority_respected_on_fm),
 diff --git a/tests/system/test_e2e.c b/tests/system/test_e2e.c
-index d9cce30..2795f3b 100644
+index d9cce30..e487042 100644
 --- a/tests/system/test_e2e.c
 +++ b/tests/system/test_e2e.c
 @@ -8,6 +8,8 @@
@@ -2584,7 +2720,7 @@ index d9cce30..2795f3b 100644
      midi_rx_read();
  
      stub_usb_receive_pitch_bend(MIDI_CHANNEL_11, 0x4000);
-@@ -238,6 +246,224 @@ void test_pitch_bends_ch3_special_mode_operators(void** state)
+@@ -238,6 +246,238 @@ void test_pitch_bends_ch3_special_mode_operators(void** state)
      midi_rx_read();
  }
  
@@ -2688,6 +2824,16 @@ index d9cce30..2795f3b 100644
 +    expect_ym2612_write_reg(0, 0x25, na & 3);
 +}
 +
++// Stage 22b (D57): entering or leaving CSM rewrites the AR registers of channel 3's four operators,
++// in operator order (values in test_synth.c).
++static void expect_ch3_attack_rates(void)
++{
++    const u8 regs[] = { 0x52, 0x5A, 0x56, 0x5E };
++    for (u8 i = 0; i < sizeof(regs); i++) {
++        expect_ym2612_write_reg_any_data(0, regs[i]);
++    }
++}
++
 +static void receive_raw_ch3_mode(u8 value)
 +{
 +    const u8 sysEx[] = { 0xF0, 0x00, 0x22, 0x77, 0x08, 0x02, 0x07, value >> 4, value & 0xF, 0xF7 };
@@ -2702,6 +2848,7 @@ index d9cce30..2795f3b 100644
 +    enable_ch3_special_mode();
 +    stub_usb_receive_cc(MIDI_CHANNEL_1, CC_CH3_NOTES, 127);
 +    expect_ym2612_write_reg(0, YM_KEY_ON_OFF, 0x02);
++    expect_ch3_attack_rates();
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
 +    midi_rx_read();
 +
@@ -2763,12 +2910,14 @@ index d9cce30..2795f3b 100644
 +    midi_rx_read();
 +    stub_usb_receive_cc(MIDI_CHANNEL_1, CC_GENMDM_CH3_SPECIAL_MODE, 0);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
++    expect_ch3_attack_rates();
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x0A);
 +    midi_rx_read();
 +
 +    // Ch3 Special on again with CSM still chosen: 01, no note.
 +    stub_usb_receive_cc(MIDI_CHANNEL_1, CC_GENMDM_CH3_SPECIAL_MODE, SPECIAL_MODE_ON);
 +    expect_ym2612_write_reg(0, YM_KEY_ON_OFF, 0x02);
++    expect_ch3_attack_rates();
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
 +    midi_rx_read();
 +
@@ -2780,6 +2929,7 @@ index d9cce30..2795f3b 100644
 +    midi_rx_read();
 +    stub_usb_receive_cc(MIDI_CHANNEL_1, CC_CH3_NOTES, 0);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
++    expect_ch3_attack_rates();
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
 +    midi_rx_read();
 +    stub_usb_receive_note_off(MIDI_CHANNEL_3, 69);
@@ -2809,7 +2959,7 @@ index d9cce30..2795f3b 100644
  void test_write_directly_to_ym2612_regs_via_sysex(void** state)
  {
      stub_everdrive_as_present();
-@@ -254,7 +480,7 @@ void test_plays_pcm_sample(void** state)
+@@ -254,7 +494,7 @@ void test_plays_pcm_sample(void** state)
  {
      stub_everdrive_as_present();
      stub_usb_receive_cc(MIDI_CHANNEL_1, CC_GENMDM_ENABLE_DAC, 127);
@@ -2818,7 +2968,7 @@ index d9cce30..2795f3b 100644
      expect_value(__wrap_Z80_loadDriver, waitReady, true);
      expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
      will_return(__wrap_Z80_getAndRequestBus, false);
-@@ -264,15 +490,43 @@ void test_plays_pcm_sample(void** state)
+@@ -264,15 +504,43 @@ void test_plays_pcm_sample(void** state)
      expect_value(__wrap_YM2612_write, port, 0);
      expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
      expect_function_call(__wrap_Z80_releaseBus);
@@ -2883,7 +3033,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..a7fc75d 100644
+index d2449c4..822a5cd 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -2897,7 +3047,18 @@ index d2449c4..a7fc75d 100644
  #include "test_midi_dynamic.h"
  #include "test_midi_finetune.h"
  #include "test_midi_fm.h"
-@@ -207,6 +210,12 @@ int main(void)
+@@ -126,6 +129,10 @@ int main(void)
+         midi_test(test_midi_sets_psg_pitch_bend_up),
+         midi_test(test_midi_psg_pitch_bend_persists_after_tick),
+         midi_test(test_midi_loads_psg_envelope),
++        midi_test(test_midi_psg_note_off_in_loop_ends_the_pass_then_releases),
++        midi_test(test_midi_psg_note_off_in_intro_plays_the_loop_once_then_releases),
++        midi_test(test_midi_psg_note_off_on_loop_without_release_stops_at_once),
++        midi_test(test_midi_psg_note_off_without_loop_stops_at_once),
+         midi_test(test_midi_polyphonic_mode_returns_state),
+         midi_test(test_midi_polyphonic_mode_uses_multiple_fm_channels),
+         midi_test(
+@@ -207,6 +214,12 @@ int main(void)
          midi_test(test_midi_sysex_sets_mapping_mode_to_auto),
          midi_test(test_midi_sysex_disables_fm_parameter_CCs),
          midi_test(test_midi_sysex_loads_psg_envelope),
@@ -2910,7 +3071,7 @@ index d2449c4..a7fc75d 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +235,49 @@ int main(void)
+@@ -226,10 +239,49 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -2962,7 +3123,7 @@ index d2449c4..a7fc75d 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +297,8 @@ int main(void)
+@@ -249,6 +301,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -2971,7 +3132,7 @@ index d2449c4..a7fc75d 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,6 +362,17 @@ int main(void)
+@@ -312,6 +366,20 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -2984,15 +3145,22 @@ index d2449c4..a7fc75d 100644
 +        synth_test(test_synth_csm_keys_off_by_mode),
 +        synth_test(test_synth_csm_dac_switch_writes_shadow),
 +        synth_test(test_synth_reset_clears_ch3_mode_shadow),
++        synth_test(test_synth_csm_writes_attack_rate_31),
++        synth_test(test_synth_csm_attack_rate_keeps_the_voice),
++        synth_test(test_synth_csm_attack_rate_only_on_channel_3),
 +        synth_test(test_synth_resets_lfo),
 +        synth_test(test_synth_lfo_reset_writes_nothing_with_lfo_off),
          synth_test(test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded),
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
-@@ -441,6 +502,60 @@ int main(void)
+@@ -440,6 +508,63 @@ int main(void)
+         midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
- 
++        midi_portamento_test(test_midi_portamento_legato_chain_glides_on_every_note),
++        midi_portamento_test(test_midi_portamento_raising_a_held_key_below_keeps_the_glide),
++        midi_portamento_test(test_midi_note_stack_without_portamento_as_before),
++
 +        midi_test(test_midi_arp_stores_fm_row),
 +        midi_test(test_midi_arp_stores_psg_row),
 +        midi_test(test_midi_arp_no_steps_clears_row),
@@ -3046,10 +3214,9 @@ index d2449c4..a7fc75d 100644
 +        midi_test(test_midi_lfo_reset_not_on_portamento_legato),
 +        midi_test(test_midi_lfo_reset_on_raised_note),
 +        midi_test(test_midi_lfo_reset_on_chord_note_of_other_voice),
-+
+ 
          midi_finetune_test(test_midi_finetune_max),
          midi_finetune_test(test_midi_finetune_min),
-         midi_finetune_test(test_midi_finetune_with_pitchbend),
 diff --git a/tests/unit/test_midi_arp.c b/tests/unit/test_midi_arp.c
 new file mode 100644
 index 0000000..9f70119
@@ -4635,10 +4802,10 @@ index 5e63f7b..de0bf95 100644
 +void test_midi_dac_repeated_enable_keeps_voices(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac_marks.c b/tests/unit/test_midi_dac_marks.c
 new file mode 100644
-index 0000000..f7c46ee
+index 0000000..b97b712
 --- /dev/null
 +++ b/tests/unit/test_midi_dac_marks.c
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,345 @@
 +#include "test_midi_dac_marks.h"
 +#include "test_midi.h"
 +#include "mocks/mock_midi.h"
@@ -4834,7 +5001,8 @@ index 0000000..f7c46ee
 +}
 +
 +// Stage 22a (D53): LOOP with ONE-SHOT. Note Off neither releases nor stops: the loop goes on,
-+// its loop bit set and its params as they were, until the key plays again.
++// its loop bit set and its params as they were, until the key plays again. The plugin no longer
++// writes these flags since stage 22b (D54 cancels D53); the ROM still plays them so.
 +void test_midi_dac_marks_one_shot_loops_past_note_off(UNUSED void** state)
 +{
 +    static const PcmMarked endless
@@ -5126,7 +5294,7 @@ index 24d50dd..8bf27a0 100644
  }
  
 diff --git a/tests/unit/test_midi_portamento.c b/tests/unit/test_midi_portamento.c
-index 13ce5a1..0fdb43c 100644
+index 13ce5a1..1ecae59 100644
 --- a/tests/unit/test_midi_portamento.c
 +++ b/tests/unit/test_midi_portamento.c
 @@ -298,7 +298,7 @@ void test_midi_portamento_zeros_any_residual_cents(UNUSED void** state)
@@ -5138,8 +5306,119 @@ index 13ce5a1..0fdb43c 100644
          debug_message("channel %d\n", chan);
          u8 psgChan = chan - MIN_PSG_CHAN;
          __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
+@@ -462,3 +462,99 @@ void test_midi_portamento_glides_with_fine_tune(UNUSED void** state)
+     expect_synth_pitch(chan, 2, 0x468);
+     midi_tick(1);
+ }
++
++// Stage 22b: a PORTA legato chain of 5 notes, each key raised after the next is pressed. Every new
++// note glides (its target set, no Note On to the chip), raising the key that no longer sounds
++// changes nothing, and the chip's Note Off comes only with the last key. In 0.22.2 the raise of the
++// non-sounding key took the sounding note off the stack, and the third note struck.
++static void tick_gliding(u8 ticks)
++{
++    for (u8 i = 0; i < ticks; i++) {
++        expect_synth_pitch_any();
++        midi_tick(1);
++    }
++}
++
++void test_midi_portamento_legato_chain_glides_on_every_note(UNUSED void** state)
++{
++    const u8 chan = 0;
++    const u8 notes[] = { 45, 48, 52, 55, 60 };
++    DeviceChannel* devChan = &__real_midi_channel_mappings()[chan];
++    __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
++
++    expect_synth_pitch(chan, 2, 0x439);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, notes[0], MAX_MIDI_VOLUME);
++    midi_tick(1);
++
++    for (u8 i = 1; i < sizeof(notes); i++) {
++        __real_midi_note_on(chan, notes[i], MAX_MIDI_VOLUME);
++        assert_int_equal(devChan->glideTargetPitch, notes[i]);
++        tick_gliding(8);
++        __real_midi_note_off(chan, notes[i - 1]);
++        assert_int_equal(devChan->glideTargetPitch, notes[i]);
++        assert_true(devChan->noteOn);
++        tick_gliding(8);
++    }
++
++    expect_value(__wrap_synth_note_off, channel, chan);
++    __real_midi_note_off(chan, notes[sizeof(notes) - 1]);
++    midi_tick(1);
++}
++
++// With three keys held the middle one raised changes nothing either; the top one raised glides
++// back to the one below it, the stack holding exactly the held keys.
++void test_midi_portamento_raising_a_held_key_below_keeps_the_glide(UNUSED void** state)
++{
++    const u8 chan = 0;
++    DeviceChannel* devChan = &__real_midi_channel_mappings()[chan];
++    __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
++
++    expect_synth_pitch(chan, 2, 0x439);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, 45, MAX_MIDI_VOLUME);
++    __real_midi_note_on(chan, 48, MAX_MIDI_VOLUME);
++    __real_midi_note_on(chan, 52, MAX_MIDI_VOLUME);
++    tick_gliding(8);
++    __real_midi_note_off(chan, 48);
++    assert_int_equal(devChan->glideTargetPitch, 52);
++    tick_gliding(8);
++    __real_midi_note_off(chan, 52);
++    assert_int_equal(devChan->glideTargetPitch, 45);
++    // A glide down ends once its whole note reaches the target, here within the first semitone.
++    tick_gliding(4);
++    expect_value(__wrap_synth_note_off, channel, chan);
++    __real_midi_note_off(chan, 45);
++    midi_tick(1);
++}
++
++// Without PORTA the raised top key strikes the one below it, as in 0.22.2, also after a key below
++// was raised; the last key sends Note Off.
++void test_midi_note_stack_without_portamento_as_before(UNUSED void** state)
++{
++    const u8 chan = 0;
++    expect_synth_pitch(chan, 4, 0x284);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_synth_pitch(chan, 4, 0x2a9);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_CS4, MAX_MIDI_VOLUME);
++    expect_synth_pitch(chan, 6, 0x47a);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_AS6, MAX_MIDI_VOLUME);
++
++    __real_midi_note_off(chan, MIDI_PITCH_C4);
++
++    expect_synth_pitch(chan, 4, 0x2a9);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_off(chan, MIDI_PITCH_AS6);
++
++    expect_value(__wrap_synth_note_off, channel, chan);
++    __real_midi_note_off(chan, MIDI_PITCH_CS4);
++}
+diff --git a/tests/unit/test_midi_portamento.h b/tests/unit/test_midi_portamento.h
+index 892e0c2..70fcd31 100644
+--- a/tests/unit/test_midi_portamento.h
++++ b/tests/unit/test_midi_portamento.h
+@@ -18,3 +18,6 @@ void test_midi_portamento_sets_portamento_time_to_minimum(UNUSED void** state);
+ void test_midi_portamento_sets_portamento_time_to_maximum(UNUSED void** state);
+ void test_midi_portamento_default_portamento_time_set(UNUSED void** state);
+ void test_midi_portamento_glides_with_fine_tune(UNUSED void** state);
++void test_midi_portamento_legato_chain_glides_on_every_note(UNUSED void** state);
++void test_midi_portamento_raising_a_held_key_below_keeps_the_glide(UNUSED void** state);
++void test_midi_note_stack_without_portamento_as_before(UNUSED void** state);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..eb168c5 100644
+index affbb29..5c896ea 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
 @@ -3,13 +3,19 @@
@@ -5226,7 +5505,102 @@ index affbb29..eb168c5 100644
  
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          __real_midi_program(chan, 1);
-@@ -428,4 +434,222 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -355,10 +361,94 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state)
+         expect_psg_tone(expectedPsgChan, expectedInitialTone);
+         __real_midi_psg_tick();
+ 
++        // A loop with no release stops at once (stage 22b, D54).
++        expect_psg_attenuation(expectedPsgChan, PSG_ATTENUATION_SILENCE);
+         __real_midi_note_off(chan, MIDI_PITCH_C4);
+     }
+ }
+ 
++// MDMI plugin fork, stage 22b (D54): Note Off with a loop and a release. An intro step, a loop of
++// two, a release of two; each step's attenuation is its number.
++static const u8 RELEASED_EEF[]
++    = { 0x01, EEF_LOOP_START, 0x02, 0x03, EEF_LOOP_END, 0x04, 0x05, EEF_END };
++
++static void expect_steps(u8 from, u8 to)
++{
++    for (u8 step = from; step <= to; step++) {
++        expect_psg_attenuation(0, step);
++        __real_midi_psg_tick();
++    }
++}
++
++void test_midi_psg_note_off_in_loop_ends_the_pass_then_releases(UNUSED void** state)
++{
++    __real_midi_psg_load_envelope(RELEASED_EEF);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, 1);
++    __real_midi_note_on(MIN_PSG_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_steps(2, 3);
++    expect_steps(2, 2);
++    __real_midi_note_off(MIN_PSG_CHAN, MIDI_PITCH_C4);
++    // The pass ends, the release plays, then silence.
++    expect_steps(3, 5);
++    expect_psg_attenuation(0, PSG_ATTENUATION_SILENCE);
++    __real_midi_psg_tick();
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_note_off_in_intro_plays_the_loop_once_then_releases(UNUSED void** state)
++{
++    __real_midi_psg_load_envelope(RELEASED_EEF);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, 1);
++    __real_midi_note_on(MIN_PSG_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    __real_midi_note_off(MIN_PSG_CHAN, MIDI_PITCH_C4);
++    // A short note sounds the whole envelope: the loop once, the release.
++    expect_steps(2, 5);
++    expect_psg_attenuation(0, PSG_ATTENUATION_SILENCE);
++    __real_midi_psg_tick();
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_note_off_on_loop_without_release_stops_at_once(UNUSED void** state)
++{
++    static const u8 toEnd[] = { 0x01, EEF_LOOP_START, 0x02, 0x03, EEF_END };
++    static const u8 toLoopEnd[] = { 0x01, EEF_LOOP_START, 0x02, 0x03, EEF_LOOP_END, EEF_END };
++    const u8* eefs[] = { toEnd, toLoopEnd };
++    for (int i = 0; i < 2; i++) {
++        __real_midi_psg_load_envelope(eefs[i]);
++        if (i == 0) {
++            // The tone is written once: it doesn't change after.
++            expect_psg_tone(0, TONE_NTSC_C4);
++        }
++        expect_psg_attenuation(0, 1);
++        __real_midi_note_on(MIN_PSG_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++        expect_steps(2, 2);
++        // Silent in the Note Off itself, in the loop or in the intro.
++        expect_psg_attenuation(0, PSG_ATTENUATION_SILENCE);
++        __real_midi_note_off(MIN_PSG_CHAN, MIDI_PITCH_C4);
++        __real_midi_psg_tick();
++        expect_psg_attenuation(0, 1);
++        __real_midi_note_on(MIN_PSG_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++        expect_psg_attenuation(0, PSG_ATTENUATION_SILENCE);
++        __real_midi_note_off(MIN_PSG_CHAN, MIDI_PITCH_C4);
++        __real_midi_psg_tick();
++    }
++}
++
++void test_midi_psg_note_off_without_loop_stops_at_once(UNUSED void** state)
++{
++    static const u8 plain[] = { 0x01, 0x02, 0x03, EEF_END };
++    __real_midi_psg_load_envelope(plain);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, 1);
++    __real_midi_note_on(MIN_PSG_CHAN, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_steps(2, 2);
++    expect_psg_attenuation(0, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(MIN_PSG_CHAN, MIDI_PITCH_C4);
++    __real_midi_psg_tick();
++}
++
+ void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state)
+ {
+     const u8 chan = MIN_PSG_CHAN;
+@@ -428,4 +518,222 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -5452,15 +5826,19 @@ index affbb29..eb168c5 100644
 +    __real_midi_cc(NOISE_MIDI_CHAN, CC_FINE_TUNE, 127);
 +}
 diff --git a/tests/unit/test_midi_psg.h b/tests/unit/test_midi_psg.h
-index bfb01a6..a164deb 100644
+index bfb01a6..3c27a9b 100644
 --- a/tests/unit/test_midi_psg.h
 +++ b/tests/unit/test_midi_psg.h
-@@ -26,4 +26,14 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
+@@ -26,4 +26,18 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_lower_limit_psg_envelope(UNUSED void** state);
  void test_midi_loads_psg_envelope(UNUSED void** state);
 -void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state);
 \ No newline at end of file
++void test_midi_psg_note_off_in_loop_ends_the_pass_then_releases(UNUSED void** state);
++void test_midi_psg_note_off_in_intro_plays_the_loop_once_then_releases(UNUSED void** state);
++void test_midi_psg_note_off_on_loop_without_release_stops_at_once(UNUSED void** state);
++void test_midi_psg_note_off_without_loop_stops_at_once(UNUSED void** state);
 +void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state);
 +void test_midi_psg_noise_writes_its_mode_on_any_note(UNUSED void** state);
 +void test_midi_psg_noise_starts_white_at_the_highest_rate(UNUSED void** state);
@@ -5646,10 +6024,29 @@ index 10cb29f..6e5800b 100644
 +void test_midi_sysex_rejects_too_long_psg_envelope(UNUSED void** state);
 +void test_midi_sysex_overwritten_psg_envelope_waits_for_next_note(UNUSED void** state);
 diff --git a/tests/unit/test_synth.c b/tests/unit/test_synth.c
-index 4fec83c..63275b2 100644
+index 4fec83c..4caa12e 100644
 --- a/tests/unit/test_synth.c
 +++ b/tests/unit/test_synth.c
-@@ -829,28 +829,37 @@ void test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator(UNUSED void*
+@@ -13,6 +13,18 @@ static bool updated = false;
+ static u8 lastChan = -1;
+ static ParameterUpdated lastParameterUpdated = -1;
+ 
++// Stage 22b (D57): the test voice's AR and RS registers of channel 3 in operator order, AR 26, 24,
++// 31, 27 with RS 1, 1, 3, 2 (0x52, 0x5A, 0x56, 0x5E). In CSM the chip gets AR 31 with the same RS.
++static const u8 CH3_VOICE_AR_RS[] = { 0x5A, 0x58, 0xDF, 0x9B };
++
++static void expect_ch3_attack_rates(bool csm31)
++{
++    for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++        expect_ym2612_write_operator(CH3_SPECIAL_MODE, op, YM_BASE_ATTACK_RATE_SCALING_RATE,
++            csm31 ? (CH3_VOICE_AR_RS[op] | 0x1F) : CH3_VOICE_AR_RS[op]);
++    }
++}
++
+ static void set_initial_registers(void)
+ {
+     expect_value(__wrap_Z80_loadDriver, driver, Z80_DRIVER_NULL);
+@@ -829,28 +841,37 @@ void test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator(UNUSED void*
  
  void test_synth_enables_dac(UNUSED void** state)
  {
@@ -5689,7 +6086,7 @@ index 4fec83c..63275b2 100644
  
      __real_synth_enable_dac(false);
  }
-@@ -864,11 +873,15 @@ void test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded(U
+@@ -864,11 +885,15 @@ void test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded(U
  
  void test_releases_Z80_bus_per_write_when_pcm_driver_loaded(UNUSED void** state)
  {
@@ -5706,7 +6103,7 @@ index 4fec83c..63275b2 100644
  
      __real_synth_enable_dac(true);
  
-@@ -879,3 +892,169 @@ void test_releases_Z80_bus_per_write_when_pcm_driver_loaded(UNUSED void** state)
+@@ -879,3 +904,288 @@ void test_releases_Z80_bus_per_write_when_pcm_driver_loaded(UNUSED void** state)
  
      __real_synth_direct_write_ym2612(0, YM_LFO_ENABLE, 0x08);
  }
@@ -5768,6 +6165,7 @@ index 4fec83c..63275b2 100644
 +    __real_synth_direct_write_ym2612(0, YM_CH3_MODE, 0x3B);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
 +    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
 +    __real_synth_set_csm(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x8B);
@@ -5779,6 +6177,7 @@ index 4fec83c..63275b2 100644
 +    __real_synth_direct_write_ym2612(0, YM_CH3_MODE, 0xC1);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x81);
 +    __real_synth_csm_note_on();
++    expect_ch3_attack_rates(false);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
 +    __real_synth_set_csm(false);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x00);
@@ -5808,6 +6207,7 @@ index 4fec83c..63275b2 100644
 +{
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x00);
 +    __real_synth_set_csm(true);
++    expect_ch3_attack_rates(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
 +    __real_synth_set_special_mode(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x81);
@@ -5822,6 +6222,7 @@ index 4fec83c..63275b2 100644
 +{
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
 +    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
 +    __real_synth_set_csm(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x81);
@@ -5837,6 +6238,7 @@ index 4fec83c..63275b2 100644
 +    __real_synth_direct_write_ym2612(0, YM_CH3_MODE, 0x0A);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
 +    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x4A);
 +    __real_synth_set_csm(true);
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x8B);
@@ -5876,11 +6278,125 @@ index 4fec83c..63275b2 100644
 +    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
 +    __real_synth_set_special_mode(true);
 +}
++
++// Stage 22b (D57): entering CSM gives channel 3's four operators AR 31 with the voice's RS; leaving
++// CSM, or Ch3 Special going off, writes the voice's AR back. Only a change of the condition writes.
++void test_synth_csm_writes_attack_rate_31(UNUSED void** state)
++{
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(true);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_csm(true);
++    // A note writes no AR.
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x81);
++    __real_synth_csm_note_on();
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_csm_note_off();
++    // Ch3 Special on again, the condition unchanged: no AR.
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(false);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_csm(false);
++
++    expect_ch3_attack_rates(true);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_csm(true);
++    expect_ch3_attack_rates(false);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x00);
++    __real_synth_set_special_mode(false);
++    // CSM chosen or left without Ch3 Special writes no AR.
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x00);
++    __real_synth_set_csm(false);
++}
++
++// In CSM a CC AR, RS and a program change keep the voice's AR while the chip gets 31; the extracted
++// preset has the voice's AR, and leaving CSM writes it.
++void test_synth_csm_attack_rate_keeps_the_voice(UNUSED void** state)
++{
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(true);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_csm(true);
++
++    expect_ym2612_write_operator(CH3_SPECIAL_MODE, 0, YM_BASE_ATTACK_RATE_SCALING_RATE, 0x5F);
++    __real_synth_operator_attack_rate(CH3_SPECIAL_MODE, 0, 10);
++    expect_ym2612_write_operator(CH3_SPECIAL_MODE, 0, YM_BASE_ATTACK_RATE_SCALING_RATE, 0x9F);
++    __real_synth_operator_rate_scaling(CH3_SPECIAL_MODE, 0, 2);
++    assert_int_equal(__real_synth_channel_parameters(CH3_SPECIAL_MODE)->operators[0].attackRate, 10);
++
++    FmPreset preset;
++    __real_synth_extract_preset(CH3_SPECIAL_MODE, &preset);
++    assert_int_equal(preset.operators[0].attackRate, 10);
++    assert_int_equal(preset.operators[1].attackRate, 24);
++    assert_int_equal(preset.operators[2].attackRate, 31);
++    assert_int_equal(preset.operators[3].attackRate, 27);
++
++    // A program change with AR 5-8: kept, the chip gets 31 with the program's RS.
++    for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++        preset.operators[op].attackRate = 5 + op;
++        preset.operators[op].rateScaling = op;
++    }
++    expect_ym2612_write_channel_any_data(CH3_SPECIAL_MODE, YM_BASE_ALGORITHM_FEEDBACK);
++    expect_ym2612_write_channel_any_data(CH3_SPECIAL_MODE, YM_BASE_STEREO_AMS_PMS);
++    for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++        expect_ym2612_write_operator_any_data(CH3_SPECIAL_MODE, op, YM_BASE_MULTIPLE_DETUNE);
++        expect_ym2612_write_operator(
++            CH3_SPECIAL_MODE, op, YM_BASE_ATTACK_RATE_SCALING_RATE, 0x1F | (op << 6));
++        expect_ym2612_write_operator_any_data(CH3_SPECIAL_MODE, op, YM_BASE_DECAY_RATE_AM_ENABLE);
++        expect_ym2612_write_operator_any_data(CH3_SPECIAL_MODE, op, YM_BASE_SUSTAIN_RATE);
++        expect_ym2612_write_operator_any_data(
++            CH3_SPECIAL_MODE, op, YM_BASE_RELEASE_RATE_SUSTAIN_LEVEL);
++        expect_ym2612_write_operator_any_data(CH3_SPECIAL_MODE, op, YM_BASE_TOTAL_LEVEL);
++        expect_ym2612_write_operator_any_data(CH3_SPECIAL_MODE, op, YM_BASE_SSG_EG);
++    }
++    __real_synth_preset(CH3_SPECIAL_MODE, &preset);
++    FmPreset extracted;
++    __real_synth_extract_preset(CH3_SPECIAL_MODE, &extracted);
++    for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++        assert_int_equal(extracted.operators[op].attackRate, 5 + op);
++    }
++
++    for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++        expect_ym2612_write_operator(
++            CH3_SPECIAL_MODE, op, YM_BASE_ATTACK_RATE_SCALING_RATE, (5 + op) | (op << 6));
++    }
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_csm(false);
++}
++
++// Channels 1, 2, 4-6 in CSM, and channel 3 with CSM chosen but Ch3 Special off, write their AR.
++void test_synth_csm_attack_rate_only_on_channel_3(UNUSED void** state)
++{
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_special_mode(true);
++    expect_ch3_attack_rates(true);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x40);
++    __real_synth_set_csm(true);
++    for (u8 chan = 0; chan < MAX_FM_CHANS; chan++) {
++        if (chan == CH3_SPECIAL_MODE) {
++            continue;
++        }
++        for (u8 op = 0; op < MAX_FM_OPERATORS; op++) {
++            expect_ym2612_write_operator(
++                chan, op, YM_BASE_ATTACK_RATE_SCALING_RATE, 20 | (CH3_VOICE_AR_RS[op] & 0xC0));
++            __real_synth_operator_attack_rate(chan, op, 20);
++        }
++    }
++
++    expect_ch3_attack_rates(false);
++    expect_ym2612_write_reg(0, YM_CH3_MODE, 0x00);
++    __real_synth_set_special_mode(false);
++    expect_ym2612_write_operator(CH3_SPECIAL_MODE, 1, YM_BASE_ATTACK_RATE_SCALING_RATE, 0x54);
++    __real_synth_operator_attack_rate(CH3_SPECIAL_MODE, 1, 20);
++}
 diff --git a/tests/unit/test_synth.h b/tests/unit/test_synth.h
-index bb5dcf1..a90d907 100644
+index bb5dcf1..d014f7c 100644
 --- a/tests/unit/test_synth.h
 +++ b/tests/unit/test_synth.h
-@@ -46,3 +46,14 @@ void test_synth_enables_dac(UNUSED void** state);
+@@ -46,3 +46,17 @@ void test_synth_enables_dac(UNUSED void** state);
  void test_synth_disables_dac(UNUSED void** state);
  void test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded(UNUSED void** state);
  void test_releases_Z80_bus_per_write_when_pcm_driver_loaded(UNUSED void** state);
@@ -5895,3 +6411,6 @@ index bb5dcf1..a90d907 100644
 +void test_synth_csm_keys_off_by_mode(UNUSED void** state);
 +void test_synth_csm_dac_switch_writes_shadow(UNUSED void** state);
 +void test_synth_reset_clears_ch3_mode_shadow(UNUSED void** state);
++void test_synth_csm_writes_attack_rate_31(UNUSED void** state);
++void test_synth_csm_attack_rate_keeps_the_voice(UNUSED void** state);
++void test_synth_csm_attack_rate_only_on_channel_3(UNUSED void** state);

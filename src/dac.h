@@ -32,9 +32,12 @@ typedef struct {
 	// Note Off doesn't stop it (ROM_SAMPLE_ONE_SHOT).
 	bool one_shot;
 	// It repeats until Note Off (ROM_SAMPLE_LOOP, stage 18): the length is cut to whole blocks, so
-	// the driver's repeat has no silence in it, and FADE doesn't apply. With one_shot it repeats past
-	// Note Off until the key plays again, a fifth note takes it, or a stop (stage 22a, D53).
+	// the driver's repeat has no silence in it, and FADE doesn't apply. Never with one_shot (D54
+	// cancels the loop past Note Off of stage 22a).
 	bool loop;
+	// With loop: Note Off stops it at once, the release after the loop isn't played (stage 22b,
+	// D54). The release isn't written to the bytes; the marks stay. Off with loop off.
+	bool stop;
 	// Loop marks in source frames (stage 18b): the repeat runs [loop_start, loop_end), what follows
 	// loop_end plays after Note Off. loop_end 0 is no marks: the loop is all the kept part, as in 0.18.
 	// They stay while LOOP is off and snap to the driver's blocks only when prepared (dac_marks_of).
@@ -51,6 +54,8 @@ typedef struct {
 	bool loops;
 	// Something follows the loop and plays after Note Off.
 	bool release;
+	// Something follows the loop, played or not: release, or stop (stage 22b).
+	bool tail;
 	// The bytes' length before padding, and the blocks the loop runs.
 	uint32_t length;
 	uint32_t loop_start;
@@ -60,6 +65,8 @@ typedef struct {
 	uint32_t frame_loop_start;
 	uint32_t frame_loop_end;
 	uint32_t frame_end;
+	// Where the part after the loop ends, played or not: frame_end but for stop.
+	uint32_t frame_tail_end;
 	// The shortest span from the start to the loop's end that allows an intro, in blocks.
 	uint32_t least_with_intro;
 } dac_marks;

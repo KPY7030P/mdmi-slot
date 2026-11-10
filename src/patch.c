@@ -322,10 +322,21 @@ void patch_arp_clean(patch_arp *arp)
 		arp->shadow_kept = 1;
 		arp->shadow = arp->shadow < arp->count ? arp->shadow : (uint8_t)(arp->count - 1);
 	}
+	arp->off = arp->count && arp->off ? 1 : 0;
+	arp->spare = 0;
+}
+
+const patch_arp *patch_arp_played(const patch_arp *arp)
+{
+	static const patch_arp none = PATCH_ARP_EMPTY;
+	// A row the ROM may hold, unknown after a reset, is all 0xFF: its count says so, not its switch.
+	return arp->off && arp->count <= PATCH_ARP_STEPS ? &none : arp;
 }
 
 bool patch_arp_same(const patch_arp *a, const patch_arp *b)
 {
+	a = patch_arp_played(a);
+	b = patch_arp_played(b);
 	return a->count == b->count && a->loop == b->loop && (a->count > PATCH_ARP_STEPS || !memcmp(a->steps, b->steps, a->count));
 }
 
@@ -488,8 +499,9 @@ int patch_shape_position(const patch_shape *shape, long held, long released)
 	if (released < 0 || at < 0) {
 		return (int)at;
 	}
-	// The ROM releases only a note whose walk has reached the loop start.
-	if (!loops || held < start) {
+	// The ROM releases only a loop with steps after its end, from the intro too: it plays on, the
+	// loop once and the release; anything else stops at Note Off (stage 22b, D54).
+	if (!loops || end >= shape->count) {
 		return -1;
 	}
 	at += released;
@@ -1172,6 +1184,8 @@ static void sync_arp(patch_receiver *receiver, bool psg, int program, const patc
 	if (program < 0 || program >= PATCH_BANK_SIZE) {
 		return;
 	}
+	// A row switched off goes as no row: 0 steps (D55).
+	arp = patch_arp_played(arp);
 	patch_arp *held = &receiver->arps[psg][program];
 	if (patch_arp_same(held, arp)) {
 		return;
@@ -1564,10 +1578,10 @@ static int lending_cost(const mdmi_patch *patch, int voice, int channel)
 }
 
 // Retrigger (D41). How long after its Note Off a voice still sounds, by the lowest RR of the
-// operators that sound, in ms: after this a note on it starts its attack from silence. Measured by
-// reg_test's test_adjacent from full level; RR 1 is RR 2's doubled, RR 0 never falls silent. Cut
-// waits for RR 15 from full level: 1023 steps of 8 every 56 us.
-static const uint16_t RELEASE_MS[16] = {65535, 6144, 3072, 1280, 640, 320, 160, 80, 40, 20, 10, 4, 4, 4, 4, 4};
+// operators that sound, in ms: by then the last note is about 20 dB down (D41). Measured by
+// reg_test's test_adjacent from full level; RR 11 is 8 since stage 22b; RR 1 is RR 2's doubled, RR 0
+// never falls silent. Cut waits for RR 15 from full level: 1023 steps of 8 every 56 us.
+static const uint16_t RELEASE_MS[16] = {65535, 6144, 3072, 1280, 640, 320, 160, 80, 40, 20, 10, 8, 4, 4, 4, 4};
 
 int patch_release_ms(int rr)
 {

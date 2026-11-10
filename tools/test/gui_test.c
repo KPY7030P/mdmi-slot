@@ -1032,9 +1032,10 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "ch3-off");
-		const int tag_dim_text = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_LINE);
-		CHECK(get_value(CH3_NOTES) == 0 && notes_dim_lit == 0 && pitch_frame() == 0 && tag_dim_text > 0,
-			"Ch3 Special off: CH3 NOTES is dim (%d px lit) and takes no click, the pitch tag is dim (%d px) and opens nothing", notes_dim_lit, tag_dim_text);
+		// Stage 22b: no tag at all with Ch3 Special off.
+		const int tag_dim_text = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_LINE) + count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_HINT);
+		CHECK(get_value(CH3_NOTES) == 0 && notes_dim_lit == 0 && pitch_frame() == 0 && tag_dim_text == 0,
+			"Ch3 Special off: CH3 NOTES is dim (%d px lit) and takes no click, no pitch tag (%d px) and the click opens nothing", notes_dim_lit, tag_dim_text);
 		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
 		run_ms(300);
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
@@ -1075,10 +1076,15 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "ch3-csm");
 		const int csm_lit = count_color_in(452, 486, 480, 498, COLOR_FM), csm_others = count_color_in(376, 450, 480, 498, COLOR_FM);
 		const int csm_value = get_value(CH3_NOTES);
+		// Stage 22b (D57): operator 1's AR (row at y 281) has no FM bar in CSM, and has one again after.
+		const int ar_in_csm = count_color_in(OP1_TL_X - 10, OP1_TL_X + 30, 282, 290, COLOR_FM_DARK);
 		double_click(window, CH3_NOTES_CSM_X, CH3_NOTES_Y);
 		run_ms(100);
+		capture(window);
+		const int ar_out = count_color_in(OP1_TL_X - 10, OP1_TL_X + 30, 282, 290, COLOR_FM_DARK);
 		CHECK(csm_value == 2 && csm_lit > 300 && csm_others == 0 && get_value(CH3_NOTES) == 0,
 			"a click on CSM sets CSM (%d), lit alone (%d px, the others %d), a double click Ops again", csm_value, csm_lit, csm_others);
+		CHECK(ar_in_csm == 0 && ar_out > 0, "channel 3's AR is dim in CSM (%d px of FM bar) and lit after (%d px)", ar_in_csm, ar_out);
 
 		// The pitch tag opens SEMI, FINE and FIX under its header; they exist only while it is open.
 		const int tl_op2 = get_value(CH3_OP2_TL), fine_before = get_value(CH3_OP2_FINE);
@@ -1382,6 +1388,77 @@ int main(int argc, char **argv)
 			capture(window);
 			CHECK(first_of(ENV_LOOP_STRIP_Y, ENV_X - 10, ENV_RIGHT + 10, COLOR_PSG) == first_before, "UNDO puts the loop back");
 		}
+		// Stage 22b (D54): release or stop by a click on the loop's end tab or the strip after it.
+		{
+			// The end tab is the last of the strip's colour.
+			const int strip_top = ENV_LOOP_STRIP_Y - 6, strip_bottom = ENV_LOOP_STRIP_Y + 8;
+			int end_tab = -1;
+			for (int x = ENV_RIGHT + 9; x >= ENV_X - 10 && end_tab < 0; x--) {
+				end_tab = (pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG ? x - 4 : -1;
+			}
+			// Dragged to the lane's end: no release, a click on the tab changes nothing.
+			drag_x(window, end_tab, ENV_LOOP_STRIP_Y, ENV_RIGHT + 20);
+			run_ms(200);
+			capture(window);
+			int last = -1;
+			for (int x = ENV_RIGHT + 9; x >= ENV_X - 10 && last < 0; x--) {
+				last = (pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG ? x : -1;
+			}
+			const int strip_none = count_color_in(ENV_X - 10, ENV_RIGHT + 10, strip_top, strip_bottom, COLOR_PSG);
+			const int lane_none = count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+			click(window, last - 4, ENV_LOOP_STRIP_Y);
+			// Away from the tab, which is lit under the mouse.
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			CHECK(count_color_in(ENV_X - 10, ENV_RIGHT + 10, strip_top, strip_bottom, COLOR_PSG) == strip_none && count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) == lane_none,
+				"PSG, no release: a click on the end tab changes nothing");
+			// 100 px back leaves a release, drawn loud so its bars show.
+			drag_x(window, last - 4, ENV_LOOP_STRIP_Y, last - 104);
+			run_ms(200);
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(last - 80, ENV_LOUD_Y));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ENV_RIGHT - 2, ENV_LOUD_Y));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ENV_RIGHT - 2, ENV_LOUD_Y));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			last = -1;
+			for (int x = ENV_RIGHT + 9; x >= ENV_X - 10 && last < 0; x--) {
+				last = (pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG ? x : -1;
+			}
+			const int lit_release = count_color_in(last + 1, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+			memset(pushed, 0, sizeof(pushed));
+			click(window, last - 4, ENV_LOOP_STRIP_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "envelope-stop");
+			const int lit_stop = count_color_in(last + 1, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+			const int stop_frame = count_color_in(last + 1, ENV_RIGHT, ENV_LOOP_STRIP_Y - 6, ENV_LOOP_STRIP_Y - 5, COLOR_LINE);
+			int last_stop = -1;
+			for (int x = ENV_RIGHT + 9; x >= ENV_X - 10 && last_stop < 0; x--) {
+				last_stop = (pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG ? x : -1;
+			}
+			CHECK(lit_release > 20 && lit_stop == 0 && stop_frame > 20 && last_stop == last && pushed[0] + pushed[1] + pushed[2] == 0,
+				"PSG: a click on the end tab, stop: the release dims (%d px lit, was %d), outlined (%d px), the loop stays, the host told nothing", lit_stop, lit_release, stop_frame);
+			click(window, last + 40, ENV_LOOP_STRIP_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			const int lit_back = count_color_in(last + 1, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+			CHECK(lit_back == lit_release, "PSG: a click on the strip after it, the release again (%d px)", lit_back);
+			// Stop, the loop off and on again: it comes back with its release.
+			click(window, last + 40, ENV_LOOP_STRIP_Y);
+			run_ms(200);
+			click(window, body_x, ENV_LOOP_STRIP_Y);
+			run_ms(200);
+			click(window, body_x, ENV_LOOP_STRIP_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			const int lit_again = count_color_in(last + 1, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+			CHECK(lit_again == lit_release, "PSG: stop, the loop off and on again: it comes back with its release (%d px)", lit_again);
+		}
 		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
 		// would draw 402 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);
@@ -1482,6 +1559,45 @@ int main(int argc, char **argv)
 			run_ms(200);
 			CHECK(store_on > 50 && store_off == 0 && count_color_in(468, 532, 2, 26, COLOR_LINE) > 50 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == 98,
 				"STORE is on for channel 8's own row (%d px), off once the row is in its place, the row stays", store_on);
+			// Stage 22b (D55): the row's switch at 470, 334, 52x12. ARP ON in PSG; a click turns the row
+			// off, dim but kept (tops C_HINT, no PSG on the row), ARP OFF in grey; UNDO turns it on.
+			const int switch_x = ARP_LX + 206, switch_y = ly - 13;
+			const int on_frame = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_PSG);
+			const int on_text = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_TEXT);
+			click(window, switch_x + 26, switch_y + 6);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "arp-off");
+			const int off_psg = count_color_in(242, 524, ly - 15, ly + 109, COLOR_PSG);
+			const int off_tops = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_HINT);
+			const int off_label = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_LABEL);
+			const int dim_tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_HINT);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			const int undone = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG);
+			CHECK(on_frame > 100 && on_text > 20 && off_psg == 0 && off_tops == 98 && off_label > 20 && dim_tab == 8 * 12 && undone == 98,
+				"ARP ON (%d px of frame); a click turns the row off: no PSG on it (%d px), its steps dim (%d px), ARP OFF; UNDO turns it on (%d px)", on_frame, off_psg, off_tops, undone);
+			// Off, the row still draws: a click on the +12 column draws +5 in dim, and ON gives it its colour.
+			click(window, switch_x + 26, switch_y + 6);
+			click(window, ARP_LX + 20, ARP_Y(ly, 5));
+			click(window, switch_x + 26, switch_y + 6);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			const int drawn_on = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG);
+			CHECK(drawn_on == 98, "a row switched off is drawn on, and on again it plays what was drawn (%d px)", drawn_on);
+			// An empty row has no switch: the length dragged to 0, ARP in grey, no frame; UNDO gives the steps back.
+			drag(window, ARP_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) + 60);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			const int empty_frame = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_PSG) + count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_LINE);
+			const int empty_label = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_LABEL);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			CHECK(empty_frame == 0 && empty_label > 10, "an empty row has no switch, only ARP (%d px)", empty_label);
 		}
 
 		// Stage 16 (D45): channel 10's page has the noise's TYPE and RATE; TONE 3 takes channel 9.
@@ -1639,7 +1755,7 @@ int main(int argc, char **argv)
 		capture(window);
 		CHECK(reset_ms >= 0 && count_color_in(DAC_FILE_X, DAC_FILE_X + 24, DAC_LIST_Y, DAC_LIST_BOTTOM, COLOR_DAC) == 0, "CLEAR gives note 40 the ROM's sample again, no restart (%ld ms)", reset_ms);
 		// Stage 18: a WAV dropped on the open note's wave replaces its sound, an FM file is refused
-		// there; LOOP and ONE-SHOT go together (stage 22a: a loop past Note Off).
+		// there; LOOP and ONE-SHOT exclude each other again (stage 22b, D54 cancels D53).
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(200);
 		click(window, GRID_NOTE40_X + 17, GRID_NOTE40_Y + 8);
@@ -1678,13 +1794,13 @@ int main(int argc, char **argv)
 		const int loop_off = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
 		const int shot_on = count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
 		save_bmp(argv[2], "dac-loop-one-shot");
-		CHECK(shot_on > 1000 && loop_off > 1000, "ONE-SHOT lights beside LOOP (%d px, LOOP %d px)", shot_on, loop_off);
-		click(window, 660, DAC_ROW_B_Y + 10);
+		CHECK(shot_on > 1000 && loop_off == 0, "ONE-SHOT lights and LOOP goes off (%d px, LOOP %d px)", shot_on, loop_off);
+		click(window, 660, DAC_ROW_A_Y + 10);
 		wait_applied(window);
 		capture(window);
 		CHECK(count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0
 				&& count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000,
-			"and ONE-SHOT goes off again, LOOP stays");
+			"and LOOP on again takes ONE-SHOT off");
 		// Stage 18b: the loop's row. Its body (dark) runs from START to the last whole block; the end
 		// tab dragged left leaves a release, the body dragged moves the loop with its length and stops
 		// at the last whole block, a click turns LOOP off, a click on the shadow on again.
@@ -1735,17 +1851,68 @@ int main(int argc, char **argv)
 			const int l4 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s4);
 			CHECK(count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000 && abs(l4 - l3) <= 3 && abs(s4 - s3) <= 2,
 				"a click on the shadow turns LOOP on where it was (%d px at %d)", l4, s4);
-			// Stage 22a: with ONE-SHOT on as well, a click on the body turns only LOOP off.
-			click(window, 660, DAC_ROW_B_Y + 10);
-			wait_applied(window);
-			capture(window);
-			save_bmp(argv[2], "dac-loop-past-note-off");
-			const int both = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000;
-			click(window, s4 + l4 / 2, DAC_LOOP_Y + 6);
-			wait_applied(window);
-			capture(window);
-			CHECK(both && count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) == 0 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000,
-				"LOOP and ONE-SHOT on together; a click on the body turns LOOP off, ONE-SHOT stays");
+			// Stage 22b (D54): release or stop by a click on the loop's end tab or the row after it.
+			// The wave after the loop's end is lit while the release plays, dim with stop.
+			{
+				const int wave_y = 323, wave_bottom = 355;
+				// The loop ends on the last whole block: no release, the click changes nothing.
+				const int lit_none = count_color_in(s4 + l4 + 4, 700, wave_y, wave_bottom, COLOR_DAC);
+				click(window, s4 + l4 + 5, DAC_LOOP_Y + 6);
+				wait_applied(window);
+				capture(window);
+				int s6;
+				const int l6_same = longest_run(row, 242, 712, COLOR_DAC_DARK, &s6);
+				CHECK(count_color_in(s4 + l4 + 4, 700, wave_y, wave_bottom, COLOR_DAC) == lit_none && l6_same == l4 && s6 == s4, "no release: a click on the end tab changes nothing");
+				// The loop moved left leaves a release.
+				drag_x(window, s4 + l4 / 2, DAC_LOOP_Y + 6, s4 + l4 / 2 - 100);
+				wait_applied(window);
+				capture(window);
+				const int l6 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s6);
+				const int tab = s6 + l6 + 5, after = s6 + l6 + 4;
+				const int lit_release = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
+				click(window, tab, DAC_LOOP_Y + 6);
+				wait_applied(window);
+				capture(window);
+				save_bmp(argv[2], "dac-loop-stop");
+				int s7;
+				const int l7 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s7);
+				const int lit_stop = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
+				const int stop_frame = count_color_in(after + 8, 700, DAC_LOOP_Y, DAC_LOOP_Y + 1, COLOR_LINE);
+				CHECK(lit_release > 300 && lit_stop < lit_release / 4 && l7 == l6 && s7 == s6 && stop_frame > 20,
+					"a click on the end tab: stop, the release dims (%d px lit, was %d), its row outlined (%d px), the loop doesn't move", lit_stop, lit_release, stop_frame);
+				click(window, after + 30, DAC_LOOP_Y + 6);
+				wait_applied(window);
+				capture(window);
+				const int lit_back = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
+				CHECK(abs(lit_back - lit_release) < 20, "a click on the row after it: the release again (%d px lit)", lit_back);
+				// Stop, then ONE-SHOT and LOOP again: the loop comes back with its release.
+				click(window, after + 30, DAC_LOOP_Y + 6);
+				wait_applied(window);
+				click(window, 660, DAC_ROW_B_Y + 10);
+				wait_applied(window);
+				capture(window);
+				const bool shot_only = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) == 0 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000;
+				click(window, 660, DAC_ROW_A_Y + 10);
+				wait_applied(window);
+				capture(window);
+				const int lit_again = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
+				CHECK(shot_only && abs(lit_again - lit_release) < 20 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0,
+					"ONE-SHOT takes LOOP off; LOOP on again takes ONE-SHOT off and comes with its release (%d px lit)", lit_again);
+				// A double click on the end tab: no release, in one undo step with the click before it.
+				double_click(window, tab, DAC_LOOP_Y + 6);
+				wait_applied(window);
+				capture(window);
+				int s8;
+				const int l8 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s8);
+				click(window, ACTION_UNDO_X, BUTTON_Y);
+				wait_applied(window);
+				capture(window);
+				int s9;
+				const int l9 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s9);
+				const int lit_undone = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
+				CHECK(l8 > l6 + 50 && l9 == l6 && s9 == s6 && abs(lit_undone - lit_release) < 20,
+					"a double click on the end tab: the loop to the last whole block (%d px, was %d); one UNDO gives back the loop with its release (%d px)", l8, l6, l9);
+			}
 		}
 		DeleteFileA(wav_path);
 		DeleteFileA(tfi_path);

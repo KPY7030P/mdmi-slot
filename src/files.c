@@ -657,7 +657,7 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 
 static dac_sample *note_content(const dac_set *dac, int note, bool *empty);
 
-bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *message, size_t size)
+bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, bool join, char *message, size_t size)
 {
 	dac_set *dac = files->host.view->dac;
 	if (!dac || note < 0 || note >= ROM_IMAGE_NOTES) {
@@ -685,7 +685,9 @@ bool files_edit_sample(mdmi_files *files, int note, const dac_edit *edit, char *
 	}
 	char text[FILES_MESSAGE];
 	snprintf(text, sizeof(text), "note %d before the change", note);
-	remember_samples(files, text);
+	if (!join || files->undo != UNDO_SAMPLES) {
+		remember_samples(files, text);
+	}
 	dac_put(dac, note, changed);
 	snprintf(message, size, "Note %d changed", note);
 	files->host.handed(files->host.context, false);

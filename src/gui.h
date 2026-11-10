@@ -56,6 +56,8 @@ typedef struct {
 	uint8_t *all_envelopes;
 	// The PSG loops switched off, PATCH_NUM_PSG_CHANNELS of them, the view's like page and channel.
 	state_loop *loop_shadows;
+	// The releases kept while a PSG loop stops at Note Off (stage 22b), the view's too.
+	state_tail *tails;
 	// What the window does with dropped and opened files.
 	mdmi_files *files;
 	void (*edit)(void *context, int kind, uint32_t id, int value);

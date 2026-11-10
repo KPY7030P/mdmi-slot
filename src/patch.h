@@ -132,7 +132,8 @@ typedef struct {
 // is: every channel, every base and every place of both lists has one. The ROM holds one per program
 // of each type, which SysEx 0A 02 (FM) and 0A 03 (PSG) write. A loop switched off in the window
 // leaves its shadow where it started, so switching it on puts it back (as D30); the shadow plays
-// nothing and two rows that differ only in it sound the same.
+// nothing and two rows that differ only in it sound the same. A row switched off (stage 22b, D55)
+// plays and compares as an empty one and keeps its steps; an empty row is never off.
 #define PATCH_ARP_STEPS 32
 #define PATCH_ARP_SHIFT 24
 #define PATCH_ARP_EMPTY ((patch_arp){.count = 0, .loop = -1})
@@ -140,8 +141,12 @@ typedef struct {
 	uint8_t count;
 	// The step the loop starts at, -1 for none.
 	int8_t loop;
-	// Only without a loop: shadow_kept says a loop was switched off, shadow where it started.
-	uint8_t shadow_kept;
+	// The row's third byte, saved as it is: bit 0 shadow_kept, only without a loop, says a loop was
+	// switched off, shadow where it started; bit 1 the row switched off (0.22.3, older builds wrote
+	// only bit 0 and read any value as a kept shadow). The other bits are 0.
+	uint8_t shadow_kept : 1;
+	uint8_t off : 1;
+	uint8_t spare : 6;
 	uint8_t shadow;
 	// -24..+24; 0 past count, so rows compare whole.
 	int8_t steps[PATCH_ARP_STEPS];
@@ -324,7 +329,8 @@ int patch_shape_room(const patch_shape *shape);
 // The frame the ROM plays, for the window only (D29): held is the frames from Note On to Note Off,
 // or to now while the note is held, released the frames since Note Off or -1 while held. One step
 // per frame from frame 0, round the loop while held; after Note Off on from where it was, through
-// the loop's end. -1 when silent: past the end, or Note Off without a loop or before the loop began.
+// the loop's end into the release, from the intro too (stage 22b, D54). -1 when silent: past the
+// end, or Note Off without a loop or with a loop that has no steps after it.
 int patch_shape_position(const patch_shape *shape, long held, long released);
 // An FM operator's envelope as the YM2612 steps it, for the window's graph only (stage 11): the
 // attenuation in the chip's 10-bit steps (0 loud, 1023 silent, 0.094 dB each) with TL added, its
@@ -349,10 +355,13 @@ bool patch_sound_changed(const patch_values *values, const patch_envelope *envel
 // channel's voice, from Algorithm on (D31).
 int patch_base_value(const patch_values *values, int channel, int param);
 // Makes a row one the ROM takes (stage 20): count 0-32, shifts -24..+24, a loop inside the steps or
-// none, a shadow only without a loop and inside the steps, zeros past count.
+// none, a shadow only without a loop and inside the steps, zeros past count, off only with steps.
 void patch_arp_clean(patch_arp *arp);
-// The two rows play the same: count, loop and steps; the shadow doesn't count.
+// The two rows play the same: count, loop and steps as they play; the shadow doesn't count, a row
+// switched off is an empty one.
 bool patch_arp_same(const patch_arp *a, const patch_arp *b);
+// The row as it plays: an empty one when it is switched off.
+const patch_arp *patch_arp_played(const patch_arp *arp);
 // The channel's row does something now: not channel 3 in Ch3 Special with Ops, channel 6 with the DAC, or
 // channel 10 at a noise rate other than Tone 3 (the window dims the row then).
 bool patch_arp_works(const patch_values *values, int channel);

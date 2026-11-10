@@ -412,10 +412,25 @@ static double note_hz(int channel, int key, uint16_t *tone3)
 	return crossings > 1 ? (crossings - 1) * (double)RATE / (last - first) : 0;
 }
 
+static void render_ms(int ms);
+
 // Stage 16 (D45): periodic noise on tone 3 plays the note, and channel 9 stays silent meanwhile.
 static void test_noise(void)
 {
 	const int noise = PATCH_NUM_CHANNELS - 1, tone3 = PATCH_NUM_CHANNELS - 2;
+	// The notes before play their releases after Note Off (stage 22b, D54): the count starts in silence.
+	int waited = 0;
+	for (; waited < 3000; waited += 10) {
+		bool silent = true;
+		for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+			silent = silent && mdmi_engine_test_psg_volume(engine, (uint8_t)i) == 15;
+		}
+		if (silent) {
+			break;
+		}
+		render_ms(10);
+	}
+	printf("    PSG silent after %d ms\n", waited);
 	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
 	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3);
 	sync_and_settle();
@@ -1059,38 +1074,61 @@ static void test_loop_marks(void)
 		sync_and_settle();
 		dac_clear(&set);
 	}
-	// Stage 22a (D53): LOOP with ONE-SHOT, the same three parts: after Note Off the loop goes on for a
-	// second with no quiet window and no release; CC 123 stops it.
+	// Stage 22b (D54): a prepared sample with marks and a release, played with its release and with
+	// stop. With stop the image holds no release and from 60 ms after Note Off it is under 0.01, as the
+	// 18b cut (the loop's pass here would run about 84 ms).
 	{
-		static float long_peaks[1100];
-		static char long_letters[1101];
-		dac_set set = {0};
-		dac_sample *s = marked_sample(1, 1, 2, 2);
-		s->sample.flags |= ROM_SAMPLE_ONE_SHOT;
-		dac_put(&set, 50, s);
-		boot_set(&set);
-		midi(0x95, 50, 127);
-		mark_windows(long_peaks, 100);
-		float loud = 0;
-		for (int w = 0; w < 100; w++) {
-			loud = long_peaks[w] > loud ? long_peaks[w] : loud;
+		float loud[2] = {0, 0}, after_off[2] = {0, 0};
+		uint32_t lengths[2] = {0, 0};
+		int release_windows[2] = {0, 0};
+		for (int stop = 0; stop < 2; stop++) {
+			const uint32_t intro = 1, loop = 6, release = 3, frames = (intro + loop + release) * ROM_SAMPLE_BLOCK;
+			dac_sample *s = calloc(1, sizeof(dac_sample));
+			s->source_hz = (uint32_t)ROM_PCM4_HZ;
+			s->source_frames = frames;
+			s->source = malloc(frames * sizeof(int16_t));
+			for (uint32_t i = 0; i < frames; i++) {
+				const uint32_t block = i / ROM_SAMPLE_BLOCK;
+				const int level = block < intro ? 120 : block < intro + loop ? 40 : 80;
+				s->source[i] = (int16_t)((i / 16 % 2 ? level : -level) * 256);
+			}
+			snprintf(s->name, sizeof(s->name), "stop");
+			const dac_edit edit = {.start = 0, .end = frames, .rate = DAC_RATE_AUTO, .loop = true, .stop = stop != 0,
+				.loop_start = intro * ROM_SAMPLE_BLOCK + 8, .loop_end = (intro + loop) * ROM_SAMPLE_BLOCK + 8};
+			const bool made = dac_prepare(s, &edit);
+			lengths[stop] = made ? s->sample.length : 0;
+			dac_set set = {0};
+			dac_put(&set, 50, s);
+			boot_set(&set);
+			midi(0x95, 50, 127);
+			float peaks[300];
+			char letters[301];
+			mark_windows(peaks, 150);
+			for (int w = 0; w < 150; w++) {
+				loud[stop] = peaks[w] > loud[stop] ? peaks[w] : loud[stop];
+			}
+			midi(0x85, 50, 0);
+			mark_windows(peaks, 300);
+			mark_letters(peaks, 300, loud[stop], letters);
+			// Stop takes the cut path of 18b: the message's way to the ROM (about 15 ms) and two of the
+			// driver's blocks (34 ms), whatever the loop's length (here 6 blocks, 101 ms).
+			for (int w = 60; w < 300; w++) {
+				after_off[stop] = peaks[w] > after_off[stop] ? peaks[w] : after_off[stop];
+			}
+			release_windows[stop] = (int)(strchr(letters, 'R') ? strspn(strchr(letters, 'R'), "R?") : 0);
+			printf("    %s: the loop sounds %d ms after Note Off\n", stop ? "stop" : "release", (int)strspn(letters, "L?"));
+			printf("    %s: %u bytes, after Note Off %.140s\n", stop ? "stop" : "release", lengths[stop], letters);
+			set_global(GLOBAL_DAC, 0);
+			sync_and_settle();
+			dac_clear(&set);
 		}
-		midi(0x85, 50, 0);
-		mark_windows(long_peaks, 1000);
-		mark_letters(long_peaks, 1000, loud, long_letters);
-		const bool loops_on = strspn(long_letters, "L?") == 1000 && !strchr(long_letters, 'Q') && !strchr(long_letters, 'R') && !strchr(long_letters, 'I');
-		if (!loops_on) {
-			printf("    loop with one-shot after Note Off: %.200s\n", long_letters);
-		}
-		midi(0xB5, 123, 0);
-		render(RATE / 20 / BLOCK);
-		const float stopped = loudest(RATE / 10 / BLOCK);
-		printf("    loop with one-shot: 1 s after Note Off %s, after CC 123 loudest %.4f\n", loops_on ? "loop only" : "FAILED", stopped);
-		check(loops_on, "LOOP with ONE-SHOT: the loop goes on 1 s past Note Off, no quiet window, no release");
-		check(stopped < 0.01f, "LOOP with ONE-SHOT: CC 123 stops it");
-		set_global(GLOBAL_DAC, 0);
-		sync_and_settle();
-		dac_clear(&set);
+		const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ;
+		printf("    release %d ms of it; stop: %u bytes against %u, from 60 ms after Note Off %.5f of %.4f\n", release_windows[0], lengths[1], lengths[0], after_off[1], loud[1]);
+		check(lengths[0] > 0 && release_windows[0] >= block_ms * 3 - 4, "release: after Note Off the loop's pass, then the release of 3 blocks");
+		check(lengths[1] == 7 * ROM_SAMPLE_BLOCK && lengths[0] >= lengths[1] + 3 * ROM_SAMPLE_BLOCK, "stop: the image is shorter by the release");
+		// The 18b cut's own measure ("marks without a release: Note Off cuts"): under 0.01 from 50 ms on;
+		// -60 dB by 40 ms isn't the ROM's cut path (47 ms to silence here, the same for 2 and 6 blocks).
+		check(loud[1] > 0 && after_off[1] < 0.01f && release_windows[1] == 0, "stop: from 60 ms after Note Off under 0.01 as the 18b cut, short of the loop's pass, no release");
 	}
 	size_t rom_size;
 	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
@@ -2750,17 +2788,17 @@ static void test_drawing(void)
 	midi(0x86, 69, 0);
 	render_ms(40);
 	check(held && mdmi_engine_test_psg_volume(engine, 0) == 15, "no loop: Note Off cuts the note");
-	// A loop start alone: the pass of 30 frames plays out, then the note ends.
+	// A loop start alone, no release: Note Off stops it at once (stage 22b, D54; before, the pass of
+	// 30 frames played out).
 	drawn(&envelope, 30, 3, 0, -1, 0);
 	draw_on(6, &envelope);
 	render(SETTLE_BLOCKS);
 	midi(0x96, 69, 127);
 	render_ms(100);
-	midi(0x86, 69, 0);
-	render_ms(100);
 	const bool pass = mdmi_engine_test_psg_volume(engine, 0) == 3;
-	render_ms(500);
-	check(pass && mdmi_engine_test_psg_volume(engine, 0) == 15, "a loop start alone: after Note Off the pass plays to the end, then silence");
+	midi(0x86, 69, 0);
+	render_ms(40);
+	check(pass && mdmi_engine_test_psg_volume(engine, 0) == 15, "a loop start alone: Note Off stops it at once");
 	// Start and end: after Note Off the tail after the loop plays, then the note ends.
 	drawn(&envelope, 26, 3, 2, 6, 9);
 	draw_on(6, &envelope);
@@ -2773,6 +2811,28 @@ static void test_drawing(void)
 	const bool tail = mdmi_engine_test_psg_volume(engine, 0) == 9;
 	render_ms(400);
 	check(looping && tail && mdmi_engine_test_psg_volume(engine, 0) == 15, "a loop with an end: held it loops, after Note Off the tail plays, then silence");
+	// Stage 22b (D54): a short note, Note Off in the intro, sounds the whole envelope: the loop once,
+	// then the release.
+	midi(0x96, 69, 127);
+	render_ms(10);
+	midi(0x86, 69, 0);
+	render_ms(40);
+	const bool short_loop = mdmi_engine_test_psg_volume(engine, 0) == 3;
+	render_ms(150);
+	const bool short_tail = mdmi_engine_test_psg_volume(engine, 0) == 9;
+	render_ms(400);
+	check(short_loop && short_tail && mdmi_engine_test_psg_volume(engine, 0) == 15, "a short note: Note Off in the intro, the loop plays once, the release, then silence");
+	// Stop: the window hands the envelope without its release; Note Off silences it in the same frame.
+	drawn(&envelope, 6, 3, 2, -1, 0);
+	draw_on(6, &envelope);
+	render(SETTLE_BLOCKS);
+	midi(0x96, 69, 127);
+	render_ms(200);
+	const bool stop_held = mdmi_engine_test_psg_volume(engine, 0) == 3;
+	midi(0x86, 69, 0);
+	// 30 ms: a frame and the message's way, short of the loop's pass of 67 ms.
+	render_ms(30);
+	check(stop_held && mdmi_engine_test_psg_volume(engine, 0) == 15, "stop: the loop without its release is silent at Note Off, not after its pass");
 
 	// Drawing: the window hands the longest envelope over every 33 ms. Notes on channel 9 meet the
 	// stores at every phase; none may wait longer than a note stored with its envelope (stage 7).
@@ -3063,7 +3123,8 @@ static void test_adjacent(void)
 	}
 	// The silence a note starts from, the floor of the levels below.
 	const float floor_level = peak_between(0, 20);
-	printf("  adjacent: a note reaches the chip %d ms after it is sent, silence is %.3f\n", lag_ms, floor_level);
+	printf("  adjacent: a note reaches the chip %d ms after it is sent, silence is %.3f (PSG volumes %d %d %d %d)\n", lag_ms, floor_level, mdmi_engine_test_psg_volume(engine, 0),
+		mdmi_engine_test_psg_volume(engine, 1), mdmi_engine_test_psg_volume(engine, 2), mdmi_engine_test_psg_volume(engine, 3));
 	midi(0x90, 60, 127);
 	const float steady = peak_between(400, 500);
 	midi(0x80, 60, 0);
@@ -3109,8 +3170,8 @@ static void test_adjacent(void)
 
 	test_retrigger(ch, alone);
 
-	// How long the pause must be for the next note to start from silence, by RR: the shortest pause
-	// after which its level 6-10 ms in is at most twice that of a note alone. patch.c's RELEASE_MS.
+	// How long the pause must be by RR before the last note is 20 dB down where the next one would
+	// reach the chip: patch.c's RELEASE_MS (stage 22b, D41).
 	static const int pauses[] = {4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 1792, 2048, 2560, 3072, 3584, 4096};
 	const int pause_count = (int)(sizeof(pauses) / sizeof(*pauses));
 	bool counted_ok = true;
@@ -3118,19 +3179,25 @@ static void test_adjacent(void)
 		for (int op = 0; op < PATCH_OPS; op++) {
 			set_on(ch, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RR, rr);
 		}
+		// Stage 22b (D41): the fading note itself, its peak in the 4 ms (a period of key 60) before the
+		// next note would reach the chip, at most -20 dB of steady, what the counts mean since stage 14
+		// ("2x alone" leaned on a floor a stray PSG tone left until 22b; -30 dB comes at about 1.4 T).
 		int needed = -1;
+		float residual = 0;
 		for (int p = 0; p < pause_count && needed < 0; p++) {
 			midi(0x90, 60, 127);
 			render_ms(500);
 			midi(0x80, 60, 0);
-			peak_between(0, pauses[p]);
-			midi(0x90, 62, 127);
-			needed = note_window() <= 2 * alone ? pauses[p] : -1;
-			midi(0x80, 62, 0);
+			const int until = lag_ms + pauses[p];
+			residual = peak_between(until - 4 > 0 ? until - 4 : 0, until);
+			needed = residual <= steady / 10 ? pauses[p] : -1;
 			render(SETTLE_BLOCKS);
 		}
-		printf("  adjacent: RR %2d needs a pause of %d ms, the dealer counts %d\n", rr, needed, patch_release_ms(rr));
-		counted_ok = counted_ok && needed > 0 && needed <= patch_release_ms(rr) * 3 / 2;
+		printf("  adjacent: RR %2d needs a pause of %d ms (%.1f dB), the dealer counts %d\n", rr, needed, residual > 0 ? 20 * log10f(residual / steady) : -120.0f, patch_release_ms(rr));
+		// 4 ms is the window itself: such counts are held to its floor, 8 ms (pauses 4, 6, 8).
+		const int count = patch_release_ms(rr);
+		const int limit = count <= 4 ? 8 : count * 3 / 2;
+		counted_ok = counted_ok && needed > 0 && needed <= limit;
 	}
 	check(counted_ok, "the dealer's release times (RELEASE_MS) hold for the chip, within one step of the pauses");
 	set_on(ch, PARAM_PRESET, 0);
@@ -4115,7 +4182,9 @@ static void test_csm_portamento(void)
 			keys_kept = keys_kept && key_reg() == keys && ch3_mode_reg() == mode_reg;
 			if (csm) {
 				const int na = csm_na_reg();
-				monotone = monotone && na >= na_last;
+				// The ROM writes 0x24 (NA's high 8 bits) then 0x25 (its low 2): a read between them sees the
+				// new high with the old low (docs/research/ch3-csm.md), so the climb is judged on 0x24.
+				monotone = monotone && (na >> 2) >= (na_last >> 2);
 				steps += na != na_last;
 				na_last = na;
 				formants_kept = formants_kept && ch3_formant_regs() == formants;
@@ -4146,6 +4215,89 @@ static void test_csm_portamento(void)
 	}
 	set_on(2, PARAM_PORTA_ON, 0);
 	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	midi(0xC2, 0, 0);
+	render(SETTLE_BLOCKS);
+}
+
+// Stage 22b, item 3 (D57): output 3's RMS on 8 notes of a legato glide, each key pressed over the
+// last and the last raised after it, then on 8 separate notes. Returns the quietest against the
+// loudest.
+#define CSM_ATTACK_NOTES 8
+static double csm_attack_spread(double legato[CSM_ATTACK_NOTES], double separate[CSM_ATTACK_NOTES])
+{
+	static const int KEYS[CSM_ATTACK_NOTES] = {45, 48, 51, 54, 57, 60, 63, 66};
+	double loudest = 0, quietest = 1e9;
+	for (int i = 0; i < CSM_ATTACK_NOTES; i++) {
+		midi(0x92, (uint8_t)KEYS[i], 127);
+		if (i > 0) {
+			midi(0x82, (uint8_t)KEYS[i - 1], 0);
+		}
+		// Porta Time 64 glides 3 semitones in about 110 ms.
+		wait_frames(RATE * 3 / 10);
+		legato[i] = rms_of(capture_output(2, RATE / 10));
+	}
+	midi(0x82, (uint8_t)KEYS[CSM_ATTACK_NOTES - 1], 0);
+	csm_tail();
+	for (int i = 0; i < CSM_ATTACK_NOTES; i++) {
+		midi(0x92, (uint8_t)KEYS[i], 127);
+		wait_frames(RATE / 20);
+		separate[i] = rms_of(capture_output(2, RATE / 10));
+		midi(0x82, (uint8_t)KEYS[i], 0);
+		csm_tail();
+	}
+	for (int i = 0; i < CSM_ATTACK_NOTES; i++) {
+		loudest = fmax(loudest, fmax(legato[i], separate[i]));
+		quietest = fmin(quietest, fmin(legato[i], separate[i]));
+	}
+	return loudest > 0 ? quietest / loudest : 0;
+}
+
+// Channel 3's default voice (AR 26/31/24/27) in CSM with Porta On. Timer A keys the operators for one
+// sample and only AR 31 attacks within it, so the ROM writes AR 31 to channel 3's four operators while
+// it is in CSM and the voice's AR back after; the model keeps the voice's. In 0.22.2 an operator below
+// AR 31 sounded or not by note and timer phase.
+static void test_csm_attack(void)
+{
+	printf("  AR 31 in CSM\n");
+	static const uint8_t AR_REGS[4] = {0x52, 0x5A, 0x56, 0x5E};
+	midi(0xC2, 0, 0);
+	render(SETTLE_BLOCKS);
+	patch_set(patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_TIME), 64);
+	set_on(2, PARAM_PORTA_ON, 1);
+	csm_mode(PATCH_CH3_CSM);
+	bool ar31 = true, below31 = false;
+	for (int op = 0; op < 4; op++) {
+		const uint8_t reg = mdmi_engine_test_ym(engine, 0, AR_REGS[op]);
+		const int ar = model_value(2, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_AR);
+		const int rs = model_value(2, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RS);
+		ar31 = ar31 && reg == (rs << 6 | 31);
+		below31 = below31 || ar < 31;
+	}
+	double legato[CSM_ATTACK_NOTES], separate[CSM_ATTACK_NOTES];
+	const double spread = csm_attack_spread(legato, separate);
+	printf("    output 3 RMS, legato:");
+	for (int i = 0; i < CSM_ATTACK_NOTES; i++) {
+		printf(" %.4f", legato[i]);
+	}
+	printf("; separate:");
+	for (int i = 0; i < CSM_ATTACK_NOTES; i++) {
+		printf(" %.4f", separate[i]);
+	}
+	printf("; the quietest %.2f of the loudest\n", spread);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	sync_and_settle();
+	bool restored = true;
+	for (int op = 0; op < 4; op++) {
+		const int ar = model_value(2, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_AR);
+		const int rs = model_value(2, PARAM_OP_BASE + op * PATCH_OP_PARAMS + F_RS);
+		restored = restored && mdmi_engine_test_ym(engine, 0, AR_REGS[op]) == (rs << 6 | ar);
+	}
+	checkf(below31 && ar31, "CSM on the default voice (an AR below 31): channel 3's four AR registers hold 31 with the voice's RS");
+	checkf(spread >= 0.8, "with Porta On every note of an 8-note legato glide and 8 separate notes sounds at 0.8 of the loudest or more (%.2f)", spread);
+	checkf(restored, "leaving CSM writes the voice's AR back");
+	set_on(2, PARAM_PORTA_ON, 0);
 	set_global(GLOBAL_CH3_MODE, 0);
 	sync_and_settle();
 	midi(0xC2, 0, 0);
@@ -4230,6 +4382,8 @@ int main(int argc, char **argv)
 	test_csm();
 	test_reset();
 	test_csm_portamento();
+	test_reset();
+	test_csm_attack();
 	test_reset();
 	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
