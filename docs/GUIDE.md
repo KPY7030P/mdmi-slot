@@ -311,6 +311,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   and `draw_all_dac` draws the last struck note's sample (`note_sample`) with its loop on grey and a line per
   voice from `patch_dac_voice_place` (D59's copy). Our ROM's `midi_dac_play` writes the voice's volume as
   velocity x (CC 7 + 1) >> 10 (`midi_dac_channel_volume`; `enable_dac` hands it channel 6's volume), not MDMI canon.
+- FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
+  Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
+  up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.
+  The FM page draws a green line over the graph with a dot on the active curve, ALL's small envelopes a line.
 - A `*` means the sound is tweaked against its base (D31): what the channel last got whole, its
   bank place or a file dropped on it. The base goes with the model and the project (block 8), undo
   gives it back, a drawing keeps it. An FM cell whose value differs from the base has an amber

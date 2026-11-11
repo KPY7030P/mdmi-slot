@@ -128,10 +128,23 @@ static void apply_master(mdmi_plugin *self, float *const *channels, uint32_t fra
 static void time_psg_notes(mdmi_plugin *self, uint64_t when, const uint8_t *bytes, size_t length)
 {
 	const int status = bytes[0] & 0xF0, psg = (bytes[0] & 0x0F) - PATCH_NUM_FM_CHANNELS;
+	gui_psg_times *times = &self->psg_times;
+	// Stage 24f: an FM channel's last note as sent, a chord's moved note too (it starts again).
+	const int fm = bytes[0] & 0x0F;
+	if (length >= 3 && fm < PATCH_NUM_FM_CHANNELS) {
+		if (status == 0x90 && bytes[2] > 0) {
+			times->fm_key[fm] = bytes[1];
+			__atomic_store_n(&times->fm_off[fm], GUI_NEVER, __ATOMIC_RELEASE);
+			__atomic_store_n(&times->fm_on[fm], when, __ATOMIC_RELEASE);
+		} else if ((((status == 0x80 || status == 0x90) && bytes[1] == times->fm_key[fm]) || (status == 0xB0 && bytes[1] == 123))
+			&& __atomic_load_n(&times->fm_off[fm], __ATOMIC_ACQUIRE) == GUI_NEVER) {
+			__atomic_store_n(&times->fm_off[fm], when, __ATOMIC_RELEASE);
+		}
+		return;
+	}
 	if (length < 3 || psg < 0 || psg >= PATCH_NUM_PSG_CHANNELS) {
 		return;
 	}
-	gui_psg_times *times = &self->psg_times;
 	if (status == 0x90 && bytes[2] > 0) {
 		times->key[psg] = bytes[1];
 		__atomic_store_n(&times->off[psg], GUI_NEVER, __ATOMIC_RELEASE);
@@ -1096,6 +1109,9 @@ static const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *f
 	self->host = host;
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		self->psg_times.on[i] = self->psg_times.off[i] = GUI_NEVER;
+	}
+	for (int i = 0; i < PATCH_NUM_FM_CHANNELS; i++) {
+		self->psg_times.fm_on[i] = self->psg_times.fm_off[i] = GUI_NEVER;
 	}
 	self->master_gain = -1;
 	self->shown_modes[0] = -1;

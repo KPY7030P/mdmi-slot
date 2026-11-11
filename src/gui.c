@@ -2358,6 +2358,32 @@ static void draw_curves(mdmi_gui *g, const patch_values *values, int channel, in
 	}
 }
 
+// Stage 24f: where an FM channel's last note is on the graph's time, in seconds of the graph, or -1.
+// Held, it runs up to Note Off at 1 s and stays there; released, it goes on from Note Off into the
+// release, also when the key was let go before 1 s, as the graph's release starts there (art-director).
+static double fm_cursor_seconds(const mdmi_gui *g, int channel)
+{
+	const gui_psg_times *times = g->source.psg_times;
+	const unsigned rate = mdmi_engine_get_stats(g->source.engine).sample_rate;
+	if (!times || rate == 0 || channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
+		return -1;
+	}
+	const uint64_t on = __atomic_load_n(&times->fm_on[channel], __ATOMIC_ACQUIRE);
+	const uint64_t off = __atomic_load_n(&times->fm_off[channel], __ATOMIC_ACQUIRE);
+	const uint64_t now = __atomic_load_n(&times->clock, __ATOMIC_ACQUIRE);
+	if (on == GUI_NEVER || on > now) {
+		return -1;
+	}
+	double s;
+	if (off == GUI_NEVER || off < on || off > now) {
+		s = (double)(now - on) / rate;
+		s = s < PATCH_FM_OFF_SECONDS ? s : PATCH_FM_OFF_SECONDS;
+	} else {
+		s = PATCH_FM_OFF_SECONDS + (double)(now - off) / rate;
+	}
+	return s < PATCH_FM_SECONDS ? s : -1;
+}
+
 // The graph of the FM page (v8): the four envelopes, Note Off dotted at 1 s with the active curve's
 // number there, the time marks.
 static void draw_graph(mdmi_gui *g, const patch_values *values, int channel, int active)
@@ -2370,7 +2396,9 @@ static void draw_graph(mdmi_gui *g, const patch_values *values, int channel, int
 		fill(g, off, y, 1, 1, C_LINE);
 	}
 	draw_curves(g, values, channel, x0, y0, w, h, active);
-	text(g, off - 19, GRAPH_Y + 24, "OFF", C_HINT, 1);
+	const double cursor = fm_cursor_seconds(g, channel);
+	const bool parked = cursor == PATCH_FM_OFF_SECONDS;
+	text(g, off - 19, GRAPH_Y + 24, "OFF", parked ? C_PLAYING : C_HINT, 1);
 	// The active curve's number where it crosses Note Off (art-director, after 0.11.0).
 	if (active >= 0) {
 		const uint16_t *low, *high;
@@ -2395,6 +2423,18 @@ static void draw_graph(mdmi_gui *g, const patch_values *values, int channel, int
 		}
 	}
 	text(g, x0 + 3, GRAPH_Y + GRAPH_H - 10, "C4", C_HINT, 1);
+	// Stage 24f: the last note's time, a green line over everything, a dot where it meets the active curve.
+	if (cursor >= 0) {
+		const int x = x0 + curve_x(cursor, w);
+		fill(g, x, y0, 1, h, C_PLAYING);
+		if (active >= 0) {
+			const uint16_t *low, *high;
+			curve_of(g, values, channel, active, &low, &high);
+			const int column = (x - x0) * CURVE_COLUMNS / w;
+			const int y = y0 + low[column < CURVE_COLUMNS ? column : CURVE_COLUMNS - 1] * (h - 1) / PATCH_FM_SILENT;
+			fill(g, x - 1, y - 1, 3, 3, C_PLAYING);
+		}
+	}
 }
 
 static const dac_set *dac_of(const mdmi_gui *g)
@@ -5749,6 +5789,11 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 			if (*g->source.all_envelopes >> channel & 1) {
 				draw_curves(g, values, channel, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, -1);
 				fill(g, ALL_SOUND_X, y + 36, ALL_SOUND_W, 1, C_LINE);
+				// Stage 24f: the last note's time, as the PSG rows have it.
+				const double cursor = fm_cursor_seconds(g, channel);
+				if (cursor >= 0) {
+					fill(g, ALL_SOUND_X + curve_x(cursor, ALL_SOUND_W), y + 2, 1, 35, C_PLAYING);
+				}
 			} else {
 				draw_mini_diagram(g, ALL_SOUND_X, y, v[PARAM_ALGORITHM], v[PARAM_FEEDBACK], is_special(values, channel) ? C_FM_LIGHT : C_FM);
 			}

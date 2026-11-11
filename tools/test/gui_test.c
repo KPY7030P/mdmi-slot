@@ -248,6 +248,8 @@ static bool out_try_push(const clap_output_events_t *list, const clap_event_head
 }
 
 static const clap_plugin_t *plugin;
+// Samples processed, the plugin's clock (stage 24f: where the FM cursor must be).
+static uint64_t frames_run;
 static float left[BLOCK], right[BLOCK];
 static uint32_t pixels[WIDTH * HEIGHT];
 
@@ -266,6 +268,7 @@ static void run_block(const void *event)
 	process.in_events = &in;
 	process.out_events = &out_events;
 	plugin->process(plugin, &process);
+	frames_run += BLOCK;
 	MSG message;
 	while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
 		DispatchMessageA(&message);
@@ -998,6 +1001,35 @@ int main(int argc, char **argv)
 		wheel(window, OP1_TL_X, OP1_TL_Y, -240);
 		run_ms(50);
 		CHECK(quick == ch4_before + 12 && get_value(CH4_OP1_TL) == ch4_before + 10, "two quick notches give +2 (%+d), two down back", quick - ch4_before - 10);
+		// Stage 24f: the cursor on the FM graph runs with the note, stays at Note Off while the key is held
+		// past 1 s, then runs on through the release; x = 243 + sqrt(s / 2) * 280, s the graph's time.
+		{
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			const uint64_t on = frames_run;
+			send_midi(0x93, 60, 100);
+			run_ms(500);
+			capture(window);
+			double s = (double)(frames_run - on) / RATE;
+			int want = 243 + (int)(sqrt(s / 2) * 280);
+			const int at_half = count_color_in(want - 1, want + 2, 83, 205, COLOR_PLAYING);
+			save_bmp(argv[2], "fm-cursor");
+			run_ms(900);
+			capture(window);
+			const int parked = count_color_in(439, 442, 83, 205, COLOR_PLAYING), off_lit = count_color_in(421, 438, 104, 114, COLOR_PLAYING);
+			const uint64_t off = frames_run;
+			send_midi(0x83, 60, 0);
+			run_ms(350);
+			capture(window);
+			s = 1.0 + (double)(frames_run - off) / RATE;
+			const int want_release = 243 + (int)(sqrt(s / 2) * 280);
+			const int in_release = count_color_in(want_release - 1, want_release + 2, 83, 205, COLOR_PLAYING);
+			run_ms(1200);
+			capture(window);
+			const int gone = count_color_in(243, 523, 83, 205, COLOR_PLAYING);
+			CHECK(at_half >= 100 && parked >= 100 && off_lit > 0 && in_release >= 100 && gone == 0,
+				"FM cursor: at x %d after %.2f s (%d px), parked at Note Off with OFF lit (%d px, %d), in the release at x %d (%d px), gone after 2 s (%d px)",
+				want, (double)(off - on) / RATE, at_half, parked, off_lit, want_release, in_release, gone);
+		}
 		// Stage 10: TL now differs from what the channel got, its GM place (D31).
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
 		run_ms(100);
@@ -1382,6 +1414,22 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "all-envelopes");
+		// Stage 24f: a note on channel 2 puts the FM cursor on its envelopes, x = 242 + sqrt(s / 2) * 104.
+		{
+			const uint64_t on = frames_run;
+			send_midi(0x91, 60, 100);
+			run_ms(400);
+			capture(window);
+			const double s = (double)(frames_run - on) / RATE;
+			const int want = 242 + (int)(sqrt(s / 2) * 104);
+			const int line = count_color_in(want - 1, want + 2, RAIL_CH1_TOP + ROW_H + 2, RAIL_CH1_TOP + ROW_H + 37, COLOR_PLAYING);
+			send_midi(0x81, 60, 0);
+			run_ms(100);
+			CHECK(line >= 30, "ALL: channel 2's envelopes have the FM cursor at x %d after %.2f s (%d px)", want, s, line);
+		}
+		const int row2_boxes = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP + ROW_H, RAIL_CH1_TOP + 2 * ROW_H, COLOR_FM);
+		const int row2_curves = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP + ROW_H, RAIL_CH1_TOP + 2 * ROW_H, COLOR_FM_LIGHT);
+		const int row1_boxes = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + ROW_H, COLOR_FM);
 		click(window, ALL_SOUND_X, ALL_CH2_Y);
 		run_ms(100);
 		capture(window);

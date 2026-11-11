@@ -31,6 +31,10 @@ typedef struct {
 	uint64_t off[PATCH_NUM_PSG_CHANNELS];
 	// The key of the last Note On, which the writer alone reads.
 	uint8_t key[PATCH_NUM_PSG_CHANNELS];
+	// Stage 24f: the same for the FM channels' last notes, for the cursor on their envelope graphs.
+	uint64_t fm_on[PATCH_NUM_FM_CHANNELS];
+	uint64_t fm_off[PATCH_NUM_FM_CHANNELS];
+	uint8_t fm_key[PATCH_NUM_FM_CHANNELS];
 } gui_psg_times;
 
 // 1 when the host sent a knob a value since the window last edited it (D32, D33), at GUI_HOST_SLOT
