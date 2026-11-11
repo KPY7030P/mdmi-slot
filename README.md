@@ -18,6 +18,18 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - Chords on FM channels, played on the voices of silent channels (not with Porta On, Ch3 Special Mode or
   the DAC).
 - Instrument files: TFI, VGI and TYI for FM, EEF for PSG. Drop them from Explorer on a channel or a bank place.
+- A ROM for the SD card (0.24): EXPORT on the ROM page writes the ROM with your ROM bank in it (the 128 FM
+  voices with their rows, the 128 PSG envelopes with theirs), the project's DAC samples and the names of the
+  places, for an EverDrive on a real console. There a Program Change plays a bank place, as in the plugin.
+  The file holds the bank, not the channels: what a channel plays that isn't a bank place as it is (a
+  dropped file, tweaks) isn't in it, and the footer names those channels; put them in the bank with STORE
+  first. Knobs that aren't a sound (LFO, Ch3 Special and its notes, noise, DAC on, pan, volume) aren't in it
+  either: the console starts as MDMI does, every channel on program 1. Master Volume and Retrigger are the
+  plugin's own. The file is for an NTSC console (60 Hz); on PAL, envelopes and rows run 1.2 times slower. The
+  ROM's screen, in the plugin and on the console, names each channel's sound where it showed controller
+  numbers, writes DAC on FM6 while the DAC plays, keeps only warnings in its journal, and shows BANK and a
+  signature in its top line: the same signature in the plugin and on the console means the card holds this
+  bank and these samples. Not checked on a real console yet.
 - Bank libraries (0.22.4): the BANK page shows two lists side by side. The left one is the ROM bank,
   the one that plays (Preset, a clip's Pgm, Program Change) and is saved with the project; its bar can
   also switch it to a library. The right one is a library: any `.mdbank` file in the folder
@@ -163,7 +175,8 @@ English; the other notes in `docs/` are in Russian).
   test host, not yet with ASIO in Live. Long sessions, many instances, freezing and export are not fully
   checked in Live either.
 - **Arrow keys** in the window work only in the VST3 version, not in CLAP hosts.
-- **File names that are not in Latin letters** (for example Cyrillic) show as blanks in the window.
+- **File names that are not in Latin letters**: Cyrillic shows transliterated (Bas for Бас) in the window and
+  on the ROM's screen, other letters as `?`. The name itself stays as it is in files and the project.
 - **Windows only.** There are no Mac or Linux builds.
 - The sound is BlastEm's emulation. A real console may sound different in places. The noise modes of 0.16 and the
   DAC pan and loop of 0.18, the loop marks of 0.18.2, the four DAC voices of 0.19 and channel 3 by operators

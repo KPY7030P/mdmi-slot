@@ -43,7 +43,8 @@ typedef struct {
 	uint16_t loop_end;
 } rom_sample;
 
-// Whether the image has the sample table the plugin was built for.
+// Whether the image is the one the plugin was built for: its sample table, its 128 GM voices packed
+// as the plugin packs PRESETS_GM, empty arp rows and the names table (stage 24).
 bool rom_image_check(const uint8_t *rom, size_t size);
 // The ROM's own sample on a note, false if the note has none.
 bool rom_image_sample(const uint8_t *rom, size_t size, int note, rom_sample *sample);
@@ -55,9 +56,56 @@ void rom_image_zone(uint32_t *table, uint32_t *table_ram, uint32_t *records);
 // The room for new samples and what one takes of it.
 uint32_t rom_image_room(void);
 uint32_t rom_image_cost(uint32_t length);
+// Stage 24: the bank as the exported image holds it, in the fork's tables (tools/gen_rom_map.py).
+// A voice in the layout of PRESETS_GM: algorithm, feedback, AMS, FMS, then per operator multiple,
+// detune, attack, rate scaling, decay, AM, sustain level, sustain rate, release, total level, SSG.
+#define ROM_VOICE_FIELDS 48
+#define ROM_VOICE_BYTES 34
+// An envelope's EEF bytes up to and with its 0xFF.
+#define ROM_ENVELOPE_BYTES 125
+#define ROM_ARP_STEPS 32
+#define ROM_ARP_NO_LOOP 0x7F
+#define ROM_PROGRAMS 128
+typedef struct {
+	uint8_t count;
+	// The step the loop starts at, ROM_ARP_NO_LOOP for none.
+	uint8_t loop;
+	int8_t steps[ROM_ARP_STEPS];
+} rom_arp;
+typedef struct {
+	uint8_t voices[ROM_PROGRAMS][ROM_VOICE_FIELDS];
+	uint8_t envelopes[ROM_PROGRAMS][ROM_ENVELOPE_BYTES];
+	// FM's rows, then PSG's.
+	rom_arp arps[2][ROM_PROGRAMS];
+} rom_bank;
+// The names the ROM's screen shows, ASCII ending in 0, and the header's signature (fork's
+// program_names.h).
+#define ROM_NAME_BYTES 24
+#define ROM_SIGNATURE_BYTES 12
+typedef struct {
+	char signature[ROM_SIGNATURE_BYTES];
+	char names[2][ROM_PROGRAMS][ROM_NAME_BYTES];
+} rom_names;
+// Where a rom_names lies in the image, as it is: the emulator gets them written into its cartridge.
+uint32_t rom_image_names_at(void);
+// Where the bank's tables are: 128 pointers to the FM voices and 128 to the envelopes, the 256 rows
+// of 2 + ROM_ARP_STEPS bytes, FM's first.
+void rom_image_tables(uint32_t *voices, uint32_t *envelopes, uint32_t *rows);
+
+// The ROM's FM voice packed as the 68000's compiler packs FmPreset's bit fields.
+void rom_image_pack_voice(const uint8_t *fields, uint8_t *voice);
+
 // A copy of the image where each note with a sample plays it; NULL notes keep the ROM's, unless
-// removed (may be NULL) says the note is empty. NULL if they don't fit, the image fails
-// rom_image_check, or out of memory. Freed by the caller.
-uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *const *samples, const bool *removed, size_t *built);
+// removed (may be NULL) says the note is empty. With a bank, its voices, envelopes and rows replace
+// the ROM's (an envelope the image doesn't hold goes after the samples); with names, they and the
+// signature go into the table. NULL if they don't fit, the image fails rom_image_check, or out of
+// memory. Freed by the caller.
+uint8_t *rom_image_build(const uint8_t *rom, size_t size, const rom_sample *const *samples, const bool *removed, const rom_bank *bank, const rom_names *names, size_t *built);
+// A CRC-16 (CCITT) of an image, past the signature and the header's checksum, so the same bank and
+// samples give the same value with any signature in it.
+uint16_t rom_image_signature(const uint8_t *image, size_t size);
+// What the file for the SD card needs on top: zeros up to a whole 512 KB, as SGDK's build pads, and
+// the header's checksum. False if out of memory; *image may move.
+bool rom_image_for_sd(uint8_t **image, size_t *size);
 
 #endif

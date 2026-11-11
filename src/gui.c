@@ -13,6 +13,7 @@
 #include "dac.h"
 #include "rom_map.h"
 #include "font5x7.h"
+#include "names.h"
 
 #define TIMER_ID 1
 #define TIMER_MS 33
@@ -55,6 +56,9 @@
 // STORE (stage 20) on EDITOR where ADD stands on BANK, their right edges together.
 #define ACTION_STORE_X 468
 #define ACTION_STORE_W 64
+// EXPORT (stage 24) on ROM, where ADD and STORE stand on the other pages.
+#define ACTION_EXPORT_X 452
+#define ACTION_EXPORT_W 80
 #define NAME_X 288
 #define NAME_CHARS 23
 #define ENVELOPE_NAME_CHARS 20
@@ -208,9 +212,9 @@ enum { OP_TL, OP_MUL, OP_DT, OP_RS, OP_AR, OP_DR, OP_SR, OP_SL, OP_RR, OP_AM, OP
 #define ALL_PAN_X 474
 #define ALL_PAN_W 17
 #define ALL_SOURCE_X 536
-enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTION_STORE, ACTIONS };
-static const int ACTION_X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X, ACTION_STORE_X};
-static const int ACTION_WIDTH[ACTIONS] = {ACTION_W, ACTION_W, ACTION_W, ACTION_W, ACTION_STORE_W};
+enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTION_STORE, ACTION_EXPORT, ACTIONS };
+static const int ACTION_X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X, ACTION_STORE_X, ACTION_EXPORT_X};
+static const int ACTION_WIDTH[ACTIONS] = {ACTION_W, ACTION_W, ACTION_W, ACTION_W, ACTION_STORE_W, ACTION_EXPORT_W};
 
 typedef struct {
 	IDropTarget iface;
@@ -292,6 +296,10 @@ struct mdmi_gui {
 	// Stage 22c (D56): the library folder, its files, and what lists A and B show, read again when the
 	// page opens, a bank is chosen, and after every action on one. own_banks when the host gives none.
 	char lib_folder[LIBRARY_PATH];
+	// Stage 24: the names last handed to the engine for the ROM's screen; EXPORT's dialog is open.
+	rom_names screen_names;
+	bool screen_names_sent;
+	bool exporting;
 	library_list lib_list;
 	bank_list lists[2];
 	gui_banks own_banks;
@@ -472,8 +480,11 @@ static void frame(mdmi_gui *g, int x, int y, int w, int h, uint32_t color)
 	fill(g, x + w - 1, y, 1, h, color);
 }
 
-static int text(mdmi_gui *g, int x, int y, const char *string, uint32_t color, int scale)
+// UTF-8 names (Бас.tfi) draw transliterated, never as gaps (stage 24): the font is ASCII only.
+static int text(mdmi_gui *g, int x, int y, const char *utf8, uint32_t color, int scale)
 {
+	char string[256];
+	names_ascii(utf8, string, sizeof(string));
 	for (const char *c = string; *c; c++) {
 		unsigned index = (unsigned char)*c - 32;
 		if (index < 95) {
@@ -494,7 +505,7 @@ static int text(mdmi_gui *g, int x, int y, const char *string, uint32_t color, i
 static void text_right(mdmi_gui *g, int right, int y, const char *string, uint32_t color, int scale, int room)
 {
 	char cut[64];
-	snprintf(cut, sizeof(cut), "%s", string);
+	names_ascii(string, cut, sizeof(cut));
 	int fit = room / (6 * scale);
 	if ((int)strlen(cut) > fit) {
 		cut[fit > 0 ? fit : 0] = 0;
@@ -4323,7 +4334,8 @@ static bool shows_store(const mdmi_gui *g)
 static int action_at(const mdmi_gui *g, int x, int y)
 {
 	for (int action = 0; action < ACTIONS; action++) {
-		if ((action == ACTION_ADD && *g->source.page != PAGE_BANK) || (action == ACTION_STORE && !shows_store(g))) {
+		if ((action == ACTION_ADD && *g->source.page != PAGE_BANK) || (action == ACTION_STORE && !shows_store(g))
+			|| (action == ACTION_EXPORT && *g->source.page != PAGE_ROM)) {
 			continue;
 		}
 		if (y >= BUTTON_Y && y < BUTTON_Y + BUTTON_H && x >= ACTION_X[action] && x < ACTION_X[action] + ACTION_WIDTH[action]) {
@@ -4370,6 +4382,8 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 		snprintf(hint, size, envelopes ? "SAVE: CH%d as EEF, the bank or a snapshot" : takes_fm(values, channel) ? "SAVE: CH%d as VGI, the bank or a snapshot" : "SAVE: the bank or a snapshot", channel + 1);
 	} else if (action == ACTION_UNDO && undo) {
 		snprintf(hint, size, "UNDO: %s", undo);
+	} else if (action == ACTION_EXPORT) {
+		snprintf(hint, size, "EXPORT: bank, DAC, names to a ROM for SD");
 	} else {
 		return false;
 	}
@@ -5534,6 +5548,19 @@ static void action_button(mdmi_gui *g, int action, const char *label, bool enabl
 	text(g, x + (w - width) / 2, BUTTON_Y + 5, label, !enabled ? C_LINE : over ? C_TEXT : C_LABEL, 2);
 }
 
+// The emulator's ROM screen names what the channels play (stage 24): handed to the engine when they
+// change, while the page shows it.
+static void send_screen_names(mdmi_gui *g)
+{
+	rom_names *names = malloc(sizeof(*names));
+	if (names && files_screen_names(g->source.files, names) && (!g->screen_names_sent || memcmp(names, &g->screen_names, sizeof(*names)))
+		&& mdmi_engine_set_names(g->source.engine, names)) {
+		g->screen_names = *names;
+		g->screen_names_sent = true;
+	}
+	free(names);
+}
+
 static void render(mdmi_gui *g)
 {
 	fill(g, 0, 0, GUI_WIDTH, HEADER_H, C_BG);
@@ -5556,6 +5583,8 @@ static void render(mdmi_gui *g)
 		action_button(g, ACTION_STORE, "STORE", files_can_store(g->source.files, *g->source.channel));
 	}
 	if (rom) {
+		action_button(g, ACTION_EXPORT, "EXPORT", !g->exporting);
+		send_screen_names(g);
 		g->cell_count = 0;
 		draw_rom(g);
 	} else {
@@ -5793,6 +5822,36 @@ static void save_dialog(mdmi_gui *g)
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
 }
 
+// EXPORT: the ROM for the SD card, named in the save dialog, or in MDMI_TEST_EXPORT for tests.
+static void export_dialog(mdmi_gui *g)
+{
+	char path[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
+	const char *test = getenv("MDMI_TEST_EXPORT");
+	if (test && *test) {
+		snprintf(path, sizeof(path), "%s", test);
+	} else {
+		wchar_t file[MAX_PATH] = L"MDMI Slot.bin";
+		OPENFILENAMEW dialog = {0};
+		dialog.lStructSize = sizeof(dialog);
+		dialog.hwndOwner = g->window;
+		dialog.lpstrFilter = L"Mega Drive ROM (*.bin)\0*.bin\0";
+		dialog.lpstrFile = file;
+		dialog.nMaxFile = MAX_PATH;
+		dialog.lpstrDefExt = L"bin";
+		dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+		g->exporting = true;
+		refresh(g);
+		const bool chosen = GetSaveFileNameW(&dialog);
+		g->exporting = false;
+		if (!chosen) {
+			return;
+		}
+		to_utf8(file, path, MAX_PATH * 3);
+	}
+	const bool done = files_export(g->source.files, path, message, sizeof(message));
+	say(g, message, !done ? C_ERROR : strstr(message, "not in ROM") ? C_AMBER : C_TEXT, done ? MESSAGE_TICKS : ERROR_TICKS);
+}
+
 static void on_action(mdmi_gui *g, int action)
 {
 	char message[FILES_MESSAGE];
@@ -5804,6 +5863,8 @@ static void on_action(mdmi_gui *g, int action)
 		}
 	} else if (action == ACTION_SAVE) {
 		save_dialog(g);
+	} else if (action == ACTION_EXPORT) {
+		export_dialog(g);
 	} else if (action == ACTION_STORE) {
 		// Off when the channel is its place as it is: the mouse does nothing there.
 		if (files_can_store(g->source.files, *g->source.channel) && files_store(g->source.files, *g->source.channel, message, sizeof(message))) {

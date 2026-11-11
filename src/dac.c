@@ -506,7 +506,7 @@ uint8_t *dac_image(const dac_set *set, const uint8_t *rom, size_t size, size_t *
 	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
 		samples[note] = set->notes[note] ? &set->notes[note]->sample : NULL;
 	}
-	return rom_image_build(rom, size, samples, set->removed, built);
+	return rom_image_build(rom, size, samples, set->removed, NULL, NULL, built);
 }
 
 // One sample's head in the project's block, little endian: name, source rate and frames, the edit

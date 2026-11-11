@@ -82,6 +82,31 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   reads the folder and both files again when the page opens, a bank is chosen and after each action. A
   press on a library row tries it, a drag to the other list copies (into a library: its first free place),
   CLEAR on the hovered row empties it, NEW asks the save dialog (`MDMI_TEST_NEW` in tests).
+- EXPORT (stage 24, D58): `files_export` writes the ROM for the SD card. `rom_image_build` takes, besides
+  the samples, a `rom_bank` (the ROM bank as the fork's tables hold it, from `rom_bank_of` in `files.c`:
+  an envelope and a row as they play, a row switched off as 0 steps) and a `rom_names`. The FM voices are
+  packed over the build's GM ones where `M_BANK_0` points (`rom_image_pack_voice`, GCC's m68k bit fields:
+  no field straddles a byte; `rom_image_check` refuses an image whose GM voices differ from the plugin's
+  packing, its rows aren't empty or the names table's magic `MDMINAME` is missing); an envelope the image
+  doesn't hold goes after the samples and `ENVELOPES` points at it; the rows go into the fork's `ARP_ROWS`
+  (FM's 128, then PSG's), which a reset copies to RAM, so GM Reset and `FF` keep the bank; the names and
+  the signature into `PROGRAM_NAMES`. `tools/gen_rom_map.py` finds all four by `symbol.txt` and fails
+  without one. The signature is `BANK` and a CRC-16 of the image past the signature and the header's
+  checksum (`rom_image_signature`); `rom_image_for_sd` pads to a whole 512 KB and writes the checksum. The
+  file goes beside the target and then over it (`write_replace`). The emulator keeps booting the GM tables
+  and its sound goes by `sync` as before; only the names reach it: `files_screen_names` gives the bank's,
+  with a channel's own sound's name on its service numbers (FM 116 + 2c, PSG 120 + 2p), and the signature
+  EXPORT would write now (reckoned again when the bank or the samples change). The window hands them to
+  `mdmi_engine_set_names` while the ROM page shows; the engine writes them into the cartridge between
+  frames and after every boot, and `patch_core` leaves their bytes out of its comparison. The fork's
+  `ui.c` draws a row's name at column 11, 23 characters, only when the row's program, MIDI channel, DAC
+  or the name's bytes changed (the frame handler shares the frame with MIDI: a `sprintf` per row each
+  activity frame shifted the timing of seven `reg_test` checks), `DAC` on FM6 while the DAC plays,
+  `PROGRAM n` where a name is empty, the signature at the top right, and only warnings of the journal
+  (`ui_log_shown`); `No SRAM` became an info line. `names_ascii` (`src/names.c`) gives the ASCII both fonts
+  draw: Cyrillic transliterated, two letters at most, so a name cut to bytes still fits its columns; the
+  window's `text()` draws through it. `names_cut_utf8` ends a file's name cut to 24 bytes on a whole
+  letter. Tests name the file in `MDMI_TEST_EXPORT` instead of the save dialog.
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
 - PSG noise (stage 16, D45): Noise Type (Periodic, White) and Noise Rate (High, Mid, Low: the chip's clock

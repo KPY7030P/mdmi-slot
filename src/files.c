@@ -6,6 +6,7 @@
 #include "files.h"
 #include "rom_map.h"
 #include "instrument.h"
+#include "names.h"
 
 #define INSTRUMENT_MAX 64
 
@@ -26,6 +27,8 @@ void files_free(mdmi_files *files)
 	files->undo_state = NULL;
 	files->undo = UNDO_NONE;
 	dac_clear(&files->undo_dac);
+	free(files->signed_bank);
+	files->signed_bank = NULL;
 }
 
 static const char *extension_of(const char *path)
@@ -1168,4 +1171,171 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 const char *files_undo_text(const mdmi_files *files)
 {
 	return files->undo == UNDO_NONE ? NULL : files->undo_text;
+}
+
+// Stage 24. The ROM bank in the fork's tables: an envelope as it plays (the bank holds no shadow or
+// kept release, D30, D54), a row switched off as no row (D55).
+static void rom_bank_of(const patch_bank *bank, rom_bank *out)
+{
+	memset(out, 0, sizeof(*out));
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		patch_voice_fields(bank->places[place].voice, out->voices[place]);
+		memcpy(out->envelopes[place], bank->envelopes[place].steps, ROM_ENVELOPE_BYTES);
+		for (int psg = 0; psg < 2; psg++) {
+			const patch_arp *arp = patch_arp_played(psg ? &bank->envelope_arps[place] : &bank->place_arps[place]);
+			rom_arp *row = &out->arps[psg][place];
+			row->count = arp->count;
+			row->loop = arp->loop < 0 ? ROM_ARP_NO_LOOP : (uint8_t)arp->loop;
+			memcpy(row->steps, arp->steps, sizeof(row->steps));
+		}
+	}
+}
+
+// A name as the ROM's screen shows it: ASCII, cut to the row.
+#define SCREEN_NAME_CHARS 23
+static void screen_name(const char *name, char *out)
+{
+	char ascii[PATCH_NAME * 2];
+	names_ascii(name, ascii, sizeof(ascii));
+	memset(out, 0, ROM_NAME_BYTES);
+	memcpy(out, ascii, strnlen(ascii, SCREEN_NAME_CHARS));
+}
+
+static void bank_names(const patch_bank *bank, rom_names *names)
+{
+	memset(names, 0, sizeof(*names));
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		screen_name(bank->places[place].name, names->names[0][place]);
+		screen_name(bank->envelopes[place].name, names->names[1][place]);
+	}
+}
+
+// The image for the SD card before rom_image_for_sd, with its signature written. NULL with a reason.
+static uint8_t *export_image(mdmi_files *files, size_t *built, uint16_t *signature, const char **why)
+{
+	const patch_bank *bank = patch_bank_view(files->host.patch);
+	rom_bank *tables = malloc(sizeof(*tables));
+	rom_names *names = malloc(sizeof(*names));
+	uint8_t *image = NULL;
+	*why = "out of memory";
+	if (tables && names) {
+		rom_bank_of(bank, tables);
+		bank_names(bank, names);
+		size_t size;
+		const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+		const dac_set *dac = files->host.view->dac;
+		const rom_sample *samples[ROM_IMAGE_NOTES];
+		for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+			samples[note] = dac->notes[note] ? &dac->notes[note]->sample : NULL;
+		}
+		image = rom_image_build(rom, size, samples, dac->removed, tables, names, built);
+		if (!image) {
+			*why = rom_image_check(rom, size) ? "over 4 MB with the samples" : "the ROM's tables are not the plugin's";
+		} else {
+			*signature = rom_image_signature(image, *built);
+			char text[ROM_SIGNATURE_BYTES + 1];
+			snprintf(text, sizeof(text), "BANK %04X", *signature);
+			memcpy(image + rom_image_names_at(), text, strlen(text));
+		}
+	}
+	free(tables);
+	free(names);
+	return image;
+}
+
+// What the window's footer holds at scale 2 left of the build's label (gui.c, footer_text).
+#define EXPORT_FOOTER_CHARS 40
+
+bool files_export(mdmi_files *files, const char *path, char *message, size_t size)
+{
+	size_t built;
+	uint16_t signature;
+	const char *why;
+	uint8_t *image = export_image(files, &built, &signature, &why);
+	if (image && !rom_image_for_sd(&image, &built)) {
+		why = "out of memory";
+		free(image);
+		image = NULL;
+	}
+	if (!image) {
+		snprintf(message, size, "NOT WRITTEN: %s", why);
+		return false;
+	}
+	const bool written = write_replace(path, image, built);
+	free(image);
+	if (!written) {
+		snprintf(message, size, "NOT WRITTEN: %s can't be written", base_of(path));
+		return false;
+	}
+	// Channels the file can't play by their program numbers: a sound the bank doesn't hold.
+	char channels[64] = "";
+	int count = 0, last = -1;
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		if (files_can_store(files, channel)) {
+			const size_t at = strlen(channels);
+			snprintf(channels + at, sizeof(channels) - at, "%sCH%d", count ? " " : "", channel + 1);
+			count++;
+			last = channel;
+		}
+	}
+	const double mb = built / 1048576.0;
+	char head[FILES_MESSAGE];
+	if (count == 1) {
+		const patch_values *values = patch_view(files->host.patch);
+		const char *name = is_psg(last) ? patch_envelope_view(files->host.patch, last)->name : values->names[last];
+		snprintf(head, sizeof(head), "%s %.20s not in ROM. %.1f MB: ", channels, name, mb);
+	} else if (count) {
+		snprintf(head, sizeof(head), "%s not in ROM. %.1f MB: ", channels, mb);
+	} else {
+		snprintf(head, sizeof(head), "ROM %.1f MB: ", mb);
+	}
+	// The path is cut at its start, so the file's name shows.
+	const int room = EXPORT_FOOTER_CHARS - (int)strlen(head);
+	const int length = (int)strlen(path);
+	if (room > 4 && length > room) {
+		snprintf(message, size, "%s...%s", head, path + length - (room - 3));
+	} else {
+		snprintf(message, size, "%s%s", head, path);
+	}
+	return true;
+}
+
+bool files_screen_names(mdmi_files *files, rom_names *names)
+{
+	const patch_bank *bank = patch_bank_view(files->host.patch);
+	const dac_set *dac = files->host.view->dac;
+	if (!files->signed_bank || memcmp(files->signed_bank, bank, sizeof(*bank)) || files->signed_dac != dac->version) {
+		size_t built;
+		uint16_t signature = 0;
+		const char *why;
+		uint8_t *image = export_image(files, &built, &signature, &why);
+		const bool exported = image != NULL;
+		free(image);
+		if (!files->signed_bank && !(files->signed_bank = malloc(sizeof(*bank)))) {
+			return false;
+		}
+		// A bank EXPORT refuses has no signature, and isn't tried again until it changes.
+		memcpy(files->signed_bank, bank, sizeof(*bank));
+		files->signed_dac = dac->version;
+		files->signature = signature;
+		files->has_signature = exported;
+	}
+	bank_names(bank, names);
+	if (files->has_signature) {
+		snprintf(names->signature, sizeof(names->signature), "BANK %04X", files->signature);
+	} else {
+		snprintf(names->signature, sizeof(names->signature), "BANK ----");
+	}
+	// The plugin delivers a channel's own sound under its service numbers (D24, D28): there the
+	// screen shows that sound's name, not the bank place's.
+	const patch_values *values = patch_view(files->host.patch);
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		const bool psg = is_psg(channel);
+		const int first = psg ? 120 + (channel - PATCH_NUM_FM_CHANNELS) * 2 : 116 + channel * 2;
+		const char *name = psg ? patch_envelope_view(files->host.patch, channel)->name : values->names[channel];
+		for (int i = 0; i < 2; i++) {
+			screen_name(name, names->names[psg][first + i]);
+		}
+	}
+	return true;
 }

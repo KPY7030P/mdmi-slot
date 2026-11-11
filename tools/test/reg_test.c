@@ -4358,6 +4358,361 @@ static void test_csm_attack(void)
 	render(SETTLE_BLOCKS);
 }
 
+// Stage 24: the exported ROM plays the project by program changes and notes alone. Run A plays a
+// bank through the plugin as ever; run B boots the file EXPORT wrote and gets no SysEx at all: a
+// program change on each channel to its place, and the same notes. What the chip does must be the
+// same: an FM voice's registers and pitch steps, a PSG channel's volume and tone from frame to frame,
+// the DAC's sample.
+#define EXPORT_SEEN 48
+#define EXPORT_REGS 30
+typedef struct {
+	uint8_t regs[EXPORT_REGS];
+	uint16_t pitches[EXPORT_SEEN];
+	int pitch_count;
+	// PSG: volume << 12 | tone, as it changes.
+	uint32_t psg[EXPORT_SEEN];
+	int psg_count;
+} export_heard;
+
+// FM 1-3, PSG 7-8 on these places; place 7's row is switched off.
+static const int EXPORT_CHANNELS[5] = {0, 1, 2, FM_CHANNELS, FM_CHANNELS + 1};
+static const int EXPORT_PLACES[5] = {5, 120, 7, 3, 121};
+#define EXPORT_SAMPLE_NOTE 100
+
+static bool export_raw;
+
+static void export_midi(uint8_t a, uint8_t b, uint8_t c)
+{
+	if (export_raw) {
+		const uint8_t message[3] = {a, b, c};
+		mdmi_engine_midi(engine, 0, message, (a & 0xF0) == 0xC0 ? 2 : 3);
+	} else {
+		midi(a, b, c);
+	}
+}
+
+static void export_listen(int channel, export_heard *heard)
+{
+	memset(heard, 0, sizeof(*heard));
+	export_midi((uint8_t)(0x90 | channel), 60, 127);
+	const bool psg = channel >= FM_CHANNELS;
+	// A value counts once it held a quarter of a frame, as in poll_pitches: a tone is written in two
+	// halves, which can show for a moment.
+	uint32_t last = UINT32_MAX, held = UINT32_MAX;
+	int since = 0;
+	for (int t = 0; t < 50 * RATE / 60 / ARP_POLL; t++) {
+		if (t == 30 * RATE / 60 / ARP_POLL) {
+			export_midi((uint8_t)(0x80 | channel), 60, 0);
+		}
+		tick(ARP_POLL);
+		uint32_t now;
+		if (psg) {
+			const uint8_t c = (uint8_t)(channel - FM_CHANNELS);
+			now = (uint32_t)mdmi_engine_test_psg_volume(engine, c) << 12 | mdmi_engine_test_psg_tone(engine, c);
+		} else {
+			now = pitch_of(channel);
+		}
+		if (now != held) {
+			held = now;
+			since = t;
+		}
+		// From the third frame on: before it a register may still hold the last note's.
+		if (t >= 3 * RATE / 60 / ARP_POLL && (t - since) * ARP_POLL >= ARP_HOLD && held != last && heard->psg_count < EXPORT_SEEN
+			&& heard->pitch_count < EXPORT_SEEN) {
+			if (psg) {
+				heard->psg[heard->psg_count++] = held;
+			} else {
+				heard->pitches[heard->pitch_count++] = (uint16_t)held;
+			}
+			last = held;
+		}
+		if (!psg && t == 10 * RATE / 60 / ARP_POLL) {
+			int n = 0;
+			for (int base = 0x30; base <= 0x90; base += 0x10) {
+				for (int slot = 0; slot < 4; slot++) {
+					heard->regs[n++] = read_reg(channel, base, slot);
+				}
+			}
+			heard->regs[n++] = read_reg(channel, 0xB0, 0);
+			heard->regs[n++] = read_reg(channel, 0xB4, 0);
+		}
+	}
+	render(SETTLE_BLOCKS);
+}
+
+// The DAC's notes of the test: the project's ramp where the ROM has none, a ROM sample made the
+// project's, a ROM note removed, a loop with its release, a loop that stops at Note Off.
+#define EXPORT_DAC_NOTES 5
+static const int EXPORT_DAC[EXPORT_DAC_NOTES] = {EXPORT_SAMPLE_NOTE, 40, 41, 50, 52};
+static const char *const EXPORT_DAC_WHAT[EXPORT_DAC_NOTES] = {"the project's sample on a note the ROM has none for",
+	"a ROM sample made the project's", "a ROM note removed", "a loop with its release", "a loop that stops at Note Off"};
+
+// Output 6's energy (index 5: the outputs here are channels 1-10) while each DAC note is held 300 ms, and in the 200 ms after its Note Off.
+static void export_play(export_heard *heard, double (*dac)[2])
+{
+	for (int i = 0; i < 5; i++) {
+		export_listen(EXPORT_CHANNELS[i], &heard[i]);
+	}
+	if (export_raw) {
+		export_midi(0xB0, 78, 127);
+	} else {
+		set_global(GLOBAL_DAC, 1);
+		sync_and_settle();
+	}
+	render(DAC_BLOCKS);
+	for (int n = 0; n < EXPORT_DAC_NOTES; n++) {
+		reset_energy();
+		export_midi(0x95, (uint8_t)EXPORT_DAC[n], 127);
+		render(RATE * 3 / 10 / BLOCK);
+		dac[n][0] = out_energy[5];
+		export_midi(0x85, (uint8_t)EXPORT_DAC[n], 0);
+		reset_energy();
+		render(RATE * 2 / 10 / BLOCK);
+		dac[n][1] = out_energy[5];
+		render(SETTLE_BLOCKS);
+	}
+	if (export_raw) {
+		export_midi(0xB0, 78, 0);
+	} else {
+		set_global(GLOBAL_DAC, 0);
+		sync_and_settle();
+	}
+	render(DAC_BLOCKS);
+}
+
+// The same within 15%, or both silent against the loudest held note.
+static bool export_same_energy(double a, double b, double loudest)
+{
+	const double quiet = loudest * 1e-3;
+	return (a < quiet && b < quiet) || fabs(a - b) <= 0.15 * fmax(a, b);
+}
+
+static bool export_same_dac(const double (*a)[2], const double (*b)[2], const char *run)
+{
+	double loudest = 0;
+	for (int n = 0; n < EXPORT_DAC_NOTES; n++) {
+		loudest = fmax(loudest, fmax(a[n][0], b[n][0]));
+	}
+	bool same = loudest > 0;
+	for (int n = 0; n < EXPORT_DAC_NOTES; n++) {
+		const bool ok = export_same_energy(a[n][0], b[n][0], loudest) && export_same_energy(a[n][1], b[n][1], loudest);
+		printf("    %s, note %d, %s: held %.3g and %.3g, after Note Off %.3g and %.3g%s\n", run, EXPORT_DAC[n], EXPORT_DAC_WHAT[n], a[n][0], b[n][0], a[n][1], b[n][1], ok ? "" : ": DIFFER");
+		same = same && ok;
+	}
+	return same;
+}
+
+// The values a source took, each once, in order of value.
+static int export_values(const uint32_t *values, int count, uint32_t *out)
+{
+	int n = 0;
+	for (int i = 0; i < count; i++) {
+		int at = 0;
+		while (at < n && out[at] < values[i]) {
+			at++;
+		}
+		if (at == n || out[at] != values[i]) {
+			memmove(out + at + 1, out + at, (size_t)(n - at) * sizeof(*out));
+			out[at] = values[i];
+			n++;
+		}
+	}
+	return n;
+}
+
+// The same registers, and the same values in about as many changes: the two runs' notes meet the
+// ROM's frame at another phase, so a loop may play a step more or less before its release.
+static bool export_same(const export_heard *a, const export_heard *b, const char *what)
+{
+	uint32_t pa[EXPORT_SEEN], pb[EXPORT_SEEN], va[EXPORT_SEEN], vb[EXPORT_SEEN], sa[2 * EXPORT_SEEN], sb[2 * EXPORT_SEEN];
+	for (int i = 0; i < EXPORT_SEEN; i++) {
+		pa[i] = a->pitches[i];
+		pb[i] = b->pitches[i];
+	}
+	const int na = export_values(pa, a->pitch_count, va), nb = export_values(pb, b->pitch_count, vb);
+	// A PSG channel's volumes and tones each, not their pairs: the row and the envelope step on
+	// their own, so which pairs meet hangs on the phase too.
+	uint32_t qa[2 * EXPORT_SEEN], qb[2 * EXPORT_SEEN];
+	for (int i = 0; i < EXPORT_SEEN; i++) {
+		qa[i] = a->psg[i] >> 12 | 0x10000;
+		qa[EXPORT_SEEN + i] = a->psg[i] & 0xFFF;
+		qb[i] = b->psg[i] >> 12 | 0x10000;
+		qb[EXPORT_SEEN + i] = b->psg[i] & 0xFFF;
+	}
+	memmove(qa + a->psg_count, qa + EXPORT_SEEN, (size_t)a->psg_count * sizeof(*qa));
+	memmove(qb + b->psg_count, qb + EXPORT_SEEN, (size_t)b->psg_count * sizeof(*qb));
+	const int ma = export_values(qa, 2 * a->psg_count, sa), mb = export_values(qb, 2 * b->psg_count, sb);
+	int reg = -1;
+	for (int i = 0; i < EXPORT_REGS && reg < 0; i++) {
+		reg = a->regs[i] != b->regs[i] ? i : -1;
+	}
+	const bool same = reg < 0 && na == nb && !memcmp(va, vb, (size_t)na * sizeof(*va)) && ma == mb && !memcmp(sa, sb, (size_t)ma * sizeof(*sa))
+		&& abs(a->pitch_count - b->pitch_count) <= 3 && abs(a->psg_count - b->psg_count) <= 8
+		&& (a->psg_count < 4 || (b->psg_count >= 4 && !memcmp(a->psg + a->psg_count - 4, b->psg + b->psg_count - 4, 4 * sizeof(*a->psg))));
+	if (!same) {
+		printf("    %s: pitches %d and %d (%d and %d values), PSG changes %d and %d (%d and %d values)", what, a->pitch_count, b->pitch_count, na, nb,
+			a->psg_count, b->psg_count, ma, mb);
+		if (reg >= 0) {
+			printf(", register %d: %02X and %02X", reg, a->regs[reg], b->regs[reg]);
+		}
+		printf("\n      ");
+		for (int i = 0; i < a->psg_count; i++) {
+			printf("%05X ", a->psg[i]);
+		}
+		printf("\n      ");
+		for (int i = 0; i < b->psg_count; i++) {
+			printf("%05X ", b->psg[i]);
+		}
+		printf("\n");
+	}
+	return same;
+}
+
+static void take_exported(void *context, bool knobs)
+{
+	(void)context;
+	(void)knobs;
+}
+
+static void test_export(void)
+{
+	patch_instrument guitar, duck;
+	if (!load_file("Thunder Guitar 03.tyi", &guitar) || !load_file("Duck Guitar.tfi", &duck)) {
+		return;
+	}
+	// The bank: a file with an octave row, a voice on a service number of the plugin's, a GM voice
+	// whose row is switched off; an envelope with a loop and its release, and a steady one on 121.
+	patch_arp octave = PATCH_ARP_EMPTY, fifth = PATCH_ARP_EMPTY, off = PATCH_ARP_EMPTY;
+	octave.count = 2, octave.loop = 0, octave.steps[1] = 12;
+	fifth.count = 2, fifth.loop = 0, fifth.steps[1] = 7;
+	off.count = 2, off.loop = 0, off.steps[1] = 5, off.off = 1;
+	patch_instrument gm7 = patch_bank_view(patch)->places[7];
+	patch_load_place(patch, 5, &guitar, &octave);
+	patch_load_place(patch, 120, &duck, NULL);
+	patch_load_place(patch, 7, &gm7, &off);
+	static const uint8_t RELEASE[] = {0x00, 0x01, PATCH_EEF_LOOP_START, 0x02, 0x03, PATCH_EEF_LOOP_END, 0x05, 0x08, 0x0B, 0x0F, PATCH_EEF_END};
+	patch_envelope released, still;
+	patch_envelope_from_eef(&released, RELEASE, sizeof(RELEASE));
+	snprintf(released.name, sizeof(released.name), "Release");
+	steady(&still, 4, 3);
+	patch_load_envelope_place(patch, 3, &released, &fifth);
+	patch_load_envelope_place(patch, 121, &still, NULL);
+	patch_take_incoming(patch);
+	// The project's sample on a note the ROM has none for.
+	size_t rom_size, image_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	static state_view view;
+	static dac_set set;
+	memset(&set, 0, sizeof(set));
+	dac_put(&set, EXPORT_SAMPLE_NOTE, ramp_sample(1, 256 * 64));
+	// A ROM sample made the project's (D39), a ROM note removed, a loop with its release and one that
+	// stops at Note Off: the stop leaves no release in the image (D54).
+	rom_sample of_rom;
+	if (rom_image_sample(rom, rom_size, 40, &of_rom)) {
+		dac_put(&set, 40, dac_from_rom(&of_rom, "rom 40"));
+	}
+	dac_remove(&set, 41);
+	dac_put(&set, 50, marked_sample(1, 1, 2, 4));
+	dac_put(&set, 52, marked_sample(1, 1, 2, 0));
+	view.dac = &set;
+	uint8_t *image = dac_image(&set, rom, rom_size, &image_size);
+	boot_image(image, image_size);
+	free(image);
+	// Every channel plays a place as it is: tweaks of the tests before go with a step of the Preset.
+	// Pan isn't the bank's, the exported ROM starts centred; the tests after get theirs back.
+	int pans[FM_CHANNELS];
+	for (int channel = 0; channel < FM_CHANNELS; channel++) {
+		pans[channel] = model_value(channel, PARAM_PAN);
+	}
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		set_on(channel, PARAM_PRESET, 1);
+		set_on(channel, PARAM_PRESET, 0);
+		if (channel < FM_CHANNELS) {
+			set_on(channel, PARAM_PAN, 1);
+		}
+	}
+	for (int i = 0; i < 5; i++) {
+		set_on(EXPORT_CHANNELS[i], PARAM_PRESET, EXPORT_PLACES[i]);
+	}
+	full_velocity();
+
+	static export_heard a[5], b[5], c[5];
+	static double a_dac[EXPORT_DAC_NOTES][2], b_dac[EXPORT_DAC_NOTES][2], c_dac[EXPORT_DAC_NOTES][2];
+	export_raw = false;
+	export_play(a, a_dac);
+
+	// The window's view, which EXPORT reads, is the model's snapshot.
+	patch_publish(patch);
+	const files_host host = {patch, &view, take_exported, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char path[MAX_PATH], message[FILES_MESSAGE];
+	GetTempPathA(sizeof(path), path);
+	strcat(path, "mdmi-reg-export.bin");
+	const bool written = files_export(&files, path, message, sizeof(message));
+	printf("    %s\n", message);
+	check(written && !strstr(message, "not in ROM"), "EXPORT writes the file; every channel plays a place of the bank as it is");
+	FILE *file = fopen(path, "rb");
+	uint8_t *exported = malloc(ROM_IMAGE_MAX + (512u << 10));
+	size_t exported_size = file && exported ? fread(exported, 1, ROM_IMAGE_MAX + (512u << 10), file) : 0;
+	if (file) {
+		fclose(file);
+	}
+	check(exported_size && exported_size % (512u << 10) == 0, "the file is padded to a whole 512 KB");
+
+	// Run B: the file alone, as the console would boot it.
+	export_raw = true;
+	const mdmi_engine_stats before = mdmi_engine_get_stats(engine);
+	mdmi_engine_set_rom(engine, exported, exported_size);
+	while (mdmi_engine_get_stats(engine).boots == before.boots) {
+		render(1);
+	}
+	render(SETTLE_BLOCKS);
+	for (int i = 0; i < 5; i++) {
+		export_midi((uint8_t)(0xC0 | EXPORT_CHANNELS[i]), (uint8_t)EXPORT_PLACES[i], 0);
+	}
+	render(SETTLE_BLOCKS);
+	export_play(b, b_dac);
+	static const char *const WHAT[5] = {"FM 1, a file with a row", "FM 2 on 120", "FM 3, a row switched off", "PSG 7, loop and release with a row", "PSG 8 on 121, a loop that stops at Note Off"};
+	for (int i = 0; i < 5; i++) {
+		checkf(export_same(&a[i], &b[i], WHAT[i]), "exported ROM, by program change and notes alone: %s sounds as through the plugin", WHAT[i]);
+	}
+	check(export_same_dac(a_dac, b_dac, "file"), "the DAC's output 6 from the exported ROM as through the plugin: the project's sample, a ROM sample made the project's, a removed note, a loop with its release, a loop that stops");
+
+	// A reset keeps the bank (stage 24): GM Reset and FF, then the same program changes.
+	static const uint8_t GM_RESET[] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7}, SYSTEM_RESET = 0xFF;
+	mdmi_engine_midi(engine, 0, GM_RESET, sizeof(GM_RESET));
+	mdmi_engine_midi(engine, 0, &SYSTEM_RESET, 1);
+	render(RESET_BLOCKS);
+	for (int i = 0; i < 5; i++) {
+		export_midi((uint8_t)(0xC0 | EXPORT_CHANNELS[i]), (uint8_t)EXPORT_PLACES[i], 0);
+	}
+	render(SETTLE_BLOCKS);
+	export_play(c, c_dac);
+	bool kept = export_same_dac(a_dac, c_dac, "after the resets");
+	for (int i = 0; i < 5; i++) {
+		kept = export_same(&a[i], &c[i], WHAT[i]) && kept;
+	}
+	check(kept, "after GM Reset and FF a program change plays the bank's voice, envelope and row again");
+	export_raw = false;
+
+	free(exported);
+	DeleteFileA(path);
+	files_free(&files);
+	patch_bank fresh;
+	patch_bank_rom(&fresh);
+	patch_load_bank(patch, &fresh);
+	patch_take_incoming(patch);
+	for (int i = 0; i < 5; i++) {
+		patch_set(patch, PATCH_CHANNEL_ID(EXPORT_CHANNELS[i], PARAM_PRESET), 0);
+	}
+	dac_clear(&set);
+	boot_image(rom, rom_size);
+	for (int channel = 0; channel < FM_CHANNELS; channel++) {
+		set_on(channel, PARAM_PAN, pans[channel]);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -4408,6 +4763,7 @@ int main(int argc, char **argv)
 	test_ch3_off();
 	test_ch3_on();
 	test_load();
+	test_export();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);
 	test_voice_by_hand();

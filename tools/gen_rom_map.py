@@ -19,7 +19,7 @@ def main():
         if len(parts) == 3:
             # Link-time optimization may add a suffix to a local name.
             symbols.setdefault(parts[2].split(".")[0], int(parts[0], 16))
-    for name in ("_stext", "_edata", "percussionPcmSample"):
+    for name in ("_stext", "_etext", "_edata", "percussionPcmSample", "M_BANK_0", "ENVELOPES", "ARP_ROWS", "PROGRAM_NAMES"):
         if name not in symbols:
             raise SystemExit(f"{symbols_path}: no symbol {name}")
     # SGDK copies .data from the image at _stext to RAM at start, so the file holds the table there.
@@ -27,6 +27,17 @@ def main():
     table = symbols["percussionPcmSample"]
     if not RAM <= table < symbols["_edata"]:
         raise SystemExit(f"percussionPcmSample at {table:#x} is not in .data")
+    # Stage 24: the bank's tables. The pointers to the FM voices and envelopes are .data, copied to
+    # RAM at start, so the image holds them at their load address; the rows and names are .rodata.
+    data = {}
+    for name in ("M_BANK_0", "ENVELOPES"):
+        if not RAM <= symbols[name] < symbols["_edata"]:
+            raise SystemExit(f"{name} at {symbols[name]:#x} is not in .data")
+        data[name] = data_load + symbols[name] - RAM
+    for name in ("ARP_ROWS", "PROGRAM_NAMES"):
+        if not symbols[name] < symbols["_etext"]:
+            raise SystemExit(f"{name} at {symbols[name]:#x} is not in .rodata")
+        data[name] = symbols[name]
 
     text = open(samples_path).read()
     files = dict(re.findall(r"static const PcmSample (\w+) = \{ pcm_(\w+),", text))
@@ -50,6 +61,10 @@ def main():
         # SGDK copies the table to RAM at start: the running ROM reads it there (D39).
         f"#define ROM_PCM_TABLE_RAM 0x{table - RAM:04X}u",
         f"#define ROM_USED_END 0x{data_load + symbols['_edata'] - RAM:06X}u",
+        f"#define ROM_FM_PRESETS 0x{data['M_BANK_0']:06X}u",
+        f"#define ROM_ENVELOPES 0x{data['ENVELOPES']:06X}u",
+        f"#define ROM_ARP_ROWS 0x{data['ARP_ROWS']:06X}u",
+        f"#define ROM_PROGRAM_NAMES 0x{data['PROGRAM_NAMES']:06X}u",
         "static const char *const ROM_SAMPLE_NAMES[128] = {",
     ]
     for i in range(0, 128, 8):

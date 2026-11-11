@@ -141,6 +141,11 @@ struct mdmi_engine {
 	double worst_wait_ms;
 	// Set by the main thread, taken by the worker: the core boots this image next (stage 12).
 	rom_image *next_rom;
+	// Stage 24: the names the ROM's screen shows, set by the main thread and taken by the worker,
+	// which writes them into the cartridge between frames and again after every boot. The image
+	// they go through holds the cartridge up to their end; only their bytes are read.
+	rom_names *next_names;
+	uint8_t *names_image;
 	uint32_t boots;
 	double last_boot_ms;
 	// Images written into the running core instead of a restart (D39).
@@ -694,7 +699,11 @@ static bool patch_core(mdmi_engine *e, const rom_image *image)
 		return false;
 	}
 	const double start = now_ms();
-	if (e->cart_differs(image->bytes, image->size, 0, table) || e->cart_differs(image->bytes, image->size, table + ROM_IMAGE_TABLE_BYTES, records)) {
+	// The names are the plugin's to write (stage 24): the cartridge's differ from any image's. They
+	// lie before the sample table.
+	const uint32_t names = rom_image_names_at(), names_end = names + (uint32_t)sizeof(rom_names);
+	if (names_end > table || e->cart_differs(image->bytes, image->size, 0, names) || e->cart_differs(image->bytes, image->size, names_end, table)
+		|| e->cart_differs(image->bytes, image->size, table + ROM_IMAGE_TABLE_BYTES, records)) {
 		return false;
 	}
 	e->write_cart(image->bytes, image->size, records, ROM_IMAGE_MAX);
@@ -703,6 +712,25 @@ static bool patch_core(mdmi_engine *e, const rom_image *image)
 	e->last_patch_ms = now_ms() - start;
 	__atomic_add_fetch(&e->patches, 1, __ATOMIC_ACQ_REL);
 	return true;
+}
+
+// The names handed over last into the cartridge; the ROM's screen reads them from there.
+static void write_names(mdmi_engine *e)
+{
+	rom_names *names = __atomic_exchange_n(&e->next_names, NULL, __ATOMIC_ACQ_REL);
+	const uint32_t at = rom_image_names_at();
+	if (names) {
+		if (!e->names_image) {
+			e->names_image = calloc(1, at + sizeof(rom_names));
+		}
+		if (e->names_image) {
+			memcpy(e->names_image + at, names, sizeof(rom_names));
+		}
+		free(names);
+	}
+	if (e->names_image && e->dll) {
+		e->write_cart(e->names_image, at + sizeof(rom_names), at, at + sizeof(rom_names));
+	}
 }
 
 // The same core boots another image: its DLL is unloaded, so the next load starts from fresh globals.
@@ -919,6 +947,9 @@ static DWORD WINAPI worker_main(LPVOID param)
 			parked = false;
 			QueryThreadCycleTime(GetCurrentThread(), &e->j_cycles_base);
 		}
+		if (__atomic_load_n(&e->next_names, __ATOMIC_ACQUIRE) && __atomic_load_n(&e->booted, __ATOMIC_ACQUIRE)) {
+			write_names(e);
+		}
 		rom_image *image = __atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL);
 		if (image) {
 			if (patch_core(e, image)) {
@@ -945,8 +976,9 @@ static DWORD WINAPI worker_main(LPVOID param)
 				__atomic_store_n(&e->failed, 1, __ATOMIC_RELEASE);
 				return 1;
 			}
-			// The new core has the default filter.
+			// The new core has the default filter, and the image's empty names.
 			e->applied_filter_hz = 0;
+			write_names(e);
 			continue;
 		}
 		uint32_t filter_hz = __atomic_load_n(&e->filter_hz, __ATOMIC_ACQUIRE);
@@ -1061,6 +1093,9 @@ void mdmi_engine_destroy(mdmi_engine *e)
 		DeleteFileA(e->rom_path);
 	}
 	free(__atomic_exchange_n(&e->next_rom, NULL, __ATOMIC_ACQ_REL));
+	free(__atomic_exchange_n(&e->next_names, NULL, __ATOMIC_ACQ_REL));
+	free(e->names_image);
+	e->names_image = NULL;
 	if (clean_exit) {
 		if (e->journal) {
 			fclose(e->journal);
@@ -1212,6 +1247,18 @@ bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size)
 	image->size = size;
 	memcpy(image->bytes, bytes, size);
 	free(__atomic_exchange_n(&e->next_rom, image, __ATOMIC_ACQ_REL));
+	SetEvent(e->wake);
+	return true;
+}
+
+bool mdmi_engine_set_names(mdmi_engine *e, const rom_names *names)
+{
+	rom_names *copy = malloc(sizeof(*copy));
+	if (!copy) {
+		return false;
+	}
+	*copy = *names;
+	free(__atomic_exchange_n(&e->next_names, copy, __ATOMIC_ACQ_REL));
 	SetEvent(e->wake);
 	return true;
 }

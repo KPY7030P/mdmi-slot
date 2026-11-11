@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "instrument.h"
+#include "names.h"
 
 #define TFI_SIZE 42
 #define VGI_SIZE INSTRUMENT_VGI_SIZE
@@ -120,6 +121,8 @@ static void name_of(const char *file_name, char *name, size_t size, const char *
 	*extension = dot ? dot + 1 : "";
 	int length = dot ? (int)(dot - base) : (int)strlen(base);
 	snprintf(name, size, "%.*s", length, base);
+	// A long name cut to the place's 24 bytes ends on a whole character (stage 24).
+	names_cut_utf8(name);
 }
 
 static bool same_text(const char *a, const char *b)

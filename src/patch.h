@@ -318,6 +318,8 @@ bool patch_place_is_gm(const patch_bank *bank, int place);
 bool patch_envelope_is_rom(const patch_bank *bank, int place);
 // The bank a fresh plugin has: the ROM's GM presets and envelopes.
 void patch_bank_rom(patch_bank *bank);
+// A voice (from PARAM_ALGORITHM on) in the layout of the ROM's presets, PRESETS_GM's (stage 24).
+void patch_voice_fields(const int16_t *voice, uint8_t *fields);
 // Makes an envelope from EEF bytes: false if they don't fit. A missing EEF_END is added.
 bool patch_envelope_from_eef(patch_envelope *envelope, const uint8_t *eef, size_t size);
 // The steps before EEF_END.

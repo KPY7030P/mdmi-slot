@@ -329,6 +329,17 @@ static int count_not_black(int top, int bottom)
 	return count;
 }
 
+static int count_not_black_in(int left, int right, int top, int bottom)
+{
+	int count = 0;
+	for (int y = top; y < bottom; y++) {
+		for (int x = left; x < right; x++) {
+			count += (pixels[y * WIDTH + x] & 0xFFFFFF) != 0;
+		}
+	}
+	return count;
+}
+
 static void save_bmp(const char *prefix, const char *name)
 {
 	char path[MAX_PATH];
@@ -728,6 +739,73 @@ int main(int argc, char **argv)
 		run_ms(500);
 		capture(window);
 		CHECK(memcmp(before + HEADER_H * WIDTH, pixels + HEADER_H * WIDTH, (HEIGHT - HEADER_H) * WIDTH * sizeof(uint32_t)) != 0, "ROM screen is live: it changes when notes stop");
+
+		// Stage 24: the ROM's screen names each channel's sound where CC7B=00 and P=116 were, and
+		// EXPORT writes the ROM for the SD card. The ROM's picture is at (40, 54), 16 px a tile; the
+		// names start at column 11 of FM1's row 3.
+		run_ms(3500);
+		capture(window);
+		save_bmp(argv[2], "rom-names");
+		const int name_pixels = count_not_black_in(216, 216 + 23 * 16, 54 + 3 * 16, 54 + 4 * 16);
+		CHECK(name_pixels > 200, "FM1's row names its sound, also long after the last change (%d px)", name_pixels);
+		char export_path[MAX_PATH];
+		snprintf(export_path, sizeof(export_path), "%s-export.bin", argv[2]);
+		SetFileAttributesA(export_path, FILE_ATTRIBUTE_NORMAL);
+		DeleteFileA(export_path);
+		SetEnvironmentVariableA("MDMI_TEST_EXPORT", export_path);
+		static char env_export[MAX_PATH + 24];
+		snprintf(env_export, sizeof(env_export), "MDMI_TEST_EXPORT=%s", export_path);
+		_putenv(env_export);
+		click(window, 452 + 40, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "rom-export");
+		static uint8_t exported[(4u << 20) + 1];
+		const size_t exported_size = read_file(export_path, exported, sizeof(exported));
+		CHECK(exported_size && exported_size % (512u << 10) == 0 && count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_TEXT) > 100,
+			"EXPORT writes the ROM (%zu bytes) and the footer says where", exported_size);
+		SetFileAttributesA(export_path, FILE_ATTRIBUTE_READONLY);
+		click(window, 452 + 40, BUTTON_Y);
+		run_ms(200);
+		capture(window);
+		static uint8_t again[(4u << 20) + 1];
+		const size_t again_size = read_file(export_path, again, sizeof(again));
+		CHECK(count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_ERROR) > 100 && again_size == exported_size && !memcmp(again, exported, exported_size),
+			"a read-only file: the footer says NOT WRITTEN in red, the file stays");
+		SetFileAttributesA(export_path, FILE_ATTRIBUTE_NORMAL);
+		DeleteFileA(export_path);
+
+		// A file named in Cyrillic: the rail shows its name transliterated, not as gaps.
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(100);
+		capture(window);
+		const int gm_name = count_color_in(60, 236, RAIL_CH1_TOP, RAIL_CH1_TOP + 20, COLOR_TEXT);
+		char cyrillic[MAX_PATH];
+		GetTempPathA(MAX_PATH, cyrillic);
+		strcat(cyrillic, "\xD0\x91\xD0\xB0\xD1\x81.tfi");
+		{
+			static const uint8_t tfi[42] = {4, 0};
+			wchar_t wide[MAX_PATH];
+			MultiByteToWideChar(CP_UTF8, 0, cyrillic, -1, wide, MAX_PATH);
+			FILE *f = _wfopen(wide, L"wb");
+			fwrite(tfi, 1, sizeof(tfi), f);
+			fclose(f);
+		}
+		drop_file(window, cyrillic, RAIL_X, RAIL_CH1_TOP + 10);
+		run_ms(200);
+		capture(window);
+		save_bmp(argv[2], "cyrillic-name");
+		const int bas_name = count_color_in(60, 236, RAIL_CH1_TOP, RAIL_CH1_TOP + 20, COLOR_TEXT);
+		CHECK(bas_name > 0 && bas_name < gm_name, "a dropped Bas.tfi in Cyrillic draws as Bas (%d px, Grand Piano %d)", bas_name, gm_name);
+		click(window, 656 + 28, BUTTON_Y);
+		run_ms(200);
+		{
+			wchar_t wide[MAX_PATH];
+			MultiByteToWideChar(CP_UTF8, 0, cyrillic, -1, wide, MAX_PATH);
+			DeleteFileW(wide);
+		}
+		click(window, BUTTON_ROM_X, BUTTON_Y);
+		run_ms(100);
 
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);

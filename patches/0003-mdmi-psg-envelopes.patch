@@ -147,15 +147,62 @@ index a263bad..5fda09c 100644
 +WAV pcm_Tambourine "samples/Tambourine.wav" PCM4 15500
 +WAV pcm_Triangle "samples/Triangle.wav" PCM4 15500
 +WAV pcm_VibraSlap "samples/VibraSlap.wav" PCM4 15500
+diff --git a/src/arp_rows.c b/src/arp_rows.c
+new file mode 100644
+index 0000000..ae7170f
+--- /dev/null
++++ b/src/arp_rows.c
+@@ -0,0 +1,6 @@
++#include "arp_rows.h"
++
++// The loop byte is non-zero so the table is data in the image, never .bss.
++const ArpRow ARP_ROWS[2 * MIDI_PROGRAMS] = {
++    [0 ... 2 * MIDI_PROGRAMS - 1] = { .count = 0, .loop = ARP_NO_LOOP },
++};
+diff --git a/src/arp_rows.h b/src/arp_rows.h
+new file mode 100644
+index 0000000..bb95215
+--- /dev/null
++++ b/src/arp_rows.h
+@@ -0,0 +1,6 @@
++#pragma once
++#include "midi.h"
++
++// MDMI plugin fork, stage 24: the arpeggio rows a reset gives every program, FM's 128 then PSG's
++// 128. The build's are empty; the plugin writes a bank's rows here when it exports the ROM.
++extern const ArpRow ARP_ROWS[2 * MIDI_PROGRAMS];
+diff --git a/src/main.c b/src/main.c
+index 497f392..511dc7a 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -2,6 +2,7 @@
+ #include "comm/comm_demo.h"
+ #include "comm/comm_megawifi.h"
+ #include "comm/everdrive_led.h"
++#include "arp_rows.h"
+ #include "envelopes.h"
+ #include "genesis.h"
+ #include "log.h"
+@@ -20,7 +21,7 @@ int main()
+     log_init();
+     scheduler_init();
+     SYS_setVIntCallback(scheduler_vsync);
+-    midi_init(M_BANK_0, P_BANK_0, ENVELOPES);
++    midi_init(M_BANK_0, P_BANK_0, ENVELOPES, ARP_ROWS);
+     ui_init();
+     comm_init();
+     ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..fc1880c 100644
+index 5145b6a..b8986d9 100644
 --- a/src/midi.c
 +++ b/src/midi.c
-@@ -71,7 +71,12 @@ static const u16 portaTimeToInterval[128]
+@@ -71,7 +71,14 @@ static const u16 portaTimeToInterval[128]
  
  static DeviceChannel deviceChannels[DEV_CHANS];
  static MidiChannel midiChannels[MIDI_CHANNELS];
-+// MDMI plugin fork, stage 20: arpeggio rows per program, one table per type; a reset clears them.
++// MDMI plugin fork, stage 20: arpeggio rows per program, one table per type; a reset sets them
++// from the image's rows (stage 24, arp_rows.c).
++static const ArpRow* defaultArpRows;
 +static ArpRow fmArpRows[MIDI_PROGRAMS];
 +static ArpRow psgArpRows[MIDI_PROGRAMS];
  static bool dynamicMode;
@@ -164,20 +211,36 @@ index 5145b6a..fc1880c 100644
  static void (*changeCallback)(MidiChangeEvent);
  
  typedef struct MidiConfig {
-@@ -120,7 +125,12 @@ static void reset(void)
+@@ -103,9 +110,13 @@ static bool valid_midi_channel(u8 midiChan);
+ static bool valid_device_channel(u8 devChan);
+ static bool is_single_voice_channel(u8 midiChan, bool playing);
+ 
+-void midi_init(
+-    const FmPreset** presets, const PercussionPreset** percussionPresets, const u8** envelopes)
++void midi_init(const FmPreset** presets, const PercussionPreset** percussionPresets,
++    const u8** envelopes, const ArpRow* arpRows)
+ {
++    // The rows are const and look empty to the compiler; the plugin patches them in the image after
++    // the build, so their bytes must be read, never folded.
++    __asm__("" : "+g"(arpRows));
++    defaultArpRows = arpRows;
+     defaultEnvelopes = envelopes;
+     defaultPresets = presets;
+     defaultPercussionPresets = percussionPresets;
+@@ -120,7 +131,12 @@ static void reset(void)
  {
      midi_psg_reset();
      midi_fm_reset();
 +    // midi_fm_reset switched the DAC off: nothing of a sample is awaited any more (stage 18b).
 +    midi_dac_reset();
      midi_fm_sm_reset();
-+    memset(fmArpRows, 0, sizeof(fmArpRows));
-+    memset(psgArpRows, 0, sizeof(psgArpRows));
++    memcpy(fmArpRows, defaultArpRows, sizeof(fmArpRows));
++    memcpy(psgArpRows, defaultArpRows + MIDI_PROGRAMS, sizeof(psgArpRows));
 +    lfoResetChannel = 0;
      config = (MidiConfig) {
          .mappingModePref = DEFAULT_MAPPING_MODE,
          .disableNonGeneralMidiCCs = false,
-@@ -179,6 +189,8 @@ static void init_device_channel(u8 devChan)
+@@ -179,6 +195,8 @@ static void init_device_channel(u8 devChan)
      chan->cents = 0;
      chan->pitchBend = DEFAULT_MIDI_PITCH_BEND;
      chan->glideTargetPitch = 0;
@@ -186,7 +249,7 @@ index 5145b6a..fc1880c 100644
      update_device_channel_from_associated_midi_channel(chan);
  }
  
-@@ -401,12 +413,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+@@ -401,12 +419,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
      return findFreeChannel(midiChan);
  }
  
@@ -238,7 +301,7 @@ index 5145b6a..fc1880c 100644
  }
  
  static void set_downstream_pitch(DeviceChannel* devChan)
-@@ -415,8 +465,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
+@@ -415,8 +471,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
      devChan->ops->pitch(devChan->num, pc.pitch, pc.cents);
  }
  
@@ -267,7 +330,7 @@ index 5145b6a..fc1880c 100644
      PitchCents pc = effectivePitchCents(devChan);
      devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
  }
-@@ -446,6 +516,17 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -446,6 +522,17 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -285,7 +348,7 @@ index 5145b6a..fc1880c 100644
      if (is_single_voice_channel(midiChan, false)) {
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
-@@ -483,19 +564,37 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,19 +570,37 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -326,7 +389,7 @@ index 5145b6a..fc1880c 100644
                  } else {
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
-@@ -606,9 +705,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +711,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -339,7 +402,7 @@ index 5145b6a..fc1880c 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +751,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +757,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -418,7 +481,7 @@ index 5145b6a..fc1880c 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -841,7 +1008,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1014,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -427,7 +490,7 @@ index 5145b6a..fc1880c 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1165,85 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1171,85 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -514,7 +577,7 @@ index 5145b6a..fc1880c 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1247,11 +1489,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1495,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -546,7 +609,7 @@ index 5145b6a..fc1880c 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1573,12 @@ void midi_reset(void)
+@@ -1311,11 +1579,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -561,7 +624,7 @@ index 5145b6a..fc1880c 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1602,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1608,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
@@ -623,7 +686,7 @@ index 5145b6a..fc1880c 100644
  
  void midi_register_change_callback(void (*callback)(MidiChangeEvent))
 diff --git a/src/midi.h b/src/midi.h
-index 731aa8c..f79c1e6 100644
+index 731aa8c..bb5b010 100644
 --- a/src/midi.h
 +++ b/src/midi.h
 @@ -17,6 +17,8 @@
@@ -710,6 +773,17 @@ index 731aa8c..f79c1e6 100644
  } DeviceChannel;
  
  typedef enum MidiChangeType {
+@@ -173,8 +215,9 @@ typedef struct MidiChangeEvent {
+     u8 value;
+ } MidiChangeEvent;
+ 
++// Stage 24: arpRows holds 2 * MIDI_PROGRAMS rows, FM then PSG; a reset copies them.
+ void midi_init(const FmPreset** defaultPresets, const PercussionPreset** defaultPercussionPresets,
+-    const u8** defaultEnvelopes);
++    const u8** defaultEnvelopes, const ArpRow* arpRows);
+ void midi_note_on(u8 chan, u8 pitch, u8 velocity);
+ void midi_note_off(u8 chan, u8 pitch);
+ void midi_pitch_bend(u8 chan, u16 bend);
 diff --git a/src/midi_dac.c b/src/midi_dac.c
 index 33ac142..54fabc9 100644
 --- a/src/midi_dac.c
@@ -1986,6 +2060,75 @@ index df535e9..a6089c0 100644
 +#endif
 +
  extern const PcmSample* percussionPcmSample[128];
+diff --git a/src/program_names.c b/src/program_names.c
+new file mode 100644
+index 0000000..b393fc7
+--- /dev/null
++++ b/src/program_names.c
+@@ -0,0 +1,11 @@
++#include "program_names.h"
++
++const ProgramNames PROGRAM_NAMES = { .magic = { 'M', 'D', 'M', 'I', 'N', 'A', 'M', 'E' } };
++
++const ProgramNames* program_names(void)
++{
++    // The table is const and looks empty to the compiler; the plugin patches it after the build.
++    const ProgramNames* names = &PROGRAM_NAMES;
++    __asm__("" : "+g"(names));
++    return names;
++}
+diff --git a/src/program_names.h b/src/program_names.h
+new file mode 100644
+index 0000000..9279767
+--- /dev/null
++++ b/src/program_names.h
+@@ -0,0 +1,20 @@
++#pragma once
++#include "midi.h"
++
++// MDMI plugin fork, stage 24: the names the screen shows for each program, FM's then PSG's, and the
++// bank's signature for the header. ASCII, 0 ends a name; the build's are empty. The plugin writes a
++// bank's names here when it exports the ROM, and the emulator's own into the running cartridge.
++#define PROGRAM_NAME_BYTES 24
++#define PROGRAM_SIGNATURE_BYTES 12
++
++typedef struct ProgramNames {
++    // "MDMINAME": the plugin finds and checks the table by it.
++    char magic[8];
++    char signature[PROGRAM_SIGNATURE_BYTES];
++    char names[2][MIDI_PROGRAMS][PROGRAM_NAME_BYTES];
++} ProgramNames;
++
++extern const ProgramNames PROGRAM_NAMES;
++
++// The table the screen reads: the image's, never folded by the compiler.
++const ProgramNames* program_names(void);
+diff --git a/src/sram/midi_fm_sram.c b/src/sram/midi_fm_sram.c
+index b128177..34caeec 100644
+--- a/src/sram/midi_fm_sram.c
++++ b/src/sram/midi_fm_sram.c
+@@ -19,7 +19,9 @@ void midi_fm_sram_init(void)
+ void midi_fm_sram_save_preset(u8 program, const FmPreset* preset)
+ {
+     if (!sram_is_present()) {
+-        log_warn("No SRAM");
++        // MDMI plugin fork, stage 24: no SRAM is the usual case (an X3, the plugin's emulator), not
++        // a fault; as info it stays off the screen.
++        log_info("No SRAM");
+         return;
+     }
+ 
+@@ -51,7 +53,9 @@ void midi_fm_sram_save_preset(u8 program, const FmPreset* preset)
+ void midi_fm_sram_clear_preset(u8 program)
+ {
+     if (!sram_is_present()) {
+-        log_warn("No SRAM");
++        // MDMI plugin fork, stage 24: no SRAM is the usual case (an X3, the plugin's emulator), not
++        // a fault; as info it stays off the screen.
++        log_info("No SRAM");
+         return;
+     }
+ 
 diff --git a/src/synth.c b/src/synth.c
 index eec5dcc..b2b37cc 100644
 --- a/src/synth.c
@@ -2271,6 +2414,265 @@ index 222a443..caee9ff 100644
 +void synth_reset_lfo(void);
  void synth_direct_write_ym2612(u8 part, u8 reg, u8 data);
  void synth_enable_dac(bool enable);
+diff --git a/src/ui.c b/src/ui.c
+index 66cd230..5060d67 100644
+--- a/src/ui.c
++++ b/src/ui.c
+@@ -14,6 +14,7 @@
+ #include "sprite.h"
+ #include "scheduler.h"
+ #include "settings.h"
++#include "program_names.h"
+ 
+ #define DEVICE_X 1
+ #define FM_DEVICE_Y 3
+@@ -64,7 +65,10 @@
+ #define LED_TILE_OFF_OFFSET (LED_TILE_COUNT)
+ #define LOAD_TILE_Y (MAX_EFFECTIVE_Y + 1)
+ 
+-#define UI_CHANGE_TTL (50 * 3)
++// MDMI plugin fork, stage 24: each channel's row shows its sound's name where the last CC or
++// program change was printed, and the header the bank's signature.
++#define NAME_X CHANGE_X
++#define NAME_CHARS 23
+ 
+ static const char MIDI_CH_TEXT[16][3] = { " 1", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9",
+     "10", "11", "12", "13", "14", "15", "16" };
+@@ -98,18 +102,15 @@ static void print_routing_mode(bool enabled);
+ static void print_mappings_if_dirty(u8* midiChans);
+ static void print_mappings(void);
+ static void update(u16 delta);
+-static void midi_change_callback(MidiChangeEvent event);
++static void print_names(void);
++static void print_signature(void);
+ 
+ static u8 lastPitches[DEV_PHYSICAL_CHANS] = { 0 };
+ 
+-typedef struct MidiUiChange {
+-    MidiChangeType type;
+-    u8 key;
+-    u8 value;
+-    u16 ttl;
+-} MidiUiChange;
+-
+-static MidiUiChange lastMidiChangeEvent[DEV_PHYSICAL_CHANS] = { 0 };
++// What each row and the header show now, so only a change is drawn; the byte past the name's end
++// is its palette.
++static char lastNames[DEV_PHYSICAL_CHANS][NAME_CHARS + 2];
++static char lastSignature[PROGRAM_SIGNATURE_BYTES];
+ 
+ static u16 loadPercentSum = 0;
+ static bool commInited = false;
+@@ -119,7 +120,6 @@ static bool lastCh3SpecialMode = false;
+ void ui_init(void)
+ {
+     scheduler_addFrameHandler(update);
+-    midi_register_change_callback(midi_change_callback);
+ 
+     SPR_init();
+     VDP_loadFont(custom_font.tileset, DMA);
+@@ -141,22 +141,6 @@ void ui_init(void)
+     ui_fm_init();
+ }
+ 
+-static void midi_change_callback(MidiChangeEvent event)
+-{
+-    u8 midiChannel = event.chan;
+-    DeviceChannel* devChans = midi_channel_mappings();
+-    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
+-        if (devChans[i].midiChannel == midiChannel) {
+-            lastMidiChangeEvent[i] = (MidiUiChange) {
+-                .type = event.type,
+-                .key = event.key,
+-                .value = event.value,
+-                .ttl = UI_CHANGE_TTL,
+-            };
+-        }
+-    }
+-}
+-
+ static void update_ch3sp(bool enabled)
+ {
+     if (enabled) {
+@@ -194,6 +178,11 @@ static void print_log(void)
+     }
+ 
+     Log* log = log_dequeue();
++    // Stage 24: only warnings reach the screen; the info lines were what the plugin's own stores and
++    // service numbers left there.
++    while (log != NULL && !ui_log_shown(log)) {
++        log = log_dequeue();
++    }
+     if (log == NULL) {
+         return;
+     }
+@@ -245,51 +234,122 @@ static void print_ticks(void)
+     draw_text(t, 0, 1);
+ }
+ 
+-static void print_midi_changes(void)
++bool ui_log_shown(const Log* log)
++{
++    return log->level == Warn;
++}
++
++// The name a device channel's row shows: its program's, DAC on FM6 while the DAC plays, nothing
++// without a MIDI channel, and the program's number where the table has no name.
++static void name_of_channel(u8 chan, char* text, u8* pal)
++{
++    const DeviceChannel* devChan = &midi_channel_mappings()[chan];
++    *pal = PAL0;
++    text[0] = 0;
++    if (devChan->midiChannel == UNASSIGNED_MIDI_CHANNEL) {
++        return;
++    }
++    if (chan == MAX_FM_CHANS - 1 && synth_global_parameters()->dacEnable) {
++        strcpy(text, "DAC");
++        return;
++    }
++    const char* name = program_names()->names[chan >= DEV_CHAN_MIN_PSG][devChan->program];
++    if (!name[0]) {
++        sprintf(text, "PROGRAM %d", devChan->program + 1);
++        *pal = PAL3;
++        return;
++    }
++    u8 i = 0;
++    for (; i < NAME_CHARS && name[i]; i++) {
++        text[i] = name[i];
++    }
++    text[i] = 0;
++}
++
++// What a row's name was made from: the program, the MIDI channel, the DAC and the table's bytes.
++// The frame handler runs every frame beside the MIDI it reads, so a row is made again only when
++// one of them changed: the rest costs a compare.
++typedef struct NameSource {
++    u8 program;
++    u8 midiChannel;
++    bool dac;
++    char name[PROGRAM_NAME_BYTES];
++} NameSource;
++static NameSource lastSources[DEV_PHYSICAL_CHANS];
++static bool sourcesKnown;
++
++static bool name_source_changed(u8 chan)
++{
++    const DeviceChannel* devChan = &midi_channel_mappings()[chan];
++    NameSource* last = &lastSources[chan];
++    const bool dac = chan == MAX_FM_CHANS - 1 && synth_global_parameters()->dacEnable;
++    const char* name = program_names()->names[chan >= DEV_CHAN_MIN_PSG][devChan->program];
++    if (sourcesKnown && last->program == devChan->program && last->midiChannel == devChan->midiChannel
++        && last->dac == dac && !memcmp(last->name, name, PROGRAM_NAME_BYTES)) {
++        return false;
++    }
++    last->program = devChan->program;
++    last->midiChannel = devChan->midiChannel;
++    last->dac = dac;
++    memcpy(last->name, name, PROGRAM_NAME_BYTES);
++    return true;
++}
++
++static void print_names(void)
+ {
+     for (u8 chan = 0; chan < DEV_PHYSICAL_CHANS; chan++) {
+-        MidiUiChange* change = &lastMidiChangeEvent[chan];
+-        if (change->type == MidiChangeType_None) {
++        if (!name_source_changed(chan)) {
+             continue;
+         }
+-        if (change->ttl == 0) {
+-            change->type = MidiChangeType_None;
+-            VDP_clearTextArea(CHANGE_X + MARGIN_X, MARGIN_Y + MIDI_Y + (chan * 2), 7, 1);
+-            continue;
++        char text[NAME_CHARS + 2];
++        u8 pal;
++        name_of_channel(chan, text, &pal);
++        u8 length = strlen(text);
++        while (length < NAME_CHARS) {
++            text[length++] = ' ';
+         }
+-        if (change->ttl == UI_CHANGE_TTL) {
+-            VDP_setTextPalette(PAL2);
+-            char text[10];
+-            switch (change->type) {
+-            case MidiChangeType_Program: {
+-                sprintf(text, "P=%-3d", change->value);
+-                draw_text(text, CHANGE_X, MIDI_Y + (chan * 2));
+-                break;
+-            }
+-            case MidiChangeType_CC: {
+-                sprintf(text, "CC%02X=%02X", change->key, change->value);
+-                draw_text(text, CHANGE_X, MIDI_Y + (chan * 2));
+-                break;
+-            }
+-            default:
+-                break;
+-            }
+-            VDP_setTextPalette(PAL0);
++        text[NAME_CHARS] = 0;
++        text[NAME_CHARS + 1] = pal;
++        if (!memcmp(text, lastNames[chan], sizeof(text))) {
++            continue;
+         }
+-        change->ttl--;
++        memcpy(lastNames[chan], text, sizeof(text));
++        VDP_setTextPalette(pal);
++        draw_text(text, NAME_X, MIDI_Y + (chan * 2));
++        VDP_setTextPalette(PAL0);
+     }
++    sourcesKnown = true;
++}
++
++// Right aligned, ending at the screen's last column but the margin.
++static void print_signature(void)
++{
++    const char* signature = program_names()->signature;
++    if (!memcmp(signature, lastSignature, PROGRAM_SIGNATURE_BYTES)) {
++        return;
++    }
++    memcpy(lastSignature, signature, PROGRAM_SIGNATURE_BYTES);
++    char text[PROGRAM_SIGNATURE_BYTES + 1];
++    memcpy(text, signature, PROGRAM_SIGNATURE_BYTES);
++    text[PROGRAM_SIGNATURE_BYTES] = 0;
++    u8 length = strlen(text);
++    VDP_clearTextArea(MAX_X - MARGIN_X - PROGRAM_SIGNATURE_BYTES + 1, MARGIN_Y, PROGRAM_SIGNATURE_BYTES, 1);
++    VDP_setTextPalette(PAL3);
++    draw_text(text, MAX_X - MARGIN_X - length, 0);
++    VDP_setTextPalette(PAL0);
+ }
+ 
+ static void update(u16 delta)
+ {
+     update_key_on_off();
+-    print_midi_changes();
+ 
+     static u16 activityFrame = 0;
+     activityFrame += delta;
+     if (activityFrame >= FRAMES_BEFORE_UPDATE_ACTIVITY) {
+         activityFrame = 0;
+         print_mappings();
++        print_names();
++        print_signature();
+         print_comm_mode();
+         print_log();
+         print_routing_mode_if_needed();
+diff --git a/src/ui.h b/src/ui.h
+index 675cc67..7d10b36 100644
+--- a/src/ui.h
++++ b/src/ui.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include "genesis.h"
++#include "log.h"
+ 
+ #define MAX_Y 27
+ #define MAX_X 39
+@@ -11,3 +12,5 @@
+ void ui_init(void);
+ void ui_draw_text(const char* text, u16 x, u16 y);
+ void ui_print_present_devices(void);
++// Stage 24: whether a journal line reaches the screen; only warnings do.
++bool ui_log_shown(const Log* log);
 diff --git a/src/ym2612_regs.h b/src/ym2612_regs.h
 index 9919ce7..8db9e5b 100644
 --- a/src/ym2612_regs.h
@@ -2643,10 +3045,16 @@ index 8dd9ef6..b196d60 100644
          e2e_test(test_plays_pcm_sample),
          e2e_test(test_midi_last_note_played_priority_respected_on_fm),
 diff --git a/tests/system/test_e2e.c b/tests/system/test_e2e.c
-index d9cce30..e487042 100644
+index d9cce30..84e5ee6 100644
 --- a/tests/system/test_e2e.c
 +++ b/tests/system/test_e2e.c
-@@ -8,6 +8,8 @@
+@@ -1,4 +1,5 @@
+ #include "test_e2e.h"
++#include "arp_rows.h"
+ #include "comm/comm.h"
+ #include "envelopes.h"
+ #include "midi.h"
+@@ -8,6 +9,8 @@
  #include "mocks/mock_sgdk.h"
  #include "mocks/mock_synth.h"
  #include "mocks/mock_ym2612.h"
@@ -2655,7 +3063,16 @@ index d9cce30..e487042 100644
  #include "presets.h"
  #include "scheduler.h"
  #include "test_helpers.h"
-@@ -183,20 +185,25 @@ void test_loads_psg_envelope(void** state)
+@@ -23,7 +26,7 @@ int test_e2e_setup(void** state)
+     comm_reset_counts();
+     stub_megawifi_as_not_present();
+     comm_init();
+-    midi_init(M_BANK_0, P_BANK_0, ENVELOPES);
++    midi_init(M_BANK_0, P_BANK_0, ENVELOPES, ARP_ROWS);
+ 
+     mock_sgdk_enable_checks();
+     mock_ym2612_enable_checks();
+@@ -183,20 +186,25 @@ void test_loads_psg_envelope(void** state)
      midi_rx_read();
  }
  
@@ -2686,7 +3103,7 @@ index d9cce30..e487042 100644
  
      stub_usb_receive_cc(MIDI_CHANNEL_3, CC_GENMDM_FM_ALGORITHM, 0x7F); // alg 7
      expect_ym2612_write_reg(0, 0xB2, 0x7);
-@@ -205,12 +212,14 @@ void test_sets_separate_ch3_operator_frequencies(void** state)
+@@ -205,12 +213,14 @@ void test_sets_separate_ch3_operator_frequencies(void** state)
      const u8 upperRegs[] = { 0xAD, 0xAE, 0xAC }; // ops 0, 1, 2
      const u8 lowerRegs[] = { 0xA9, 0xAA, 0xA8 };
      const u8 tlValues[] = { 0x27, 0x04, 0x24 };
@@ -2701,7 +3118,7 @@ index d9cce30..e487042 100644
          midi_rx_read();
      }
  }
-@@ -218,9 +227,7 @@ void test_sets_separate_ch3_operator_frequencies(void** state)
+@@ -218,9 +228,7 @@ void test_sets_separate_ch3_operator_frequencies(void** state)
  void test_pitch_bends_ch3_special_mode_operators(void** state)
  {
      stub_everdrive_as_present();
@@ -2712,7 +3129,7 @@ index d9cce30..e487042 100644
  
      stub_usb_receive_cc(MIDI_CHANNEL_3, CC_GENMDM_FM_ALGORITHM, 0x7F); // alg 7
      expect_ym2612_write_reg(0, YM_REG(YM_BASE_ALGORITHM_FEEDBACK, YM_CH3), 0x7);
-@@ -230,6 +237,7 @@ void test_pitch_bends_ch3_special_mode_operators(void** state)
+@@ -230,6 +238,7 @@ void test_pitch_bends_ch3_special_mode_operators(void** state)
      expect_ym2612_write_reg(0, YM_CH3SM_OP1_FREQ_MSB_BLK, 0x22);
      expect_ym2612_write_reg(0, YM_CH3SM_OP1_FREQ_LSB, 0x84);
      expect_ym2612_write_operator_any_data(CH3_SPECIAL_MODE, 0, 0x40);
@@ -2720,7 +3137,7 @@ index d9cce30..e487042 100644
      midi_rx_read();
  
      stub_usb_receive_pitch_bend(MIDI_CHANNEL_11, 0x4000);
-@@ -238,6 +246,238 @@ void test_pitch_bends_ch3_special_mode_operators(void** state)
+@@ -238,6 +247,238 @@ void test_pitch_bends_ch3_special_mode_operators(void** state)
      midi_rx_read();
  }
  
@@ -2959,7 +3376,7 @@ index d9cce30..e487042 100644
  void test_write_directly_to_ym2612_regs_via_sysex(void** state)
  {
      stub_everdrive_as_present();
-@@ -254,7 +494,7 @@ void test_plays_pcm_sample(void** state)
+@@ -254,7 +495,7 @@ void test_plays_pcm_sample(void** state)
  {
      stub_everdrive_as_present();
      stub_usb_receive_cc(MIDI_CHANNEL_1, CC_GENMDM_ENABLE_DAC, 127);
@@ -2968,7 +3385,7 @@ index d9cce30..e487042 100644
      expect_value(__wrap_Z80_loadDriver, waitReady, true);
      expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
      will_return(__wrap_Z80_getAndRequestBus, false);
-@@ -264,15 +504,43 @@ void test_plays_pcm_sample(void** state)
+@@ -264,15 +505,43 @@ void test_plays_pcm_sample(void** state)
      expect_value(__wrap_YM2612_write, port, 0);
      expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
      expect_function_call(__wrap_Z80_releaseBus);
@@ -3033,7 +3450,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..822a5cd 100644
+index d2449c4..f97e412 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -3153,7 +3570,15 @@ index d2449c4..822a5cd 100644
          synth_test(test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded),
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
-@@ -440,6 +508,63 @@ int main(void)
+@@ -382,6 +450,7 @@ int main(void)
+         log_test(test_log_info_writes_to_log_buffer),
+         log_test(test_log_warn_writes_to_log_buffer),
+         log_test(test_log_stores_two_logs),
++        log_test(test_log_screen_shows_only_warnings),
+         log_test(test_log_stores_multiple_logs_and_overwrites_older),
+         log_test(
+             test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
+@@ -440,6 +509,64 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
@@ -3171,6 +3596,7 @@ index d2449c4..822a5cd 100644
 +        midi_test(test_midi_arp_note_off_stops_steps),
 +        midi_test(test_midi_arp_rewrite_keeps_sounding_row),
 +        midi_test(test_midi_arp_reset_clears_rows),
++        midi_test(test_midi_arp_reset_takes_image_rows),
 +        midi_test(test_midi_arp_adds_to_bend_and_fine_tune),
 +        midi_test(test_midi_arp_adds_to_portamento),
 +        midi_test(test_midi_arp_fm_held_within_range),
@@ -3217,12 +3643,83 @@ index d2449c4..822a5cd 100644
  
          midi_finetune_test(test_midi_finetune_max),
          midi_finetune_test(test_midi_finetune_min),
+diff --git a/tests/unit/test_log.c b/tests/unit/test_log.c
+index 5377c79..9de5c05 100644
+--- a/tests/unit/test_log.c
++++ b/tests/unit/test_log.c
+@@ -1,5 +1,6 @@
+ #include "test_log.h"
+ #include "log.h"
++#include "ui.h"
+ #include "string.h"
+ #include "mocks/mock_log.h"
+ 
+@@ -68,3 +69,14 @@ void test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued(UNUSED
+     assert_non_null(__real_log_dequeue());
+     assert_null(__real_log_dequeue());
+ }
++
++// MDMI plugin fork, stage 24: the ROM's screen shows warnings only; the plugin's stores and service
++// numbers leave info lines ("Prg 116: FM preset stored", "No SRAM").
++void test_log_screen_shows_only_warnings(UNUSED void** state)
++{
++    __real_log_info("Prg %d: FM preset stored", 116);
++    __real_log_warn("Prg %d: Invalid PSG envelope", 41);
++
++    assert_false(ui_log_shown(__real_log_dequeue()));
++    assert_true(ui_log_shown(__real_log_dequeue()));
++}
+diff --git a/tests/unit/test_log.h b/tests/unit/test_log.h
+index e212165..06af454 100644
+--- a/tests/unit/test_log.h
++++ b/tests/unit/test_log.h
+@@ -6,3 +6,4 @@ void test_log_warn_writes_to_log_buffer(UNUSED void** state);
+ void test_log_stores_two_logs(UNUSED void** state);
+ void test_log_stores_multiple_logs_and_overwrites_older(UNUSED void** state);
+ void test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued(UNUSED void** state);
++void test_log_screen_shows_only_warnings(UNUSED void** state);
+diff --git a/tests/unit/test_midi.c b/tests/unit/test_midi.c
+index e17b775..146571d 100644
+--- a/tests/unit/test_midi.c
++++ b/tests/unit/test_midi.c
+@@ -53,6 +53,9 @@ static const u8* TEST_ENVELOPES[MIDI_PROGRAMS] = { ENVELOPE_0, ENVELOPE_1, ENVEL
+     ENVELOPE_0, ENVELOPE_0, ENVELOPE_0, ENVELOPE_0, ENVELOPE_0, ENVELOPE_0, ENVELOPE_0, ENVELOPE_0,
+     ENVELOPE_0, ENVELOPE_0, ENVELOPE_0, ENVELOPE_0 };
+ 
++// Stage 24: the image's rows, empty before every test; a test may fill them and reset.
++ArpRow TEST_ARP_ROWS[2 * MIDI_PROGRAMS];
++
+ int test_midi_setup(UNUSED void** state)
+ {
+     expect_any(__wrap_scheduler_addFrameHandler, onFrame);
+@@ -61,7 +64,8 @@ int test_midi_setup(UNUSED void** state)
+     P_BANK_0[30] = &TEST_P_BANK_0_INST_30_CASTANETS;
+     mock_log_disable_checks();
+     mock_synth_disable_checks();
+-    midi_init(M_BANK_0, P_BANK_0, TEST_ENVELOPES);
++    memset(TEST_ARP_ROWS, 0, sizeof(TEST_ARP_ROWS));
++    midi_init(M_BANK_0, P_BANK_0, TEST_ENVELOPES, TEST_ARP_ROWS);
+     mock_synth_enable_checks();
+     mock_sgdk_set_SYS_isPAL(false);
+     return 0;
+diff --git a/tests/unit/test_midi.h b/tests/unit/test_midi.h
+index 729d99e..da26e28 100644
+--- a/tests/unit/test_midi.h
++++ b/tests/unit/test_midi.h
+@@ -16,6 +16,7 @@
+ extern const FmPreset TEST_M_BANK_0_INST_0_GRANDPIANO;
+ extern const FmPreset TEST_M_BANK_0_INST_1_BRIGHTPIANO;
+ extern const PercussionPreset TEST_P_BANK_0_INST_30_CASTANETS;
++extern ArpRow TEST_ARP_ROWS[2 * MIDI_PROGRAMS];
+ 
+ int test_midi_setup(UNUSED void** state);
+ void test_midi_polyphonic_mode_returns_state(UNUSED void** state);
 diff --git a/tests/unit/test_midi_arp.c b/tests/unit/test_midi_arp.c
 new file mode 100644
-index 0000000..9f70119
+index 0000000..e2dd68d
 --- /dev/null
 +++ b/tests/unit/test_midi_arp.c
-@@ -0,0 +1,455 @@
+@@ -0,0 +1,476 @@
 +// MDMI plugin fork, stage 20: arpeggio rows of FM and PSG programs, SysEx 0A 02 and 0A 03.
 +#include "test_midi_arp.h"
 +#include "test_midi.h"
@@ -3521,6 +4018,27 @@ index 0000000..9f70119
 +    ticks_without_writes(10);
 +}
 +
++// Stage 24: a reset gives each program the image's row again, past what a SysEx stored over it.
++void test_midi_arp_reset_takes_image_rows(UNUSED void** state)
++{
++    TEST_ARP_ROWS[0] = (ArpRow) { .count = 2, .loop = 0, .steps = { 0, 12 } };
++    TEST_ARP_ROWS[MIDI_PROGRAMS] = (ArpRow) { .count = 2, .loop = 0, .steps = { 0, 7 } };
++    const s8 steps[] = { 3 };
++    store_fm_row(0, NO_LOOP, steps, sizeof(steps));
++    store_psg_row(0, NO_LOOP, steps, sizeof(steps));
++
++    mock_synth_disable_checks();
++    __real_midi_reset();
++    mock_synth_enable_checks();
++
++    fm_note_on(MIDI_PITCH_C4, 4, SYNTH_NTSC_C);
++    fm_tick(5, SYNTH_NTSC_C);
++    expect_synth_note_off(FM_CH1);
++    __real_midi_note_off(FM_MIDI_CHAN, MIDI_PITCH_C4);
++    psg_note_on(MIDI_PITCH_C4, TONE_C4);
++    psg_tick(TONE_G4);
++}
++
 +// Fine tune +50 cents, bend +1 semitone, the row +12: C#5 and 50 cents.
 +void test_midi_arp_adds_to_bend_and_fine_tune(UNUSED void** state)
 +{
@@ -3680,10 +4198,10 @@ index 0000000..9f70119
 +}
 diff --git a/tests/unit/test_midi_arp.h b/tests/unit/test_midi_arp.h
 new file mode 100644
-index 0000000..4e0d9ca
+index 0000000..aa4d6d7
 --- /dev/null
 +++ b/tests/unit/test_midi_arp.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,23 @@
 +#pragma once
 +#include "cmocka_inc.h"
 +
@@ -3697,6 +4215,7 @@ index 0000000..4e0d9ca
 +void test_midi_arp_note_off_stops_steps(UNUSED void** state);
 +void test_midi_arp_rewrite_keeps_sounding_row(UNUSED void** state);
 +void test_midi_arp_reset_clears_rows(UNUSED void** state);
++void test_midi_arp_reset_takes_image_rows(UNUSED void** state);
 +void test_midi_arp_adds_to_bend_and_fine_tune(UNUSED void** state);
 +void test_midi_arp_adds_to_portamento(UNUSED void** state);
 +void test_midi_arp_fm_held_within_range(UNUSED void** state);

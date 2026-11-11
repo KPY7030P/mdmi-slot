@@ -170,6 +170,13 @@ static int preset_field(int param)
 	return 4 + op * PATCH_OP_PARAMS + OP_PARAMS[i].preset_field;
 }
 
+void patch_voice_fields(const int16_t *voice, uint8_t *fields)
+{
+	for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
+		fields[preset_field(param)] = (uint8_t)voice[param - PARAM_ALGORITHM];
+	}
+}
+
 void patch_global_init(void)
 {
 	for (size_t i = 0; i < ROM_ENVELOPES; i++) {

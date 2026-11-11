@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "rom_image.h"
 
 // One emulated Mega Drive running the MDMI ROM on its own thread. Every engine gets
 // a private copy of the BlastEm DLL because the core keeps its state in globals.
@@ -82,6 +83,9 @@ const uint8_t *mdmi_engine_builtin_rom(size_t *size);
 // one; after it written into the running core when only its samples differ (D39), else as a restart
 // on the engine's own thread, silent while it boots. Stats show both and their time.
 bool mdmi_engine_set_rom(mdmi_engine *e, const uint8_t *bytes, size_t size);
+// Stage 24: the names and signature the ROM's screen shows, written into the running cartridge
+// between frames and again after every boot. Main thread; the engine keeps a copy.
+bool mdmi_engine_set_names(mdmi_engine *e, const rom_names *names);
 // Tests only, before activate: the emulator computes no further than the block being rendered, so
 // after mdmi_engine_render it stands at the step past the audio, whatever the scheduler did. It may
 // still be finishing that step by a few cycles while the test reads it.

@@ -59,6 +59,12 @@ typedef struct {
 	bool undo_envelopes;
 	char undo_library[LIBRARY_PATH];
 	char undo_text[FILES_MESSAGE];
+	// Stage 24: the bank and samples the signature was last reckoned for, and the signature.
+	patch_bank *signed_bank;
+	uint32_t signed_dac;
+	uint16_t signature;
+	// False when EXPORT would refuse that bank.
+	bool has_signature;
 } mdmi_files;
 
 void files_init(mdmi_files *files, const files_host *host);
@@ -122,5 +128,14 @@ bool files_copy_place(mdmi_files *files, bool envelopes, const files_spot *from,
 bool files_clear_place(mdmi_files *files, bool envelopes, const files_spot *spot, char *message, size_t size);
 // What undo would put back, or NULL.
 const char *files_undo_text(const mdmi_files *files);
+// EXPORT (stage 24): the ROM for the SD card, with the ROM bank, the DAC samples, the names and the
+// signature, written beside the file and then put in its place, so a refusal leaves it as it was. Not
+// remembered by the project, no undo. The message names the channels that play a sound the bank
+// doesn't hold, which the file can't play by its program numbers.
+bool files_export(mdmi_files *files, const char *path, char *message, size_t size);
+// The names the emulator's ROM screen shows (stage 24): the bank's, where a channel's service
+// numbers carry its own sound's name, and the signature EXPORT would write now. False when out of
+// memory.
+bool files_screen_names(mdmi_files *files, rom_names *names);
 
 #endif

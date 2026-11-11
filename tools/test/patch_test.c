@@ -14,6 +14,8 @@
 #include "files.h"
 #include "patch.h"
 #include "presets_gm.h"
+#include "names.h"
+#include "rom_image.h"
 
 #define OP_TL 0
 #define OP_SR 6
@@ -2984,6 +2986,140 @@ static void test_libraries(void)
 	files_free(&files);
 }
 
+static uint8_t *read_whole(const char *path, size_t *size)
+{
+	FILE *file = fopen(path, "rb");
+	if (!file) {
+		return NULL;
+	}
+	fseek(file, 0, SEEK_END);
+	*size = (size_t)ftell(file);
+	fseek(file, 0, SEEK_SET);
+	uint8_t *bytes = malloc(*size ? *size : 1);
+	if (bytes && fread(bytes, 1, *size, file) != *size) {
+		free(bytes);
+		bytes = NULL;
+	}
+	fclose(file);
+	return bytes;
+}
+
+static uint32_t be32(const uint8_t *at)
+{
+	return (uint32_t)at[0] << 24 | (uint32_t)at[1] << 16 | (uint32_t)at[2] << 8 | at[3];
+}
+
+// Stage 24: the image EXPORT writes, and names as the ROM's screen and the window show them.
+static void test_export(void)
+{
+	char ascii[64];
+	names_ascii("\xD0\x91\xD0\xB0\xD1\x81 \xD0\x96\xD0\xB8\xD1\x80\xD0\xBD\xD1\x8B\xD0\xB9.tfi", ascii, sizeof(ascii));
+	CHECK(!strcmp(ascii, "Bas Zhirnyy.tfi"), "a Cyrillic name is transliterated: %s", ascii);
+	names_ascii("\xD0\xA9\xD1\x91\xD1\x82\xD0\xBA\xD0\xB0 \xE2\x80\x94 x\xD0", ascii, sizeof(ascii));
+	CHECK(!strcmp(ascii, "Shyotka ? x"), "two letters at most, other characters as ?, a cut letter dropped: %s", ascii);
+	char cut[PATCH_NAME];
+	// 23 bytes of Cyrillic and ASCII, the last letter cut in half at 24.
+	snprintf(cut, sizeof(cut), "%s", "abcdefghijklmnopqrstuv\xD0\x96\xD0\x96");
+	names_cut_utf8(cut);
+	CHECK(!strcmp(cut, "abcdefghijklmnopqrstuv"), "a name cut at its 24 bytes ends on a whole letter: %s", cut);
+
+	size_t rom_size, built;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	CHECK(rom_image_check(rom, rom_size), "the built ROM's GM voices are as the plugin packs them, its rows empty");
+	uint32_t voices, envelopes, rows;
+	rom_image_tables(&voices, &envelopes, &rows);
+	// Past the ROM's own data: the sample records and data start there, and what the bank adds.
+	uint32_t table, table_ram, records;
+	rom_image_zone(&table, &table_ram, &records);
+	uint8_t *bad = malloc(rom_size);
+	memcpy(bad, rom, rom_size);
+	bad[be32(rom + voices + 4 * 9) + 3] ^= 0x08;
+	CHECK(!rom_image_check(bad, rom_size), "an image whose voice 10 differs from GM is refused");
+	free(bad);
+
+	// The GM bank changes nothing but the names.
+	static rom_bank gm;
+	memset(&gm, 0, sizeof(gm));
+	for (int place = 0; place < 128; place++) {
+		memcpy(gm.voices[place], PRESETS_GM[place], ROM_VOICE_FIELDS);
+		memcpy(gm.envelopes[place], rom + be32(rom + envelopes + 4 * place), ROM_ENVELOPE_BYTES);
+		gm.arps[0][place].loop = gm.arps[1][place].loop = ROM_ARP_NO_LOOP;
+	}
+	const rom_sample *none[ROM_IMAGE_NOTES] = {0};
+	uint8_t *same = rom_image_build(rom, rom_size, none, NULL, &gm, NULL, &built);
+	CHECK(same && built == rom_size && !memcmp(same, rom, rom_size), "the image of the GM bank without samples is the emulator's");
+	free(same);
+
+	// A bank: a voice on 5 with its row, an envelope of the user's on 3, a row switched off on 7.
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	static dac_set set;
+	memset(&set, 0, sizeof(set));
+	files_view = (state_view){0};
+	files_view.dac = &set;
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	patch_instrument voice = patch->bank.places[5];
+	voice.voice[0] = 7;
+	voice.voice[PATCH_VOICE_PARAMS - 1] = 3;
+	snprintf(voice.name, sizeof(voice.name), "%s", "\xD0\x91\xD0\xB0\xD1\x81");
+	patch_arp octave = PATCH_ARP_EMPTY, off = PATCH_ARP_EMPTY;
+	octave.count = 2, octave.loop = 0, octave.steps[1] = 12;
+	off.count = 1, off.steps[0] = 5, off.off = 1;
+	patch_load_place(patch, 5, &voice, &octave);
+	patch_load_place(patch, 7, &patch->bank.places[7], &off);
+	static const uint8_t EEF[] = {0x00, PATCH_EEF_LOOP_START, 0x03, PATCH_EEF_LOOP_END, 0x0F, PATCH_EEF_END};
+	patch_envelope envelope;
+	patch_envelope_from_eef(&envelope, EEF, sizeof(EEF));
+	snprintf(envelope.name, sizeof(envelope.name), "Mine");
+	patch_load_envelope_place(patch, 3, &envelope, NULL);
+	patch_take_incoming(patch);
+	char path[MAX_PATH], message[FILES_MESSAGE];
+	snprintf(path, sizeof(path), "%s\\export.bin", temp_dir);
+	CHECK(files_export(&files, path, message, sizeof(message)) && !strncmp(message, "ROM ", 4), "EXPORT: %s", message);
+	size_t size;
+	uint8_t *image = read_whole(path, &size);
+	uint8_t packed[ROM_VOICE_BYTES], fields[ROM_VOICE_FIELDS];
+	patch_voice_fields(voice.voice, fields);
+	rom_image_pack_voice(fields, packed);
+	const uint8_t *row5 = image ? image + rows + 5 * (2 + ROM_ARP_STEPS) : NULL, *row7 = image ? image + rows + 7 * (2 + ROM_ARP_STEPS) : NULL;
+	const uint32_t at3 = image ? be32(image + envelopes + 4 * 3) : 0;
+	CHECK(image && size % (512u << 10) == 0 && !memcmp(image + be32(image + voices + 4 * 5), packed, sizeof(packed)), "place 5's voice is in the image where GM's was");
+	CHECK(image && row5[0] == 2 && row5[1] == 0 && row5[2] == 0 && row5[3] == 12, "its row is in the table");
+	CHECK(image && row7[0] == 0 && row7[1] == ROM_ARP_NO_LOOP, "a row switched off goes with no steps");
+	CHECK(image && at3 >= records && at3 + sizeof(EEF) <= size && !memcmp(image + at3, EEF, sizeof(EEF)), "the user's envelope is past the ROM's data and place 3 points at it");
+	const rom_names *names = image ? (const rom_names *)(image + rom_image_names_at()) : NULL;
+	CHECK(names && !strcmp(names->names[0][5], "Bas") && !strcmp(names->names[1][3], "Mine") && !strcmp(names->names[0][0], "Grand Piano")
+		&& !strncmp(names->signature, "BANK ", 5), "names: %s, %s, %s; %s", names ? names->names[0][5] : "", names ? names->names[1][3] : "", names ? names->names[0][0] : "", names ? names->signature : "");
+	// The window's signature is the one in the file.
+	static rom_names screen;
+	CHECK(files_screen_names(&files, &screen) && names && !memcmp(screen.signature, names->signature, ROM_SIGNATURE_BYTES), "the ROM page shows the file's signature: %s", screen.signature);
+	free(image);
+
+	// A channel with a file not in the bank is named; the file is still written.
+	patch_instrument dropped = voice;
+	snprintf(dropped.name, sizeof(dropped.name), "Slap");
+	dropped.voice[0] = 2;
+	patch_load_voice(patch, 1, &dropped, NULL);
+	patch_take_incoming(patch);
+	CHECK(files_export(&files, path, message, sizeof(message)) && strstr(message, "CH2 Slap not in ROM"), "a channel not from the bank: %s", message);
+	// A read-only file isn't touched.
+	wchar_t wide[MAX_PATH];
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH);
+	SetFileAttributesW(wide, FILE_ATTRIBUTE_READONLY);
+	uint8_t *was = read_whole(path, &size);
+	CHECK(!files_export(&files, path, message, sizeof(message)) && strstr(message, "NOT WRITTEN"), "a read-only file: %s", message);
+	size_t now_size;
+	uint8_t *now = read_whole(path, &now_size);
+	CHECK(was && now && now_size == size && !memcmp(was, now, size), "and its bytes stay");
+	free(was);
+	free(now);
+	SetFileAttributesW(wide, FILE_ATTRIBUTE_NORMAL);
+	DeleteFileW(wide);
+	files_free(&files);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -3018,6 +3154,7 @@ int main(int argc, char **argv)
 	test_dac_old_project();
 	test_dac_moves();
 	test_libraries();
+	test_export();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;
