@@ -107,6 +107,8 @@ uint8_t mdmi_engine_test_ym(const mdmi_engine *e, uint8_t part, uint8_t reg);
 uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel);
 // A tone channel's period, or the noise channel's type and rate bits, for tests.
 uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel);
+// A byte of the Z80's RAM, for tests (stage 24c: PCM4's STATUS at 0x102, D6).
+uint8_t mdmi_engine_test_z80(const mdmi_engine *e, uint16_t address);
 // Main thread. Frames are only copied while someone is watching.
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);

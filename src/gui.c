@@ -643,24 +643,46 @@ static bool noise_without_pitch(const patch_values *values, int channel)
 // what the plugin sent: the ROM has no velocity curve of its own (D29).
 #define BAR_X 54
 #define BAR_SEGMENTS 16
-// FM SP's four notes in a column at the rail's right, one note's width: the bar ends where a
-// one-note row's does. The name gives up two letters to keep clear of the column.
+// Stage 24c (art-director): the column of notes where one channel sounds several without borrowing,
+// Ch3 OPS's operators and the DAC's voices, in the note's place at the rail's right: 4 lines of 9 px,
+// 4 characters wide, so C--1 fits. The name gives up two letters to keep clear of it.
+#define NOTE_RIGHT 226
+#define NOTE_ROOM 24
 #define SPECIAL_NOTE_Y 2
 #define SPECIAL_NOTE_PITCH 9
-#define SPECIAL_NOTES_W 18
 #define SPECIAL_NAME_CHARS 11
-static void level_bar(mdmi_gui *g, int y, int right, int volume, int velocity, bool seen, bool held, uint32_t dark)
+// The bar has the same 16 segments of 9 px on every row, whatever is written right of it or under it.
+#define BAR_PITCH 9
+static void level_bar(mdmi_gui *g, int y, int volume, int velocity, bool seen, bool held, uint32_t dark)
 {
-	int pitch = (right - BAR_X) / BAR_SEGMENTS;
-	pitch = pitch < 3 ? 3 : pitch;
 	// A note that came lights one segment at least.
 	int lit = (volume * velocity * BAR_SEGMENTS + 127 * 127 / 2) / (127 * 127);
 	lit = !seen ? 0 : lit < 1 ? 1 : lit;
 	const int shown = (volume * BAR_SEGMENTS + 63) / 127;
 	for (int k = 0; k < BAR_SEGMENTS; k++) {
 		const uint32_t color = k < lit ? (held ? C_PLAYING : C_HINT) : k < shown ? dark : C_CELL;
-		fill(g, BAR_X + k * pitch, y, pitch - 1, 4, color);
+		fill(g, BAR_X + k * BAR_PITCH, y, BAR_PITCH - 1, 4, color);
 	}
+}
+
+// The line under the note (stage 24c): what goes with it, right to left, 6 px apart.
+static void row_tag(mdmi_gui *g, int *right, int y, const char *tag, uint32_t color)
+{
+	*right -= (int)strlen(tag) * 6;
+	text(g, *right, y, tag, color, 1);
+	*right -= 6;
+}
+
+// One line of a row's column: a held note green, one let go that still sounds grey, none "---".
+static void column_note(mdmi_gui *g, int y, int k, bool seen, int key, bool held)
+{
+	char buffer[8];
+	if (seen) {
+		note_name(key, buffer, sizeof(buffer));
+	} else {
+		snprintf(buffer, sizeof(buffer), "---");
+	}
+	text_right(g, NOTE_RIGHT, y + SPECIAL_NOTE_Y + k * SPECIAL_NOTE_PITCH, buffer, !seen ? C_LINE : held ? C_PLAYING : C_HINT, 1, NOTE_ROOM);
 }
 
 // One rail row (0A): the number x3 beside the name and the bar, the name x2 above with 3 px to the
@@ -711,49 +733,44 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	// The selected row's ground is the dark colour: its volume is drawn in the channel's own. Channel
 	// 3 in Ch3 Special Mode is light FM all over: its stripe, number and volume.
 	const uint32_t volume_ink = selected || special ? kind : dark;
-	// The bottom line, right to left: the note at 226, then how many are held, then how many are cut.
-	const int line = y + 22, bar_y = y + 25;
-	int left = RAIL_W - 6;
+	// Stage 24c: the note at y+22 right of the bar, what goes with it a line below at y+31.
+	const int line = y + 22, tags = y + 31, bar_y = y + 25;
+	int right = NOTE_RIGHT;
 	const uint32_t note = __atomic_load_n(&g->source.notes[channel], __ATOMIC_ACQUIRE);
 	const bool seen = GUI_NOTE_SEEN(note);
 	const int held = seen ? (int)GUI_NOTE_HELD(note) : 0;
 	if (taken) {
 		// No bar: the channel makes no sound. Its held notes are cut, as notes without a voice.
-		left -= 13 * 6;
-		text(g, left, line, "TAKEN BY CH10", C_LABEL, 1);
+		text_right(g, NOTE_RIGHT, line, "TAKEN BY CH10", C_LABEL, 1, 13 * 6);
 		if (held > 0) {
 			snprintf(buffer, sizeof(buffer), "%d CUT", held);
-			left -= 6 + (int)strlen(buffer) * 6;
-			text(g, left, line, buffer, C_ERROR, 1);
+			row_tag(g, &right, tags, buffer, C_ERROR);
 		}
 		return;
 	}
 	// Only with Ops (stage 21): in One Note MIDI 3 plays them all, a note as on any row.
 	if (special && patch_ch3_ops(values)) {
-		// A column at the right where other rows have their note: the lead (operator 4, channel 3
-		// itself) on top and green, operators 1-3 (MIDI 11-13) below it, dimmer. The bar stays as
-		// long as on a row with one note (owner's note on 0.9.0).
+		// The lead (operator 4, channel 3 itself) on top, operators 1-3 (MIDI 11-13) below it.
 		static const int SOURCES[4] = {2, 10, 11, 12};
 		for (int k = 0; k < 4; k++) {
 			const uint32_t op = __atomic_load_n(&g->source.notes[SOURCES[k]], __ATOMIC_ACQUIRE);
-			const bool op_held = GUI_NOTE_SEEN(op) && GUI_NOTE_HELD(op);
-			if (GUI_NOTE_SEEN(op)) {
-				note_name((int)GUI_NOTE_KEY(op), buffer, sizeof(buffer));
-			} else {
-				snprintf(buffer, sizeof(buffer), "---");
-			}
-			text_right(g, left, y + SPECIAL_NOTE_Y + k * SPECIAL_NOTE_PITCH, buffer, !GUI_NOTE_SEEN(op) ? C_LINE : !op_held ? C_HINT : k == 0 ? C_PLAYING : C_LABEL, 1, SPECIAL_NOTES_W);
+			column_note(g, y, k, GUI_NOTE_SEEN(op), (int)GUI_NOTE_KEY(op), GUI_NOTE_SEEN(op) && GUI_NOTE_HELD(op));
 		}
-		level_bar(g, bar_y, left - SPECIAL_NOTES_W - 6, values->channels[channel][PARAM_VOLUME], (int)GUI_NOTE_VELOCITY(note), seen, held > 0, volume_ink);
+		level_bar(g, bar_y, values->channels[channel][PARAM_VOLUME], (int)GUI_NOTE_VELOCITY(note), seen, held > 0, volume_ink);
 		return;
 	}
 	if (dac) {
-		// The DAC hears neither volume nor velocity: the bar only says a sample was started.
-		if (seen) {
-			note_name((int)GUI_NOTE_KEY(note), buffer, sizeof(buffer));
-			text_right(g, left, line, buffer, held ? C_PLAYING : C_HINT, 1, 40);
+		// PCM4's four voices, line k voice k, as the ROM deals them (D59). The DAC hears neither volume
+		// nor velocity here: the block only says a sample sounds, green while its key is held.
+		bool any_held = false, any_out = false;
+		for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+			int key = 0;
+			const int state = patch_dac_voice_state(g->source.patch, v, &key);
+			column_note(g, y, v, state != PATCH_DAC_FREE, key, state == PATCH_DAC_HELD);
+			any_held = any_held || state == PATCH_DAC_HELD;
+			any_out = any_out || state == PATCH_DAC_OUT;
 		}
-		fill(g, BAR_X, bar_y, 16, 4, held ? C_PLAYING : C_CELL);
+		fill(g, BAR_X, bar_y, 16, 4, any_held ? C_PLAYING : any_out ? C_HINT : C_CELL);
 		return;
 	}
 	// A row whose voice another channel's chord plays shows that note and whose it is, with the
@@ -765,11 +782,9 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	bool bar_seen = seen, bar_held = held > 0;
 	if (lent) {
 		note_name(patch_voice_key(g->source.patch, channel), buffer, sizeof(buffer));
-		left -= (int)strlen(buffer) * 6;
-		text(g, left, line, buffer, C_PLAYING, 1);
+		text_right(g, NOTE_RIGHT, line, buffer, C_PLAYING, 1, NOTE_ROOM);
 		snprintf(buffer, sizeof(buffer), "CH%d", player + 1);
-		left -= 6 + (int)strlen(buffer) * 6;
-		text(g, left, line, buffer, C_LABEL, 1);
+		row_tag(g, &right, tags, buffer, C_LABEL);
 		volume = values->channels[player][PARAM_VOLUME];
 		velocity = patch_voice_velocity(g->source.patch, channel);
 		bar_seen = bar_held = true;
@@ -781,25 +796,22 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		} else {
 			snprintf(buffer, sizeof(buffer), "---");
 		}
-		left -= (int)strlen(buffer) * 6;
-		text(g, left, line, buffer, !seen ? C_LINE : held ? C_PLAYING : C_HINT, 1);
+		text_right(g, NOTE_RIGHT, line, buffer, !seen ? C_LINE : held ? C_PLAYING : C_HINT, 1, NOTE_ROOM);
 		if (own) {
 			velocity = patch_voice_velocity(g->source.patch, channel);
 		}
 		if (held > 1) {
 			snprintf(buffer, sizeof(buffer), "x%d", held);
-			left -= 6 + (int)strlen(buffer) * 6;
-			text(g, left, line, buffer, C_PLAYING, 1);
+			row_tag(g, &right, tags, buffer, C_PLAYING);
 		}
 		// Held notes without a voice: cut off by a tune, or more than the free voices (D20).
 		const int muted = seen ? patch_muted_notes(g->source.patch, channel) : 0;
 		if (muted > 0) {
 			snprintf(buffer, sizeof(buffer), "%d CUT", muted);
-			left -= 6 + (int)strlen(buffer) * 6;
-			text(g, left, line, buffer, C_ERROR, 1);
+			row_tag(g, &right, tags, buffer, C_ERROR);
 		}
 	}
-	level_bar(g, bar_y, left - 6, volume, velocity, bar_seen, bar_held, volume_ink);
+	level_bar(g, bar_y, volume, velocity, bar_seen, bar_held, volume_ink);
 }
 
 // Brackets from a channel playing a chord to the rows whose voices it borrowed, between the big

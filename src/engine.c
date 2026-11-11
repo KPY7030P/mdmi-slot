@@ -84,6 +84,7 @@ typedef void (*set_voice_batch_fn)(voice_batch_fn);
 typedef uint8_t (*test_ym_read_fn)(uint8_t, uint8_t);
 typedef uint8_t (*test_psg_volume_fn)(uint8_t);
 typedef uint16_t (*test_psg_tone_fn)(uint8_t);
+typedef uint8_t (*test_z80_read_fn)(uint16_t);
 
 struct mdmi_engine {
 	HANDLE thread;
@@ -100,6 +101,7 @@ struct mdmi_engine {
 	test_ym_read_fn test_ym_read;
 	test_psg_volume_fn test_psg_volume;
 	test_psg_tone_fn test_psg_tone;
+	test_z80_read_fn test_z80_read;
 	cart_compare_fn cart_differs;
 	cart_compare_fn write_cart;
 	write_ram_fn write_ram;
@@ -627,6 +629,7 @@ static bool load_core(mdmi_engine *e)
 	LOAD(test_ym_read, test_ym_read_fn, "mdmi_test_ym_read")
 	LOAD(test_psg_volume, test_psg_volume_fn, "mdmi_test_psg_volume")
 	LOAD(test_psg_tone, test_psg_tone_fn, "mdmi_test_psg_tone")
+	LOAD(test_z80_read, test_z80_read_fn, "mdmi_test_z80_read")
 	LOAD(cart_differs, cart_compare_fn, "mdmi_cart_differs")
 	LOAD(write_cart, cart_compare_fn, "mdmi_write_cart")
 	LOAD(write_ram, write_ram_fn, "mdmi_write_ram")
@@ -639,6 +642,7 @@ static bool load_core(mdmi_engine *e)
 	e->test_ym_read = test_ym_read;
 	e->test_psg_volume = test_psg_volume;
 	e->test_psg_tone = test_psg_tone;
+	e->test_z80_read = test_z80_read;
 	e->cart_differs = cart_differs;
 	e->write_cart = write_cart;
 	e->write_ram = write_ram;
@@ -1281,6 +1285,11 @@ uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel)
 uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel)
 {
 	return e->test_psg_tone(channel);
+}
+
+uint8_t mdmi_engine_test_z80(const mdmi_engine *e, uint16_t address)
+{
+	return e->test_z80_read(address);
 }
 
 int mdmi_engine_test_owner(const mdmi_engine *e, int voice)

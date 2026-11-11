@@ -84,6 +84,9 @@ typedef struct {
 	uint32_t window_ms[GUI_HOST_SLOTS];
 	// Master Volume's factor at the end of the last block, the audio thread's only; below 0 before the first.
 	float master_gain;
+	// Ch3 Special, Ch3 Notes and the DAC as the rail last showed their notes (stage 24c): a switch
+	// releases the ROM's keys there, so the rail lets them go too. The audio thread's only.
+	int16_t shown_modes[3];
 } mdmi_plugin;
 
 typedef struct {
@@ -193,6 +196,11 @@ static bool plugin_init(const clap_plugin_t *plugin)
 	self->host_params = self->host->get_extension(self->host, CLAP_EXT_PARAMS);
 	self->host_state = self->host->get_extension(self->host, CLAP_EXT_STATE);
 	patch_init(&self->patch);
+	{
+		size_t size;
+		const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+		patch_set_dac_image(&self->patch, rom, size);
+	}
 	self->patch.owner = owner_to_engine;
 	self->view.dac = &self->dac;
 	const files_host files = {&self->patch, &self->view, files_handed, self};
@@ -518,6 +526,31 @@ static void start_due(mdmi_plugin *self, uint64_t clock, uint32_t until)
 	}
 }
 
+// Stage 24c (from stage 21's parking): CC 80, CC 81 and a DAC switch release channel 3's keys and the
+// operators' in the ROM (ch3_keys_reset), and a DAC switch channel 6's (midi_dac_reset, the YM's
+// reset): their rows show those notes let go, not sounding. Called before each moment's notes, so a
+// note at the switch's moment is not let go with them.
+static void release_switched_notes(mdmi_plugin *self)
+{
+	const int16_t *globals = self->patch.model.globals;
+	const int16_t now[3] = {globals[GLOBAL_CH3_MODE], globals[GLOBAL_CH3_NOTES], globals[GLOBAL_DAC]};
+	if (!memcmp(now, self->shown_modes, sizeof(now))) {
+		return;
+	}
+	const bool first = self->shown_modes[0] < 0, dac = now[2] != self->shown_modes[2];
+	memcpy(self->shown_modes, now, sizeof(now));
+	if (first) {
+		return;
+	}
+	static const int CH3[] = {2, 10, 11, 12};
+	for (size_t i = 0; i < sizeof(CH3) / sizeof(CH3[0]); i++) {
+		release_notes(self, CH3[i]);
+	}
+	if (dac) {
+		release_notes(self, PATCH_NUM_FM_CHANNELS - 1);
+	}
+}
+
 static clap_process_status plugin_process(const clap_plugin_t *plugin, const clap_process_t *process)
 {
 	mdmi_plugin *self = self_of(plugin);
@@ -547,6 +580,7 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		patch_sync(&self->patch, &self->patch.rom, emit_to_engine, &target);
 	}
 	take_edits(self, process->out_events, true);
+	release_switched_notes(self);
 	// The VST3 wrapper puts notes before knobs and controllers of the same moment. A preset point
 	// exactly on a note's start is meant for that note, so at each moment notes come last, in their
 	// own order: a note that ends where it starts must not end first, so an end of a key that isn't
@@ -565,6 +599,9 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		uint32_t later[128];
 		uint32_t later_count = 0;
 		for (int pass = 0; pass < 2; pass++) {
+			if (pass == 1) {
+				release_switched_notes(self);
+			}
 			for (uint32_t i = first; i < end; i++) {
 				const clap_event_header_t *header = in->get(in, i);
 				if (is_note(header) != (pass == 1)) {
@@ -788,6 +825,7 @@ static void apply_dac(mdmi_plugin *self)
 	uint8_t *image = dac_image(&self->dac, rom, size, &built);
 	if (image) {
 		self->dac_applied = self->dac.version;
+		patch_set_dac_image(&self->patch, image, built);
 		mdmi_engine_set_rom(self->engine, image, built);
 		free(image);
 	}
@@ -1060,6 +1098,7 @@ static const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *f
 		self->psg_times.on[i] = self->psg_times.off[i] = GUI_NEVER;
 	}
 	self->master_gain = -1;
+	self->shown_modes[0] = -1;
 	self->plugin.desc = &plugin_descriptor;
 	self->plugin.plugin_data = self;
 	self->plugin.init = plugin_init;

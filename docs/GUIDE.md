@@ -290,7 +290,15 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   16 segments: the channel's volume (CC7), and green while a note is held, CC7 x velocity / 127,
   grey after. The ROM itself has no velocity curve; the bar shows what the plugin sent. In Ch3
   Special Mode channel 3's row is light FM; with Ops it shows four notes in a column at the right, its own
-  on top; the bar keeps its length. The bank page's scroll track marks every
+  on top. Stage 24c: the bar is 16 segments of 9 px on every row (x 54-196); the note is at the right
+  (x 202-225, `C--1` fits), and under it, right to left, `xN`, `n CUT` and `CHn`. The column (held green,
+  let go grey, `---` none) also shows the DAC's four voices on channel 6's row, line k voice k, from
+  `patch_dac_voice_state` (D59: `patch.c` copies `midi_dac.c`'s choice of voice and reckons each end from
+  the playing image's record, `patch_set_dac_image`; `reg_test` `test_dac_shown` compares it with PCM4's
+  STATUS | COMMAND in the Z80's RAM, `mdmi_engine_test_z80`: every change of a voice comes back in the
+  driver after one delay within two ROM frames). A switch of Ch3 Special, Ch3 Notes or the DAC shows
+  channel 3's and MIDI 11-13's held notes let go, a DAC switch channel 6's too, as the ROM releases them
+  (`release_switched_notes` in `plugin.c`, before each moment's notes). The bank page's scroll track marks every
   channel's place.
 - A `*` means the sound is tweaked against its base (D31): what the channel last got whole, its
   bank place or a file dropped on it. The base goes with the model and the project (block 8), undo

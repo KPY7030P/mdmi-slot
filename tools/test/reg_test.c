@@ -576,6 +576,7 @@ static void test_restart(void)
 static void boot_image(const uint8_t *image, size_t size)
 {
 	const mdmi_engine_stats before = mdmi_engine_get_stats(engine);
+	patch_set_dac_image(patch, image, size);
 	mdmi_engine_set_rom(engine, image, size);
 	mdmi_engine_stats now;
 	do {
@@ -1346,6 +1347,173 @@ static void test_four_voices(void)
 		lengths = lengths && was > 0 && fabs(now / was - 1) < 0.03;
 	}
 	check(lengths, "the ROM's samples last as long as in 0.18, within 3%");
+	boot_image(rom, rom_size);
+}
+
+// Stage 24c (D59): the window's copy of PCM4's voices against the driver's own bits, STATUS | COMMAND
+// in the Z80's RAM (D6: tests only), recorded each ms. The ROM hears a note the plugin's latency and up
+// to a frame later, and the driver ends a sample on its block: every change of the copy must come back
+// as the same change of the same voice in the driver, all of them after one delay within two ROM frames.
+#define DAC_SHOWN_MS 12000
+#define DAC_BLOCK_MS 17
+static uint8_t shown_copy[DAC_SHOWN_MS], shown_rom[DAC_SHOWN_MS];
+static int shown_ms;
+static uint8_t dac_copy_bits(void)
+{
+	uint8_t copy = 0;
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		copy |= (uint8_t)((patch_dac_voice_state(patch, v, NULL) != PATCH_DAC_FREE) << v);
+	}
+	return copy;
+}
+
+static void dac_shown_follow(int ms)
+{
+	for (int t = 0; t < ms; t++) {
+		const uint8_t copy = dac_copy_bits();
+		tick(RATE / 1000);
+		if (shown_ms < DAC_SHOWN_MS) {
+			shown_copy[shown_ms] = copy;
+			shown_rom[shown_ms] = (mdmi_engine_test_z80(engine, 0x102) | mdmi_engine_test_z80(engine, 0x100)) & 0x0F;
+			shown_ms++;
+		}
+	}
+}
+
+static int busy_voices(uint8_t bits)
+{
+	return (bits & 1) + (bits >> 1 & 1) + (bits >> 2 & 1) + (bits >> 3 & 1);
+}
+
+static int compare_ints(const void *a, const void *b)
+{
+	return *(const int *)a - *(const int *)b;
+}
+
+static void test_dac_shown(void)
+{
+	dac_set set = {0};
+	const uint32_t short_blocks = 12, long_blocks = 80;
+	for (int k = 0; k < 5; k++) {
+		dac_put(&set, 70 + k, square_sample(long_blocks * ROM_SAMPLE_BLOCK, 60));
+	}
+	dac_put(&set, 75, square_sample(short_blocks * ROM_SAMPLE_BLOCK, 60));
+	set.notes[75]->sample.flags = ROM_SAMPLE_ONE_SHOT;
+	dac_put(&set, 76, marked_sample(1, 4, 6, 10));
+	dac_put(&set, 77, marked_sample(1, 4, 6, 10));
+	// A loop with no release: Note Off stops it.
+	set.notes[77]->sample.loop_end = (uint16_t)20;
+	dac_put(&set, 78, square_sample(8 * ROM_SAMPLE_BLOCK, 60));
+	set.notes[78]->sample.flags = ROM_SAMPLE_LOOP;
+	boot_set(&set);
+	// From silence: the first start is a change too.
+	shown_copy[0] = shown_rom[0] = 0;
+	shown_ms = 1;
+	// A roll on one key while its one-shot sounds: its own voice each time, in the copy and the driver.
+	const int roll_from = shown_ms;
+	for (int k = 0; k < 6; k++) {
+		midi(0x95, 75, 100);
+		dac_shown_follow(40);
+	}
+	midi(0x85, 75, 0);
+	dac_shown_follow(400);
+	int roll_copy = 0, roll_rom = 0;
+	for (int t = roll_from; t < shown_ms; t++) {
+		roll_copy = busy_voices(shown_copy[t]) > roll_copy ? busy_voices(shown_copy[t]) : roll_copy;
+		roll_rom = busy_voices(shown_rom[t]) > roll_rom ? busy_voices(shown_rom[t]) : roll_rom;
+	}
+	// Five keys held: the fifth takes the oldest start's voice.
+	for (int k = 0; k < 5; k++) {
+		midi(0x95, (uint8_t)(70 + k), 100);
+		dac_shown_follow(150);
+	}
+	int five = 0;
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		int key = 0;
+		five += patch_dac_voice_state(patch, v, &key) == PATCH_DAC_HELD && key != 70;
+	}
+	for (int k = 0; k < 5; k++) {
+		midi(0x85, (uint8_t)(70 + k), 0);
+	}
+	dac_shown_follow(300);
+	// A one-shot let go at once sounds to its end, shown released.
+	midi(0x95, 75, 100);
+	dac_shown_follow(20);
+	midi(0x85, 75, 0);
+	dac_shown_follow(30);
+	int key = 0;
+	const bool out = patch_dac_voice_state(patch, 0, &key) == PATCH_DAC_OUT && key == 75;
+	dac_shown_follow(400);
+	// A loop with a release, let go in its intro and in its loop; one that stops; a whole-sample loop.
+	static const int HOLD[4] = {40, 500, 500, 500};
+	for (int k = 0; k < 4; k++) {
+		const uint8_t note = (uint8_t)(k < 2 ? 76 : 75 + k);
+		midi(0x95, note, 100);
+		dac_shown_follow(HOLD[k]);
+		midi(0x85, note, 0);
+		dac_shown_follow(400);
+	}
+	// Every change of the copy, voice by voice, found again in the driver and how much later.
+	int delays[256], edges = 0, missing = 0;
+	for (int t = 1; t < shown_ms; t++) {
+		for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+			const int was = shown_copy[t - 1] >> v & 1, now = shown_copy[t] >> v & 1;
+			if (was == now) {
+				continue;
+			}
+			// The copy reckons a sample's end from its blocks, the driver ends it on its block: up to
+			// a block either way (the stage's definition: within a block of PCM4).
+			int found = INT32_MIN;
+			for (int u = t - DAC_BLOCK_MS > 1 ? t - DAC_BLOCK_MS : 1; u < t + 200 && u < shown_ms && found == INT32_MIN; u++) {
+				found = (shown_rom[u - 1] >> v & 1) == was && (shown_rom[u] >> v & 1) == now ? u - t : INT32_MIN;
+			}
+			if (found == INT32_MIN) {
+				if (missing < 6) {
+					printf("    the copy's voice %d %s at %d ms: not in the driver\n", v + 1, now ? "starts" : "ends", t);
+				}
+				missing++;
+			} else if (edges < 256) {
+				delays[edges++] = found;
+			}
+		}
+	}
+	// And no change of the driver that the copy didn't make before it.
+	int unseen = 0;
+	for (int t = 1; t < shown_ms; t++) {
+		for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+			const int was = shown_rom[t - 1] >> v & 1, now = shown_rom[t] >> v & 1;
+			if (was == now) {
+				continue;
+			}
+			bool made = false;
+			for (int u = t + DAC_BLOCK_MS < shown_ms - 1 ? t + DAC_BLOCK_MS : shown_ms - 1; u > t - 200 && u > 0 && !made; u--) {
+				made = (shown_copy[u - 1] >> v & 1) == was && (shown_copy[u] >> v & 1) == now;
+			}
+			if (!made && unseen < 6) {
+				printf("    the driver's voice %d %s at %d ms: not in the copy\n", v + 1, now ? "starts" : "ends", t);
+			}
+			unseen += !made;
+		}
+	}
+	missing += unseen;
+	int sorted[256];
+	memcpy(sorted, delays, sizeof(int) * (size_t)edges);
+	qsort(sorted, (size_t)edges, sizeof(int), compare_ints);
+	const int median = edges ? sorted[edges / 2] : 0;
+	int outliers = 0;
+	for (int i = 0; i < edges; i++) {
+		outliers += abs(delays[i] - median) > 34;
+	}
+	printf("    %d changes of the copy: %d missing in the driver, delays %d-%d ms around %d, %d more than 34 ms off; roll %d voice(s) shown, %d in the driver; five keys gave %d others\n",
+		edges + missing, missing, edges ? sorted[0] : 0, edges ? sorted[edges - 1] : 0, median, outliers, roll_copy, roll_rom, five);
+	check(edges >= 20 && missing == 0 && outliers == 0, "the window's DAC voices change as the driver's own, voice by voice, one delay within two ROM frames");
+	check(roll_copy == 1 && roll_rom == 1 && five == 4 && out, "a roll on one key keeps one voice, a fifth key takes the oldest's, a one-shot plays on released");
+	midi(0xB5, 123, 0);
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	dac_clear(&set);
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
 	boot_image(rom, rom_size);
 }
 
@@ -4724,6 +4892,11 @@ int main(int argc, char **argv)
 	patch_global_init();
 	patch_init(patch);
 	patch->owner = owner;
+	{
+		size_t size;
+		const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+		patch_set_dac_image(patch, rom, size);
+	}
 	if (!mdmi_engine_global_init() || !(engine = mdmi_engine_create())) {
 		printf("FAIL: engine\n");
 		return 1;
@@ -4764,6 +4937,8 @@ int main(int argc, char **argv)
 	test_ch3_on();
 	test_load();
 	test_export();
+	// After the export: its comparison is sensitive to the ROM frame's phase, which a test before it moves.
+	test_dac_shown();
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);
 	test_voice_by_hand();

@@ -4,6 +4,7 @@
 #include <string.h>
 #include "patch.h"
 #include "presets_gm.h"
+#include "rom_image.h"
 
 #define CC_LFO_RATE 1
 #define CC_PRESET 3
@@ -1670,10 +1671,162 @@ static bool other_silent_voice(const mdmi_patch *patch, int except)
 	return false;
 }
 
+// D59: PCM4's voices as our ROM deals them (midi_dac.c), for the window only. The same states, the
+// same choice of voice, the same Note Off; where the ROM asks the driver whether a voice still sounds,
+// the copy reckons its end from the sample's blocks at ROM_PCM4_HZ.
+enum { DAC_VOICE_FREE, DAC_VOICE_PLAYING, DAC_VOICE_WAIT_COPY, DAC_VOICE_LOOPING, DAC_VOICE_RELEASE };
+#define DAC_NOTE_BLOCKS(n) ((uint32_t)((n) & 0xFFFFF))
+#define DAC_NOTE_LOOP_START(n) ((uint32_t)((n) >> 20 & 0xFFFF))
+#define DAC_NOTE_LOOP_END(n) ((uint32_t)((n) >> 36 & 0xFFFF))
+#define DAC_NOTE_FLAGS(n) ((uint8_t)((n) >> 52 & 0xFF))
+
+void patch_set_dac_note(mdmi_patch *patch, int note, uint32_t blocks, uint16_t loop_start, uint16_t loop_end, uint8_t flags)
+{
+	if (note < 0 || note > 127) {
+		return;
+	}
+	const uint64_t packed = blocks ? (uint64_t)(blocks & 0xFFFFF) | (uint64_t)loop_start << 20 | (uint64_t)loop_end << 36 | (uint64_t)flags << 52 : 0;
+	__atomic_store_n(&patch->dac_notes[note], packed, __ATOMIC_RELAXED);
+}
+
+void patch_set_dac_image(mdmi_patch *patch, const uint8_t *image, size_t size)
+{
+	for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+		rom_sample sample;
+		if (rom_image_sample(image, size, note, &sample)) {
+			patch_set_dac_note(patch, note, sample.length / ROM_SAMPLE_BLOCK, sample.loop_start, sample.loop_end, sample.flags);
+		} else {
+			patch_set_dac_note(patch, note, 0, 0, 0, 0);
+		}
+	}
+}
+
+// The writer's samples a number of the driver's blocks lasts.
+static uint64_t dac_blocks_time(const mdmi_patch *patch, uint64_t blocks)
+{
+	return (uint64_t)((double)blocks * ROM_SAMPLE_BLOCK * patch->rate / ROM_PCM4_HZ);
+}
+
+static bool dac_busy(const mdmi_patch *patch, int v)
+{
+	const patch_dac_voice *voice = &patch->dac[v];
+	return voice->rom_state == DAC_VOICE_WAIT_COPY || (voice->rom_state != DAC_VOICE_FREE && patch->now < voice->end);
+}
+
+static void dac_publish(mdmi_patch *patch)
+{
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		const patch_dac_voice *voice = &patch->dac[v];
+		const int state = !dac_busy(patch, v) ? PATCH_DAC_FREE : voice->held ? PATCH_DAC_HELD : PATCH_DAC_OUT;
+		__atomic_store_n(&patch->dac_shown_start[v], voice->start, __ATOMIC_RELAXED);
+		__atomic_store_n(&patch->dac_shown[v], (uint32_t)voice->key | (uint32_t)state << 8, __ATOMIC_RELEASE);
+	}
+}
+
+static void dac_reset(mdmi_patch *patch)
+{
+	memset(patch->dac, 0, sizeof(patch->dac));
+	dac_publish(patch);
+}
+
+int patch_dac_voice_state(const mdmi_patch *patch, int voice, int *key)
+{
+	if (voice < 0 || voice >= PATCH_DAC_VOICES) {
+		return PATCH_DAC_FREE;
+	}
+	const uint32_t shown = __atomic_load_n(&patch->dac_shown[voice], __ATOMIC_ACQUIRE);
+	if (key) {
+		*key = (int)(shown & 0xFF);
+	}
+	return (int)(shown >> 8);
+}
+
+// pick_voice: the key's own voice while it sounds, else a free one, else the oldest start.
+static int dac_pick(const mdmi_patch *patch, int key)
+{
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		if (patch->dac[v].key == key && dac_busy(patch, v)) {
+			return v;
+		}
+	}
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		if (!dac_busy(patch, v)) {
+			return v;
+		}
+	}
+	int oldest = 0;
+	for (int v = 1; v < PATCH_DAC_VOICES; v++) {
+		if ((uint16_t)(patch->dac_starts - patch->dac[v].order) > (uint16_t)(patch->dac_starts - patch->dac[oldest].order)) {
+			oldest = v;
+		}
+	}
+	return oldest;
+}
+
+// midi_dac_play.
+static void dac_play(mdmi_patch *patch, int key)
+{
+	const uint64_t note = __atomic_load_n(&patch->dac_notes[key], __ATOMIC_RELAXED);
+	if (!note) {
+		return;
+	}
+	const int v = dac_pick(patch, key);
+	patch_dac_voice *voice = &patch->dac[v];
+	const uint8_t flags = DAC_NOTE_FLAGS(note);
+	const bool marks = flags & ROM_SAMPLE_MARKS, loops = flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS);
+	*voice = (patch_dac_voice){(uint8_t)key, DAC_VOICE_PLAYING, true, ++patch->dac_starts, patch->now, 0, note};
+	voice->rom_state = marks && DAC_NOTE_LOOP_START(note) ? DAC_VOICE_WAIT_COPY : loops ? DAC_VOICE_LOOPING : DAC_VOICE_PLAYING;
+	voice->end = loops ? UINT64_MAX : patch->now + dac_blocks_time(patch, DAC_NOTE_BLOCKS(note));
+	dac_publish(patch);
+}
+
+// midi_dac_release: the key's voice, if another key hasn't taken it.
+static void dac_release(mdmi_patch *patch, int key)
+{
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		patch_dac_voice *voice = &patch->dac[v];
+		if (voice->key != key || voice->rom_state == DAC_VOICE_FREE) {
+			continue;
+		}
+		voice->held = false;
+		const uint64_t note = voice->note;
+		const uint8_t flags = DAC_NOTE_FLAGS(note);
+		if (flags & ROM_SAMPLE_ONE_SHOT || voice->rom_state == DAC_VOICE_RELEASE) {
+			break;
+		}
+		const uint32_t blocks = DAC_NOTE_BLOCKS(note);
+		const uint32_t loop_start = flags & ROM_SAMPLE_MARKS ? DAC_NOTE_LOOP_START(note) : 0;
+		const uint32_t loop_end = flags & ROM_SAMPLE_MARKS ? DAC_NOTE_LOOP_END(note) : blocks;
+		if ((voice->rom_state == DAC_VOICE_WAIT_COPY || voice->rom_state == DAC_VOICE_LOOPING) && blocks > loop_end) {
+			// The pass under way runs out to the loop's end, then the release plays.
+			const uint64_t block = dac_blocks_time(patch, 1);
+			uint64_t at = block ? (patch->now - voice->start) / block : 0;
+			if (at >= loop_end && loop_end > loop_start) {
+				at = loop_start + (at - loop_end) % (loop_end - loop_start);
+			}
+			const uint64_t left = at < loop_end ? loop_end - at : 0;
+			voice->rom_state = DAC_VOICE_RELEASE;
+			voice->end = patch->now + dac_blocks_time(patch, left + blocks - loop_end);
+		} else {
+			voice->rom_state = DAC_VOICE_FREE;
+			voice->key = 0;
+		}
+		break;
+	}
+	dac_publish(patch);
+}
+
 void patch_set_now(mdmi_patch *patch, uint64_t sample, uint32_t rate)
 {
 	patch->now = sample;
 	patch->rate = rate;
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		const uint32_t shown = __atomic_load_n(&patch->dac_shown[v], __ATOMIC_RELAXED);
+		if (shown >> 8 != PATCH_DAC_FREE && !dac_busy(patch, v)) {
+			dac_publish(patch);
+			break;
+		}
+	}
 }
 
 bool patch_next_due(const mdmi_patch *patch, uint64_t *sample)
@@ -1826,6 +1979,7 @@ static void stop_playing(mdmi_patch *patch, patch_emit_fn emit, void *context)
 
 void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context)
 {
+	dac_reset(patch);
 	patch->pending_count = 0;
 	for (int channel = 0; channel < 16; channel++) {
 		if (channel < PATCH_NUM_FM_CHANNELS) {
@@ -2015,6 +2169,9 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		if (patch->owner && model_globals[GLOBAL_DAC] && receiver == &patch->rom) {
 			patch->owner(context, PATCH_NUM_FM_CHANNELS - 1, PATCH_NUM_FM_CHANNELS - 1, true);
 		}
+		if (receiver == &patch->rom) {
+			dac_reset(patch);
+		}
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_DAC, model_globals[GLOBAL_DAC] ? CC_ON : 0);
 		rom_globals[GLOBAL_DAC] = model_globals[GLOBAL_DAC];
 		rom_globals[GLOBAL_LFO_ON] = rom_globals[GLOBAL_LFO_RATE] = rom_globals[GLOBAL_CH3_MODE] = PATCH_UNKNOWN;
@@ -2169,6 +2326,7 @@ static void resend_everything(mdmi_patch *patch, bool reset, patch_emit_fn emit,
 
 void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context)
 {
+	dac_reset(patch);
 	stop_playing(patch, emit, context);
 	resend_everything(patch, true, emit, context);
 }
@@ -2181,6 +2339,16 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	bool fm = channel < PATCH_NUM_FM_CHANNELS;
 	bool changed = false, moved = false;
 	bool note = fm && (status == 0x90 || status == 0x80) && length >= 3;
+	// D59: channel 6's notes with the DAC on, as the ROM gives them voices; its panic stops all four.
+	if (channel == PATCH_NUM_FM_CHANNELS - 1 && patch->model.globals[GLOBAL_DAC] && length >= 3) {
+		if (note && status == 0x90 && bytes[2]) {
+			dac_play(patch, bytes[1] & 0x7F);
+		} else if (note) {
+			dac_release(patch, bytes[1] & 0x7F);
+		} else if (status == 0xB0 && (bytes[1] == CC_ALL_NOTES_OFF || bytes[1] == 120)) {
+			dac_reset(patch);
+		}
+	}
 	// MIDI 11-13 play channel 3's operators in Ch3 Special Mode with Ops: on its voice, into its output.
 	if (patch->owner && patch_ch3_ops(&patch->model) && status == 0x90 && length >= 3 && bytes[2] && channel >= 10 && channel <= 12) {
 		patch->owner(context, 2, 2, false);
@@ -2202,6 +2370,7 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		return false;
 	}
 	if (bytes[0] == 0xF0 || bytes[0] == 0xFF) {
+		dac_reset(patch);
 		stop_playing(patch, emit, context);
 		emit(context, bytes, length);
 		resend_everything(patch, bytes[0] == 0xFF, emit, context);

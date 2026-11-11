@@ -255,9 +255,34 @@ typedef struct {
 // told with the context of the emit that sends the note.
 typedef void (*patch_owner_fn)(void *context, int voice, int channel, bool at_once);
 
+// Stage 24c (D59): the four voices of PCM4 as our ROM deals them (midi_dac.c), a copy for the window
+// only. The writer keeps it by its clock; a voice ends by its sample's length and loop marks.
+#define PATCH_DAC_VOICES 4
+enum { PATCH_DAC_FREE, PATCH_DAC_HELD, PATCH_DAC_OUT };
+typedef struct {
+	uint8_t key;
+	// The ROM's own state of the voice (VOICE_FREE ... VOICE_RELEASE), and whether its key is down.
+	uint8_t rom_state;
+	bool held;
+	uint16_t order;
+	uint64_t start;
+	// When it falls silent; UINT64_MAX while a loop repeats.
+	uint64_t end;
+	// Its sample's entry of dac_notes, as it was at the start.
+	uint64_t note;
+} patch_dac_voice;
+
 typedef struct {
 	patch_values model;
 	patch_receiver rom;
+	// D59: each note's sample as the image holds it, packed by patch_set_dac_note; 0 is none. Written
+	// by the main thread, read by the writer.
+	uint64_t dac_notes[128];
+	patch_dac_voice dac[PATCH_DAC_VOICES];
+	uint16_t dac_starts;
+	// For the window: key | state << 8 per voice, and the voice's start on the writer's clock.
+	uint32_t dac_shown[PATCH_DAC_VOICES];
+	uint64_t dac_shown_start[PATCH_DAC_VOICES];
 	// Told whose note each FM voice starts; NULL when nobody listens.
 	patch_owner_fn owner;
 	// The dealer of FM voices: one for all receivers, so all get the same layout.
@@ -457,6 +482,13 @@ void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // DAC, channel 3 in Ch3 Special Mode, Porta On.
 enum { PATCH_ALONE_NO, PATCH_ALONE_PORTA, PATCH_ALONE_CH3, PATCH_ALONE_DAC };
 int patch_alone_reason(const patch_values *values, int channel);
+// Main thread (D59): a note's sample as the image holds it (rom_image_sample), its length and loop
+// marks in blocks of 256 bytes and its record's flags; blocks 0 for none.
+void patch_set_dac_note(mdmi_patch *patch, int note, uint32_t blocks, uint16_t loop_start, uint16_t loop_end, uint8_t flags);
+// Main thread (D59): every note's sample from the image the core plays.
+void patch_set_dac_image(mdmi_patch *patch, const uint8_t *image, size_t size);
+// Any thread: a DAC voice's state (PATCH_DAC_*) and key.
+int patch_dac_voice_state(const mdmi_patch *patch, int voice, int *key);
 // Any thread: how many held notes of a channel don't sound.
 int patch_muted_notes(const mdmi_patch *patch, int channel);
 // Any thread: the channel playing on an FM voice, or -1, and the key it plays there.

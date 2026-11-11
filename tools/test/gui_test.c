@@ -852,7 +852,20 @@ int main(int argc, char **argv)
 		capture(window);
 		save_bmp(argv[2], "cut");
 		CHECK(count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING) > 40, "seven notes keep the bracket");
-		CHECK(count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH4_TOP + 20, RAIL_CH4_TOP + 30, COLOR_ERROR) > 0, "and channel 4's row says CUT");
+		CHECK(count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH4_TOP + 20, RAIL_CH4_TOP + 39, COLOR_ERROR) > 0, "and channel 4's row says CUT");
+		// Stage 24c: every bar ends at x 196 with a chord's owner, its CUT and the lent rows' CHn.
+		{
+			int ends[6], same = 0;
+			for (int row = 0; row < 6; row++) {
+				const uint32_t *line = pixels + (RAIL_CH1_TOP + row * ROW_H + 26) * WIDTH;
+				ends[row] = -1;
+				for (int x = BAR_LEFT; x < 202; x++) {
+					ends[row] = (line[x] & 0xFFFFFF) != (line[200] & 0xFFFFFF) ? x : ends[row];
+				}
+				same += ends[row] == 196;
+			}
+			CHECK(same == 6, "the bars end at one x on every FM row (%d %d %d %d %d %d)", ends[0], ends[1], ends[2], ends[3], ends[4], ends[5]);
+		}
 		// Stage 24b: over the row the footer says why, in red. Without a real mouse the hover leaves as
 		// soon as messages are pumped, so the frame is taken right after the move (WM_PRINTCLIENT draws
 		// it afresh). Only red pixels are counted, not the text.
@@ -894,13 +907,22 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "special");
-		const int op1 = count_color_in(column, 226, top + 9, top + 17, COLOR_LABEL);
+		// Stage 24c: a held operator is green like the lead.
+		const int op1 = count_color_in(column, 226, top + 9, top + 17, COLOR_PLAYING);
 		// The bar is as long as on a row with one note: its last segment ends short of the column.
 		const int bar_past = count_color_in(column, 226, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_FM_LIGHT);
 		const int bar_light = count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_FM_LIGHT) + count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_PLAYING);
 		// The row is light FM: the number in it, and 3 px between the name and the notes below.
 		const int light_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
 		const int name_low = count_color_in(BAR_LEFT, 226, RAIL_CH3_TOP + 19, RAIL_CH3_TOP + 22, COLOR_TEXT);
+		// Stage 24c: CH3 SPECIAL off and on again releases the ROM's keys; the column shows them let go.
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(200);
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(200);
+		capture(window);
+		const int still_green = count_color_in(column, 226, top, top + 37, COLOR_PLAYING);
+		CHECK(still_green == 0 && count_color_in(column, 226, top, top + 37, COLOR_HINT) > 0, "after CH3 SPECIAL off and on the held notes show let go (%d green px)", still_green);
 		send_midi(0x82, 60, 0);
 		send_midi(0x8A, 64, 0);
 		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
@@ -1188,11 +1210,12 @@ int main(int argc, char **argv)
 		send_midi(0x9A, 64, 100);
 		run_ms(200);
 		capture(window);
-		const int one_column = count_color_in(ops_column_x, 226, ops_top + 9, ops_top + 17, COLOR_LABEL);
+		const int one_column = count_color_in(ops_column_x, 226, ops_top + 9, ops_top + 17, COLOR_HINT);
 		double_click(window, CH3_NOTES_ONE_X, CH3_NOTES_Y);
 		run_ms(200);
 		capture(window);
-		const int ops_column = count_color_in(ops_column_x, 226, ops_top + 9, ops_top + 17, COLOR_LABEL);
+		// Stage 24c: the switch released the ROM's keys, so operator 1's note shows let go, grey.
+		const int ops_column = count_color_in(ops_column_x, 226, ops_top + 9, ops_top + 17, COLOR_HINT);
 		send_midi(0x82, 60, 0);
 		send_midi(0x8A, 64, 0);
 		CHECK(get_value(CH3_NOTES) == 0 && one_column == 0 && ops_column > 0,
@@ -1875,6 +1898,17 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "dac");
 		const int mapped = count_color_in(242, 700, 96, 294, COLOR_DAC_DARK) + count_color_in(242, 700, 96, 294, COLOR_SHARP_ROM);
 		CHECK(mapped > 61 * 450 && count_color_in(242, 700, 96, 294, COLOR_DAC) < 200, "the grid has the ROM's 61 notes (%d px), no file yet", mapped);
+		// Stage 24c (D59): two DAC notes held, two green lines of the column on channel 6's row.
+		send_midi(0x95, 36, 100);
+		send_midi(0x95, 38, 100);
+		run_ms(60);
+		capture(window);
+		const int dac_two = count_color_in(200, 227, 244 + 2, 244 + 18, COLOR_PLAYING), dac_rest = count_color_in(200, 227, 244 + 20, 244 + 37, COLOR_PLAYING);
+		save_bmp(argv[2], "dac-voices");
+		send_midi(0x85, 36, 0);
+		send_midi(0x85, 38, 0);
+		run_ms(100);
+		CHECK(dac_two > 20 && dac_rest == 0, "two held DAC notes fill two lines of the column (%d px, %d below)", dac_two, dac_rest);
 		// Stage 20: the window still shows FM rows instead of graphs, but channel 6 on the DAC has no row.
 		CHECK(count_color_in(242, 708, HEADER_H, 460, COLOR_FM_LIGHT) + count_color_in(242, 708, HEADER_H, 460, COLOR_FM_DARK) == 0, "the DAC's page draws no arp row");
 		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
