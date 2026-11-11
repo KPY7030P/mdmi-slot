@@ -59,6 +59,8 @@ typedef struct {
 	mdmi_gui *gui;
 	// The window's page and channel and the loops switched off, saved with the project.
 	state_view view;
+	// What BANK's two lists show, kept while the window is closed, not saved (stage 22c, D56).
+	gui_banks banks;
 	// The project's DAC samples (D36), and the version of them the core was last given.
 	dac_set dac;
 	uint32_t dac_applied;
@@ -890,6 +892,7 @@ static bool gui_ext_create(const clap_plugin_t *plugin, const char *api, bool is
 		.loop_shadows = self->view.loops,
 		.tails = self->view.tails,
 		.files = &self->files,
+		.banks = &self->banks,
 		.edit = gui_edit,
 		.context = self,
 	};

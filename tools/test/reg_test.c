@@ -12,7 +12,9 @@
 #define PSAPI_VERSION 2
 #include <windows.h>
 #include <psapi.h>
+#include <stdlib.h>
 #include "dac.h"
+#include "files.h"
 #include "engine.h"
 #include "instrument.h"
 #include "patch.h"
@@ -2627,6 +2629,58 @@ static void test_bank_place(void)
 	set_on(2, PARAM_PRESET, 0);
 }
 
+// Stage 22c (D56): a library's place tried on a channel goes the way of a dropped file and reaches
+// the chip the same, row and all; the ROM bank stays.
+static void take_tried(void *context, bool knobs)
+{
+	(void)context;
+	(void)knobs;
+	patch_take_incoming(patch);
+}
+
+static void test_library_try(void)
+{
+	file_regs expected;
+	patch_instrument instrument;
+	if (!file_regs_of("Thunder Guitar 03.tyi", &expected) || !load_file("Thunder Guitar 03.tyi", &instrument)) {
+		return;
+	}
+	static patch_bank library, rom_before;
+	memset(&library, 0, sizeof(library));
+	patch_bank_rom(&library);
+	library.places[7] = instrument;
+	char path[MAX_PATH];
+	GetTempPathA(sizeof(path), path);
+	strcat(path, "mdmi-reg-library.mdbank");
+	size_t size;
+	uint8_t *bytes = state_bank_build(&library, &size);
+	FILE *file = fopen(path, "wb");
+	fwrite(bytes, 1, size, file);
+	fclose(file);
+	free(bytes);
+	rom_before = *patch_bank_view(patch);
+	static state_view view;
+	const files_host host = {patch, &view, take_tried, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	const files_spot spot = {path, 7};
+	char message[FILES_MESSAGE];
+	moment(FM_CHANNELS - 1, 96, 1, true);
+	const bool tried = files_try_place(&files, 1, &spot, message, sizeof(message));
+	patch_sync(patch, &patch->rom, emit, NULL);
+	moment(1, 60, 1, true);
+	render(SETTLE_BLOCKS);
+	moment(1, 60, 1, false);
+	moment(FM_CHANNELS - 1, 96, 1, false);
+	render(SETTLE_BLOCKS);
+	check(tried && compare_file(1, &expected, true) == 0 && !strcmp(patch->model.names[1], "Thunder Guitar 03") && !memcmp(patch_bank_view(patch), &rom_before, sizeof(rom_before)),
+		"a library's place tried on channel 2 reaches the chip as the dropped file does, the ROM bank stays");
+	files_undo(&files, message, sizeof(message));
+	patch_sync(patch, &patch->rom, emit, NULL);
+	files_free(&files);
+	DeleteFileA(path);
+}
+
 // Stage 7 (D28). An envelope that holds one level while the key is down, so the chip's attenuation
 // says which envelope a channel plays: at full volume and velocity it is the envelope's level.
 static void steady(patch_envelope *envelope, uint8_t level, int steps)
@@ -4362,6 +4416,7 @@ int main(int argc, char **argv)
 	test_reset();
 	test_files();
 	test_bank_place();
+	test_library_try();
 	test_reset();
 	test_envelopes();
 	test_reset();

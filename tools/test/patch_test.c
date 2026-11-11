@@ -2769,6 +2769,221 @@ static void test_ch3_ops(void)
 	}
 }
 
+static bool same_file(const char *path, const uint8_t *bytes, size_t size)
+{
+	FILE *file = fopen(path, "rb");
+	if (!file) {
+		return false;
+	}
+	static uint8_t got[1 << 17];
+	const size_t read = fread(got, 1, sizeof(got), file);
+	fclose(file);
+	return read == size && !memcmp(got, bytes, size);
+}
+
+// Libraries beside the plugin (stage 22c, D56): files of a folder, read and written place by place,
+// never the ROM bank unless copied into it.
+static void test_libraries(void)
+{
+	char folder[LIBRARY_PATH];
+	library_folder_for("D:\\VST\\MDMI Slot.clap", folder, sizeof(folder));
+	CHECK(!strcmp(folder, "D:\\VST\\MDMI Banks"), "beside a plugin file: %s", folder);
+	library_folder_for("D:\\VST\\MDMI Slot.vst3\\Contents\\x86_64-win\\MDMI Slot.vst3", folder, sizeof(folder));
+	CHECK(!strcmp(folder, "D:\\VST\\MDMI Banks"), "beside a VST3 bundle, never inside it: %s", folder);
+	library_folder_for("C:/Plugins/x.vst3", folder, sizeof(folder));
+	CHECK(!strcmp(folder, "C:/Plugins\\MDMI Banks"), "a single VST3 file: %s", folder);
+	library_folder_for("D:\\\xD0\x9C\xD1\x83\xD0\xB7\xD1\x8B\xD0\xBA\xD0\xB0\\MDMI Slot.clap", folder, sizeof(folder));
+	CHECK(!strcmp(folder, "D:\\\xD0\x9C\xD1\x83\xD0\xB7\xD1\x8B\xD0\xBA\xD0\xB0\\MDMI Banks"), "a path in Cyrillic");
+
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	files_view = (state_view){0};
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	snprintf(folder, sizeof(folder), "%s\\libraries", temp_dir);
+	// What a run before left.
+	const char *const left[] = {"b drums.mdbank", "A Bass.MDBANK", "junk.mdbank", "notes.txt", "c.mdbank"};
+	for (size_t i = 0; i < sizeof(left) / sizeof(*left); i++) {
+		char path[LIBRARY_PATH];
+		library_path(folder, left[i], path, sizeof(path));
+		SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+		DeleteFileA(path);
+	}
+	char sub[LIBRARY_PATH];
+	library_path(folder, "sub.mdbank", sub, sizeof(sub));
+	RemoveDirectoryA(sub);
+	RemoveDirectoryA(folder);
+	library_list list;
+	library_scan(folder, &list);
+	CHECK(!list.found && list.count == 0, "no folder: nothing listed");
+	CHECK(library_make_folder(folder) && library_make_folder(folder), "the folder made, twice is fine");
+	char a[LIBRARY_PATH], b[LIBRARY_PATH], junk[LIBRARY_PATH], other[LIBRARY_PATH];
+	library_path(folder, "b drums.mdbank", b, sizeof(b));
+	library_path(folder, "A Bass.MDBANK", a, sizeof(a));
+	library_path(folder, "junk.mdbank", junk, sizeof(junk));
+	library_path(folder, "notes.txt", other, sizeof(other));
+	CHECK(files_new_library(b, message, sizeof(message)) && files_new_library(a, message, sizeof(message)), "two new libraries: %s", message);
+	FILE *file = fopen(other, "wb");
+	fclose(file);
+	file = fopen(junk, "wb");
+	fputs("not a bank", file);
+	fclose(file);
+	CreateDirectoryA(sub, NULL);
+	library_scan(folder, &list);
+	CHECK(list.found && list.count == 3 && list.total == 3 && !strcmp(list.names[0], "A Bass.MDBANK") && !strcmp(list.names[1], "b drums.mdbank") && !strcmp(list.names[2], "junk.mdbank"),
+		"only .mdbank files, by name ignoring case: %d %s", list.count, list.names[0]);
+
+	// A new library is every place empty, and the same bytes a GM bank saves as.
+	static patch_bank library, rom;
+	patch_bank_rom(&rom);
+	bool empty = files_read_library(a, &library);
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		empty = empty && files_place_empty(&library, false, place) && files_place_empty(&library, true, place);
+	}
+	CHECK(empty, "a new library is all empty");
+	char saved[LIBRARY_PATH];
+	library_path(temp_dir, "gm.mdbank", saved, sizeof(saved));
+	size_t size;
+	uint8_t *bytes = state_bank_build(&rom, &size);
+	CHECK(files_save(&files, saved, FILES_BANK, 0, message, sizeof(message)) && same_file(saved, bytes, size), "the ROM bank saved is the same file: a saved bank is a library");
+	free(bytes);
+
+	// The ROM bank's place into a library: the bank and the channels stay.
+	CHECK(open_file(&files, files_dir, "Thunder Guitar 03.tyi", 0, 9, message), "a TYI in place 10: %s", message);
+	const patch_arp row = {.count = 2, .loop = -1, .steps = {0, 7}};
+	patch_load_place(patch, 9, &patch->bank.places[9], &row);
+	static patch_bank bank_before;
+	bank_before = *patch_bank_view(patch);
+	patch_values values_before = patch->model;
+	files_spot rom10 = {NULL, 9}, a5 = {a, 4}, b1 = {b, 0}, rom1 = {NULL, 0};
+	CHECK(files_copy_place(&files, false, &rom10, &a5, NULL, message, sizeof(message)) && !strcmp(message, "Thunder Guitar 03 to A Bass 5"), "ROM bank to a library: %s", message);
+	CHECK(files_read_library(a, &library) && !strcmp(library.places[4].name, "Thunder Guitar 03") && library.place_arps[4].count == 2
+		&& !memcmp(library.places[4].voice, bank_before.places[9].voice, sizeof(library.places[4].voice)) && !files_place_empty(&library, false, 4),
+		"the file has sound, name and row");
+	CHECK(!memcmp(patch_bank_view(patch), &bank_before, sizeof(bank_before)) && same_model(&patch->model, &values_before), "the ROM bank and the channels stay");
+	char temporary[LIBRARY_PATH + 8];
+	snprintf(temporary, sizeof(temporary), "%s.tmp", a);
+	CHECK(GetFileAttributesA(temporary) == INVALID_FILE_ATTRIBUTES, "no .tmp is left after a write");
+	char expected[FILES_MESSAGE];
+	snprintf(expected, sizeof(expected), "A Bass 5 back to %s", rom.places[4].name);
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), expected), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(a, &library) && files_place_empty(&library, false, 4), "undo empties it in the file: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(a, &library) && !strcmp(library.places[4].name, "Thunder Guitar 03"), "and again brings it back");
+
+	// Library to library, then into the ROM bank: a channel playing the place as it is sounds new.
+	CHECK(files_copy_place(&files, false, &a5, &b1, NULL, message, sizeof(message)) && files_read_library(b, &library) && !strcmp(library.places[0].name, "Thunder Guitar 03"), "library to library: %s", message);
+	CHECK(!strcmp(patch->model.names[0], "Grand Piano"), "channel 1 plays place 1");
+	CHECK(files_copy_place(&files, false, &b1, &rom1, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[0].name, "Thunder Guitar 03") && patch->bank.place_arps[0].count == 2 && !strcmp(patch->model.names[0], "Thunder Guitar 03"),
+		"into the ROM bank, and channel 1 sounds it: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && !strcmp(patch->bank.places[0].name, "Grand Piano") && !strcmp(patch->model.names[0], "Grand Piano"), "undo puts the place back: %s", message);
+	CHECK(!files_copy_place(&files, false, &a5, &a5, NULL, message, sizeof(message)), "a place onto itself: %s", message);
+
+	// Trying a place on a channel: as a dropped file, Preset stays.
+	CHECK(files_try_place(&files, 3, &a5, message, sizeof(message)) && !strcmp(patch->model.names[3], "Thunder Guitar 03") && patch->model.channels[3][PARAM_PRESET] == 0 && patch_arp_view(patch, 3)->count == 2,
+		"a library place tried on channel 4: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && !strcmp(patch->model.names[3], "Grand Piano"), "undo gives the channel back");
+
+	// Envelopes, and clearing.
+	CHECK(files_put_places_one(&files, "PSG Organ.eef", 3, message), "an envelope in place 4: %s", message);
+	files_spot rom4 = {NULL, 3}, b4 = {b, 3};
+	CHECK(files_copy_place(&files, true, &rom4, &b4, NULL, message, sizeof(message)) && files_read_library(b, &library) && !strcmp(library.envelopes[3].name, "PSG Organ") && !strcmp(library.places[3].name, rom.places[3].name),
+		"an envelope to a library, its FM place stays: %s", message);
+	CHECK(files_clear_place(&files, true, &b4, message, sizeof(message)) && files_read_library(b, &library) && files_place_empty(&library, true, 3) && !strcmp(library.places[0].name, "Thunder Guitar 03"),
+		"cleared, the other places stay: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(b, &library) && !strcmp(library.envelopes[3].name, "PSG Organ"), "undo of a clear");
+
+	// A file that isn't a bank is never written; a file that can't be written changes nothing.
+	files_spot junk1 = {junk, 0};
+	CHECK(!files_copy_place(&files, false, &rom10, &junk1, NULL, message, sizeof(message)) && same_file(junk, (const uint8_t *)"not a bank", 10), "no bank, not written: %s", message);
+	CHECK(!files_try_place(&files, 0, &junk1, message, sizeof(message)) && !strcmp(patch->model.names[0], "Grand Piano"), "nor tried: %s", message);
+	wchar_t wide[LIBRARY_PATH];
+	MultiByteToWideChar(CP_UTF8, 0, a, -1, wide, LIBRARY_PATH);
+	SetFileAttributesW(wide, FILE_ATTRIBUTE_READONLY);
+	files_spot a6 = {a, 5};
+	CHECK(!files_copy_place(&files, false, &rom10, &a6, NULL, message, sizeof(message)) && files_read_library(a, &library) && files_place_empty(&library, false, 5) && strstr(message, "Can't write"),
+		"a read-only library: %s", message);
+	CHECK(files_copy_place(&files, false, &a5, &rom1, NULL, message, sizeof(message)), "but it still gives its places: %s", message);
+	SetFileAttributesW(wide, FILE_ATTRIBUTE_NORMAL);
+	// Another plugin wrote another place since: both stay.
+	static patch_bank elsewhere;
+	files_read_library(a, &elsewhere);
+	snprintf(elsewhere.places[20].name, PATCH_NAME, "Other");
+	bytes = state_bank_build(&elsewhere, &size);
+	file = fopen(a, "wb");
+	fwrite(bytes, 1, size, file);
+	fclose(file);
+	free(bytes);
+	CHECK(files_copy_place(&files, false, &rom10, &a6, NULL, message, sizeof(message)) && files_read_library(a, &library) && !strcmp(library.places[20].name, "Other") && !strcmp(library.places[5].name, "Thunder Guitar 03"),
+		"the file is read again before a change: %s", message);
+	// The file went: undo says so and keeps nothing.
+	DeleteFileW(wide);
+	CHECK(!files_undo(&files, message, sizeof(message)) && GetFileAttributesW(wide) == INVALID_FILE_ATTRIBUTES && !strcmp(message, "Can't undo: A Bass is gone"), "undo into a removed library: %s", message);
+
+	// Review of stage 22c. Two instances add to a library's first free place, each without seeing the
+	// other's: the place is chosen in the file as it is now, so neither is lost.
+	static mdmi_files second;
+	files_init(&second, &host);
+	files_spot b_free = {b, -1}, rom3 = {NULL, 2};
+	static patch_bank before_copy;
+	files_read_library(b, &before_copy);
+	int landed = -1, landed_too = -1;
+	CHECK(files_copy_place(&second, false, &rom10, &b_free, &landed, message, sizeof(message)) && landed == 1, "another instance adds to the first free place: %d", landed);
+	CHECK(files_copy_place(&files, false, &rom3, &b_free, &landed_too, message, sizeof(message)) && landed_too == 3, "this one, not told, adds after it, past place 3 where its GM sound would read as empty: %d", landed_too);
+	// The file is the bank before with exactly those places: what SAVE of that bank writes.
+	before_copy.places[1] = patch->bank.places[9];
+	before_copy.place_arps[1] = patch->bank.place_arps[9];
+	before_copy.places[3] = patch->bank.places[2];
+	before_copy.place_arps[3] = patch->bank.place_arps[2];
+	bytes = state_bank_build(&before_copy, &size);
+	CHECK(same_file(b, bytes, size), "the file changed by those two places only, as a saved bank");
+	free(bytes);
+	// One place written by both: the last one stays.
+	files_spot b11 = {b, 10};
+	files_copy_place(&second, false, &rom10, &b11, NULL, message, sizeof(message));
+	files_copy_place(&files, false, &rom3, &b11, NULL, message, sizeof(message));
+	CHECK(files_read_library(b, &library) && !strcmp(library.places[10].name, patch->bank.places[2].name), "the same place: the last write stays");
+	// A GM sound doesn't go to its own GM place, where it would read as empty and vanish.
+	char c[LIBRARY_PATH];
+	library_path(folder, "c.mdbank", c, sizeof(c));
+	files_new_library(c, message, sizeof(message));
+	const patch_arp none = PATCH_ARP_EMPTY;
+	patch_load_place(patch, 0, &rom.places[0], &none);
+	files_spot c_free = {c, -1};
+	CHECK(files_copy_place(&files, false, &rom1, &c_free, &landed, message, sizeof(message)) && landed == 1 && files_read_library(c, &library) && !files_place_empty(&library, false, 1),
+		"GM place 1 into a new library goes to place 2, not its own: %d", landed);
+	// A library copied from leaves its file as it was.
+	size_t c_size;
+	uint8_t *c_bytes = state_bank_build(&library, &c_size);
+	files_spot c2 = {c, 1}, rom20 = {NULL, 19};
+	CHECK(files_copy_place(&files, false, &c2, &rom20, NULL, message, sizeof(message)) && same_file(c, c_bytes, c_size), "a library copied into the ROM bank stays as it was");
+	// A read-only library: NEW over it and CLEAR are refused, the file stays.
+	MultiByteToWideChar(CP_UTF8, 0, c, -1, wide, LIBRARY_PATH);
+	SetFileAttributesW(wide, FILE_ATTRIBUTE_READONLY);
+	CHECK(!files_clear_place(&files, false, &c2, message, sizeof(message)) && same_file(c, c_bytes, c_size), "CLEAR on a read-only library: %s", message);
+	CHECK(!files_new_library(c, message, sizeof(message)) && same_file(c, c_bytes, c_size), "NEW over a read-only library: %s", message);
+	SetFileAttributesW(wide, FILE_ATTRIBUTE_NORMAL);
+	free(c_bytes);
+	DeleteFileW(wide);
+	files_free(&second);
+
+	// Stage 22c adds no block to a project: libraries are never in it.
+	files_view = (state_view){0};
+	bytes = state_build(patch, &files_view, &size);
+	bool known = bytes != NULL;
+	for (size_t at = sizeof(uint32_t); known && at + 8 <= size;) {
+		uint32_t type, length;
+		memcpy(&type, bytes + at, 4);
+		memcpy(&length, bytes + at + 4, 4);
+		known = type >= 1 && type <= 11;
+		at += 8 + length;
+	}
+	CHECK(known, "a 0.22.4 project has blocks 1-11 only");
+	free(bytes);
+	files_free(&files);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -2802,6 +3017,7 @@ int main(int argc, char **argv)
 	test_dac_marks();
 	test_dac_old_project();
 	test_dac_moves();
+	test_libraries();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	return failures;

@@ -806,6 +806,283 @@ int files_move_sample(mdmi_files *files, int from, int to, bool copy, char *mess
 	return 1;
 }
 
+// A whole file written beside the old one, then put in its place, so a write that fails halfway
+// leaves the old file as it was.
+static bool write_replace(const char *path, const uint8_t *bytes, size_t size)
+{
+	char temporary[LIBRARY_PATH + 8];
+	snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+	wchar_t from[LIBRARY_PATH + 8], to[LIBRARY_PATH];
+	if (!MultiByteToWideChar(CP_UTF8, 0, temporary, -1, from, LIBRARY_PATH + 8) || !MultiByteToWideChar(CP_UTF8, 0, path, -1, to, LIBRARY_PATH)) {
+		return false;
+	}
+	if (!write_all(temporary, bytes, size)) {
+		DeleteFileW(from);
+		return false;
+	}
+	if (!MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		DeleteFileW(from);
+		return false;
+	}
+	return true;
+}
+
+// The name a library goes by: its file's, without .mdbank.
+static void library_name(const char *path, char *out, size_t size)
+{
+	const char *base = base_of(path);
+	const char *dot = strrchr(base, '.');
+	snprintf(out, size, "%.*s", dot && dot != base ? (int)(dot - base) : (int)strlen(base), base);
+}
+
+bool files_read_library(const char *path, patch_bank *bank)
+{
+	size_t length = 0;
+	uint8_t *bytes = read_all(path, &length);
+	const bool read = bytes && state_bank_read(bytes, length, bank);
+	free(bytes);
+	return read;
+}
+
+static bool write_library(const char *path, const patch_bank *bank)
+{
+	size_t length;
+	uint8_t *bytes = state_bank_build(bank, &length);
+	const bool written = bytes && write_replace(path, bytes, length);
+	free(bytes);
+	return written;
+}
+
+// What a place holds: the voice or the envelope by the list, and the row.
+typedef struct {
+	patch_instrument instrument;
+	patch_envelope envelope;
+	patch_arp arp;
+} place_sound;
+
+static void get_place(const patch_bank *bank, bool envelopes, int place, place_sound *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (envelopes) {
+		out->envelope = bank->envelopes[place];
+		out->arp = bank->envelope_arps[place];
+	} else {
+		out->instrument = bank->places[place];
+		out->arp = bank->place_arps[place];
+	}
+}
+
+static void set_place(patch_bank *bank, bool envelopes, int place, const place_sound *sound)
+{
+	if (envelopes) {
+		bank->envelopes[place] = sound->envelope;
+		bank->envelope_arps[place] = sound->arp;
+	} else {
+		bank->places[place] = sound->instrument;
+		bank->place_arps[place] = sound->arp;
+	}
+}
+
+bool files_place_empty(const patch_bank *bank, bool envelopes, int place)
+{
+	place &= PATCH_BANK_SIZE - 1;
+	const patch_arp *arp = envelopes ? &bank->envelope_arps[place] : &bank->place_arps[place];
+	return arp->count == 0 && (envelopes ? patch_envelope_is_rom(bank, place) : patch_place_is_gm(bank, place));
+}
+
+static const char *sound_name(const place_sound *sound, bool envelopes)
+{
+	return envelopes ? sound->envelope.name : sound->instrument.name;
+}
+
+static bool read_spot(mdmi_files *files, bool envelopes, const files_spot *spot, place_sound *out, char *message, size_t size)
+{
+	if (spot->place < 0 || spot->place >= PATCH_BANK_SIZE) {
+		snprintf(message, size, "No such slot");
+		return false;
+	}
+	if (!spot->library) {
+		get_place(patch_bank_view(files->host.patch), envelopes, spot->place, out);
+		return true;
+	}
+	patch_bank *bank = malloc(sizeof(*bank));
+	if (!bank || !files_read_library(spot->library, bank)) {
+		char name[LIBRARY_NAME];
+		library_name(spot->library, name, sizeof(name));
+		snprintf(message, size, "%s: can't be read as a bank", name);
+		free(bank);
+		return false;
+	}
+	get_place(bank, envelopes, spot->place, out);
+	free(bank);
+	return true;
+}
+
+// The library file read again, one place changed, the file written whole. before gets what the
+// place had. Nothing changes if the file can't be read as a bank or written.
+// *place < 0: the first empty place of the fresh file where the sound doesn't read as empty (a GM
+// sound on its own GM place would), set to where it went.
+static bool write_library_place(const char *path, bool envelopes, int *place, const place_sound *sound, place_sound *before, char *message, size_t size)
+{
+	char name[LIBRARY_NAME];
+	library_name(path, name, sizeof(name));
+	patch_bank *bank = malloc(sizeof(*bank));
+	if (!bank || !files_read_library(path, bank)) {
+		snprintf(message, size, "%s: can't be read as a bank, not changed", name);
+		free(bank);
+		return false;
+	}
+	for (int free_place = 0; *place < 0 && free_place < PATCH_BANK_SIZE; free_place++) {
+		if (!files_place_empty(bank, envelopes, free_place)) {
+			continue;
+		}
+		get_place(bank, envelopes, free_place, before);
+		set_place(bank, envelopes, free_place, sound);
+		if (!files_place_empty(bank, envelopes, free_place)) {
+			*place = free_place;
+		}
+		set_place(bank, envelopes, free_place, before);
+	}
+	if (*place < 0) {
+		snprintf(message, size, "%.40s is full to 128: clear a sound first", name);
+		free(bank);
+		return false;
+	}
+	get_place(bank, envelopes, *place, before);
+	set_place(bank, envelopes, *place, sound);
+	const bool written = write_library(path, bank);
+	free(bank);
+	if (!written) {
+		snprintf(message, size, "Can't write %s: read-only or in use, nothing changed", name);
+	}
+	return written;
+}
+
+static void remember_library(mdmi_files *files, bool envelopes, const char *path, int place, const place_sound *before)
+{
+	remember(files, UNDO_LIBRARY, place, envelopes ? NULL : &before->instrument, envelopes ? &before->envelope : NULL, NULL, 0);
+	files->undo_arp = before->arp;
+	files->undo_envelopes = envelopes;
+	snprintf(files->undo_library, sizeof(files->undo_library), "%s", path);
+	char name[LIBRARY_NAME];
+	library_name(path, name, sizeof(name));
+	snprintf(files->undo_text, sizeof(files->undo_text), "%.40s %d back to %s", name, place + 1, sound_name(before, envelopes));
+}
+
+// A sound into a place of the ROM bank or of a library, with its undo step.
+// A library's place < 0 is its first free one; *landed says where the sound went.
+static bool put_spot(mdmi_files *files, bool envelopes, const files_spot *to, const place_sound *sound, int *landed, char *message, size_t size)
+{
+	*landed = to->place;
+	if (!to->library) {
+		if (envelopes) {
+			put_envelope_in_place(files, to->place, &sound->envelope, &sound->arp);
+		} else {
+			put_in_place(files, to->place, &sound->instrument, &sound->arp);
+		}
+		return true;
+	}
+	place_sound before;
+	if (!write_library_place(to->library, envelopes, landed, sound, &before, message, size)) {
+		return false;
+	}
+	remember_library(files, envelopes, to->library, *landed, &before);
+	return true;
+}
+
+static void spot_name(const files_spot *spot, char *out, size_t size)
+{
+	char name[LIBRARY_NAME];
+	if (spot->library) {
+		library_name(spot->library, name, sizeof(name));
+		snprintf(out, size, "%.40s %d", name, spot->place + 1);
+	} else {
+		snprintf(out, size, "bank %d", spot->place + 1);
+	}
+}
+
+bool files_new_library(const char *path, char *message, size_t size)
+{
+	char name[LIBRARY_NAME];
+	library_name(path, name, sizeof(name));
+	patch_bank *bank = calloc(1, sizeof(*bank));
+	if (bank) {
+		patch_bank_rom(bank);
+	}
+	const bool written = bank && write_library(path, bank);
+	free(bank);
+	snprintf(message, size, written ? "New library %s" : "%s: can't be written", name);
+	return written;
+}
+
+bool files_try_place(mdmi_files *files, int channel, const files_spot *from, char *message, size_t size)
+{
+	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
+		return false;
+	}
+	const bool envelopes = is_psg(channel);
+	place_sound sound;
+	if (!read_spot(files, envelopes, from, &sound, message, size)) {
+		return false;
+	}
+	if (envelopes) {
+		put_envelope_on_channel(files, channel, &sound.envelope, &sound.envelope, &sound.arp, &sound.arp);
+	} else {
+		put_on_channel(files, channel, &sound.instrument, &sound.instrument, &sound.arp, &sound.arp);
+	}
+	snprintf(message, size, "Trying %s on CH%d", sound_name(&sound, envelopes), channel + 1);
+	return true;
+}
+
+bool files_copy_place(mdmi_files *files, bool envelopes, const files_spot *from, const files_spot *to, int *landed, char *message, size_t size)
+{
+	if (to->place >= PATCH_BANK_SIZE || (to->place < 0 && !to->library)) {
+		snprintf(message, size, "No such slot");
+		return false;
+	}
+	const bool same_bank = from->library && to->library ? !_stricmp(from->library, to->library) : !from->library && !to->library;
+	if (same_bank && (from->place == to->place || to->place < 0)) {
+		snprintf(message, size, "Same slot");
+		return false;
+	}
+	place_sound sound;
+	int went;
+	if (!read_spot(files, envelopes, from, &sound, message, size) || !put_spot(files, envelopes, to, &sound, &went, message, size)) {
+		return false;
+	}
+	if (landed) {
+		*landed = went;
+	}
+	char where[64];
+	const files_spot there = {to->library, went};
+	spot_name(&there, where, sizeof(where));
+	snprintf(message, size, "%s to %s", sound_name(&sound, envelopes), where);
+	return true;
+}
+
+bool files_clear_place(mdmi_files *files, bool envelopes, const files_spot *spot, char *message, size_t size)
+{
+	if (!spot->library || spot->place < 0 || spot->place >= PATCH_BANK_SIZE) {
+		return false;
+	}
+	patch_bank *rom = calloc(1, sizeof(*rom));
+	if (!rom) {
+		return false;
+	}
+	patch_bank_rom(rom);
+	place_sound empty;
+	get_place(rom, envelopes, spot->place, &empty);
+	free(rom);
+	int landed;
+	if (!put_spot(files, envelopes, spot, &empty, &landed, message, size)) {
+		return false;
+	}
+	char where[64];
+	spot_name(spot, where, sizeof(where));
+	snprintf(message, size, "%s emptied", where);
+	return true;
+}
+
 bool files_undo(mdmi_files *files, char *message, size_t size)
 {
 	const int undo = files->undo, target = files->undo_target;
@@ -823,6 +1100,27 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 		files->undo_arp = now;
 		snprintf(files->undo_text, sizeof(files->undo_text), "CH%d arp as drawn", target + 1);
 		files->host.handed(files->host.context, false);
+	} else if (undo == UNDO_LIBRARY) {
+		// The place as it was written back, and what it has now kept for a second undo.
+		const bool envelopes = files->undo_envelopes;
+		place_sound back = {.instrument = files->undo_instrument, .envelope = files->undo_envelope, .arp = arp}, now;
+		char path[LIBRARY_PATH];
+		snprintf(path, sizeof(path), "%s", files->undo_library);
+		char why[FILES_MESSAGE];
+		int place = target;
+		if (!write_library_place(path, envelopes, &place, &back, &now, why, sizeof(why))) {
+			char name[LIBRARY_NAME];
+			library_name(path, name, sizeof(name));
+			wchar_t wide[LIBRARY_PATH];
+			const bool gone = MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, LIBRARY_PATH) && GetFileAttributesW(wide) == INVALID_FILE_ATTRIBUTES;
+			if (gone) {
+				snprintf(message, size, "Can't undo: %.40s is gone", name);
+			} else {
+				snprintf(message, size, "Can't undo: %s", why);
+			}
+			return false;
+		}
+		remember_library(files, envelopes, path, target, &now);
 	} else if (undo == UNDO_CHANNEL && is_psg(target)) {
 		patch_envelope back = files->undo_envelope, base = files->undo_base_envelope;
 		put_envelope_on_channel(files, target, &back, &base, &arp, &base_arp);

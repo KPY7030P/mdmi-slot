@@ -39,6 +39,26 @@ static uint8_t *put_block_head(uint8_t *out, uint32_t type, uint32_t length)
 	return out + BLOCK_HEAD;
 }
 
+#define BANK_FILE_BYTES (sizeof(uint32_t) + 3 * BLOCK_HEAD + PLACES_BYTES + ENVELOPES_BYTES + ARPS_BYTES)
+
+// The bank's places, envelopes and rows, the channels' rows empty: a bank file after its version, and
+// the end of a state, whose channels' rows its builder writes over them.
+static uint8_t *put_bank(uint8_t *out, const patch_bank *bank)
+{
+	out = put_block_head(out, BLOCK_BANK, PLACES_BYTES);
+	memcpy(out, bank->places, PLACES_BYTES);
+	out = put_block_head(out + PLACES_BYTES, BLOCK_ENVELOPES, ENVELOPES_BYTES);
+	memcpy(out, bank->envelopes, ENVELOPES_BYTES);
+	out = put_block_head(out + ENVELOPES_BYTES, BLOCK_ARPS, ARPS_BYTES);
+	memcpy(out, bank->place_arps, PLACE_ARPS_BYTES);
+	memcpy(out + PLACE_ARPS_BYTES, bank->envelope_arps, PLACE_ARPS_BYTES);
+	const patch_arp none = PATCH_ARP_EMPTY;
+	for (int i = 0; i < 2 * PATCH_NUM_CHANNELS; i++) {
+		memcpy(out + 2 * PLACE_ARPS_BYTES + i * sizeof(patch_arp), &none, sizeof(none));
+	}
+	return out + ARPS_BYTES;
+}
+
 uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 {
 	const size_t dac_bytes = view && view->dac ? dac_block_size(view->dac) : 0;
@@ -92,24 +112,82 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 			out += dac_bytes;
 		}
 	}
-	const patch_bank *bank = patch_bank_view(patch);
-	out = put_block_head(out, BLOCK_BANK, PLACES_BYTES);
-	memcpy(out, bank->places, PLACES_BYTES);
-	out = put_block_head(out + PLACES_BYTES, BLOCK_ENVELOPES, ENVELOPES_BYTES);
-	memcpy(out, bank->envelopes, ENVELOPES_BYTES);
-	out = put_block_head(out + ENVELOPES_BYTES, BLOCK_ARPS, ARPS_BYTES);
-	memcpy(out, bank->place_arps, PLACE_ARPS_BYTES);
-	memcpy(out + PLACE_ARPS_BYTES, bank->envelope_arps, PLACE_ARPS_BYTES);
+	out = put_bank(out, patch_bank_view(patch));
 	if (view) {
-		patch_save_arps(patch_view(patch), out + 2 * PLACE_ARPS_BYTES);
-	} else {
-		const patch_arp none = PATCH_ARP_EMPTY;
-		for (int i = 0; i < 2 * PATCH_NUM_CHANNELS; i++) {
-			memcpy(out + 2 * PLACE_ARPS_BYTES + i * sizeof(patch_arp), &none, sizeof(none));
-		}
+		patch_save_arps(patch_view(patch), out - PATCH_CHANNEL_ARPS_BYTES);
 	}
-	*size = (size_t)(out + ARPS_BYTES - buffer);
+	*size = (size_t)(out - buffer);
 	return buffer;
+}
+
+uint8_t *state_bank_build(const patch_bank *bank, size_t *size)
+{
+	uint8_t *buffer = malloc(BANK_FILE_BYTES);
+	if (!buffer) {
+		return NULL;
+	}
+	const uint32_t version = STATE_VERSION;
+	memcpy(buffer, &version, sizeof(version));
+	*size = (size_t)(put_bank(buffer + sizeof(version), bank) - buffer);
+	return buffer;
+}
+
+// The bank's blocks into a bank that starts as the ROM's: without envelopes the ROM's, without rows
+// every place has none.
+static void take_bank(patch_bank *copy, const uint8_t *bank, const uint8_t *envelopes, const uint8_t *arps)
+{
+	// Zero first: the bytes after a name's end go to files, so the same bank writes the same file.
+	memset(copy, 0, sizeof(*copy));
+	patch_bank_rom(copy);
+	memcpy(copy->places, bank, PLACES_BYTES);
+	if (envelopes) {
+		memcpy(copy->envelopes, envelopes, ENVELOPES_BYTES);
+	}
+	if (arps) {
+		memcpy(copy->place_arps, arps, PLACE_ARPS_BYTES);
+		memcpy(copy->envelope_arps, arps + PLACE_ARPS_BYTES, PLACE_ARPS_BYTES);
+	}
+}
+
+// The blocks of a state or bank file: version, then type, length, data. False if damaged.
+static bool find_blocks(const uint8_t *bytes, size_t size, const uint8_t **bank, const uint8_t **envelopes, const uint8_t **arps)
+{
+	uint32_t version;
+	if (size < sizeof(version)) {
+		return false;
+	}
+	memcpy(&version, bytes, sizeof(version));
+	if (version != STATE_VERSION) {
+		return false;
+	}
+	for (size_t at = sizeof(version); at + BLOCK_HEAD <= size;) {
+		uint32_t type, length;
+		memcpy(&type, bytes + at, sizeof(type));
+		memcpy(&length, bytes + at + sizeof(type), sizeof(length));
+		at += BLOCK_HEAD;
+		if (length > size - at) {
+			return false;
+		}
+		if (type == BLOCK_BANK && length == PLACES_BYTES) {
+			*bank = bytes + at;
+		} else if (type == BLOCK_ENVELOPES && length == ENVELOPES_BYTES) {
+			*envelopes = bytes + at;
+		} else if (type == BLOCK_ARPS && length == ARPS_BYTES) {
+			*arps = bytes + at;
+		}
+		at += length;
+	}
+	return true;
+}
+
+bool state_bank_read(const uint8_t *bytes, size_t size, patch_bank *out)
+{
+	const uint8_t *bank = NULL, *envelopes = NULL, *arps = NULL;
+	if (!find_blocks(bytes, size, &bank, &envelopes, &arps) || !bank) {
+		return false;
+	}
+	take_bank(out, bank, envelopes, arps);
+	return true;
 }
 
 // The bank goes first, so channels without names are named after it. Without envelopes, the bank
@@ -182,16 +260,7 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 			dac_clear(&read_samples);
 			return false;
 		}
-		patch_bank_rom(copy);
-		memcpy(copy->places, bank, PLACES_BYTES);
-		if (envelopes) {
-			memcpy(copy->envelopes, envelopes, ENVELOPES_BYTES);
-		}
-		// Without rows every place has none.
-		if (arps) {
-			memcpy(copy->place_arps, arps, PLACE_ARPS_BYTES);
-			memcpy(copy->envelope_arps, arps + PLACE_ARPS_BYTES, PLACE_ARPS_BYTES);
-		}
+		take_bank(copy, bank, envelopes, arps);
 		patch_load_bank(patch, copy);
 		free(copy);
 	}

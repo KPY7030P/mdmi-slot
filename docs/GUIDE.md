@@ -68,6 +68,20 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   snapshot, which is the project's own state. UNDO puts back what the last file replaced, and a second
   UNDO brings the file back. `src/instrument.c` reads the formats, `src/files.c` and `src/state.c`
   the rest.
+- Libraries (stage 22c, D56): `.mdbank` files in the folder `MDMI Banks` beside the plugin's DLL, or
+  beside the `.vst3` bundle that holds it (`src/library.c`: `library_folder`, `library_folder_for` from a
+  path, `MDMI_BANKS` for tests; `library_scan` lists up to 64 by name). The format is the bank file's;
+  `state_bank_build` and `state_bank_read` write and read one outside the model. A place is empty when it
+  is the ROM's GM preset (or envelope) with an empty row (`files_place_empty`). `files_try_place` gives a
+  place to a channel as a dropped file goes, `files_copy_place` copies between the ROM bank and libraries
+  in any direction, `files_clear_place` empties a library's place. A library is read again before every
+  change, one place changes, and the whole file goes to `<name>.mdbank.tmp`, then `MoveFileExW` replaces
+  the old one; undo (`UNDO_LIBRARY`) writes the place back the same way. The audio thread never sees
+  libraries. The window (`draw_bank` and the functions around it in `src/gui.c`) shows list A (the ROM bank
+  or a library) and list B (a library); which ones is the instance's (`gui_banks`), not the project's. It
+  reads the folder and both files again when the page opens, a bank is chosen and after each action. A
+  press on a library row tries it, a drag to the other list copies (into a library: its first free place),
+  CLEAR on the hovered row empties it, NEW asks the save dialog (`MDMI_TEST_NEW` in tests).
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
 - PSG noise (stage 16, D45): Noise Type (Periodic, White) and Noise Rate (High, Mid, Low: the chip's clock

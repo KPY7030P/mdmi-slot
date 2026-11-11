@@ -56,5 +56,10 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size);
 // Hands the model whatever blocks there are. False if nothing could be used; *knobs says whether
 // there were values, and the view changes only if there was one.
 bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view *view, bool *knobs);
+// A bank file of a bank outside the model, a library (stage 22c, D56): the same bytes state_build
+// gives without a view. Freed by the caller.
+uint8_t *state_bank_build(const patch_bank *bank, size_t *size);
+// The bank of a bank file or a state into out, which starts as the ROM's. False if there is none.
+bool state_bank_read(const uint8_t *bytes, size_t size, patch_bank *out);
 
 #endif

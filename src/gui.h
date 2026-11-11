@@ -41,6 +41,14 @@ typedef struct {
 // What edit() asks for: a gesture around one or more values, as a host records a knob.
 enum { GUI_EDIT_BEGIN, GUI_EDIT_SET, GUI_EDIT_END };
 
+// What the two lists of BANK show (stage 22c, D56): file names of the library folder. An empty left
+// is the ROM bank, an empty right the first library by name. The instance's while it is loaded,
+// never the project's.
+typedef struct {
+	char left[LIBRARY_NAME];
+	char right[LIBRARY_NAME];
+} gui_banks;
+
 typedef struct {
 	mdmi_engine *engine;
 	mdmi_patch *patch;
@@ -60,6 +68,8 @@ typedef struct {
 	state_tail *tails;
 	// What the window does with dropped and opened files.
 	mdmi_files *files;
+	// The lists of BANK, NULL for the window's own.
+	gui_banks *banks;
 	void (*edit)(void *context, int kind, uint32_t id, int value);
 	void *context;
 } gui_source;

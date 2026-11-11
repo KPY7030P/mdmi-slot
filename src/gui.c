@@ -1,4 +1,5 @@
 #define COBJMACROS
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -102,17 +103,25 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define DRAG_SLOP 3
 #define MAX_CELLS 160
 #define TIMER_PER_SECOND (1000 / TIMER_MS)
-// The bank page: one row per place, scrolled.
+// The bank page (stage 22c, D56, art-director's frame in the ROADMAP): two lists side by side, A the
+// ROM bank or a library, B a library, a bar over each that chooses what it shows; one row per place,
+// scrolled. The DAC's list keeps BANK_X to BANK_RIGHT.
 #define BANK_X 242
-#define BANK_HEADER_Y 60
-#define BANK_Y 72
+#define BANK_BAR_Y 56
+#define BANK_BAR_H 20
+#define BANK_LABEL_Y 80
+#define BANK_Y 92
 #define BANK_ROW_H 20
-#define BANK_ROWS 19
+#define BANK_ROWS 18
+#define BANK_BOTTOM (BANK_Y + BANK_ROWS * BANK_ROW_H)
 #define BANK_RIGHT 698
-#define BANK_DOTS_X 616
-// While files are dragged the rows left of this replace and the FILE and dots column adds (D26).
-#define BANK_ADD_X 576
-#define BANK_ADD_Y 56
+#define LIST_A_RIGHT 504
+#define LIST_A_SCROLL 506
+#define LIST_A_BAR_RIGHT 512
+#define LIST_DIVIDER_X 515
+#define LIST_B_X 520
+#define LIST_B_BAR_RIGHT 708
+#define LIST_EDGE 10
 #define SCROLL_X 702
 #define SCROLL_H (BANK_ROWS * BANK_ROW_H)
 #define BANK_TOP_MAX (PATCH_BANK_SIZE - BANK_ROWS)
@@ -207,6 +216,25 @@ typedef struct {
 	IDropTarget iface;
 	struct mdmi_gui *gui;
 } drop_target;
+
+// What a list of BANK shows (stage 22c): the ROM bank, a library read from its file, a file that
+// isn't a bank, or no library because the folder or its files aren't there (list B only).
+enum { LIST_ROM, LIST_LIBRARY, LIST_UNREAD, LIST_NO_FOLDER, LIST_NO_LIBRARY };
+typedef struct {
+	int kind;
+	char path[LIBRARY_PATH];
+	// The file's name in the folder, and without .mdbank.
+	char file[LIBRARY_NAME];
+	char name[LIBRARY_NAME];
+	// A library as read, the window's copy.
+	patch_bank bank;
+	// The rows: every place of the ROM bank, a library's places that aren't empty, of the list the
+	// selected channel chooses from.
+	int places[PATCH_BANK_SIZE];
+	int count;
+	// The first row shown of a library; the ROM bank's is bank_top.
+	int top;
+} bank_list;
 // A row cell is dragged, a column cell is a global knob, a choice is one of a row of buttons (the
 // algorithm, pan L C R), the source is the Preset drawn as where the sound comes from.
 // SSG is the button that opens the choice of shapes over the graph (stage 11), PITCH the tag of a
@@ -261,6 +289,28 @@ struct mdmi_gui {
 	int bank_top;
 	int bank_seen_channel;
 	bool bank_was_open;
+	// Stage 22c (D56): the library folder, its files, and what lists A and B show, read again when the
+	// page opens, a bank is chosen, and after every action on one. own_banks when the host gives none.
+	char lib_folder[LIBRARY_PATH];
+	library_list lib_list;
+	bank_list lists[2];
+	gui_banks own_banks;
+	// Names whose file couldn't be read when opened, which the choice shows in red.
+	char lib_bad[4][LIBRARY_NAME];
+	int lib_bad_next;
+	// The open choice of a bank: for which list, -1 closed; its first row shown.
+	int chooser;
+	int chooser_top;
+	// A press on a row of a list (-1: none): the place, where it was, and whether the mouse went past
+	// DRAG_SLOP, which makes it a drag that copies.
+	int row_list;
+	int row_place;
+	int row_x, row_y;
+	bool row_moved;
+	// The library place last tried on a channel, lit while the channel plays it.
+	int tried_channel;
+	int tried_place;
+	char tried_path[LIBRARY_PATH];
 	// The first note the DAC page shows, and whether it has been open.
 	int dac_top;
 	bool dac_was_open;
@@ -397,6 +447,9 @@ struct mdmi_gui {
 	int flash_count;
 	int flash_ticks;
 	uint32_t flash_color;
+	// The list of BANK a flash is in (stage 22c), -1 for the ROM bank's rows as before; a place of -1
+	// there is the whole list.
+	int flash_list;
 };
 
 static LONG window_count;
@@ -4452,6 +4505,9 @@ static void footer_text(mdmi_gui *g, const char *message, uint32_t color)
 	text(g, 8, FOOTER_Y + 4, cut, color, 2);
 }
 
+// Stage 22c: the lists of BANK under the mouse, defined with them.
+static bool bank_hint(mdmi_gui *g, char *hint, size_t size, uint32_t *color);
+
 // One line, by what matters most: a dead engine, a file being dragged, the button under the mouse,
 // what just happened, then the engine's numbers.
 static void draw_footer(mdmi_gui *g)
@@ -4464,6 +4520,7 @@ static void draw_footer(mdmi_gui *g)
 		g->underruns_second_ago = stats.underruns;
 	}
 	char buffer[160];
+	uint32_t color = C_LABEL;
 	if (stats.failed) {
 		if (stats.boot_error) {
 			snprintf(buffer, sizeof(buffer), "ENGINE FAILED: %s %u", stats.boot_stage ? stats.boot_stage : "", stats.boot_error);
@@ -4475,6 +4532,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, g->drop_hint, g->drop_hint_color);
 	} else if (action_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
+	} else if (g->row_moved && bank_hint(g, buffer, sizeof(buffer), &color)) {
+		footer_text(g, buffer, color);
 	} else if (g->env_drag != ENV_NONE && envelope_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->arp_drag != ARP_NONE && arp_hint(g, buffer, sizeof(buffer))) {
@@ -4485,6 +4544,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, "MASTER: PLUGIN ONLY, NOT ON THE CONSOLE", C_LABEL);
 	} else if (ch3_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
+	} else if (bank_hint(g, buffer, sizeof(buffer), &color)) {
+		footer_text(g, buffer, color);
 	} else if (dac_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
@@ -4503,31 +4564,579 @@ static void draw_footer(mdmi_gui *g)
 	text(g, version_x(g), FOOTER_Y + 8, g->source.version, C_HINT, 1);
 }
 
-static int bank_place_at(const mdmi_gui *g, int x, int y)
-{
-	if (x < BANK_X || x >= BANK_RIGHT || y < BANK_Y || y >= BANK_Y + BANK_ROWS * BANK_ROW_H) {
-		return -1;
-	}
-	return g->bank_top + (y - BANK_Y) / BANK_ROW_H;
-}
-
 static void scroll_bank(mdmi_gui *g, int top)
 {
 	g->bank_top = top < 0 ? 0 : top > BANK_TOP_MAX ? BANK_TOP_MAX : top;
 }
 
-// The places of the list the selected channel chooses from, FM voices or envelopes (D28), with its
-// place lit and a dot for every channel of the list on it.
+// Stage 22c (D56): the two lists of BANK. Geometry of list A (0) and B (1).
+static int list_x(int list)
+{
+	return list ? LIST_B_X : BANK_X;
+}
+
+static int list_right(int list)
+{
+	return list ? BANK_RIGHT : LIST_A_RIGHT;
+}
+
+static int list_scroll_x(int list)
+{
+	return list ? SCROLL_X : LIST_A_SCROLL;
+}
+
+static int list_bar_right(int list)
+{
+	return list ? LIST_B_BAR_RIGHT : LIST_A_BAR_RIGHT;
+}
+
+static gui_banks *banks_of(mdmi_gui *g)
+{
+	return g->source.banks ? g->source.banks : &g->own_banks;
+}
+
+static int *list_top(mdmi_gui *g, int list)
+{
+	return g->lists[list].kind == LIST_ROM ? &g->bank_top : &g->lists[list].top;
+}
+
+static void scroll_list(mdmi_gui *g, int list, int top)
+{
+	const int most = g->lists[list].count - BANK_ROWS;
+	int *at = list_top(g, list);
+	*at = top > most ? most : top;
+	*at = *at < 0 ? 0 : *at;
+}
+
+static const patch_bank *list_bank(const mdmi_gui *g, int list)
+{
+	return g->lists[list].kind == LIST_ROM ? patch_bank_view(g->source.patch) : &g->lists[list].bank;
+}
+
+static bool listed(const library_list *list, const char *name)
+{
+	for (int i = 0; i < list->count; i++) {
+		if (!strcmp(list->names[i], name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool is_bad(const mdmi_gui *g, const char *name)
+{
+	for (int i = 0; i < 4; i++) {
+		if (!strcmp(g->lib_bad[i], name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void stem_of(const char *file, char *out, size_t size)
+{
+	const char *dot = strrchr(file, '.');
+	snprintf(out, size, "%.*s", dot && dot != file ? (int)(dot - file) : (int)strlen(file), file);
+}
+
+static void open_list(mdmi_gui *g, int list, const char *name)
+{
+	bank_list *l = &g->lists[list];
+	l->path[0] = l->name[0] = l->file[0] = 0;
+	l->top = 0;
+	if (!*name) {
+		l->kind = list ? (g->lib_list.found ? LIST_NO_LIBRARY : LIST_NO_FOLDER) : LIST_ROM;
+		return;
+	}
+	snprintf(l->file, sizeof(l->file), "%s", name);
+	library_path(g->lib_folder, name, l->path, sizeof(l->path));
+	stem_of(name, l->name, sizeof(l->name));
+	if (files_read_library(l->path, &l->bank)) {
+		l->kind = LIST_LIBRARY;
+		for (int i = 0; i < 4; i++) {
+			if (!strcmp(g->lib_bad[i], name)) {
+				g->lib_bad[i][0] = 0;
+			}
+		}
+		return;
+	}
+	l->kind = LIST_UNREAD;
+	if (!is_bad(g, name)) {
+		snprintf(g->lib_bad[g->lib_bad_next], LIBRARY_NAME, "%s", name);
+		g->lib_bad_next = (g->lib_bad_next + 1) % 4;
+	}
+}
+
+// The folder and both lists read again. A file gone leaves its list to the ROM bank (A) or the first
+// library by name that A doesn't show (B). The rows stay where they were when the same bank comes back.
+static void load_lists(mdmi_gui *g)
+{
+	library_folder(g->lib_folder, sizeof(g->lib_folder));
+	library_scan(g->lib_folder, &g->lib_list);
+	gui_banks *banks = banks_of(g);
+	if (*banks->left && !listed(&g->lib_list, banks->left)) {
+		banks->left[0] = 0;
+	}
+	if (*banks->right && (!listed(&g->lib_list, banks->right) || !strcmp(banks->right, banks->left))) {
+		banks->right[0] = 0;
+	}
+	const char *right = banks->right;
+	for (int i = 0; !*right && i < g->lib_list.count; i++) {
+		if (strcmp(g->lib_list.names[i], banks->left)) {
+			right = g->lib_list.names[i];
+		}
+	}
+	const char *names[2] = {banks->left, right};
+	for (int list = 0; list < 2; list++) {
+		char name[LIBRARY_NAME];
+		stem_of(names[list], name, sizeof(name));
+		const bool same = g->lists[list].kind == LIST_LIBRARY && *names[list] && !strcmp(g->lists[list].name, name);
+		const int top = g->lists[list].top;
+		open_list(g, list, names[list]);
+		g->lists[list].top = same ? top : 0;
+	}
+}
+
+// The rows each list shows for the selected channel's list: FM voices or envelopes.
+static void list_rows(mdmi_gui *g, bool envelopes)
+{
+	for (int list = 0; list < 2; list++) {
+		bank_list *l = &g->lists[list];
+		l->count = 0;
+		for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+			if (l->kind == LIST_ROM || (l->kind == LIST_LIBRARY && !files_place_empty(&l->bank, envelopes, place))) {
+				l->places[l->count++] = place;
+			}
+		}
+		scroll_list(g, list, *list_top(g, list));
+	}
+}
+
+// The list whose rows or scroll track are at x, y, or -1.
+static int list_under(int x, int y)
+{
+	if (y < BANK_Y || y >= BANK_BOTTOM) {
+		return -1;
+	}
+	return x >= BANK_X && x < LIST_A_BAR_RIGHT ? 0 : x >= LIST_B_X && x < LIST_B_BAR_RIGHT ? 1 : -1;
+}
+
+static int bar_under(int x, int y)
+{
+	if (y < BANK_BAR_Y || y >= BANK_BAR_Y + BANK_BAR_H) {
+		return -1;
+	}
+	return x >= BANK_X && x < LIST_A_BAR_RIGHT ? 0 : x >= LIST_B_X && x < LIST_B_BAR_RIGHT ? 1 : -1;
+}
+
+// The place of a list's row at x, y, or -1.
+static int list_place_at(mdmi_gui *g, int list, int x, int y)
+{
+	if (x < list_x(list) || x >= list_right(list) || y < BANK_Y || y >= BANK_BOTTOM) {
+		return -1;
+	}
+	const int row = *list_top(g, list) + (y - BANK_Y) / BANK_ROW_H;
+	return row < g->lists[list].count ? g->lists[list].places[row] : -1;
+}
+
+// A place of the ROM bank at x, y while list A shows it, for dropped files.
+static int bank_place_at(mdmi_gui *g, int x, int y)
+{
+	return g->lists[0].kind == LIST_ROM ? list_place_at(g, 0, x, y) : -1;
+}
+
+static files_spot spot_of(const mdmi_gui *g, int list, int place)
+{
+	return (files_spot){g->lists[list].kind == LIST_ROM ? NULL : g->lists[list].path, place};
+}
+
+static int first_free(const bank_list *l, bool envelopes)
+{
+	for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+		if (files_place_empty(&l->bank, envelopes, place)) {
+			return place;
+		}
+	}
+	return -1;
+}
+
+// The library row under the mouse has CLEAR at its right.
+static bool over_clear(int list, int x, int y)
+{
+	const int left = list_right(list) - 44;
+	return x >= left && x < left + 40 && (y - BANK_Y) % BANK_ROW_H >= 2 && (y - BANK_Y) % BANK_ROW_H < 17;
+}
+
+static bool shows_new(const mdmi_gui *g, int list)
+{
+	return g->lists[list].kind == LIST_NO_FOLDER || g->lists[list].kind == LIST_NO_LIBRARY;
+}
+
+static bool over_new(const mdmi_gui *g, int list, int x, int y)
+{
+	return shows_new(g, list) && in_box(x, y, list_x(list) + 8, 180, 64, 24);
+}
+
+// Text in lines of at most chars, broken after a space or a separator. Returns the y after it.
+static int text_wrap(mdmi_gui *g, int x, int y, const char *string, uint32_t color, int chars)
+{
+	while (*string) {
+		int length = (int)strlen(string);
+		if (length > chars) {
+			length = chars;
+			for (int i = chars; i > chars / 2; i--) {
+				if (string[i - 1] == ' ' || string[i - 1] == '\\' || string[i - 1] == '/') {
+					length = i;
+					break;
+				}
+			}
+		}
+		char line[128];
+		snprintf(line, sizeof(line), "%.*s", length, string);
+		text(g, x, y, line, color, 1);
+		string += length;
+		y += 10;
+	}
+	return y;
+}
+
+static void triangle(mdmi_gui *g, int x, int y, bool up, uint32_t color)
+{
+	for (int i = 0; i < 4; i++) {
+		fill(g, x + i, up ? y + 3 - i : y + i, 7 - 2 * i, 1, color);
+	}
+}
+
+static void draw_list_bar(mdmi_gui *g, int list, bool envelopes)
+{
+	const bank_list *l = &g->lists[list];
+	const int x = list_x(list), right = list_bar_right(list), w = right - x;
+	const bool open = g->chooser == list, rom = l->kind == LIST_ROM;
+	const bool over = !open && !g->file_over && g->row_list < 0 && g->chooser < 0 && bar_under(g->mouse_x, g->mouse_y) == list;
+	if (open) {
+		fill(g, x, BANK_BAR_Y, w, BANK_BAR_H, C_TEXT);
+	} else if (rom) {
+		fill(g, x, BANK_BAR_Y, w, BANK_BAR_H, envelopes ? C_PSG_DARK : C_FM_DARK);
+		fill(g, x, BANK_BAR_Y, 4, BANK_BAR_H, envelopes ? C_PSG : C_FM);
+	} else {
+		fill(g, x, BANK_BAR_Y, w, BANK_BAR_H, C_CELL);
+	}
+	char label[64];
+	snprintf(label, sizeof(label), "%.*s", (w - 30) / 12, rom ? "ROM BANK" : shows_new(g, list) ? "NO LIBRARY" : l->name);
+	text(g, x + 10, BANK_BAR_Y + 3, label, open ? C_BG : shows_new(g, list) ? C_LABEL : C_TEXT, 2);
+	if (rom && !open) {
+		text_right(g, right - 22, BANK_BAR_Y + 7, "PLAYS", envelopes ? C_PSG : C_FM_LIGHT, 1, 60);
+	}
+	triangle(g, right - 14, BANK_BAR_Y + 8, open, open ? C_BG : rom ? C_TEXT : C_LABEL);
+	if (over) {
+		frame(g, x, BANK_BAR_Y, w, BANK_BAR_H, C_TEXT);
+	}
+}
+
+// The scroll track of a list, its thumb by the rows.
+static void draw_list_track(mdmi_gui *g, int list)
+{
+	const int x = list_scroll_x(list), count = g->lists[list].count;
+	fill(g, x, BANK_Y, 6, SCROLL_H, C_CELL);
+	if (count > BANK_ROWS) {
+		const bool over = g->mouse_x >= x && g->mouse_x < x + 6 && g->mouse_y >= BANK_Y && g->mouse_y < BANK_BOTTOM;
+		fill(g, x, BANK_Y + *list_top(g, list) * SCROLL_H / count, 6, SCROLL_H * BANK_ROWS / count, over ? C_LABEL : C_LINE);
+	}
+}
+
+static uint32_t list_frame_color(const mdmi_gui *g, int list)
+{
+	return g->flash_ticks > 0 && g->flash_list == list && g->flash_place < 0 && g->flash_color == C_ERROR ? C_ERROR : 0;
+}
+
+static void double_frame(mdmi_gui *g, int list, uint32_t color)
+{
+	const int x = list_x(list) - 2, w = list_scroll_x(list) + 8 - x;
+	frame(g, x, BANK_Y - 2, w, SCROLL_H + 4, color);
+	frame(g, x + 1, BANK_Y - 1, w - 2, SCROLL_H + 2, color);
+}
+
+// The list a row is dragged into, and where the copy would go, -1 when it goes nowhere.
+static int drag_target(mdmi_gui *g, bool envelopes, int *place)
+{
+	const int to = list_under(g->mouse_x, g->mouse_y);
+	*place = -1;
+	if (!g->row_moved || to < 0 || to == g->row_list) {
+		return -1;
+	}
+	if (g->lists[to].kind == LIST_ROM) {
+		*place = list_place_at(g, to, g->mouse_x, g->mouse_y);
+	} else if (g->lists[to].kind == LIST_LIBRARY) {
+		*place = first_free(&g->lists[to], envelopes);
+	}
+	return to;
+}
+
+// The ROM bank in list A: its places, the channels' dots, the selected channel's place lit (D23).
+static void draw_rom_list(mdmi_gui *g, const patch_values *values, bool envelopes)
+{
+	const int channel = *g->source.channel;
+	const uint32_t kind = envelopes ? C_PSG : C_FM, dark = envelopes ? C_PSG_DARK : C_FM_DARK, light = envelopes ? C_PSG : C_FM_LIGHT;
+	const int first_channel = envelopes ? PATCH_NUM_FM_CHANNELS : 0, last_channel = envelopes ? PATCH_NUM_CHANNELS : PATCH_NUM_FM_CHANNELS;
+	const int n = last_channel - first_channel;
+	const int preset = values->channels[channel][PARAM_PRESET];
+	const patch_bank *bank = patch_bank_view(g->source.patch);
+	char buffer[64];
+	text(g, 250, BANK_LABEL_Y, "PRG", C_HINT, 1);
+	text(g, 290, BANK_LABEL_Y, envelopes ? "PSG ENVELOPE" : "FM VOICE", light, 1);
+	for (int c = first_channel; c < last_channel; c++) {
+		snprintf(buffer, sizeof(buffer), "%d", c + 1);
+		text(g, LIST_A_RIGHT - (n - (c - first_channel)) * 8, BANK_LABEL_Y, buffer, c == channel ? C_TEXT : is_dac(values, c) ? C_LINE : C_HINT, 1);
+	}
+	const bool own = plays_own_file(g, values, channel);
+	const bool idle = !g->file_over && g->row_list < 0 && g->chooser < 0;
+	const int hover = idle ? list_place_at(g, 0, g->mouse_x, g->mouse_y) : -1;
+	const bool aimed = g->file_over && (g->drop_place >= 0 || g->drop_add);
+	int dragged_to;
+	const bool dragged = drag_target(g, envelopes, &dragged_to) == 0;
+	for (int row = 0; row < BANK_ROWS; row++) {
+		const int place = g->bank_top + row, y = BANK_Y + row * BANK_ROW_H;
+		const bool selected = preset == place;
+		const bool target = (aimed && place >= g->drop_first && place < g->drop_first + g->drop_lit) || (dragged && place == dragged_to);
+		const bool flash = g->flash_ticks > 0 && g->flash_list < 0 && place >= g->flash_place && place < g->flash_place + g->flash_count;
+		const bool from_file = envelopes ? !patch_envelope_is_rom(bank, place) : !patch_place_is_gm(bank, place);
+		if (target) {
+			fill(g, BANK_X, y, LIST_A_RIGHT - BANK_X, BANK_ROW_H - 1, C_AMBER);
+		} else if (flash && g->flash_color == C_LINE) {
+			fill(g, BANK_X, y, LIST_A_RIGHT - BANK_X, BANK_ROW_H - 1, C_LINE);
+		} else if (selected) {
+			if (!own) {
+				fill(g, BANK_X + 4, y, LIST_A_RIGHT - BANK_X - 4, BANK_ROW_H - 1, dark);
+			}
+			fill(g, BANK_X, y, 4, BANK_ROW_H - 1, kind);
+		}
+		fill(g, BANK_X, y + BANK_ROW_H - 1, LIST_A_RIGHT - BANK_X, 1, place % 8 == 7 ? C_LINE : C_CELL);
+		snprintf(buffer, sizeof(buffer), "%d", place + 1);
+		text_right(g, 284, y + 3, buffer, target ? C_BG : selected ? C_TEXT : C_LABEL, 2, 40);
+		snprintf(buffer, sizeof(buffer), "%.13s", place_name(bank, envelopes, place));
+		text(g, 290, y + 3, buffer, target ? C_BG : from_file ? C_TEXT : C_LABEL, 2);
+		for (int c = first_channel; c < last_channel; c++) {
+			if (!takes_files(values, c) || values->channels[c][PARAM_PRESET] != place) {
+				continue;
+			}
+			const uint32_t color = target ? C_BG : c == channel ? C_TEXT : light;
+			const int x = LIST_A_RIGHT - (n - (c - first_channel)) * 8;
+			if (plays_own_file(g, values, c)) {
+				frame(g, x, y + 7, 6, 6, color);
+			} else {
+				fill(g, x, y + 7, 6, 6, color);
+			}
+		}
+		if (flash && g->flash_color == C_ERROR) {
+			frame(g, BANK_X, y, LIST_A_RIGHT - BANK_X, BANK_ROW_H - 1, C_ERROR);
+		} else if (g->row_list == 0 && g->row_moved && g->row_place == place) {
+			frame(g, BANK_X, y, LIST_A_RIGHT - BANK_X, BANK_ROW_H - 1, C_TEXT);
+			frame(g, BANK_X + 1, y + 1, LIST_A_RIGHT - BANK_X - 2, BANK_ROW_H - 3, C_TEXT);
+		} else if (hover == place) {
+			frame(g, BANK_X, y, LIST_A_RIGHT - BANK_X, BANK_ROW_H - 1, C_TEXT);
+		}
+	}
+	draw_list_track(g, 0);
+	// Every channel of the list marks its place on the track, the selected one wide, so places out of
+	// view are found without scrolling.
+	for (int c = first_channel; c < last_channel; c++) {
+		if (c != channel && takes_files(values, c)) {
+			fill(g, LIST_A_SCROLL, BANK_Y + values->channels[c][PARAM_PRESET] * SCROLL_H / PATCH_BANK_SIZE, 3, 2, light);
+		}
+	}
+	fill(g, LIST_A_SCROLL, BANK_Y + preset * SCROLL_H / PATCH_BANK_SIZE, 6, 3, kind);
+	// The lit places show on the track too, where the list doesn't reach.
+	if (aimed && g->drop_lit > 0) {
+		const int h = g->drop_lit * SCROLL_H / PATCH_BANK_SIZE;
+		fill(g, LIST_A_SCROLL, BANK_Y + g->drop_first * SCROLL_H / PATCH_BANK_SIZE, 6, h < 3 ? 3 : h, C_AMBER);
+	}
+}
+
+// The library place last tried on the selected channel, while the channel plays it.
+static bool is_tried(mdmi_gui *g, const patch_values *values, int list, int place)
+{
+	const int channel = *g->source.channel;
+	const bank_list *l = &g->lists[list];
+	return g->tried_channel == channel && g->tried_place == place && !strcmp(g->tried_path, l->path) && plays_own_file(g, values, channel)
+		&& !strcmp(sound_name(values, channel), place_name(&l->bank, !channel_is_fm(channel), place));
+}
+
+// A library: its sounds by place, no numbers, grey but for the one the channel plays (D56).
+static void draw_library_list(mdmi_gui *g, const patch_values *values, int list, bool envelopes)
+{
+	const bank_list *l = &g->lists[list];
+	const int x = list_x(list), right = list_right(list), chars = list ? 13 : 20;
+	const uint32_t kind = envelopes ? C_PSG : C_FM, dark = envelopes ? C_PSG_DARK : C_FM_DARK;
+	char buffer[160];
+	if (l->kind == LIST_UNREAD) {
+		text(g, x + 8, 100, "CAN'T READ", C_ERROR, 2);
+		const int y = text_wrap(g, x + 8, 124, "not an MDMI bank", C_LABEL, (right - x - 16) / 6);
+		text_wrap(g, x + 8, y + 2, "Nothing is written to this file", C_HINT, (right - x - 16) / 6);
+	} else if (shows_new(g, list)) {
+		text(g, x + 8, 100, l->kind == LIST_NO_FOLDER ? "NO FOLDER" : "NO LIBRARIES", C_LABEL, 2);
+		int y = text_wrap(g, x + 8, 124, g->lib_folder, C_HINT, 28 < (right - x - 16) / 6 ? 28 : (right - x - 16) / 6);
+		text_wrap(g, x + 8, y + 2, "Libraries are .mdbank files in this folder.", C_HINT, (right - x - 16) / 6);
+		const bool over = !g->file_over && g->chooser < 0 && over_new(g, list, g->mouse_x, g->mouse_y);
+		frame(g, x + 8, 180, 64, 24, over ? C_TEXT : C_LINE);
+		text(g, x + 8 + 14, 185, "NEW", over ? C_TEXT : C_LABEL, 2);
+	} else if (l->count == 0) {
+		snprintf(buffer, sizeof(buffer), "0 %s, 128 FREE", envelopes ? "ENVELOPES" : "VOICES");
+		text(g, x + 8, BANK_LABEL_Y, buffer, C_HINT, 1);
+		text(g, x + 8, 100, "EMPTY", C_LABEL, 2);
+		text(g, x + 8, 124, "Drag a sound here", C_HINT, 1);
+	} else {
+		snprintf(buffer, sizeof(buffer), "%d %s, %d FREE", l->count, envelopes ? "ENVELOPES" : "VOICES", PATCH_BANK_SIZE - l->count);
+		text(g, x + 8, BANK_LABEL_Y, buffer, C_HINT, 1);
+	}
+	const bool idle = !g->file_over && g->row_list < 0 && g->chooser < 0;
+	const int hover = idle && l->kind == LIST_LIBRARY ? list_place_at(g, list, g->mouse_x, g->mouse_y) : -1;
+	for (int row = 0; l->kind == LIST_LIBRARY && row < BANK_ROWS && l->top + row < l->count; row++) {
+		const int place = l->places[l->top + row], y = BANK_Y + row * BANK_ROW_H;
+		const bool flash = g->flash_ticks > 0 && g->flash_list == list && g->flash_place == place;
+		if (flash && g->flash_color == C_LINE) {
+			fill(g, x, y, right - x, BANK_ROW_H - 1, C_LINE);
+		} else if (is_tried(g, values, list, place)) {
+			fill(g, x + 4, y, right - x - 4, BANK_ROW_H - 1, dark);
+			fill(g, x, y, 4, BANK_ROW_H - 1, kind);
+		}
+		fill(g, x, y + BANK_ROW_H - 1, right - x, 1, C_CELL);
+		const int room = hover == place ? (right - 44 - x - 12) / 12 : chars;
+		snprintf(buffer, sizeof(buffer), "%.*s", room < chars ? room : chars, place_name(&l->bank, envelopes, place));
+		text(g, x + 8, y + 3, buffer, C_TEXT, 2);
+		if (flash && g->flash_color == C_ERROR) {
+			frame(g, x, y, right - x, BANK_ROW_H - 1, C_ERROR);
+		} else if (g->row_list == list && g->row_moved && g->row_place == place) {
+			frame(g, x, y, right - x, BANK_ROW_H - 1, C_TEXT);
+			frame(g, x + 1, y + 1, right - x - 2, BANK_ROW_H - 3, C_TEXT);
+		} else if (hover == place) {
+			frame(g, x, y, right - x, BANK_ROW_H - 1, C_TEXT);
+			const bool clear = over_clear(list, g->mouse_x, g->mouse_y);
+			frame(g, right - 44, y + 2, 40, 15, clear ? C_TEXT : C_LINE);
+			text(g, right - 44 + 5, y + 2 + 4, "CLEAR", clear ? C_TEXT : C_LABEL, 1);
+		}
+	}
+	draw_list_track(g, list);
+	int place;
+	if (drag_target(g, envelopes, &place) == list && l->kind == LIST_LIBRARY) {
+		double_frame(g, list, place >= 0 ? C_AMBER : C_LINE);
+	}
+	if (list_frame_color(g, list)) {
+		double_frame(g, list, C_ERROR);
+	}
+}
+
+// The choice of a bank, over both lists: NEW, the ROM bank for list A, the libraries by name.
+enum { CHOICE_NEW = -2, CHOICE_ROM = -1, CHOICE_MORE = LIBRARY_MAX };
+static int choice_count(const mdmi_gui *g)
+{
+	return 1 + (g->chooser == 0) + g->lib_list.count + (g->lib_list.total > g->lib_list.count);
+}
+
+// What row i of the choice is: CHOICE_NEW, CHOICE_ROM, a library's index, or CHOICE_MORE.
+static int choice_of(const mdmi_gui *g, int i)
+{
+	if (i == 0) {
+		return CHOICE_NEW;
+	}
+	if (g->chooser == 0 && i == 1) {
+		return CHOICE_ROM;
+	}
+	const int library = i - 1 - (g->chooser == 0);
+	return library < g->lib_list.count ? library : CHOICE_MORE;
+}
+
+static int choice_at(const mdmi_gui *g, int x, int y)
+{
+	if (x < BANK_X || x >= BANK_RIGHT || y < BANK_Y || y >= BANK_BOTTOM) {
+		return -3;
+	}
+	const int i = g->chooser_top + (y - BANK_Y) / BANK_ROW_H;
+	return i < choice_count(g) ? choice_of(g, i) : -3;
+}
+
+// Whether a list shows a library's file; the one open in the other list can't be chosen here.
+static bool list_shows(const mdmi_gui *g, int list, int library)
+{
+	return *g->lists[list].file && !strcmp(g->lists[list].file, g->lib_list.names[library]);
+}
+
+static bool open_here(const mdmi_gui *g, int library)
+{
+	return list_shows(g, g->chooser, library);
+}
+
+static bool open_elsewhere(const mdmi_gui *g, int library)
+{
+	return list_shows(g, 1 - g->chooser, library);
+}
+
+static void draw_chooser(mdmi_gui *g, bool envelopes)
+{
+	// Over the lists and their frames.
+	fill(g, BANK_X - 2, BANK_LABEL_Y, LIST_B_BAR_RIGHT + 4 - BANK_X, BANK_BOTTOM + 3 - BANK_LABEL_Y, C_BG);
+	text(g, 250, BANK_LABEL_Y, g->chooser ? "RIGHT LIST: A LIBRARY" : "LEFT LIST: ROM BANK OR A LIBRARY", C_HINT, 1);
+	char buffer[160];
+	const int path_room = (BANK_RIGHT - 460) / 6;
+	const int length = (int)strlen(g->lib_folder);
+	snprintf(buffer, sizeof(buffer), "%s", length > path_room ? g->lib_folder + length - path_room : g->lib_folder);
+	text_right(g, BANK_RIGHT, BANK_LABEL_Y, buffer, C_HINT, 1, path_room * 6);
+	const int count = choice_count(g);
+	const int over = choice_at(g, g->mouse_x, g->mouse_y);
+	for (int row = 0; row < BANK_ROWS && g->chooser_top + row < count; row++) {
+		const int y = BANK_Y + row * BANK_ROW_H, choice = choice_of(g, g->chooser_top + row);
+		bool clickable = true;
+		fill(g, BANK_X, y + BANK_ROW_H - 1, BANK_RIGHT - BANK_X, 1, C_CELL);
+		if (choice == CHOICE_NEW) {
+			frame(g, 250, y + 2, 56, 15, over == choice ? C_TEXT : C_LINE);
+			text(g, 250 + 19, y + 6, "NEW", C_LABEL, 1);
+			text(g, 314, y + 6, "empty library, named in the Windows save dialog", C_HINT, 1);
+		} else if (choice == CHOICE_ROM) {
+			fill(g, BANK_X, y, 4, BANK_ROW_H - 1, envelopes ? C_PSG : C_FM);
+			text(g, 250, y + 3, "ROM BANK", C_TEXT, 2);
+			if (g->lists[0].kind == LIST_ROM) {
+				text_right(g, BANK_RIGHT - 6, y + 7, "OPEN", C_LABEL, 1, 40);
+			}
+		} else if (choice == CHOICE_MORE) {
+			clickable = false;
+			snprintf(buffer, sizeof(buffer), "%d of %d libraries shown, by name", g->lib_list.count, g->lib_list.total);
+			text(g, 250, y + 7, buffer, C_HINT, 1);
+		} else {
+			char name[LIBRARY_NAME];
+			stem_of(g->lib_list.names[choice], name, sizeof(name));
+			const bool here = open_here(g, choice), elsewhere = open_elsewhere(g, choice), bad = is_bad(g, g->lib_list.names[choice]);
+			clickable = !elsewhere;
+			if (here) {
+				fill(g, BANK_X + 4, y, BANK_RIGHT - BANK_X - 4, BANK_ROW_H - 1, C_CELL);
+				fill(g, BANK_X, y, 4, BANK_ROW_H - 1, C_TEXT);
+			}
+			snprintf(buffer, sizeof(buffer), "%.30s", name);
+			text(g, 250, y + 3, buffer, elsewhere ? C_LINE : bad ? C_ERROR : C_TEXT, 2);
+			const char *note = elsewhere ? (g->chooser ? "IN LEFT" : "IN RIGHT") : bad ? "CAN'T READ" : here ? "OPEN" : "";
+			text_right(g, BANK_RIGHT - 6, y + 7, note, elsewhere ? C_LINE : bad ? C_ERROR : C_LABEL, 1, 70);
+		}
+		if (clickable && over == choice) {
+			frame(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, C_TEXT);
+		}
+	}
+	fill(g, SCROLL_X, BANK_Y, 6, SCROLL_H, C_CELL);
+	if (count > BANK_ROWS) {
+		fill(g, SCROLL_X, BANK_Y + g->chooser_top * SCROLL_H / count, 6, SCROLL_H * BANK_ROWS / count, C_LINE);
+	}
+}
+
+// The page of the selected channel's list (D28): list A, list B, the choice of a bank over them.
 static void draw_bank(mdmi_gui *g, const patch_values *values)
 {
 	const int channel = *g->source.channel;
-	const bool usable = takes_files(values, channel);
 	const bool envelopes = !channel_is_fm(channel);
-	const uint32_t kind = envelopes ? C_PSG : C_FM, dark = envelopes ? C_PSG_DARK : C_FM_DARK, light = envelopes ? C_PSG : C_FM_LIGHT;
-	const int first_channel = envelopes ? PATCH_NUM_FM_CHANNELS : 0, last_channel = envelopes ? PATCH_NUM_CHANNELS : PATCH_NUM_FM_CHANNELS;
+	if (!g->bank_was_open) {
+		load_lists(g);
+		g->chooser = -1;
+	}
+	list_rows(g, envelopes);
 	const int preset = values->channels[channel][PARAM_PRESET];
 	// Opening the page or choosing another channel brings its place into view; a program change doesn't.
-	if (usable && (!g->bank_was_open || g->bank_seen_channel != channel) && (preset < g->bank_top || preset >= g->bank_top + BANK_ROWS)) {
+	if (takes_files(values, channel) && (!g->bank_was_open || g->bank_seen_channel != channel) && (preset < g->bank_top || preset >= g->bank_top + BANK_ROWS)) {
 		scroll_bank(g, preset - 3);
 	}
 	g->bank_was_open = true;
@@ -4538,110 +5147,100 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 		draw_dac_list(g, values);
 		return;
 	}
-	const patch_bank *bank = patch_bank_view(g->source.patch);
-	text(g, 250, BANK_HEADER_Y, "PRG", C_HINT, 1);
-	if (usable) {
-		text(g, 298, BANK_HEADER_Y, envelopes ? "PSG ENVELOPE" : "FM VOICE", light, 1);
+	for (int list = 0; list < 2; list++) {
+		draw_list_bar(g, list, envelopes);
+	}
+	fill(g, LIST_DIVIDER_X, BANK_BAR_Y, 1, BANK_BOTTOM - BANK_BAR_Y, C_LINE);
+	if (g->lists[0].kind == LIST_ROM) {
+		draw_rom_list(g, values, envelopes);
 	} else {
-		text(g, 298, BANK_HEADER_Y, "CH6 PLAYS SAMPLES. SELECT ANOTHER CH", C_LABEL, 1);
+		draw_library_list(g, values, 0, envelopes);
 	}
-	if (envelopes) {
-		text(g, 544, BANK_HEADER_Y, "STEP", C_HINT, 1);
-	}
-	// While files of the list's kind are dragged the FILE and dots column becomes one ADD field.
-	const bool sounds_over = g->file_over && (envelopes ? g->file_envelopes : g->file_instruments) > 0;
-	const bool full = files_add_place(g->source.files, envelopes) >= PATCH_BANK_SIZE;
-	char buffer[64];
-	if (!sounds_over) {
-		text(g, 580, BANK_HEADER_Y, "FILE", C_HINT, 1);
-		for (int c = first_channel; c < last_channel; c++) {
-			snprintf(buffer, sizeof(buffer), "%d", c + 1);
-			text(g, BANK_DOTS_X + (c - first_channel) * 12, BANK_HEADER_Y, buffer, c == channel ? C_TEXT : is_dac(values, c) ? C_LINE : C_HINT, 1);
-		}
-	}
-	const bool own = usable && plays_own_file(g, values, channel);
-	const int hover = g->file_over ? -1 : bank_place_at(g, g->mouse_x, g->mouse_y);
-	const bool aimed = g->file_over && (g->drop_place >= 0 || g->drop_add);
-	for (int row = 0; row < BANK_ROWS; row++) {
-		const int place = g->bank_top + row, y = BANK_Y + row * BANK_ROW_H;
-		const bool selected = usable && preset == place;
-		const bool target = aimed && place >= g->drop_first && place < g->drop_first + g->drop_lit;
-		const bool flash = g->flash_ticks > 0 && place >= g->flash_place && place < g->flash_place + g->flash_count;
-		const bool from_file = envelopes ? !patch_envelope_is_rom(bank, place) : !patch_place_is_gm(bank, place);
-		if (target) {
-			fill(g, BANK_X, y, BANK_ADD_X - BANK_X, BANK_ROW_H - 1, C_AMBER);
-		} else if (flash && g->flash_color == C_LINE) {
-			fill(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, C_LINE);
-		} else if (selected) {
-			if (!own) {
-				fill(g, BANK_X + 4, y, BANK_RIGHT - BANK_X - 4, BANK_ROW_H - 1, dark);
-			}
-			fill(g, BANK_X, y, 4, BANK_ROW_H - 1, kind);
-		}
-		fill(g, BANK_X, y + BANK_ROW_H - 1, BANK_RIGHT - BANK_X, 1, place % 8 == 7 ? C_LINE : C_CELL);
-		snprintf(buffer, sizeof(buffer), "%d", place + 1);
-		text_right(g, 286, y + 3, buffer, target ? C_BG : !usable ? C_LINE : selected ? C_TEXT : C_LABEL, 2, 40);
-		snprintf(buffer, sizeof(buffer), "%.*s", envelopes ? ENVELOPE_NAME_CHARS : NAME_CHARS, place_name(bank, envelopes, place));
-		text(g, 298, y + 3, buffer, target ? C_BG : !usable ? C_HINT : from_file ? C_TEXT : C_LABEL, 2);
-		if (envelopes && !target) {
-			// The steps the limit counts, and whether a held note keeps it going.
-			const patch_envelope *envelope = &bank->envelopes[place];
-			const int length = patch_envelope_length(envelope);
-			snprintf(buffer, sizeof(buffer), "%d", length);
-			text_right(g, 564, y + 7, buffer, selected ? C_TEXT : C_LABEL, 1, 24);
-			if (memchr(envelope->steps, PATCH_EEF_LOOP_START, (size_t)length)) {
-				text(g, 568, y + 7, "L", C_PSG, 1);
-			}
-		}
-		if (from_file) {
-			text(g, 580, y + 7, "FILE", light, 1);
-		}
-		for (int c = first_channel; c < last_channel; c++) {
-			if (!takes_files(values, c) || values->channels[c][PARAM_PRESET] != place) {
-				continue;
-			}
-			const uint32_t color = c == channel ? C_TEXT : light;
-			const int x = BANK_DOTS_X + (c - first_channel) * 12;
-			if (plays_own_file(g, values, c)) {
-				frame(g, x, y + 7, 6, 6, color);
-			} else {
-				fill(g, x, y + 7, 6, 6, color);
-			}
-		}
-		if (flash && g->flash_color == C_ERROR) {
-			frame(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, C_ERROR);
-		} else if (hover == place) {
-			frame(g, BANK_X, y, BANK_RIGHT - BANK_X, BANK_ROW_H - 1, usable ? C_TEXT : C_LINE);
-		}
-	}
-	fill(g, SCROLL_X, BANK_Y, 6, SCROLL_H, C_CELL);
-	const bool over_scroll = g->mouse_x >= SCROLL_X && g->mouse_x < SCROLL_X + 6 && g->mouse_y >= BANK_Y && g->mouse_y < BANK_Y + SCROLL_H;
-	fill(g, SCROLL_X, BANK_Y + g->bank_top * SCROLL_H / PATCH_BANK_SIZE, 6, SCROLL_H * BANK_ROWS / PATCH_BANK_SIZE, over_scroll ? C_LABEL : C_LINE);
-	// The lit places show on the track too, where the list doesn't reach.
-	if (aimed && g->drop_lit > 0) {
-		const int h = g->drop_lit * SCROLL_H / PATCH_BANK_SIZE;
-		fill(g, SCROLL_X, BANK_Y + g->drop_first * SCROLL_H / PATCH_BANK_SIZE, 6, h < 3 ? 3 : h, C_AMBER);
-	}
-	// Every channel of the list marks its place on the track, the selected one wide, so places out of
-	// view are found without scrolling.
-	for (int c = first_channel; c < last_channel; c++) {
-		if (c != channel && takes_files(values, c)) {
-			fill(g, SCROLL_X, BANK_Y + values->channels[c][PARAM_PRESET] * SCROLL_H / PATCH_BANK_SIZE, 3, 2, light);
-		}
-	}
-	if (usable) {
-		fill(g, SCROLL_X, BANK_Y + preset * SCROLL_H / PATCH_BANK_SIZE, 6, 3, kind);
-	}
+	// While files of the list's kind are dragged over the page, list B is one ADD field into the ROM
+	// bank (D26), when list A shows it.
+	const bool sounds_over = g->file_over && (envelopes ? g->file_envelopes : g->file_instruments) > 0 && g->lists[0].kind == LIST_ROM;
 	if (sounds_over) {
-		// The field covers what the column shows, lit when the files would go there.
+		const bool full = files_add_place(g->source.files, envelopes) >= PATCH_BANK_SIZE;
 		const uint32_t edge = full ? C_LINE : C_AMBER;
-		fill(g, 580, 72, 118, 380, g->drop_add ? C_AMBER : C_BG);
-		text(g, 621, 255, "ADD", g->drop_add ? C_BG : edge, 2);
-		frame(g, 240, 70, 336, 384, C_AMBER);
-		frame(g, 241, 71, 334, 382, C_AMBER);
-		frame(g, 578, 70, 122, 384, edge);
-		frame(g, 579, 71, 120, 382, edge);
+		fill(g, LIST_B_X, BANK_LABEL_Y, LIST_B_BAR_RIGHT - LIST_B_X, BANK_BOTTOM - BANK_LABEL_Y, C_BG);
+		fill(g, LIST_B_X, BANK_Y, LIST_B_BAR_RIGHT - LIST_B_X, SCROLL_H, g->drop_add ? C_AMBER : C_BG);
+		text(g, (LIST_B_X + LIST_B_BAR_RIGHT) / 2 - 18, BANK_Y + SCROLL_H / 2 - 7, "ADD", g->drop_add ? C_BG : edge, 2);
+		double_frame(g, 0, C_AMBER);
+		double_frame(g, 1, edge);
+	} else {
+		draw_library_list(g, values, 1, envelopes);
 	}
+	if (g->chooser >= 0) {
+		draw_chooser(g, envelopes);
+	}
+	// The dragged sound's name at the mouse.
+	if (g->row_list >= 0 && g->row_moved) {
+		char buffer[32];
+		snprintf(buffer, sizeof(buffer), "%.13s", place_name(list_bank(g, g->row_list), envelopes, g->row_place));
+		fill(g, g->mouse_x + 8, g->mouse_y - 10, (int)strlen(buffer) * 12 + 8, 20, C_TEXT);
+		text(g, g->mouse_x + 12, g->mouse_y - 7, buffer, C_BG, 2);
+	}
+}
+
+// The footer over the lists of BANK: what a click or a drop would do.
+static bool bank_hint(mdmi_gui *g, char *hint, size_t size, uint32_t *color)
+{
+	const patch_values *values = patch_view(g->source.patch);
+	const int channel = *g->source.channel;
+	if (*g->source.page != PAGE_BANK || is_dac(values, channel) || g->file_over) {
+		return false;
+	}
+	const bool envelopes = !channel_is_fm(channel);
+	const int x = g->mouse_x, y = g->mouse_y;
+	*color = C_LABEL;
+	if (g->row_list >= 0 && g->row_moved) {
+		const char *name = place_name(list_bank(g, g->row_list), envelopes, g->row_place);
+		int place;
+		const int to = drag_target(g, envelopes, &place), over = list_under(x, y);
+		if (over == g->row_list) {
+			snprintf(hint, size, "Drop on the other list");
+		} else if (to < 0) {
+			return false;
+		} else if (g->lists[to].kind == LIST_ROM && place >= 0) {
+			*color = C_AMBER;
+			snprintf(hint, size, "%s > slot %d, replaces %s", name, place + 1, place_name(list_bank(g, to), envelopes, place));
+		} else if (g->lists[to].kind == LIST_LIBRARY && place < 0) {
+			snprintf(hint, size, "%s is full to 128: clear a sound first", g->lists[to].name);
+		} else if (g->lists[to].kind == LIST_LIBRARY) {
+			*color = C_AMBER;
+			snprintf(hint, size, "%s > ADD to %s, %d free", name, g->lists[to].name, PATCH_BANK_SIZE - g->lists[to].count);
+		} else {
+			return false;
+		}
+		return true;
+	}
+	if (g->row_list >= 0 || g->chooser >= 0) {
+		return false;
+	}
+	const int list = list_under(x, y), bar = bar_under(x, y);
+	if ((list == 1 || bar == 1) && g->lists[1].kind == LIST_NO_FOLDER) {
+		snprintf(hint, size, "No folder %s", g->lib_folder);
+		return true;
+	}
+	const int place = list >= 0 ? list_place_at(g, list, x, y) : -1;
+	if (place < 0) {
+		return false;
+	}
+	const patch_bank *bank = list_bank(g, list);
+	char steps[32] = "";
+	if (envelopes) {
+		const patch_envelope *envelope = &bank->envelopes[place];
+		const int length = patch_envelope_length(envelope);
+		snprintf(steps, sizeof(steps), ", %d steps%s", length, memchr(envelope->steps, PATCH_EEF_LOOP_START, (size_t)length) ? ", loop" : "");
+	}
+	if (g->lists[list].kind == LIST_ROM) {
+		snprintf(hint, size, "%d %s: click plays on CH%d, drag copies%s", place + 1, place_name(bank, envelopes, place), channel + 1, steps);
+	} else if (over_clear(list, x, y)) {
+		snprintf(hint, size, "CLEAR: %s leaves %s", place_name(bank, envelopes, place), g->lists[list].name);
+	} else {
+		snprintf(hint, size, "%s: click plays on CH%d, drag copies%s", place_name(bank, envelopes, place), channel + 1, steps);
+	}
+	return true;
 }
 
 // The algorithm in small for a row of ALL: operators 10 px with their number, carriers filled, the
@@ -5030,6 +5629,7 @@ static void flash(mdmi_gui *g, int channel, int place, int count, bool done)
 	g->flash_count = count;
 	g->flash_color = done ? C_LINE : C_ERROR;
 	g->flash_ticks = FLASH_TICKS;
+	g->flash_list = -1;
 }
 
 // Opens a file onto a channel, or a bank or a snapshot, and says how it went.
@@ -5209,10 +5809,286 @@ static void on_action(mdmi_gui *g, int action)
 		if (files_can_store(g->source.files, *g->source.channel) && files_store(g->source.files, *g->source.channel, message, sizeof(message))) {
 			say(g, message, C_TEXT, MESSAGE_TICKS);
 		}
-	} else if (action == ACTION_UNDO && files_undo(g->source.files, message, sizeof(message))) {
-		say(g, message, C_TEXT, MESSAGE_TICKS);
+	} else if (action == ACTION_UNDO) {
+		message[0] = 0;
+		if (files_undo(g->source.files, message, sizeof(message))) {
+			say(g, message, C_TEXT, MESSAGE_TICKS);
+		} else if (!strncmp(message, "Can't undo", 10)) {
+			say(g, message, C_ERROR, ERROR_TICKS);
+		}
+		// A library's place may have gone back in its file (stage 22c).
+		if (*g->source.page == PAGE_BANK) {
+			load_lists(g);
+		}
 	}
 	refresh(g);
+}
+
+// Stage 22c (D56): what the lists of BANK do. A flash on a library's place, or on the whole list.
+static void flash_list(mdmi_gui *g, int list, int place, bool done)
+{
+	flash(g, -1, place, 1, done);
+	g->flash_list = list;
+}
+
+// Whether path is a file right in the library folder; / and \ count alike, case doesn't.
+static bool in_folder(const char *folder, const char *path)
+{
+	size_t parent = strlen(path);
+	while (parent > 0 && path[parent - 1] != '\\' && path[parent - 1] != '/') {
+		parent--;
+	}
+	size_t length = strlen(folder);
+	while (length > 0 && (folder[length - 1] == '\\' || folder[length - 1] == '/')) {
+		length--;
+	}
+	if (parent == 0 || parent - 1 != length) {
+		return false;
+	}
+	for (size_t i = 0; i < length; i++) {
+		const char a = folder[i] == '/' ? '\\' : folder[i], b = path[i] == '/' ? '\\' : path[i];
+		if (tolower((unsigned char)a) != tolower((unsigned char)b)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// NEW: an empty library named in the save dialog, opened in the list it was asked from. Tests name
+// the file in MDMI_TEST_NEW instead of the dialog.
+static void new_library(mdmi_gui *g, int list)
+{
+	char message[FILES_MESSAGE], path[LIBRARY_PATH + 8];
+	if (!library_make_folder(g->lib_folder)) {
+		snprintf(message, sizeof(message), "Can't make the folder %s", g->lib_folder);
+		say(g, message, C_ERROR, ERROR_TICKS);
+		return;
+	}
+	const char *test = getenv("MDMI_TEST_NEW");
+	if (test && *test) {
+		snprintf(path, LIBRARY_PATH, "%s", test);
+	} else {
+		wchar_t file[MAX_PATH] = L"", folder[LIBRARY_PATH];
+		MultiByteToWideChar(CP_UTF8, 0, g->lib_folder, -1, folder, LIBRARY_PATH);
+		OPENFILENAMEW dialog = {0};
+		dialog.lStructSize = sizeof(dialog);
+		dialog.hwndOwner = g->window;
+		dialog.lpstrFilter = L"Bank (*.mdbank)\0*.mdbank\0";
+		dialog.lpstrFile = file;
+		dialog.nMaxFile = MAX_PATH;
+		dialog.lpstrInitialDir = folder;
+		dialog.lpstrDefExt = L"mdbank";
+		dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+		if (!GetSaveFileNameW(&dialog)) {
+			return;
+		}
+		to_utf8(file, path, LIBRARY_PATH);
+	}
+	if (files_kind(path) != FILES_BANK) {
+		strcat(path, ".mdbank");
+	}
+	if (!files_new_library(path, message, sizeof(message))) {
+		say(g, message, C_ERROR, ERROR_TICKS);
+		flash_list(g, list, -1, false);
+		return;
+	}
+	if (!in_folder(g->lib_folder, path)) {
+		say(g, "Saved outside MDMI Banks: not a library", C_AMBER, MESSAGE_TICKS);
+		return;
+	}
+	const char *name = path + strlen(path);
+	while (name > path && name[-1] != '\\' && name[-1] != '/') {
+		name--;
+	}
+	gui_banks *banks = banks_of(g);
+	snprintf(list ? banks->right : banks->left, LIBRARY_NAME, "%s", name);
+	load_lists(g);
+	say(g, message, C_AMBER, MESSAGE_TICKS);
+}
+
+static void open_chooser(mdmi_gui *g, int list)
+{
+	load_lists(g);
+	g->chooser = list;
+	g->chooser_top = 0;
+	if (g->lib_list.total > g->lib_list.count) {
+		char message[FILES_MESSAGE];
+		snprintf(message, sizeof(message), "%d of %d libraries shown, by name", g->lib_list.count, g->lib_list.total);
+		say(g, message, C_AMBER, MESSAGE_TICKS);
+	}
+}
+
+static void chooser_down(mdmi_gui *g, int x, int y)
+{
+	const int choice = choice_at(g, x, y), list = g->chooser;
+	gui_banks *banks = banks_of(g);
+	if (choice == CHOICE_MORE || (choice >= 0 && open_elsewhere(g, choice))) {
+		return;
+	}
+	if (x >= SCROLL_X && x < SCROLL_X + 6 && y >= BANK_Y && y < BANK_BOTTOM) {
+		const int most = choice_count(g) - BANK_ROWS;
+		g->chooser_top += y < BANK_Y + g->chooser_top * SCROLL_H / choice_count(g) ? -BANK_ROWS : BANK_ROWS;
+		g->chooser_top = g->chooser_top > most ? most : g->chooser_top;
+		g->chooser_top = g->chooser_top < 0 ? 0 : g->chooser_top;
+		return;
+	}
+	g->chooser = -1;
+	if (choice == CHOICE_NEW) {
+		new_library(g, list);
+	} else if (choice == CHOICE_ROM) {
+		banks->left[0] = 0;
+		load_lists(g);
+	} else if (choice >= 0) {
+		snprintf(list ? banks->right : banks->left, LIBRARY_NAME, "%s", g->lib_list.names[choice]);
+		load_lists(g);
+		if (g->lists[list].kind == LIST_UNREAD) {
+			char message[FILES_MESSAGE];
+			snprintf(message, sizeof(message), "%s: not an MDMI bank", g->lists[list].name);
+			say(g, message, C_ERROR, ERROR_TICKS);
+		}
+	}
+}
+
+// A row dragged onto the other list: into the ROM bank's place under the mouse, or a library's first
+// empty one, so nothing of a library is replaced by a miss (art-director's frame).
+static void drop_row(mdmi_gui *g)
+{
+	const bool envelopes = !channel_is_fm(*g->source.channel);
+	int place;
+	const int to = drag_target(g, envelopes, &place);
+	if (to < 0) {
+		return;
+	}
+	char message[FILES_MESSAGE];
+	if (g->lists[to].kind == LIST_LIBRARY && place < 0) {
+		snprintf(message, sizeof(message), "%s is full to 128: clear a sound first", g->lists[to].name);
+		say(g, message, C_LABEL, MESSAGE_TICKS);
+		return;
+	}
+	if (place < 0) {
+		return;
+	}
+	// Into a library the place is chosen in its file as it is now: another window may have filled
+	// the one this shows as free (review of stage 22c).
+	const bool rom = g->lists[to].kind == LIST_ROM;
+	const files_spot from = spot_of(g, g->row_list, g->row_place), into = spot_of(g, to, rom ? place : -1);
+	const bool done = files_copy_place(g->source.files, envelopes, &from, &into, &place, message, sizeof(message));
+	say(g, message, done ? C_AMBER : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
+	load_lists(g);
+	list_rows(g, envelopes);
+	if (rom) {
+		flash(g, -1, place, 1, done);
+		return;
+	}
+	flash_list(g, to, done ? place : -1, done);
+	for (int row = 0; done && row < g->lists[to].count; row++) {
+		if (g->lists[to].places[row] == place && (row < g->lists[to].top || row >= g->lists[to].top + BANK_ROWS)) {
+			scroll_list(g, to, row - 3);
+		}
+	}
+}
+
+// The library place a row shows still holds that sound in its file; otherwise the lists are read
+// again and the footer says so (review of stage 22c: another window may have changed it).
+static bool still_shown(mdmi_gui *g, int list, int place, bool envelopes)
+{
+	char name[PATCH_NAME];
+	snprintf(name, sizeof(name), "%s", place_name(&g->lists[list].bank, envelopes, place));
+	load_lists(g);
+	list_rows(g, envelopes);
+	const bank_list *l = &g->lists[list];
+	if (l->kind == LIST_LIBRARY && !files_place_empty(&l->bank, envelopes, place) && !strcmp(place_name(&l->bank, envelopes, place), name)) {
+		return true;
+	}
+	char message[FILES_MESSAGE];
+	snprintf(message, sizeof(message), "%s changed elsewhere: shown again", name);
+	say(g, message, C_LABEL, MESSAGE_TICKS);
+	return false;
+}
+
+// A click on a row, the mouse up where it went down: a ROM bank place becomes the channel's Preset,
+// a library's sound goes to the channel as a dropped file (D25). A drag does neither, so the sound
+// the channel had and its undo step stay (review of stage 22c).
+static void click_row(mdmi_gui *g, int list, int place)
+{
+	const int channel = *g->source.channel;
+	const bool envelopes = !channel_is_fm(channel);
+	if (g->lists[list].kind == LIST_ROM) {
+		edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
+		return;
+	}
+	if (g->lists[list].kind != LIST_LIBRARY || !still_shown(g, list, place, envelopes)) {
+		return;
+	}
+	char message[FILES_MESSAGE];
+	const files_spot spot = spot_of(g, list, place);
+	if (files_try_place(g->source.files, channel, &spot, message, sizeof(message))) {
+		g->tried_channel = channel;
+		g->tried_place = place;
+		snprintf(g->tried_path, sizeof(g->tried_path), "%s", g->lists[list].path);
+	} else {
+		say(g, message, C_ERROR, ERROR_TICKS);
+	}
+}
+
+// A press on BANK's lists, their bars or the choice. True when the page took it.
+static bool bank_down(mdmi_gui *g, int x, int y)
+{
+	const int channel = *g->source.channel;
+	const bool envelopes = !channel_is_fm(channel);
+	list_rows(g, envelopes);
+	if (g->chooser >= 0) {
+		if (bar_under(x, y) >= 0 || choice_at(g, x, y) != -3 || (x >= SCROLL_X && x < SCROLL_X + 6)) {
+			chooser_down(g, x, y);
+		} else {
+			g->chooser = -1;
+		}
+		return true;
+	}
+	const int bar = bar_under(x, y);
+	if (bar >= 0) {
+		open_chooser(g, bar);
+		return true;
+	}
+	char message[FILES_MESSAGE];
+	for (int list = 0; list < 2; list++) {
+		if (over_new(g, list, x, y)) {
+			new_library(g, list);
+			return true;
+		}
+		const int place = list_place_at(g, list, x, y);
+		if (place >= 0) {
+			if (g->lists[list].kind == LIST_LIBRARY && over_clear(list, x, y)) {
+				if (!still_shown(g, list, place, envelopes)) {
+					return true;
+				}
+				const files_spot spot = spot_of(g, list, place);
+				const bool done = files_clear_place(g->source.files, envelopes, &spot, message, sizeof(message));
+				say(g, message, done ? C_AMBER : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
+				if (!done) {
+					flash_list(g, list, place, false);
+				}
+				load_lists(g);
+				return true;
+			}
+			// What the press does waits for the mouse to go up: a click or a drag (click_row, drop_row).
+			g->row_list = list;
+			g->row_place = place;
+			g->row_x = x;
+			g->row_y = y;
+			g->row_moved = false;
+			SetCapture(g->window);
+			return true;
+		}
+		const int track = list_scroll_x(list);
+		if (x >= track && x < track + 6 && y >= BANK_Y && y < BANK_BOTTOM && g->lists[list].count > BANK_ROWS) {
+			const int top = *list_top(g, list);
+			const int thumb = BANK_Y + top * SCROLL_H / g->lists[list].count;
+			scroll_list(g, list, top + (y < thumb ? -BANK_ROWS : BANK_ROWS));
+			return true;
+		}
+	}
+	return x >= BANK_X && y >= BANK_BAR_Y && y < BANK_BOTTOM;
 }
 
 static void on_down(mdmi_gui *g, int x, int y)
@@ -5312,19 +6188,9 @@ static void on_down(mdmi_gui *g, int x, int y)
 			return;
 		}
 	}
-	if (*g->source.page == PAGE_BANK) {
-		const int place = bank_place_at(g, x, y);
-		const int selected = *g->source.channel;
-		if (place >= 0 && takes_files(patch_view(g->source.patch), selected)) {
-			edit_once(g, PATCH_CHANNEL_ID(selected, PARAM_PRESET), place);
-		} else if (x >= SCROLL_X && x < SCROLL_X + 6 && y >= BANK_Y && y < BANK_Y + SCROLL_H) {
-			const int thumb = BANK_Y + g->bank_top * SCROLL_H / PATCH_BANK_SIZE;
-			scroll_bank(g, g->bank_top + (y < thumb ? -BANK_ROWS : BANK_ROWS));
-		}
-		if (place >= 0 || x >= SCROLL_X) {
-			refresh(g);
-			return;
-		}
+	if (*g->source.page == PAGE_BANK && !is_dac(patch_view(g->source.patch), *g->source.channel) && bank_down(g, x, y)) {
+		refresh(g);
+		return;
 	}
 	g->mouse_x = x;
 	g->mouse_y = y;
@@ -5409,6 +6275,11 @@ static void on_move(mdmi_gui *g, int x, int y)
 		arp_move(g, x, y);
 		return;
 	}
+	if (g->row_list >= 0) {
+		g->row_moved = g->row_moved || abs(x - g->row_x) >= DRAG_SLOP || abs(y - g->row_y) >= DRAG_SLOP;
+		refresh(g);
+		return;
+	}
 	if (!g->dragging) {
 		return;
 	}
@@ -5428,6 +6299,20 @@ static void on_move(mdmi_gui *g, int x, int y)
 
 static void on_up(mdmi_gui *g)
 {
+	if (g->row_list >= 0) {
+		if (g->row_moved) {
+			drop_row(g);
+		} else {
+			click_row(g, g->row_list, g->row_place);
+		}
+		g->row_list = -1;
+		g->row_moved = false;
+		if (GetCapture() == g->window) {
+			ReleaseCapture();
+		}
+		refresh(g);
+		return;
+	}
 	if (g->grid_from >= 0) {
 		const int from = g->grid_from, to = g->grid_target;
 		const bool moved = g->grid_moved;
@@ -5727,8 +6612,10 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		return false;
 	}
 	const int channel = row_at(g, x, y);
-	const bool in_list = page == PAGE_BANK && y >= BANK_ADD_Y && y < BANK_Y + BANK_ROWS * BANK_ROW_H;
-	const bool add = in_list && x >= BANK_ADD_X && x < BANK_RIGHT + 2;
+	// Stage 22c: files go into the ROM bank only, list A's places or list B as one ADD field.
+	const bool in_list = page == PAGE_BANK && y >= BANK_Y && y < BANK_BOTTOM && x >= BANK_X;
+	const bool rom_shown = g->lists[0].kind == LIST_ROM;
+	const bool add = in_list && rom_shown && x >= LIST_B_X && x < LIST_B_BAR_RIGHT;
 	const int place = in_list && !add ? bank_place_at(g, x, y) : -1;
 	if (channel >= 0 && many) {
 		hint(g, C_LABEL, "One file per channel");
@@ -5744,6 +6631,8 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		return true;
 	} else if (page != PAGE_BANK) {
 		hint(g, C_LABEL, many ? "Several files: open BANK to drop" : envelopes ? "%s: drop on CH7-10" : "%s: drop on CH1-6", g->file_name);
+	} else if (in_list && !rom_shown) {
+		hint(g, C_LABEL, "Files go to the ROM bank: choose ROM BANK on the left");
 	} else if (envelopes != envelopes_open && (add || place >= 0)) {
 		hint(g, C_LABEL, envelopes ? "EEF: select CH7-10 for envelopes" : "FM file: select CH1-6 for voices");
 	} else if (add || place >= 0) {
@@ -5886,8 +6775,17 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 {
 	POINT client = {screen_x, screen_y};
 	ScreenToClient(g->window, &client);
-	if (*g->source.page == PAGE_BANK && client.x / g->scale >= BANK_X) {
-		scroll_bank(g, g->bank_top - delta / WHEEL_DELTA * WHEEL_ROWS);
+	const int wheel_x = client.x / g->scale, wheel_y = client.y / g->scale;
+	const bool lists = *g->source.page == PAGE_BANK && !is_dac(patch_view(g->source.patch), *g->source.channel);
+	if (lists && g->chooser >= 0 && wheel_x >= BANK_X) {
+		const int most = choice_count(g) - BANK_ROWS, top = g->chooser_top - delta / WHEEL_DELTA * WHEEL_ROWS;
+		g->chooser_top = top > most ? most : top;
+		g->chooser_top = g->chooser_top < 0 ? 0 : g->chooser_top;
+		refresh(g);
+	} else if (lists && list_under(wheel_x, wheel_y) >= 0) {
+		// Stage 22c: the list under the mouse, during a drag too.
+		const int list = list_under(wheel_x, wheel_y);
+		scroll_list(g, list, *list_top(g, list) - delta / WHEEL_DELTA * WHEEL_ROWS);
 		refresh(g);
 	} else if (dac_bank(g, patch_view(g->source.patch)) && client.x / g->scale >= BANK_X) {
 		scroll_dac(g, g->dac_top - delta / WHEEL_DELTA * WHEEL_ROWS);
@@ -5946,6 +6844,14 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		}
 		if (g->arp_drag != ARP_NONE) {
 			arp_hand(g);
+		}
+		// A row dragged near the top or bottom of the other list moves that list a row a tick (stage 22c).
+		if (g->row_list >= 0 && g->row_moved) {
+			const int list = list_under(g->mouse_x, g->mouse_y);
+			if (list >= 0 && list != g->row_list) {
+				const int step = g->mouse_y < BANK_Y + LIST_EDGE ? -1 : g->mouse_y >= BANK_BOTTOM - LIST_EDGE ? 1 : 0;
+				scroll_list(g, list, *list_top(g, list) + step);
+			}
 		}
 		refresh(g);
 		return 0;
@@ -6046,6 +6952,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->grid_from = -1;
 	g->rom_copy_note = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
+	g->chooser = g->row_list = g->tried_channel = g->flash_list = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
 }

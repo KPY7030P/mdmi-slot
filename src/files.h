@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "library.h"
 #include "patch.h"
 #include "state.h"
 
@@ -23,7 +24,15 @@ typedef struct {
 } files_host;
 
 // UNDO_ARP: a drawn row, only the row comes back (review of stage 20: a voice's knobs moved since stay).
-enum { UNDO_NONE, UNDO_CHANNEL, UNDO_PLACE, UNDO_ENVELOPE_PLACE, UNDO_STATE, UNDO_SAMPLES, UNDO_ARP };
+// UNDO_LIBRARY: a place of a library file, written back to the file (stage 22c).
+enum { UNDO_NONE, UNDO_CHANNEL, UNDO_PLACE, UNDO_ENVELOPE_PLACE, UNDO_STATE, UNDO_SAMPLES, UNDO_ARP, UNDO_LIBRARY };
+
+// A place of a bank the window shows (stage 22c, D56): of the ROM bank, the one that plays, when
+// library is NULL, otherwise of the library file at that path.
+typedef struct {
+	const char *library;
+	int place;
+} files_spot;
 
 typedef struct {
 	files_host host;
@@ -46,6 +55,9 @@ typedef struct {
 	size_t undo_state_size;
 	// The DAC samples before the last change of them, swapped back by undo.
 	dac_set undo_dac;
+	// UNDO_LIBRARY: the file, and whether the place is of its envelopes; the place is undo_target.
+	bool undo_envelopes;
+	char undo_library[LIBRARY_PATH];
 	char undo_text[FILES_MESSAGE];
 } mdmi_files;
 
@@ -92,6 +104,22 @@ int files_move_sample(mdmi_files *files, int from, int to, bool copy, char *mess
 // CLEAR: a file goes and the ROM's sample comes back; on a note of the ROM's the sample is removed,
 // and on a removed one it comes back.
 bool files_reset_sample(mdmi_files *files, int note, char *message, size_t size);
+// Libraries (stage 22c, D56). A library is a bank file; a place of it is empty when it is the ROM's
+// GM preset, or envelope, with an empty row (D26). The file is read again before every change and
+// written whole at once: to a file beside it, then put in its place.
+bool files_read_library(const char *path, patch_bank *bank);
+bool files_place_empty(const patch_bank *bank, bool envelopes, int place);
+// A new library, every place empty, over a file that is there (the save dialog has asked).
+bool files_new_library(const char *path, char *message, size_t size);
+// A place's sound, name and row onto the channel, as a dropped file goes (D25): Preset stays.
+bool files_try_place(mdmi_files *files, int channel, const files_spot *from, char *message, size_t size);
+// A place's sound, name and row over another's, of the same list: FM voices, or envelopes. One undo
+// step, which writes a library back. A library's place < 0 is its first empty place in the file as it
+// is now, where the sound doesn't read as empty (a GM sound on its own GM place would); landed, when
+// not NULL, says where the sound went.
+bool files_copy_place(mdmi_files *files, bool envelopes, const files_spot *from, const files_spot *to, int *landed, char *message, size_t size);
+// A library's place emptied.
+bool files_clear_place(mdmi_files *files, bool envelopes, const files_spot *spot, char *message, size_t size);
 // What undo would put back, or NULL.
 const char *files_undo_text(const mdmi_files *files);
 

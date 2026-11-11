@@ -18,6 +18,20 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - Chords on FM channels, played on the voices of silent channels (not with Porta On, Ch3 Special Mode or
   the DAC).
 - Instrument files: TFI, VGI and TYI for FM, EEF for PSG. Drop them from Explorer on a channel or a bank place.
+- Bank libraries (0.22.4): the BANK page shows two lists side by side. The left one is the ROM bank,
+  the one that plays (Preset, a clip's Pgm, Program Change) and is saved with the project; its bar can
+  also switch it to a library. The right one is a library: any `.mdbank` file in the folder
+  **MDMI Banks** next to the plugin file, for example `D:\VST\MDMI Banks` beside `D:\VST\MDMI Slot.vst3`.
+  A library shows only its sounds; its empty places are counted as FREE. Click a library's sound to hear it
+  on the selected channel (the Preset stays, as with a dropped file). Drag a sound to the other list to copy
+  it: onto a ROM bank place it replaces that place, into a library it goes to the first free place. CLEAR on
+  the row under the mouse empties a library's place. NEW (on a list's bar, or under NO FOLDER) makes an empty
+  library, named in the save dialog, and the folder if it isn't there. Library changes are written to the
+  file at once and UNDO writes them back; there is no SAVE for libraries. Every project and every MDMI Slot in
+  a set sees the same libraries; another instance sees a change the next time its BANK page opens. A project
+  never depends on them: what you tried or copied is in the project. A bank saved with SAVE earlier is a
+  library as soon as it is in the folder. To hand the plugin to someone, give them the plugin files and the
+  MDMI Banks folder. Rename or delete libraries in Explorer.
 - Arpeggio rows (0.20): a sound can carry a row of up to 32 steps, one per frame (60 Hz), each a shift of
   -24 to +24 semitones, with a loop. The ROM plays it, so it works on a console too. Draw it under the PSG
   envelope or on the FM page (ARP). STORE puts the channel's sound with its row into its bank place; rows
@@ -114,6 +128,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
    The instrument appears under Plug-Ins as **MDMI Slot**.
 
 To update, replace the files while the host is closed: Live locks the VST3 while it runs.
+Bank libraries live in the folder `MDMI Banks` next to the plugin file; updating the plugin leaves it as
+it is. In `C:\Program Files` Windows doesn't let the plugin write there, so libraries can be read and
+copied from but not changed; put the plugin in a folder of your own to change them.
 
 ## First steps
 

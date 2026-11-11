@@ -45,10 +45,10 @@
 // Master Volume at the strip's right end (stage 18a), and its id.
 #define MASTER_X 660
 #define MASTER 9
-// The bank page's button, its third place, and channel 4's Preset.
+// The bank page's button, its third place in list A (stage 22c: rows from y 92), and channel 4's Preset.
 #define BUTTON_BANK_X 244
 #define BANK_ROW_X 400
-#define BANK_ROW3_Y 122
+#define BANK_ROW3_Y 142
 #define CH4_PRESET 1400
 #define COLOR_FM_DARK 0x222266
 // The envelope editor of a PSG channel: channel 8 in the rail, the level lane, a row near its top
@@ -78,8 +78,8 @@
 #define COLOR_LABEL 0xAAAAAA
 #define COLOR_FM_LIGHT 0x8888EE
 #define COLOR_TEXT 0xEEEEEE
-#define SCROLL_X 702
-#define SCROLL_TOP 72
+#define SCROLL_X 506
+#define SCROLL_TOP 92
 #define SCROLL_BOTTOM 452
 // Stage 10: the ALL page. Channel 2's row, its VOL and PAN R, its id, and the sound column.
 #define ALL_CH2_Y 96
@@ -376,6 +376,30 @@ static void wheel(HWND window, int x, int y, int delta)
 	SendMessageA(window, WM_MOUSEWHEEL, MAKEWPARAM(0, (short)delta), MAKELPARAM(screen.x, screen.y));
 }
 
+// A drag from one point to another in four moves (stage 22c: a row from one list to the other).
+static void drag_to(HWND window, int x, int y, int to_x, int to_y)
+{
+	SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+	for (int step = 1; step <= 4; step++) {
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x + (to_x - x) * step / 4, y + (to_y - y) * step / 4));
+	}
+	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(to_x, to_y));
+}
+
+// The test's library folder (MDMI_BANKS) and the file NEW makes there (MDMI_TEST_NEW).
+static char banks_dir[MAX_PATH], new_bank[MAX_PATH];
+
+static size_t read_file(const char *path, uint8_t *bytes, size_t most)
+{
+	FILE *file = fopen(path, "rb");
+	if (!file) {
+		return 0;
+	}
+	const size_t size = fread(bytes, 1, most, file);
+	fclose(file);
+	return size;
+}
+
 // A sideways drag in four moves, as a hand makes it.
 static void drag_x(HWND window, int x, int y, int to_x)
 {
@@ -606,6 +630,24 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	const bool expect_crash = getenv("MDMI_TEST_CRASH") != NULL;
+	// Stage 22c: the libraries in a folder of the test's, gone before it starts.
+	snprintf(banks_dir, sizeof(banks_dir), "%s-banks", argv[2]);
+	snprintf(new_bank, sizeof(new_bank), "%s\\First.mdbank", banks_dir);
+	const char *const left[] = {"First.mdbank", "broken.mdbank", "First.mdbank.tmp"};
+	for (size_t i = 0; i < sizeof(left) / sizeof(*left); i++) {
+		char path[MAX_PATH];
+		snprintf(path, sizeof(path), "%s\\%s", banks_dir, left[i]);
+		SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+		DeleteFileA(path);
+	}
+	RemoveDirectoryA(banks_dir);
+	SetEnvironmentVariableA("MDMI_BANKS", banks_dir);
+	SetEnvironmentVariableA("MDMI_TEST_NEW", new_bank);
+	static char env_banks[MAX_PATH + 16], env_new[MAX_PATH + 16];
+	snprintf(env_banks, sizeof(env_banks), "MDMI_BANKS=%s", banks_dir);
+	snprintf(env_new, sizeof(env_new), "MDMI_TEST_NEW=%s", new_bank);
+	_putenv(env_banks);
+	_putenv(env_new);
 	HMODULE lib = LoadLibraryA(argv[1]);
 	if (!lib) {
 		fprintf(stderr, "LoadLibrary failed: %lu\n", GetLastError());
@@ -1266,6 +1308,100 @@ int main(int argc, char **argv)
 		}
 		run_ms(100);
 		CHECK(get_value(CH4_PRESET) == 0, "arrows up stop at place 1");
+
+		// Stage 22c (D56): libraries beside the plugin, here the test's folder in MDMI_BANKS, not there yet.
+		{
+			const int b_x = 600, b_row1_y = 102, a_row5_y = 92 + 4 * 20;
+			capture(window);
+			CHECK(count_color_in(528, 592, 180, 204, COLOR_LINE) > 100 && count_color_in(528, 690, 100, 116, COLOR_LABEL) > 50, "no folder: list B says so and offers NEW");
+			save_bmp(argv[2], "bank-no-folder");
+			// The last message (4 s of the window's timer) goes first: it comes before hints.
+			for (int tick = 0; tick < 5 * 31; tick++) {
+				SendMessageA(window, WM_TIMER, 1, 0);
+			}
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, 300));
+			capture(window);
+			CHECK(count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_LABEL) > 100 && count_color_in(528, 690, 80, 88, COLOR_HINT) == 0, "the footer over list B says where the folder is expected");
+			click(window, 560, 190);
+			run_ms(50);
+			capture(window);
+			CHECK(GetFileAttributesA(new_bank) != INVALID_FILE_ATTRIBUTES && count_color_in(528, 690, 80, 88, COLOR_HINT) > 30, "NEW makes the folder and an empty library, open in list B");
+			static uint8_t empty[1 << 17], now[1 << 17];
+			const size_t empty_size = read_file(new_bank, empty, sizeof(empty));
+			// Place 3 of the ROM bank dragged into the library.
+			drag_to(window, BANK_ROW_X, BANK_ROW3_Y, b_x, 200);
+			run_ms(50);
+			capture(window);
+			size_t size = read_file(new_bank, now, sizeof(now));
+			CHECK(size == empty_size && memcmp(now, empty, size) && count_color_in(528, 690, 95, 110, COLOR_TEXT) > 50, "a ROM place dragged into the library is written to its file and listed");
+			save_bmp(argv[2], "bank-library");
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(50);
+			size = read_file(new_bank, now, sizeof(now));
+			CHECK(size == empty_size && !memcmp(now, empty, size), "UNDO writes the place back");
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(50);
+			size = read_file(new_bank, now, sizeof(now));
+			CHECK(size == empty_size && memcmp(now, empty, size), "and again brings it");
+			// A press on the library's sound plays it on channel 4; the Preset stays.
+			// Channel 4 on place 1 first, so the tried sound is not the place it already plays.
+			click(window, BANK_ROW_X, 102);
+			run_ms(100);
+			const int preset = get_value(CH4_PRESET);
+			click(window, b_x, b_row1_y);
+			run_ms(100);
+			capture(window);
+			CHECK(get_value(CH4_PRESET) == preset && count_color_in(524, 698, 92, 111, COLOR_FM_DARK) > 1000, "a library's sound tried on channel 4 lights its row, Preset stays");
+			save_bmp(argv[2], "bank-tried");
+			// Into the ROM bank's place 5: its name turns from GM grey to white.
+			const int gm = count_color_in(290, 446, a_row5_y + 3, a_row5_y + 17, COLOR_TEXT);
+			drag_to(window, b_x, b_row1_y, BANK_ROW_X, a_row5_y + 10);
+			run_ms(100);
+			capture(window);
+			CHECK(gm == 0 && count_color_in(290, 446, a_row5_y + 3, a_row5_y + 17, COLOR_TEXT) > 50, "the library's sound dragged into place 5 of the ROM bank");
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(100);
+			// CLEAR on the hovered row empties the library's place.
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(b_x, b_row1_y));
+			capture(window);
+			CHECK(count_color_in(654, 694, 94, 109, COLOR_LINE) > 20, "the hovered library row shows CLEAR");
+			click(window, 674, b_row1_y);
+			run_ms(50);
+			size = read_file(new_bank, now, sizeof(now));
+			CHECK(size == empty_size && !memcmp(now, empty, size), "CLEAR empties the place in the file");
+			capture(window);
+			save_bmp(argv[2], "bank-cleared");
+			// A library that can't be written: nothing changes, the footer says why.
+			SetFileAttributesA(new_bank, FILE_ATTRIBUTE_READONLY);
+			drag_to(window, BANK_ROW_X, BANK_ROW3_Y, b_x, 200);
+			run_ms(50);
+			capture(window);
+			size = read_file(new_bank, now, sizeof(now));
+			CHECK(size == empty_size && !memcmp(now, empty, size) && count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_ERROR) > 50, "a read-only library is refused in the footer, unchanged");
+			SetFileAttributesA(new_bank, FILE_ATTRIBUTE_NORMAL);
+			// The choice of list B: NEW, then the libraries by name; a broken file opens as CAN'T READ.
+			char broken[MAX_PATH];
+			snprintf(broken, sizeof(broken), "%s\\broken.mdbank", banks_dir);
+			FILE *file = fopen(broken, "wb");
+			fputs("not a bank", file);
+			fclose(file);
+			click(window, b_x, 66);
+			run_ms(50);
+			capture(window);
+			CHECK(count_color_in(520, 708, 56, 76, COLOR_TEXT) > 1000, "a click on list B's bar opens the choice");
+			save_bmp(argv[2], "bank-choice");
+			click(window, 400, 92 + 20 + 10);
+			run_ms(50);
+			capture(window);
+			CHECK(count_color_in(528, 690, 100, 116, COLOR_ERROR) > 50 && count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_ERROR) > 50, "a broken file opens as CAN'T READ");
+			click(window, b_x, 66);
+			run_ms(50);
+			click(window, 400, 92 + 40 + 10);
+			run_ms(50);
+			capture(window);
+			CHECK(count_color_in(528, 690, 80, 88, COLOR_HINT) > 30, "and the library comes back by the choice");
+			DeleteFileA(broken);
+		}
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		CHECK(!keys->key(plugin, true), "the editor page leaves arrows to the host");
