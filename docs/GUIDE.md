@@ -284,12 +284,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   drawing, against 18.3 ms for a note stored with its envelope (`reg_test`, one run).
 
 - Window (stage 9, D29): every page puts the same things in the same places: number, name, source
-  (GM, ROM or BANK and the place; FILE over it for a dropped file; drag it to change the Preset), and
+  (`ROM N`, the place of the ROM bank, grey while it holds the factory sound and white once replaced, stage 24d; FILE over it for a dropped file; drag it to change the Preset), and
   the channel's cells VOL, PAN (L C R), TUNE, BEND, PORTA, TIME in one row, PSG keeping PAN's
   place empty. A rail row shows the name, a `*` when the bank place's sound was tweaked, and a bar of
   16 segments: the channel's volume (CC7), and green while a note is held, CC7 x velocity / 127,
   grey after. The ROM itself has no velocity curve; the bar shows what the plugin sent. In Ch3
-  Special Mode channel 3's row is light FM; with Ops it shows four notes in a column at the right, its own
+  Special Mode channel 3 is pink (`C_SP`, D62) everywhere FM's colours are: `fill` swaps FM's three for `C_SP_DARK`/`C_SP` while `g->sp` is set (its rail row, its page, its ALL row, its cells and the pitch editor), text on a pink fill is black (`on_fill`); with Ops it shows four notes in a column at the right, its own
   on top. Stage 24c: the bar is 16 segments of 9 px on every row (x 54-196); the note is at the right
   (x 202-225, `C--1` fits), and under it, right to left, `xN`, `n CUT` and `CHn`. The column (held green,
   let go grey, `---` none) also shows the DAC's four voices on channel 6's row, line k voice k, from
@@ -300,10 +300,13 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   channel 3's and MIDI 11-13's held notes let go, a DAC switch channel 6's too, as the ROM releases them
   (`release_switched_notes` in `plugin.c`, before each moment's notes). The bank page's scroll track marks every
   channel's place.
+- Double click (stage 24d): it sets a default wherever that means something, in the undo step of the click before it: knobs (the preset's value), the globals, an envelope column (level 0 dB, pitch 0, `envelope_reset`), an arp column (0, `arp_zero`), the DAC panel's cells and marks, ALL's VOL and PAN (the preset's value). Where the first click switched something (ARP ON/OFF, the ARP view, the arp loop's body and shadow, the PSG loop's strip and tabs, the release or stop of a PSG or DAC loop) the second does nothing more. Steps of 8 values or fewer step again on EDITOR; Preset, the FM graph's points, ALL's sound and the BANK lists take none.
+- PSG arp row (stage 24d): the widget takes its width from `arp_w` (FM 282 in the graph's place, PSG 460 to the page's right edge); lane `w - 82`, right column at `w - 54`. On CH7-CH9 the noise's warning is one amber line over the envelope; on CH10 TYPE and RATE's caveat is in the footer over that row (`noise_hint`).
+- Chord arrows (stage 24d): the spine, branches and heads sit at the names' height (y + 11), a head is a solid 5 x 10 triangle, clear of the bars.
 - A `*` means the sound is tweaked against its base (D31): what the channel last got whole, its
   bank place or a file dropped on it. The base goes with the model and the project (block 8), undo
   gives it back, a drawing keeps it. An FM cell whose value differs from the base has an amber
-  label and a mark where the base's value is; held, the footer says `TL 49, GM 39`. A channel's
+  label and a mark where the base's value is; held, the footer says `TL 49, ROM 39`. A channel's
   cell is a bar filled up to its value (TUNE from its middle), so the mark reads against the fill.
 - A red dot at a cell's top right: the host sent that knob a value since the mouse last edited it
   (D32, D33, D34). Live sends values only while a lane moves; it echoes the window's own edit
@@ -332,8 +335,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   Off at 1 s, where the active curve has its number. Each operator's SSG is a button at its
   header's right end, its shape or a dim SSG: a click opens OFF and the 8 shapes under the header,
   a click on one sets it as one gesture, any other click closes the choice. In Ch3 Special Mode
-  channel 3's number on the page is light FM, as in the rail. On channel 3 (stage 21) each header says only
-  OP1-OP4 and has a tag of the operator's pitch (`+7 +10`, or the note with FIX, filled light FM); a click on
+  channel 3's number on the page is pink in Ch3 Special (D62), as in the rail. On channel 3 (stage 21) each header says only
+  OP1-OP4 and has a tag of the operator's pitch (`+7 +10`, or the note with FIX, filled pink); a click on
   it opens SEMI, FINE and FIX where the choice of SSG opens, one of the two at a time; any other click,
   another channel or Ch3 Special off closes it. Without Ch3 Special the tags are dim and take no mouse.
 
@@ -360,7 +363,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   of the strip of globals, on every page but ROM; the footer says the console ignores it. A double click
   on any global cell puts its default back on every page.
   The strip's cells are as wide as what they show (stage 21): LFO, LFO RATE, LFO RESET, FILTER, CH3 SPECIAL
-  (On in light FM), CH3 NOTES (segments OPS, 1 NOTE and CSM, `docs/design/ch3-ops.md`), DAC, RETRIGGER, MASTER. LFO RESET is dim and
+  (On in pink), CH3 NOTES (segments OPS, 1 NOTE and CSM, `docs/design/ch3-ops.md`), DAC, RETRIGGER, MASTER. LFO RESET is dim and
   takes no mouse with the LFO off, CH3 NOTES without Ch3 Special; a double click puts OPS and Off back,
   and 0 and Off in the pitch editor.
 

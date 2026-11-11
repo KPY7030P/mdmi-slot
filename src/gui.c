@@ -36,6 +36,9 @@
 #define C_PLAYING 0xAAEE22
 #define C_AMBER 0xEECC66
 #define C_ERROR 0xEE2222
+// Stage 24d (D62): channel 3 in Ch3 Special Mode, everything of it that is FM's elsewhere.
+#define C_SP 0xEE44AA
+#define C_SP_DARK 0x440022
 
 // The layout of docs/design/ui-concept.md, "Окно 720x528".
 #define HEADER_H 28
@@ -177,16 +180,17 @@ enum { ENV_NONE, ENV_LEVEL, ENV_PITCH, ENV_LOOP_START, ENV_LOOP_END, ENV_LOOP, E
 // The arp row (stage 20, docs/design/arpeggio.md): one widget the graph's size on both pages, in the
 // graph's place on FM and under the envelope on PSG. Its lane holds -24..+24 at 2 px a semitone, the
 // loop's strip over it, a column of the length and labels at its right.
-#define ARP_W GRAPH_W
+#define ARP_W arp_w(g)
 #define ARP_H GRAPH_H
 #define ARP_PSG_Y 332
 #define ARP_LANE_DX 22
-#define ARP_LANE_W 200
+// The lane and the right column follow the row's width (stage 24d): on FM 200 and 228 as before.
+#define ARP_LANE_W (arp_w(g) - 82)
 #define ARP_LANE_DY 15
 #define ARP_LANE_H 98
 #define ARP_STRIP_DY 2
 #define ARP_STRIP_H 12
-#define ARP_RIGHT_DX 228
+#define ARP_RIGHT_DX (arp_w(g) - 54)
 #define ARP_LENGTH_DY 16
 #define ARP_LENGTH_W 52
 // Pixels of a vertical drag on the length per step: 128 px for all 32.
@@ -264,6 +268,8 @@ struct mdmi_gui {
 	HWND parent;
 	int scale;
 	uint32_t *pixels;
+	// Stage 24d (D62): while channel 3 in Ch3 Special is drawn, FM's colours are its pink.
+	bool sp;
 
 	cell cells[MAX_CELLS];
 	int cell_count;
@@ -464,6 +470,9 @@ static LONG window_count;
 
 static void fill(mdmi_gui *g, int x, int y, int w, int h, uint32_t color)
 {
+	if (g->sp) {
+		color = color == C_FM_DARK ? C_SP_DARK : color == C_FM || color == C_FM_LIGHT ? C_SP : color;
+	}
 	for (int row = y; row < y + h && row < GUI_HEIGHT; row++) {
 		uint32_t *line = g->pixels + row * GUI_WIDTH;
 		for (int col = x; col < x + w && col < GUI_WIDTH; col++) {
@@ -499,6 +508,12 @@ static int text(mdmi_gui *g, int x, int y, const char *utf8, uint32_t color, int
 		x += 6 * scale;
 	}
 	return x;
+}
+
+// Text on a fill of the channel's colour: black on channel 3's pink (D62), white on FM.
+static uint32_t on_fill(const mdmi_gui *g)
+{
+	return g->sp ? C_BG : C_TEXT;
 }
 
 // Text ending at the right edge, cut to the room it has.
@@ -846,22 +861,22 @@ static void draw_lends(mdmi_gui *g)
 			lane += other != c && lends[other] && (other_span < span || (other_span == span && other < c));
 		}
 		const int x = LEND_LANE_X - lane * LEND_LANE_STEP;
-		const int y_top = row_y(top[c]) + ROW_H / 2, y_bottom = row_y(bottom[c]) + ROW_H / 2;
-		fill(g, x, y_top, 2, y_bottom - y_top + 1, C_PLAYING);
+		// Stage 24d (art-director): at the names' height, clear of the bars, so the head reads.
+		fill(g, x, row_y(top[c]) + 11, 2, row_y(bottom[c]) - row_y(top[c]) + 2, C_PLAYING);
 		for (int row = top[c]; row <= bottom[c]; row++) {
 			if (row != c && player[row] != c) {
 				continue;
 			}
-			const int y = row_y(row) + ROW_H / 2;
+			const int y = row_y(row);
 			if (row == c) {
 				// Where the chord comes from: a square on the spine, no arrow.
-				fill(g, x - 2, y - 3, 6, 7, C_PLAYING);
+				fill(g, x - 2, y + 9, 6, 6, C_PLAYING);
 				continue;
 			}
-			// Where it goes: a branch with an arrowhead into the row.
-			fill(g, x, y, LEND_TIP_X - x, 1, C_PLAYING);
+			// Where it goes: a branch 2 px thick with a solid head 5 x 10, its tip at x 51.
+			fill(g, x, y + 11, LEND_TIP_X - x, 2, C_PLAYING);
 			for (int i = 0; i < 5; i++) {
-				fill(g, LEND_TIP_X + i, y - 4 + i, 1, 9 - 2 * i, C_PLAYING);
+				fill(g, LEND_TIP_X + i, y + 7 + i, 1, 10 - 2 * i, C_PLAYING);
 			}
 		}
 	}
@@ -1251,9 +1266,9 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			const bool over = g->mouse_x >= c->x && g->mouse_x < c->x + c->w && g->mouse_y >= c->y && g->mouse_y < c->y + c->h;
 			fill(g, c->x, c->y, c->w, c->h, on ? C_FM_LIGHT : over ? C_LINE : C_CELL);
 			if (c->choice == 0) {
-				text(g, c->x + (c->w - 17) / 2, c->y + (c->h - 7) / 2, "OFF", on ? C_TEXT : C_LABEL, 1);
+				text(g, c->x + (c->w - 17) / 2, c->y + (c->h - 7) / 2, "OFF", on ? on_fill(g) : C_LABEL, 1);
 			} else {
-				ssg_icon(g, c->x + 6, c->y + 7, c->w - 12, 8, c->choice, on ? C_TEXT : C_FM_LIGHT);
+				ssg_icon(g, c->x + 6, c->y + 7, c->w - 12, 8, c->choice, on ? on_fill(g) : C_FM_LIGHT);
 			}
 			return;
 		} else {
@@ -1269,8 +1284,10 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			const bool ch3_notes = c->id == GLOBAL_CH3_NOTES;
 			const int scale = !psg && !ch3_notes && (int)strlen(c->label) * 12 - 2 <= c->w - 2 && c->h >= 16 ? 2 : 1;
 			const int width = (int)strlen(c->label) * 6 * scale - scale;
-			fill(g, c->x, c->y, c->w, c->h, lit ? (pan ? C_TEXT : psg ? C_PSG : C_FM) : C_CELL);
-			text(g, c->x + (c->w - width) / 2, c->y + (ch3_notes ? 6 : (c->h - 7 * scale) / 2), c->label, lit ? (pan || psg ? C_BG : C_TEXT) : dim ? (on ? C_HINT : C_LINE) : C_LABEL, scale);
+			// CH3 NOTES, a global, is channel 3's in Ch3 Special: its chosen segment pink (D62).
+			const bool sp = ch3_notes && is_special(values, 2);
+			fill(g, c->x, c->y, c->w, c->h, lit ? (pan ? C_TEXT : psg ? C_PSG : sp ? C_SP : C_FM) : C_CELL);
+			text(g, c->x + (c->w - width) / 2, c->y + (ch3_notes ? 6 : (c->h - 7 * scale) / 2), c->label, lit ? (pan || psg || sp ? C_BG : on_fill(g)) : dim ? (on ? C_HINT : C_LINE) : C_LABEL, scale);
 		}
 		if (changed && c->choice == base) {
 			fill(g, c->x, c->y + c->h - 2, c->w, 2, C_AMBER);
@@ -1305,7 +1322,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		if (!value) {
 			frame(g, c->x, c->y, c->w, c->h, held ? C_TEXT : C_LINE);
 		}
-		text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7) / 2, c->label, changed ? C_AMBER : value ? C_TEXT : C_LABEL, 1);
+		text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7) / 2, c->label, changed ? C_AMBER : value ? on_fill(g) : C_LABEL, 1);
 		return;
 	}
 	if (c->look == LOOK_FEEDBACK) {
@@ -1323,17 +1340,19 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		return;
 	}
 	if (c->kind == CELL_SOURCE) {
-		// Where the sound comes from: a GM preset, a ROM envelope, or a place a file replaced; a file
-		// dropped on the channel says FILE over the place the next preset step goes back to.
+		// Where the sound comes from: place N of the ROM bank on FM and PSG alike (stage 24d), grey
+		// while it holds the factory sound, white once the owner replaced it; a file dropped on the
+		// channel says FILE over the place the next preset step goes back to.
 		const patch_bank *bank = patch_bank_view(g->source.patch);
-		const bool from_rom = channel_is_fm(channel) ? patch_place_is_gm(bank, value) : patch_envelope_is_rom(bank, value);
-		snprintf(buffer, sizeof(buffer), "%s %d", from_rom ? (channel_is_fm(channel) ? "GM" : "ROM") : "BANK", value + 1);
+		const bool factory = channel_is_fm(channel) ? patch_place_is_gm(bank, value) : patch_envelope_is_rom(bank, value);
+		snprintf(buffer, sizeof(buffer), "ROM %d", value + 1);
+		const uint32_t ink = held || !factory ? C_TEXT : C_LABEL;
 		const int right = c->x + c->w - 2;
 		if (plays_own_file(g, values, channel)) {
-			text_right(g, right, c->y + 2, "FILE", held ? C_TEXT : C_LABEL, 1, c->w);
-			text_right(g, right, c->y + 12, buffer, held ? C_TEXT : C_LABEL, 1, c->w);
+			text_right(g, right, c->y + 2, "FILE", C_TEXT, 1, c->w);
+			text_right(g, right, c->y + 12, buffer, ink, 1, c->w);
 		} else {
-			text_right(g, right, c->y + 4, buffer, held ? C_TEXT : C_LABEL, 2, c->w);
+			text_right(g, right, c->y + 4, buffer, ink, 2, c->w);
 		}
 		if (held) {
 			frame(g, c->x, c->y, c->w, c->h, C_TEXT);
@@ -1373,9 +1392,9 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	if (c->id == GLOBAL_DAC && value) {
 		shown = C_DAC;
 	}
-	// On in channel 3's light FM, as its row and number in the rail (stage 21).
+	// On in channel 3's pink, as its row and number in the rail (stage 21, D62).
 	if (c->id == GLOBAL_CH3_MODE && value) {
-		shown = C_FM_LIGHT;
+		shown = C_SP;
 	}
 	// No limiter: above 0 dB the plugin can clip, so amber; silence is dim.
 	if (c->id == GLOBAL_MASTER) {
@@ -1414,8 +1433,11 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 // A knob the host sent a value since the mouse last touched it (D33): a red dot 3x3 at the cell's top right.
 static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 {
+	int channel = -1, param = -1;
+	patch_id_split(c->id, &channel, &param);
+	g->sp = is_special(values, 2) && (channel == 2 || is_ch3_op_global(c->id));
 	draw_cell_body(g, c, values);
-	int channel, param;
+	g->sp = false;
 	// The pitch tag has no dot of its own: its editor's cells do (docs/design/ch3-ops.md).
 	if (c->kind == CELL_PITCH || !g->source.host_values || !patch_id_split(c->id, &channel, &param) || !__atomic_load_n(&g->source.host_values[GUI_HOST_SLOT(channel, param)], __ATOMIC_RELAXED)) {
 		return;
@@ -1514,7 +1536,7 @@ static void draw_diagram(mdmi_gui *g, int algorithm, int feedback)
 		char digit[2] = {(char)('1' + op), 0};
 		if (CARRIERS[algorithm] >> op & 1) {
 			fill(g, x, y, OP_BOX, OP_BOX, C_FM);
-			text(g, x + (OP_BOX - 10) / 2, y + (OP_BOX - 14) / 2, digit, C_TEXT, 2);
+			text(g, x + (OP_BOX - 10) / 2, y + (OP_BOX - 14) / 2, digit, on_fill(g), 2);
 		} else {
 			fill(g, x, y, OP_BOX, OP_BOX, C_BG);
 			frame(g, x, y, OP_BOX, OP_BOX, C_FM_LIGHT);
@@ -1869,6 +1891,30 @@ static void envelope_move(mdmi_gui *g, int x, int y)
 	patch_envelope scratch;
 	patch_shape_to_envelope(shape, &scratch);
 	g->env_changed |= memcmp(&was, shape, sizeof(was)) != 0;
+}
+
+// Stage 24d: a double click on a column sets its default, the level 0 dB (0) or the pitch 0, in the
+// undo step of the click before it, as arp_zero does.
+static void envelope_reset(mdmi_gui *g, int x, int y, int part)
+{
+	const bool again = g->env_handed && g->env_channel == *g->source.channel;
+	const patch_envelope before = g->env_before;
+	envelope_take(g);
+	if (again) {
+		g->env_before = before;
+		g->env_handed = true;
+	}
+	patch_shape *shape = &g->env_shape;
+	if (shape->count <= 0) {
+		return;
+	}
+	const int step = clamp(column_at(shape->count, x), 0, shape->count - 1);
+	(void)y;
+	const uint8_t was = shape->frames[step];
+	// PITCH_CODES[7] is the code of no shift.
+	shape->frames[step] = with_value(was, part, part == ENV_LEVEL ? 0 : 7);
+	g->env_changed = shape->frames[step] != was;
+	envelope_hand(g);
 }
 
 // A click on the loop's strip, the mouse let go within DRAG_SLOP: the loop's switch (4A).
@@ -3187,7 +3233,8 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 		}
 		break;
 	case DACC_LOOP_BODY:
-		// Its first click switched the loop already.
+	case DACC_LOOP_TAIL:
+		// Its first click switched the loop, or the release and stop, already: one undo step (stage 24d).
 		return true;
 	case DACC_PITCH:
 		edit.pitch = (int16_t)cents;
@@ -3667,6 +3714,13 @@ static bool arp_shown(const mdmi_gui *g)
 }
 
 // The row's top left corner: the graph's on FM, under the envelope on PSG.
+// Stage 24d: the row is as wide as the page on PSG (owner), on FM in the graph's place.
+#define ARP_PSG_W 460
+static int arp_w(const mdmi_gui *g)
+{
+	return channel_is_fm(*g->source.channel) ? GRAPH_W : ARP_PSG_W;
+}
+
 static void arp_corner(const mdmi_gui *g, int *bx, int *by)
 {
 	const bool fm = channel_is_fm(*g->source.channel);
@@ -3690,7 +3744,7 @@ static int arp_y(int ly, int shift)
 	return ly + 2 * (PATCH_ARP_SHIFT - shift);
 }
 
-static int arp_x(int lx, int count, int step)
+static int arp_x(const mdmi_gui *g, int lx, int count, int step)
 {
 	return lane_column_x(lx, ARP_LANE_W, count, step);
 }
@@ -3721,11 +3775,11 @@ static int arp_part_at(mdmi_gui *g, const patch_arp *row, int x, int y)
 			return ARP_NONE;
 		}
 		if (row->loop >= 0) {
-			const int ls = arp_x(lx, count, row->loop) - 1;
+			const int ls = arp_x(g, lx, count, row->loop) - 1;
 			return x >= ls - 9 && x <= ls ? ARP_TAB : x > ls && x < end ? ARP_BODY : ARP_NONE;
 		}
 		if (row->shadow_kept) {
-			return x >= arp_x(lx, count, row->shadow) - 10 && x < end ? ARP_SHADOW : ARP_NONE;
+			return x >= arp_x(g, lx, count, row->shadow) - 10 && x < end ? ARP_SHADOW : ARP_NONE;
 		}
 		return x >= lx && x < lx + ENV_LOOP_OFF_W ? ARP_SWITCH : ARP_NONE;
 	}
@@ -3769,7 +3823,7 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 
 	// The ground: the loop lighter, the column under the mouse lighter still, the octaves' lines.
 	for (int i = 0; i < count; i++) {
-		const int x = arp_x(lx, count, i), w = arp_x(lx, count, i + 1) - x;
+		const int x = arp_x(g, lx, count, i), w = arp_x(g, lx, count, i + 1) - x;
 		const bool in_loop = !off && row->loop >= 0 && i >= row->loop;
 		fill(g, x, ly, w, ARP_LANE_H, off ? (i == lit ? C_CELL : C_BG) : i == hover ? C_LINE : in_loop ? C_CELL : C_BG);
 		fill(g, x, ly + 24, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
@@ -3789,7 +3843,7 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 	// The zero line reads stronger than the octaves'.
 	fill(g, lx, ly + 48, ARP_LANE_W, 2, C_LINE);
 	for (int i = 0; i < count; i++) {
-		const int x = arp_x(lx, count, i), w = arp_x(lx, count, i + 1) - x;
+		const int x = arp_x(g, lx, count, i), w = arp_x(g, lx, count, i + 1) - x;
 		const int shift = row->steps[i], top = arp_y(ly, shift);
 		if (shift > 0) {
 			fill(g, x, top + 2, w - 1, ly + 48 - top - 2, off ? C_CELL : dark);
@@ -3806,7 +3860,7 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 
 	// The loop's strip: one tab at the start, the loop runs to the last step.
 	if (count && row->loop >= 0) {
-		const int ls = arp_x(lx, count, row->loop) - 1;
+		const int ls = arp_x(g, lx, count, row->loop) - 1;
 		const bool moved = g->arp_drag == ARP_BODY && g->arp_moved, held = moved || g->arp_drag == ARP_TAB;
 		const uint32_t loop_ink = off ? C_HINT : ink;
 		fill(g, ls + 1, sy, end - ls - 1, ARP_STRIP_H, over == ARP_BODY ? C_LINE : C_CELL);
@@ -3815,7 +3869,7 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 		fill(g, ls - 8, sy, 8, ARP_STRIP_H, held ? C_AMBER : over == ARP_TAB ? C_TEXT : loop_ink);
 	} else if (count && row->shadow_kept) {
 		// The loop switched off: an outline where it started, no tab, no line.
-		const int ss = arp_x(lx, count, row->shadow) - 1;
+		const int ss = arp_x(g, lx, count, row->shadow) - 1;
 		const bool moved = g->arp_drag == ARP_SHADOW && g->arp_moved;
 		const uint32_t color = moved ? C_AMBER : over == ARP_SHADOW ? C_TEXT : C_LINE;
 		frame(g, ss, sy, end - ss, ARP_STRIP_H, color);
@@ -3860,7 +3914,7 @@ static void draw_arp(mdmi_gui *g, const patch_values *values, int bx, int by)
 			y = shift >= 0 ? top + 5 : top - 15;
 		}
 		shift_text(shift, buffer, sizeof(buffer));
-		value_tag(g, (arp_x(lx, count, lit) + arp_x(lx, count, lit + 1)) / 2, y, buffer, lx, end);
+		value_tag(g, (arp_x(g, lx, count, lit) + arp_x(g, lx, count, lit + 1)) / 2, y, buffer, lx, end);
 	}
 }
 
@@ -3874,10 +3928,10 @@ static void draw_arp_switch(mdmi_gui *g, const patch_values *values)
 	if (over || !g->arp_view) {
 		frame(g, ARP_SWITCH_X, GRAPH_Y, ARP_SWITCH_W, CELL_H, over ? C_TEXT : C_LINE);
 	}
-	text(g, ARP_SWITCH_X + 4, GRAPH_Y + 6, "ARP", g->arp_view ? C_TEXT : C_LABEL, 1);
+	text(g, ARP_SWITCH_X + 4, GRAPH_Y + 6, "ARP", g->arp_view ? on_fill(g) : C_LABEL, 1);
 	char buffer[8];
 	snprintf(buffer, sizeof(buffer), count ? "%d" : "-", count);
-	text_right(g, ARP_SWITCH_X + 48, GRAPH_Y + 3, buffer, !count || row->off || !patch_arp_works(values, channel) ? C_LINE : C_TEXT, 2, 26);
+	text_right(g, ARP_SWITCH_X + 48, GRAPH_Y + 3, buffer, !count || row->off || !patch_arp_works(values, channel) ? C_LINE : g->arp_view ? on_fill(g) : C_TEXT, 2, 26);
 }
 
 // The channel's row becomes the window's copy, and what undo puts back.
@@ -4213,16 +4267,13 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		frame(g, GRID_X[1], GRID_ROW1_Y, 60, CELL_H, C_CELL);
 		text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LINE, 1);
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
-		// The chip's lines in the column right of the arp row (stage 20).
-		text(g, PSG_NOTE_X, ARP_PSG_Y + 4, channel == PATCH_NUM_CHANNELS - 1 ? "SN76489 NOISE" : "SN76489 SQUARE", C_HINT, 1);
+		// The row reaches the right edge (stage 24d): the chip's caveats moved, the noise's to the footer.
 		if (channel == PATCH_NUM_CHANNELS - 1) {
 			const bool kit = values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_KIT;
 			fill(g, 242, NOISE_ROW_Y, 32, CELL_H, C_CELL);
 			text(g, 246, NOISE_ROW_Y + 6, "TYPE", kit ? C_LINE : C_LABEL, 1);
 			fill(g, 402, NOISE_ROW_Y, 32, CELL_H, C_CELL);
 			text(g, 406, NOISE_ROW_Y + 6, "RATE", C_LABEL, 1);
-			text(g, PSG_NOTE_X, ARP_PSG_Y + 18, "TYPE AND RATE:", C_HINT, 1);
-			text(g, PSG_NOTE_X, ARP_PSG_Y + 28, "NOT CHECKED ON CONSOLE", C_HINT, 1);
 			if (noise_without_pitch(values, channel)) {
 				// The places of TUNE, BEND, PORTA and TIME, dim like PAN's: no pitch off Tone 3.
 				static const struct {
@@ -4236,9 +4287,7 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 				}
 			}
 		} else if (noise_takes(values, channel)) {
-			text(g, PSG_NOTE_X, ARP_PSG_Y + 18, "TAKEN BY CH10 NOISE,", C_AMBER, 1);
-			text(g, PSG_NOTE_X, ARP_PSG_Y + 28, "TONE 3 OR KIT:", C_AMBER, 1);
-			text(g, PSG_NOTE_X, ARP_PSG_Y + 38, "CH9 NOTES ARE SILENT", C_AMBER, 1);
+			text(g, 242, 88, "TAKEN BY CH10 NOISE, TONE 3 OR KIT: CH9 NOTES ARE SILENT", C_AMBER, 1);
 		}
 		draw_envelope(g, values);
 		draw_arp(g, values, PAGE_X, ARP_PSG_Y);
@@ -4271,7 +4320,7 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		if (op == active) {
 			frame(g, x, OP_HEADER_Y, OP_W, OP_HEADER_H, C_TEXT);
 		}
-		text(g, x + 4, OP_HEADER_Y + 4, buffer, carrier || op == active ? C_TEXT : C_FM_LIGHT, 1);
+		text(g, x + 4, OP_HEADER_Y + 4, buffer, carrier ? on_fill(g) : op == active ? C_TEXT : C_FM_LIGHT, 1);
 		// Channel 3's pitch tags only in Ch3 Special (stage 22b): off, its header is as the others'.
 		if (channel == 2 && values->globals[GLOBAL_CH3_MODE]) {
 			draw_pitch_tag(g, values, op);
@@ -4427,11 +4476,24 @@ static bool base_hint(mdmi_gui *g, char *hint, size_t size)
 		return false;
 	}
 	const patch_bank *bank = patch_bank_view(g->source.patch);
-	const char *from = plays_own_file(g, values, channel) ? "FILE" : patch_place_is_gm(bank, values->channels[channel][PARAM_PRESET]) ? "GM" : "BANK";
+	const char *from = plays_own_file(g, values, channel) ? "FILE" : "ROM";
 	char now[24], was[24];
 	patch_format(bank, c->id, value, now, sizeof(now));
 	patch_format(bank, c->id, base, was, sizeof(was));
 	snprintf(hint, size, "%s %s, %s %s", c->kind == CELL_CHOICE ? "ALG" : c->label, now, from, was);
+	return true;
+}
+
+// Stage 24d: channel 10's TYPE and RATE row under the mouse, what was the chip's line beside the arp row.
+static bool noise_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (g->file_over || *g->source.page != PAGE_EDITOR || *g->source.channel != PATCH_NUM_CHANNELS - 1) {
+		return false;
+	}
+	if (g->mouse_x < 242 || g->mouse_x >= PAGE_RIGHT || g->mouse_y < NOISE_ROW_Y || g->mouse_y >= NOISE_ROW_Y + CELL_H) {
+		return false;
+	}
+	snprintf(hint, size, "TYPE AND RATE: NOT CHECKED ON CONSOLE");
 	return true;
 }
 
@@ -4611,6 +4673,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (bank_hint(g, buffer, sizeof(buffer), &color)) {
 		footer_text(g, buffer, color);
+	} else if (noise_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (dac_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
@@ -5365,7 +5429,7 @@ static void draw_mini_diagram(mdmi_gui *g, int x0, int y0, int algorithm, int fe
 		const char digit[2] = {(char)('1' + op), 0};
 		if (CARRIERS[algorithm] >> op & 1) {
 			fill(g, x, y, MINI_OP, MINI_OP, carrier);
-			text(g, x + 3, y + 2, digit, C_TEXT, 1);
+			text(g, x + 3, y + 2, digit, on_fill(g), 1);
 		} else {
 			fill(g, x, y, MINI_OP, MINI_OP, C_BG);
 			frame(g, x, y, MINI_OP, MINI_OP, C_FM_LIGHT);
@@ -5464,6 +5528,8 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 	text_right(g, PAGE_RIGHT - 2, RAIL_PSG_Y - GROUP_H + 4, "SOURCE", C_HINT, 1, 60);
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		const int y = row_y(channel);
+		// Channel 3 in Ch3 Special in its pink (D62); draw_editor puts FM's colours back after the page.
+		g->sp = channel == 2 && is_special(values, 2);
 		fill(g, RAIL_W + 1, y + ROW_H - 1, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
 		if (is_dac(values, channel)) {
 			text(g, ALL_VOL_X, y + 14, "PLAYS SAMPLES (DAC)", C_DAC, 1);
@@ -5508,12 +5574,17 @@ static void draw_editor(mdmi_gui *g)
 	} else if (*g->source.page == PAGE_ALL) {
 		g->bank_was_open = false;
 		draw_all(g, values);
+		g->sp = false;
 	} else {
 		g->bank_was_open = false;
+		g->sp = *g->source.channel == 2 && is_special(values, 2);
 		draw_page(g, values);
+		g->sp = false;
 	}
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		g->sp = channel == 2 && is_special(values, 2);
 		draw_row(g, values, channel);
+		g->sp = false;
 	}
 	draw_lends(g);
 	fill(g, 0, GLOBALS_Y, GUI_WIDTH, FOOTER_Y - GLOBALS_Y, C_BG);
@@ -5534,7 +5605,9 @@ static void draw_editor(mdmi_gui *g)
 		}
 	}
 	if (g->pitch_open >= 0) {
+		g->sp = is_special(values, 2);
 		draw_pitch_editor(g, values);
+		g->sp = false;
 	}
 	draw_globals_dim(g, values);
 	// Hover last, so nothing covers it. ALL has no hover frames (owner after 0.11.0).
@@ -6521,19 +6594,27 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		}
 		return;
 	}
-	// On the arp row a column's second press sets 0; elsewhere on the row, and on the ARP switch, it
-	// is a press as the first was.
+	// On the arp row a column's second press sets 0; the row's ON/OFF and the ARP view's switch took
+	// the first click, one undo step (stage 24d); elsewhere on the row it is a press as the first was.
 	if (!globals && (over_arp_switch(g, x, y) || arp_part_at(g, shown_arp(g), x, y) != ARP_NONE)) {
-		if (!arp_zero(g, x, y)) {
+		const int part = arp_part_at(g, shown_arp(g), x, y);
+		if (!over_arp_switch(g, x, y) && part != ARP_ON_OFF && part != ARP_SWITCH && part != ARP_BODY && part != ARP_SHADOW && !arp_zero(g, x, y)) {
 			on_down(g, x, y);
 		}
 		refresh(g);
 		return;
 	}
-	// A quick second press on the envelope draws as the first did.
+	// Stage 24d: on the envelope a column's second press sets its default, in the click's undo step;
+	// on the loop's strip, its tabs and the release the first click did it all; LENGTH steps again.
 	patch_shape scratch;
-	if (!globals && is_envelope_page(g) && envelope_part_at(g, shown_shape(g, &scratch), x, y) != ENV_NONE) {
-		on_down(g, x, y);
+	const int env_part = !globals && is_envelope_page(g) ? envelope_part_at(g, shown_shape(g, &scratch), x, y) : ENV_NONE;
+	if (env_part != ENV_NONE) {
+		if (env_part == ENV_LEVEL || env_part == ENV_PITCH) {
+			envelope_reset(g, x, y, env_part);
+		} else if (env_part == ENV_LENGTH) {
+			on_down(g, x, y);
+		}
+		refresh(g);
 		return;
 	}
 	// On ALL a quick second click on a row's sound switches again, as the first did.
@@ -6541,7 +6622,17 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		on_down(g, x, y);
 		return;
 	}
-	int index = *g->source.page == PAGE_EDITOR || globals ? hovered(g) : -1;
+	// ALL's VOL takes a double click as on EDITOR, the preset's value (stage 24d, from stage 10's
+	// parking); on PAN the first click chose the side, and the second does nothing more.
+	int index = *g->source.page == PAGE_EDITOR || *g->source.page == PAGE_ALL || globals ? hovered(g) : -1;
+	if (index >= 0 && *g->source.page == PAGE_ALL && !globals) {
+		int channel = -1, param = -1;
+		patch_id_split(g->cells[index].id, &channel, &param);
+		if (channel >= 0 && param == PARAM_VOLUME) {
+			edit_once(g, g->cells[index].id, patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET))));
+		}
+		return;
+	}
 	// The choice of SSG and its button take a quick second click as a click.
 	if (g->ssg_open >= 0 || (index >= 0 && (g->cells[index].kind == CELL_SSG || g->cells[index].kind == CELL_PITCH))) {
 		on_down(g, x, y);

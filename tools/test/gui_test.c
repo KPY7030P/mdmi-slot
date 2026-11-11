@@ -112,6 +112,9 @@
 #define DAC_GAIN_X 396
 #define CH2_PAN 1202
 #define COLOR_FM 0x4422EE
+// Stage 24d (D62): channel 3 in Ch3 Special.
+#define COLOR_SP 0xEE44AA
+#define COLOR_SP_DARK 0x440022
 #define COLOR_MARK 0xEECC66
 #define FOOTER_TOP 504
 // Stage 11: the FM page of v8. The operators' columns, the graph, the SSG button and its choice,
@@ -125,6 +128,12 @@
 #define ARP_Y(ly, shift) ((ly) + 2 * (24 - (shift)))
 #define ARP_STRIP(ly) ((ly) - 7)
 #define ARP_LENGTH_X 495
+// Stage 24d: the PSG row is 460 wide, its lane 378 from ARP_LX, its right column at 648.
+#define PSG_COL(k) (ARP_LX + (k) * 378 / 4)
+#define PSG_BAND (2 * (PSG_COL(1) - 1 - PSG_COL(0)))
+#define PSG_TOPS (2 * (PSG_COL(4) - PSG_COL(0) - 4))
+#define ARP_PSG_RX 648
+#define ARP_PSG_LENGTH_X 673
 #define ARP_LENGTH(ly) ((ly) + 11)
 #define ARP_SWITCH_X 676
 #define ARP_SWITCH_Y 92
@@ -820,6 +829,11 @@ int main(int argc, char **argv)
 		capture(window);
 		int bracket = count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING);
 		CHECK(bracket > 40, "a chord's borrowed voices are joined by a bracket (%d pixels)", bracket);
+		// Stage 24d: each borrowed row's arrowhead is a solid 5 x 10 at the name's height, tip at x 51.
+		const int heads = count_color_in(47, 52, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING);
+		CHECK(heads >= 2 * 30, "the chord's arrowheads are solid (%d px for two)", heads);
+		// Stage 24d: the source says ROM N, grey for the factory sound.
+		CHECK(count_color_in(600, 708, 30, 48, COLOR_LABEL) > 20, "the source of a factory sound is grey");
 		save_bmp(argv[2], "voices");
 		send_midi(0x83, 60, 0);
 		send_midi(0x83, 64, 0);
@@ -910,10 +924,10 @@ int main(int argc, char **argv)
 		// Stage 24c: a held operator is green like the lead.
 		const int op1 = count_color_in(column, 226, top + 9, top + 17, COLOR_PLAYING);
 		// The bar is as long as on a row with one note: its last segment ends short of the column.
-		const int bar_past = count_color_in(column, 226, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_FM_LIGHT);
-		const int bar_light = count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_FM_LIGHT) + count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_PLAYING);
+		const int bar_past = count_color_in(column, 226, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_SP);
+		const int bar_light = count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_SP) + count_color_in(BAR_LEFT, column, RAIL_CH3_TOP + 25, RAIL_CH3_TOP + 29, COLOR_PLAYING);
 		// The row is light FM: the number in it, and 3 px between the name and the notes below.
-		const int light_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
+		const int light_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_SP);
 		const int name_low = count_color_in(BAR_LEFT, 226, RAIL_CH3_TOP + 19, RAIL_CH3_TOP + 22, COLOR_TEXT);
 		// Stage 24c: CH3 SPECIAL off and on again releases the ROM's keys; the column shows them let go.
 		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
@@ -928,7 +942,7 @@ int main(int argc, char **argv)
 		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
 		run_ms(300);
 		capture(window);
-		const int plain_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_FM_LIGHT);
+		const int plain_number = count_color_in(10, BAR_LEFT, RAIL_CH3_TOP, RAIL_CH3_TOP + 39, COLOR_SP);
 		CHECK(lead > 0 && rest == 0 && op1 > 0, "FM SP: the lead's note is on top of the column (%d px, %d below), operator 1's next (%d px)", lead, rest, op1);
 		CHECK(bar_past == 0 && bar_light > 4 * 100, "FM SP: the bar runs as on other rows (%d px lit, %d in the note column)", bar_light, bar_past);
 		CHECK(light_number > 20 && plain_number == 0 && name_low == 0, "FM SP: channel 3's number is light FM (%d px, %d after), the name clear of the notes (%d px)", light_number, plain_number, name_low);
@@ -1191,16 +1205,16 @@ int main(int argc, char **argv)
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 		run_ms(100);
 		capture(window);
-		const int ops_dim_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
-		const int ops_lit = count_color_in(376, 410, 480, 498, COLOR_FM), special_on = count_color_in(298, 370, 480, 498, COLOR_FM_LIGHT);
+		const int ops_dim_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_SP);
+		const int ops_lit = count_color_in(376, 410, 480, 498, COLOR_SP), special_on = count_color_in(298, 370, 480, 498, COLOR_SP);
 		click(window, CH3_NOTES_ONE_X, CH3_NOTES_Y);
 		run_ms(100);
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "ch3-one-note");
-		const int one_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_FM_LIGHT);
-		const int one_lit = count_color_in(412, 450, 480, 498, COLOR_FM);
+		const int one_row = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_FM_LY, 12), ARP_Y(ARP_FM_LY, 12) + 2, COLOR_SP);
+		const int one_lit = count_color_in(412, 450, 480, 498, COLOR_SP);
 		CHECK(special_on > 0 && ops_lit > 300 && get_value(CH3_NOTES) == 1 && one_lit > 300,
 			"CH3 SPECIAL On in light FM (%d px), OPS lit (%d px), a click on 1 NOTE sets One Note (%d px)", special_on, ops_lit, one_lit);
 		CHECK(row_lit == 98 && ops_dim_row == 0 && one_row == 98, "channel 3's arp row is dim with Ops (%d px light) and back with One Note (%d px)", ops_dim_row, one_row);
@@ -1225,14 +1239,14 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "ch3-csm");
-		const int csm_lit = count_color_in(452, 486, 480, 498, COLOR_FM), csm_others = count_color_in(376, 450, 480, 498, COLOR_FM);
+		const int csm_lit = count_color_in(452, 486, 480, 498, COLOR_SP), csm_others = count_color_in(376, 450, 480, 498, COLOR_SP);
 		const int csm_value = get_value(CH3_NOTES);
 		// Stage 22b (D57): operator 1's AR (row at y 281) has no FM bar in CSM, and has one again after.
-		const int ar_in_csm = count_color_in(OP1_TL_X - 10, OP1_TL_X + 30, 282, 290, COLOR_FM_DARK);
+		const int ar_in_csm = count_color_in(OP1_TL_X - 10, OP1_TL_X + 30, 282, 290, COLOR_SP_DARK);
 		double_click(window, CH3_NOTES_CSM_X, CH3_NOTES_Y);
 		run_ms(100);
 		capture(window);
-		const int ar_out = count_color_in(OP1_TL_X - 10, OP1_TL_X + 30, 282, 290, COLOR_FM_DARK);
+		const int ar_out = count_color_in(OP1_TL_X - 10, OP1_TL_X + 30, 282, 290, COLOR_SP_DARK);
 		CHECK(csm_value == 2 && csm_lit > 300 && csm_others == 0 && get_value(CH3_NOTES) == 0,
 			"a click on CSM sets CSM (%d), lit alone (%d px, the others %d), a double click Ops again", csm_value, csm_lit, csm_others);
 		CHECK(ar_in_csm == 0 && ar_out > 0, "channel 3's AR is dim in CSM (%d px of FM bar) and lit after (%d px)", ar_in_csm, ar_out);
@@ -1259,7 +1273,7 @@ int main(int argc, char **argv)
 		capture(window);
 		save_bmp(argv[2], "ch3-pitch");
 		const int semi = get_value(CH3_OP2_SEMI), fine = get_value(CH3_OP2_FINE), fixed = get_value(CH3_OP2_FIXED);
-		const int tag_fixed = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_FM_LIGHT);
+		const int tag_fixed = count_color_in(TAG2_LEFT, TAG2_LEFT + 48, TAG_Y - 6, TAG_Y + 6, COLOR_SP);
 		// Stage 22a: 6 px a semitone, 3 px a cent.
 		CHECK(frame_open == 114 && semi == 58 && fine == fine_before - 10 && fixed == 1 && pushed[0] == 3 && pushed_id[0] == CH3_OP2_FIXED,
 			"a click on operator 2's tag opens its editor (%d px); 60 px drag SEMI to %+d, 30 px FINE to %+d, FIX turns on, %d gestures", frame_open, semi - 48, fine - 63, pushed[0]);
@@ -1349,6 +1363,18 @@ int main(int argc, char **argv)
 			"MASTER on ALL drags to %d (560 is -4 dB) and a double click sets it back to %d (600 is 0 dB)", master_dragged, get_value(MASTER));
 		capture(window);
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM) > 6 * 50, "the FM rows draw their algorithms");
+		// Stage 24d (from stage 10's parking): a double click on ALL's VOL sets the preset's value.
+		{
+			const int vol_before = get_value(1201);
+			drag(window, ALL_VOL_X, ALL_CH2_Y, ALL_CH2_Y + 40);
+			run_ms(50);
+			const int vol_dragged = get_value(1201);
+			double_click(window, ALL_VOL_X, ALL_CH2_Y);
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ALL_VOL_X, ALL_CH2_Y));
+			run_ms(50);
+			// Channel 2's GM preset has VOL 127; earlier steps left the knob elsewhere.
+			CHECK(vol_dragged < vol_before && get_value(1201) == 127, "a double click on ALL's VOL of channel 2 sets its preset's %d (dragged to %d)", get_value(1201), vol_dragged);
+		}
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 30, RAIL_CH8_Y + 10, COLOR_PSG) > 0, "the PSG rows draw their envelopes");
 		// Stage 11: a click on an FM row's sound puts that row's envelopes in place of its diagram, a
 		// second click brings the diagram back; other rows keep theirs.
@@ -1704,6 +1730,83 @@ int main(int argc, char **argv)
 			const int lit_again = count_color_in(last + 1, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
 			CHECK(lit_again == lit_release, "PSG: stop, the loop off and on again: it comes back with its release (%d px)", lit_again);
 		}
+		// Stage 24d: a double click on a level column sets 0 dB (the top) in the first click's undo step.
+		{
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(100);
+			capture(window);
+			static uint32_t lane_before[(ENV_LEVEL_BOTTOM - ENV_LEVEL_Y) * (ENV_RIGHT - ENV_X)];
+			for (int y = ENV_LEVEL_Y; y < ENV_LEVEL_BOTTOM; y++) {
+				memcpy(lane_before + (y - ENV_LEVEL_Y) * (ENV_RIGHT - ENV_X), pixels + y * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t));
+			}
+			double_click(window, ENV_X + 3, ENV_LEVEL_Y + 70);
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ENV_X + 3, ENV_LEVEL_Y + 70));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "envelope-reset");
+			const int top_lit = count_color_in(ENV_X, ENV_X + 4, ENV_LOUD_Y, ENV_LOUD_Y + 2, COLOR_PSG);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			int differ = 0;
+			for (int y = ENV_LEVEL_Y; y < ENV_LEVEL_BOTTOM; y++) {
+				differ += memcmp(lane_before + (y - ENV_LEVEL_Y) * (ENV_RIGHT - ENV_X), pixels + y * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t)) != 0;
+			}
+			CHECK(top_lit > 0 && differ == 0, "a double click on a level column sets it to 0 dB (%d px at the top), one UNDO gives back the column before the first press (%d rows differ)", top_lit, differ);
+			// The same on a pitch column: a click high draws a shift, a double click there leaves none.
+			const int pitch_top = ENV_LEVEL_BOTTOM + 6, pitch_bottom = pitch_top + 60;
+			static uint32_t pitch_before[60 * (ENV_RIGHT - ENV_X)];
+			for (int y = pitch_top; y < pitch_bottom; y++) {
+				memcpy(pitch_before + (y - pitch_top) * (ENV_RIGHT - ENV_X), pixels + y * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t));
+			}
+			click(window, ENV_X + 3, pitch_top + 2);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			const int shifted = count_color_in(ENV_X, ENV_X + 4, pitch_top, pitch_bottom, COLOR_PSG);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(100);
+			double_click(window, ENV_X + 3, pitch_top + 2);
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ENV_X + 3, pitch_top + 2));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			const int reset = count_color_in(ENV_X, ENV_X + 4, pitch_top, pitch_bottom, COLOR_PSG);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			int pitch_differ = 0;
+			for (int y = pitch_top; y < pitch_bottom; y++) {
+				pitch_differ += memcmp(pitch_before + (y - pitch_top) * (ENV_RIGHT - ENV_X), pixels + y * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t)) != 0;
+			}
+			CHECK(shifted > reset && pitch_differ == 0, "a double click on a pitch column sets 0 (%d px of shift, %d after), one UNDO gives back the column (%d rows differ)", shifted, reset, pitch_differ);
+			// The loop's strip: a double click switches the loop once, one UNDO switches it back.
+			static uint32_t strip_before[16 * (ENV_RIGHT - ENV_X)];
+			for (int y = 0; y < 16; y++) {
+				memcpy(strip_before + y * (ENV_RIGHT - ENV_X), pixels + (ENV_LOOP_STRIP_Y - 6 + y) * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t));
+			}
+			double_click(window, ENV_X + 200, ENV_LOOP_STRIP_Y);
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ENV_X + 200, ENV_LOOP_STRIP_Y));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			int strip_changed = 0;
+			for (int y = 0; y < 16; y++) {
+				strip_changed += memcmp(strip_before + y * (ENV_RIGHT - ENV_X), pixels + (ENV_LOOP_STRIP_Y - 6 + y) * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t)) != 0;
+			}
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+			run_ms(200);
+			capture(window);
+			int strip_back = 0;
+			for (int y = 0; y < 16; y++) {
+				strip_back += memcmp(strip_before + y * (ENV_RIGHT - ENV_X), pixels + (ENV_LOOP_STRIP_Y - 6 + y) * WIDTH + ENV_X, (ENV_RIGHT - ENV_X) * sizeof(uint32_t)) != 0;
+			}
+			CHECK(strip_changed > 0 && strip_back == 0, "a double click on the loop's strip switches it once (%d rows changed), one UNDO back (%d differ)", strip_changed, strip_back);
+		}
 		// Dragged far down: one frame, one column across the whole lane, drawn loud. Two frames
 		// would draw 402 px.
 		drag(window, ENV_LENGTH_X, ENV_LENGTH_Y, ENV_LENGTH_Y + 300);
@@ -1718,36 +1821,36 @@ int main(int argc, char **argv)
 		// steps of 0 looped from the first and draws the one under the mouse; a drag draws on.
 		{
 			const int ly = ARP_PSG_LY, strip = ARP_STRIP(ARP_PSG_LY);
-			const int empty_hint = count_color_in(ARP_LX, ARP_LX + 200, ly + 30, ly + 38, COLOR_HINT);
+			const int empty_hint = count_color_in(ARP_LX, PSG_COL(4), ly + 30, ly + 38, COLOR_HINT);
 			// 0.22.0 divided by the zero steps here and took the host down: the mouse over the empty row.
-			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ARP_LX + 70, ARP_Y(ly, 3)));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(PSG_COL(1) + 20, ARP_Y(ly, 3)));
 			run_ms(100);
 			click(window, ARP_LX + 20, ARP_Y(ly, 12));
-			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(ARP_LX + 70, ARP_Y(ly, 3)));
-			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ARP_LX + 120, ARP_Y(ly, 4)));
-			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ARP_LX + 170, ARP_Y(ly, 7)));
-			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ARP_LX + 170, ARP_Y(ly, 7)));
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(PSG_COL(1) + 20, ARP_Y(ly, 3)));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(PSG_COL(2) + 20, ARP_Y(ly, 4)));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(PSG_COL(3) + 20, ARP_Y(ly, 7)));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(PSG_COL(3) + 20, ARP_Y(ly, 7)));
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
 			capture(window);
 			save_bmp(argv[2], "arp");
-			const int tops = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) + count_color_in(ARP_LX + 50, ARP_LX + 99, ARP_Y(ly, 3), ARP_Y(ly, 3) + 2, COLOR_PSG)
-				+ count_color_in(ARP_LX + 100, ARP_LX + 149, ARP_Y(ly, 4), ARP_Y(ly, 4) + 2, COLOR_PSG) + count_color_in(ARP_LX + 150, ARP_LX + 199, ARP_Y(ly, 7), ARP_Y(ly, 7) + 2, COLOR_PSG);
+			const int tops = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) + count_color_in(PSG_COL(1), PSG_COL(2) - 1, ARP_Y(ly, 3), ARP_Y(ly, 3) + 2, COLOR_PSG)
+				+ count_color_in(PSG_COL(2), PSG_COL(3) - 1, ARP_Y(ly, 4), ARP_Y(ly, 4) + 2, COLOR_PSG) + count_color_in(PSG_COL(3), PSG_COL(4) - 1, ARP_Y(ly, 7), ARP_Y(ly, 7) + 2, COLOR_PSG);
 			const int tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG);
-			CHECK(empty_hint > 50 && tops == 4 * 98 && tab == 8 * 12 && pushed[0] + pushed[1] + pushed[2] == 0,
+			CHECK(empty_hint > 50 && tops == PSG_TOPS && tab == 8 * 12 && pushed[0] + pushed[1] + pushed[2] == 0,
 				"a click on the empty row makes 4 looped steps, a drag draws +3 +4 +7 after the +12 (%d px of tops), the loop's tab at the start (%d px), the host told nothing", tops, tab);
 			// The length up to the limit: 32 steps, the new ones copy the last, amber MAX; UNDO gives the 4 back.
-			drag(window, ARP_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) - 200);
+			drag(window, ARP_PSG_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) - 200);
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
 			capture(window);
 			save_bmp(argv[2], "arp-long");
-			const int sevens = runs_of(ARP_Y(ly, 7), ARP_LX, ARP_LX + 200, COLOR_PSG);
-			const int max = count_color_in(ARP_LX + 206, ARP_LX + 258, ly + 1, ly + 32, COLOR_AMBER);
+			const int sevens = runs_of(ARP_Y(ly, 7), ARP_LX, PSG_COL(4), COLOR_PSG);
+			const int max = count_color_in(ARP_PSG_RX, ARP_PSG_RX + 52, ly + 1, ly + 32, COLOR_AMBER);
 			click(window, ACTION_UNDO_X, BUTTON_Y);
 			run_ms(200);
 			capture(window);
-			CHECK(sevens == 29 && max > 30 && runs_of(ARP_Y(ly, 7), ARP_LX, ARP_LX + 200, COLOR_PSG) == 1,
+			CHECK(sevens == 29 && max > 30 && runs_of(ARP_Y(ly, 7), ARP_LX, PSG_COL(4), COLOR_PSG) == 1,
 				"the length dragged up stops at 32 steps (%d new ones at +7), MAX in amber (%d px); UNDO gives back 4", sevens, max);
 			// The loop: a click on its body turns it off and leaves a shadow, a click on the shadow turns it
 			// on there; a drag on the body moves its start; UNDO puts it back.
@@ -1757,7 +1860,7 @@ int main(int argc, char **argv)
 			capture(window);
 			save_bmp(argv[2], "arp-loop-off");
 			const int off_tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG);
-			const int shadow_line = count_color_in(ARP_LX, ARP_LX + 200, strip - 6, strip - 5, COLOR_LINE);
+			const int shadow_line = count_color_in(ARP_LX, PSG_COL(4), strip - 6, strip - 5, COLOR_LINE);
 			click(window, ARP_LX + 130, strip);
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
@@ -1765,12 +1868,12 @@ int main(int argc, char **argv)
 			const int on_tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_PSG);
 			CHECK(off_tab == 0 && shadow_line > 190 && on_tab == 8 * 12, "a click on the loop turns it off, its shadow outlined (%d px), a click on that turns it on again", shadow_line);
 			memset(pushed, 0, sizeof(pushed));
-			drag_x(window, ARP_LX + 36, strip, ARP_LX + 136);
+			drag_x(window, ARP_LX + 36, strip, ARP_LX + 36 + PSG_COL(2) - PSG_COL(0));
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
 			capture(window);
 			save_bmp(argv[2], "arp-loop-moved");
-			const int moved_tab = count_color_in(ARP_LX + 91, ARP_LX + 99, strip - 6, strip + 6, COLOR_PSG);
+			const int moved_tab = count_color_in(PSG_COL(2) - 9, PSG_COL(2) - 1, strip - 6, strip + 6, COLOR_PSG);
 			click(window, ACTION_UNDO_X, BUTTON_Y);
 			run_ms(200);
 			capture(window);
@@ -1784,12 +1887,12 @@ int main(int argc, char **argv)
 			run_ms(200);
 			capture(window);
 			save_bmp(argv[2], "arp-zero");
-			const int zero = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 0), ARP_Y(ly, 0) + 2, COLOR_PSG);
-			const int five = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG);
+			const int zero = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 0), ARP_Y(ly, 0) + 2, COLOR_PSG);
+			const int five = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG);
 			click(window, ACTION_UNDO_X, BUTTON_Y);
 			run_ms(200);
 			capture(window);
-			CHECK(zero == 98 && five == 0 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == 98,
+			CHECK(zero == PSG_BAND && five == 0 && count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == PSG_BAND,
 				"a double click on a step sets it to 0, and one UNDO gives back the +12 from before the first press");
 			// STORE: on with a row of the channel's own (its label grey), after it the channel is its place
 			// as it is and STORE is off (its label dim).
@@ -1802,11 +1905,11 @@ int main(int argc, char **argv)
 			const int store_off = count_color_in(468, 532, 2, 26, COLOR_LABEL);
 			click(window, ACTION_UNDO_X, BUTTON_Y);
 			run_ms(200);
-			CHECK(store_on > 50 && store_off == 0 && count_color_in(468, 532, 2, 26, COLOR_LINE) > 50 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == 98,
+			CHECK(store_on > 50 && store_off == 0 && count_color_in(468, 532, 2, 26, COLOR_LINE) > 50 && count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == PSG_BAND,
 				"STORE is on for channel 8's own row (%d px), off once the row is in its place, the row stays", store_on);
 			// Stage 22b (D55): the row's switch at 470, 334, 52x12. ARP ON in PSG; a click turns the row
 			// off, dim but kept (tops C_HINT, no PSG on the row), ARP OFF in grey; UNDO turns it on.
-			const int switch_x = ARP_LX + 206, switch_y = ly - 13;
+			const int switch_x = ARP_PSG_RX, switch_y = ly - 13;
 			const int on_frame = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_PSG);
 			const int on_text = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_TEXT);
 			click(window, switch_x + 26, switch_y + 6);
@@ -1814,15 +1917,15 @@ int main(int argc, char **argv)
 			run_ms(200);
 			capture(window);
 			save_bmp(argv[2], "arp-off");
-			const int off_psg = count_color_in(242, 524, ly - 15, ly + 109, COLOR_PSG);
-			const int off_tops = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_HINT);
+			const int off_psg = count_color_in(242, 702, ly - 15, ly + 109, COLOR_PSG);
+			const int off_tops = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_HINT);
 			const int off_label = count_color_in(switch_x, switch_x + 52, switch_y, switch_y + 12, COLOR_LABEL);
 			const int dim_tab = count_color_in(ARP_LX - 9, ARP_LX - 1, strip - 6, strip + 6, COLOR_HINT);
 			click(window, ACTION_UNDO_X, BUTTON_Y);
 			run_ms(200);
 			capture(window);
-			const int undone = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG);
-			CHECK(on_frame > 100 && on_text > 20 && off_psg == 0 && off_tops == 98 && off_label > 20 && dim_tab == 8 * 12 && undone == 98,
+			const int undone = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG);
+			CHECK(on_frame > 100 && on_text > 20 && off_psg == 0 && off_tops == PSG_BAND && off_label > 20 && dim_tab == 8 * 12 && undone == PSG_BAND,
 				"ARP ON (%d px of frame); a click turns the row off: no PSG on it (%d px), its steps dim (%d px), ARP OFF; UNDO turns it on (%d px)", on_frame, off_psg, off_tops, undone);
 			// Off, the row still draws: a click on the +12 column draws +5 in dim, and ON gives it its colour.
 			click(window, switch_x + 26, switch_y + 6);
@@ -1831,10 +1934,22 @@ int main(int argc, char **argv)
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
 			capture(window);
-			const int drawn_on = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG);
-			CHECK(drawn_on == 98, "a row switched off is drawn on, and on again it plays what was drawn (%d px)", drawn_on);
+			const int drawn_on = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG);
+			CHECK(drawn_on == PSG_BAND, "a row switched off is drawn on, and on again it plays what was drawn (%d px)", drawn_on);
+			// Stage 24d: a double click on ARP ON turns the row off once, and one UNDO turns it on.
+			double_click(window, switch_x + 26, switch_y + 6);
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(switch_x + 26, switch_y + 6));
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(200);
+			capture(window);
+			const int twice_off = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_HINT);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			CHECK(twice_off == PSG_BAND && count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG) == PSG_BAND,
+				"a double click on ARP ON turns the row off once (%d px dim), one UNDO turns it on", twice_off);
 			// An empty row has no switch: the length dragged to 0, ARP in grey, no frame; UNDO gives the steps back.
-			drag(window, ARP_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) + 60);
+			drag(window, ARP_PSG_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) + 60);
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
 			capture(window);
@@ -1857,7 +1972,7 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "noise-taken");
-		CHECK(count_color_in(534, 708, 350, 377, COLOR_AMBER) > 100, "channel 9's page says in amber that the noise takes it");
+		CHECK(count_color_in(242, 600, 86, 98, COLOR_AMBER) > 100, "channel 9's page says in amber that the noise takes it");
 		click(window, RAIL_X, RAIL_CH8_Y + 80);
 		run_ms(100);
 		click(window, 550, 92);
@@ -1875,13 +1990,13 @@ int main(int argc, char **argv)
 		run_ms(200);
 		capture(window);
 		save_bmp(argv[2], "arp-kit");
-		const int kit_psg = count_color_in(242, 524, ARP_PSG_LY - 15, ARP_PSG_LY + 109, COLOR_PSG);
-		const int kit_dim = count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_PSG_LY, 12), ARP_Y(ARP_PSG_LY, 12) + 2, COLOR_LINE);
+		const int kit_psg = count_color_in(242, 702, ARP_PSG_LY - 15, ARP_PSG_LY + 109, COLOR_PSG);
+		const int kit_dim = count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ARP_PSG_LY, 12), ARP_Y(ARP_PSG_LY, 12) + 2, COLOR_LINE);
 		click(window, 607, 92);
 		run_ms(200);
 		capture(window);
-		CHECK(get_value(8) == 3 && kit_psg == 0 && kit_dim == 98 && count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_PSG_LY, 12), ARP_Y(ARP_PSG_LY, 12) + 2, COLOR_PSG) == 98
-			&& count_color_in(ARP_LX, ARP_LX + 49, ARP_Y(ARP_PSG_LY, 24), ARP_Y(ARP_PSG_LY, 24) + 2, COLOR_PSG) == 0,
+		CHECK(get_value(8) == 3 && kit_psg == 0 && kit_dim == PSG_BAND && count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ARP_PSG_LY, 12), ARP_Y(ARP_PSG_LY, 12) + 2, COLOR_PSG) == PSG_BAND
+			&& count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ARP_PSG_LY, 24), ARP_Y(ARP_PSG_LY, 24) + 2, COLOR_PSG) == 0,
 			"at KIT channel 10's row is dim (%d px of PSG) and takes no drawing; on Tone 3 it is back", kit_psg);
 		click(window, ACTION_UNDO_X, BUTTON_Y);
 		click(window, 550, 92);

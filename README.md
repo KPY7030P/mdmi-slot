@@ -30,6 +30,15 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   numbers, writes DAC on FM6 while the DAC plays, keeps only warnings in its journal, and shows BANK and a
   signature in its top line: the same signature in the plugin and on the console means the card holds this
   bank and these samples. Not checked on a real console yet.
+- Window after 0.24 (0.24.1-0.24.3): over a channel row with cut chord notes the footer says why no voice
+  was free (for example `1 CUT: PORTA 1 4, SP 3, DAC 6`). The level bar is the same length on every row;
+  the note is at the right, `x3`, `1 CUT` and `CH4` under it. Channel 6 with the DAC lists the samples
+  that sound, up to four, as the ROM plays them; channel 3 with CH3 SPECIAL lists its operators' notes.
+  Channel 3 in Ch3 Special is pink everywhere. The source says `ROM N` on FM and PSG: grey while the
+  place holds the factory sound, white once you replaced it. The PSG arp row reaches the right edge. A
+  double click sets a default where that makes sense (a knob to its preset's value, an envelope column
+  to 0 dB or no pitch shift, an arp step to 0, VOL on ALL), in one UNDO step with the click before it;
+  on switches (ARP ON, a loop's strip, release or stop) the second click does nothing more.
 - Bank libraries (0.22.4): the BANK page shows two lists side by side. The left one is the ROM bank,
   the one that plays (Preset, a clip's Pgm, Program Change) and is saved with the project; its bar can
   also switch it to a library. The right one is a library: any `.mdbank` file in the folder
