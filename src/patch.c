@@ -1445,11 +1445,19 @@ static void sync_voice_owners(patch_receiver *receiver, patch_emit_fn emit, void
 
 // Channels that play only on their own voice, which is never lent: the ROM glides on one voice,
 // Ch3 Special gives voice 3 a pitch per operator, and the DAC takes voice 6.
+int patch_alone_reason(const patch_values *values, int channel)
+{
+	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
+		return PATCH_ALONE_NO;
+	}
+	return channel == PATCH_NUM_FM_CHANNELS - 1 && values->globals[GLOBAL_DAC] ? PATCH_ALONE_DAC
+		: channel == 2 && values->globals[GLOBAL_CH3_MODE] ? PATCH_ALONE_CH3
+		: values->channels[channel][PARAM_PORTA_ON] ? PATCH_ALONE_PORTA : PATCH_ALONE_NO;
+}
+
 static bool plays_alone(const mdmi_patch *patch, int channel)
 {
-	return patch->model.channels[channel][PARAM_PORTA_ON]
-		|| (channel == 2 && patch->model.globals[GLOBAL_CH3_MODE])
-		|| (channel == PATCH_NUM_FM_CHANNELS - 1 && patch->model.globals[GLOBAL_DAC]);
+	return patch_alone_reason(&patch->model, channel) != PATCH_ALONE_NO;
 }
 
 static void emit_note(patch_emit_fn emit, void *context, int status, int channel, int key, int velocity)

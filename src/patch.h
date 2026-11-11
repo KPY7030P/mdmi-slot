@@ -453,6 +453,10 @@ int patch_release_ms(int rr);
 void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // The ROM booted again (a new image, stage 12): notes are gone, and the receiver gets everything.
 void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context);
+// Why an FM channel plays only on its own voice and lends none (D20, stage 24b): channel 6 with the
+// DAC, channel 3 in Ch3 Special Mode, Porta On.
+enum { PATCH_ALONE_NO, PATCH_ALONE_PORTA, PATCH_ALONE_CH3, PATCH_ALONE_DAC };
+int patch_alone_reason(const patch_values *values, int channel);
 // Any thread: how many held notes of a channel don't sound.
 int patch_muted_notes(const mdmi_patch *patch, int channel);
 // Any thread: the channel playing on an FM voice, or -1, and the key it plays there.

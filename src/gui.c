@@ -4430,6 +4430,43 @@ static bool master_hint(mdmi_gui *g)
 	return over >= 0 && g->cells[over].id == GLOBAL_MASTER;
 }
 
+// A rail row with cut notes under the mouse (stage 24b): why no voice was free. The voices that play
+// only alone are named by cause; the others play notes of their own.
+static bool cut_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (g->file_over || g->dragging || *g->source.page == PAGE_ROM) {
+		return false;
+	}
+	const int channel = rail_channel_at(g->mouse_x, g->mouse_y);
+	const int muted = channel >= 0 && channel_is_fm(channel) ? patch_muted_notes(g->source.patch, channel) : 0;
+	if (muted <= 0) {
+		return false;
+	}
+	const patch_values *values = patch_view(g->source.patch);
+	static const char *const CAUSE[] = {"", "PORTA", "SP", "DAC"};
+	char causes[3][24] = {"", "", ""};
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		const int reason = patch_alone_reason(values, voice);
+		if (reason != PATCH_ALONE_NO) {
+			char *list = causes[reason - 1];
+			snprintf(list + strlen(list), sizeof(causes[0]) - strlen(list), " %d", voice + 1);
+		}
+	}
+	// Short enough for the footer beside a long build label: "1 CUT: PORTA 1 2 4, SP 3, DAC 6".
+	int at = snprintf(hint, size, "%d CUT", muted);
+	bool first = true;
+	for (int reason = PATCH_ALONE_PORTA; reason <= PATCH_ALONE_DAC && at > 0 && (size_t)at < size; reason++) {
+		if (causes[reason - 1][0]) {
+			at += snprintf(hint + at, size - (size_t)at, "%s %s%s", first ? ":" : ",", CAUSE[reason], causes[reason - 1]);
+			first = false;
+		}
+	}
+	if (first && at > 0 && (size_t)at < size) {
+		snprintf(hint + at, size - (size_t)at, ": ALL 6 VOICES PLAY");
+	}
+	return true;
+}
+
 // Stage 21's cells under the mouse, dim ones too (docs/design/ch3-ops.md, part 3).
 static bool ch3_hint(mdmi_gui *g, char *hint, size_t size)
 {
@@ -4552,6 +4589,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->arp_drag != ARP_NONE && arp_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
+	} else if (cut_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_ERROR);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
 	} else if (master_hint(g)) {

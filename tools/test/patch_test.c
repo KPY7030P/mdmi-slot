@@ -569,6 +569,30 @@ static void test_dealer(void)
 	moment(&patch, 3, 48, 6, false);
 	CHECK(free_voices(&patch) == 6, "and the chord ends with every voice free");
 
+	// Stage 24b, the owner's tst6: Porta On on channels 1, 3 and 4, Ch3 Special and the DAC. Only voices 2
+	// and 5 lend, so channel 5's chord of 3 cuts one note with no bug: the window names the causes.
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	set(&patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_ON), 1);
+	set(&patch, PATCH_CHANNEL_ID(3, PARAM_PORTA_ON), 1);
+	set(&patch, GLOBAL_CH3_MODE, 1);
+	set(&patch, GLOBAL_DAC, 1);
+	moment(&patch, 4, 60, 3, true);
+	moment(&patch, 3, 34, 1, true);
+	CHECK(patch_muted_notes(&patch, 4) == 1 && patch.voices[1].channel == 4 && patch.voices[4].channel == 4 && patch.voices[3].channel == 3,
+		"tst6: a chord of 3 on channel 5 has voices 5 and 2, channel 4 plays its own, one note is cut");
+	CHECK(patch_alone_reason(&patch.model, 0) == PATCH_ALONE_PORTA && patch_alone_reason(&patch.model, 1) == PATCH_ALONE_NO
+		&& patch_alone_reason(&patch.model, 2) == PATCH_ALONE_CH3 && patch_alone_reason(&patch.model, 3) == PATCH_ALONE_PORTA
+		&& patch_alone_reason(&patch.model, 4) == PATCH_ALONE_NO && patch_alone_reason(&patch.model, 5) == PATCH_ALONE_DAC,
+		"and the reasons: Porta 1 4, Ch3 Special 3, DAC 6");
+	moment(&patch, 3, 34, 1, false);
+	moment(&patch, 4, 60, 3, false);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	set(&patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_ON), 0);
+	set(&patch, PATCH_CHANNEL_ID(3, PARAM_PORTA_ON), 0);
+	set(&patch, GLOBAL_CH3_MODE, 0);
+	set(&patch, GLOBAL_DAC, 0);
+	CHECK(free_voices(&patch) == 6 && patch_muted_notes(&patch, 4) == 0, "and tst6's case ends with every voice free");
+
 	// A note and its note off at one moment.
 	const uint8_t on[3] = {0x90, 70, 100}, off[3] = {0x80, 70, 0};
 	patch_midi(&patch, on, 3, record, NULL);

@@ -853,6 +853,14 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "cut");
 		CHECK(count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING) > 40, "seven notes keep the bracket");
 		CHECK(count_color_in(BAR_LEFT, BAR_RIGHT, RAIL_CH4_TOP + 20, RAIL_CH4_TOP + 30, COLOR_ERROR) > 0, "and channel 4's row says CUT");
+		// Stage 24b: over the row the footer says why, in red. Without a real mouse the hover leaves as
+		// soon as messages are pumped, so the frame is taken right after the move (WM_PRINTCLIENT draws
+		// it afresh). Only red pixels are counted, not the text.
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, RAIL_CH4_TOP + 10));
+		capture(window);
+		CHECK(count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_ERROR) > 50, "over the cut row the footer says why no voice was free");
+		save_bmp(argv[2], "cut-why");
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 		// Each borrowed row's bar shows the velocity of the note on its voice, 20 to 122: counted in
 		// segments, whose width depends on the text right of the bar, left of any text.
 		int lit_rows = 0, fewest = 1000, most = 0;
