@@ -303,6 +303,14 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Double click (stage 24d): it sets a default wherever that means something, in the undo step of the click before it: knobs (the preset's value), the globals, an envelope column (level 0 dB, pitch 0, `envelope_reset`), an arp column (0, `arp_zero`), the DAC panel's cells and marks, ALL's VOL and PAN (the preset's value). Where the first click switched something (ARP ON/OFF, the ARP view, the arp loop's body and shadow, the PSG loop's strip and tabs, the release or stop of a PSG or DAC loop) the second does nothing more. Steps of 8 values or fewer step again on EDITOR; Preset, the FM graph's points, ALL's sound and the BANK lists take none.
 - PSG arp row (stage 24d): the widget takes its width from `arp_w` (FM 282 in the graph's place, PSG 460 to the page's right edge); lane `w - 82`, right column at `w - 54`. On CH7-CH9 the noise's warning is one amber line over the envelope; on CH10 TYPE and RATE's caveat is in the footer over that row (`noise_hint`).
 - Chord arrows (stage 24d): the spine, branches and heads sit at the names' height (y + 11), a head is a solid 5 x 10 triangle, clear of the bars.
+- ALL's OUT and DAC row (stage 24e, D60, D61): `publish_waves` in `engine.c` copies each output's last 8192
+  samples (left and right averaged) into a triple buffer after every core run while the window shows ALL
+  (`mdmi_engine_watch_waves`, set by `render`); `draw_out` draws 2 periods of `lowest_key` (the channel's
+  voices from the dealer, or its PSG note) from the rising zero crossing nearest a grid of whole periods on the outputs' clock (the same crest each frame, a chord too), at one scale (`OUT_FULL`),
+  the noise 5 ms. The source cell moved to x 620. The DAC's row has VOL (bar in the DAC's dark colour) and PAN,
+  and `draw_all_dac` draws the last struck note's sample (`note_sample`) with its loop on grey and a line per
+  voice from `patch_dac_voice_place` (D59's copy). Our ROM's `midi_dac_play` writes the voice's volume as
+  velocity x (CC 7 + 1) >> 10 (`midi_dac_channel_volume`; `enable_dac` hands it channel 6's volume), not MDMI canon.
 - A `*` means the sound is tweaked against its base (D31): what the channel last got whole, its
   bank place or a file dropped on it. The base goes with the model and the project (block 8), undo
   gives it back, a drawing keeps it. An FM cell whose value differs from the base has an amber

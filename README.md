@@ -39,6 +39,12 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   double click sets a default where that makes sense (a knob to its preset's value, an envelope column
   to 0 dB or no pitch shift, an arp step to 0, VOL on ALL), in one UNDO step with the click before it;
   on switches (ARP ON, a loop's strip, release or stop) the second click does nothing more.
+- ALL page (0.24.4): each FM and PSG row has an OUT box with the channel's live output from the emulator,
+  two periods of its lowest sounding note (the noise channel the last 5 ms), empty without a note. The DAC's
+  row has PAN and VOL and shows the last sample struck with a line where each sounding voice is. DAC VOL is
+  not MDMI canon: our ROM scales the velocity of new DAC notes by channel 6's CC 7, so the DAC can be
+  turned down alone; it also works on a console with this ROM, not with another MDMI ROM. VOL 0 is about
+  -24 dB, not silence, and channel 6 has one CC 7 for FM6 and the DAC.
 - Bank libraries (0.22.4): the BANK page shows two lists side by side. The left one is the ROM bank,
   the one that plays (Preset, a clip's Pgm, Program Change) and is saved with the project; its bar can
   also switch it to a library. The right one is a library: any `.mdbank` file in the folder

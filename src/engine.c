@@ -19,6 +19,8 @@ extern const uint8_t mdmi_blob_rom[], mdmi_blob_rom_end[];
 #define WARM_UP_NOTE_FRAMES 3
 #define WARM_UP_SETTLE_FRAMES 60
 // The ring holds what the worker may write ahead of the reader, sized from the block at activation.
+// The window's picture of the outputs (stage 24e) takes at most a ring of it: 3 periods down to 35 Hz
+// at 48 kHz.
 #define RING_MIN_FRAMES 4096
 #define MIDI_QUEUE_SIZE (1 << 13)
 #define MIDI_CHUNK 7
@@ -233,6 +235,12 @@ struct mdmi_engine {
 	uint32_t frame_front;
 	uint32_t frame_shared;
 	uint32_t frames_watched;
+	// Stage 24e (D60): the outputs' last samples, the same triple buffer.
+	mdmi_waves *waves;
+	uint32_t wave_back;
+	uint32_t wave_front;
+	uint32_t wave_shared;
+	uint32_t waves_watched;
 };
 
 #define FRAME_NEW 4
@@ -473,6 +481,29 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 }
 
 static void input_poll_cb(void) {}
+
+// Worker (stage 24e, D60): after a core run, the outputs' last samples for the window. What lies
+// behind ring_write in the ring is never written again before the worker moves on, so it is whole.
+static void publish_waves(mdmi_engine *e)
+{
+	if (!__atomic_load_n(&e->waves_watched, __ATOMIC_ACQUIRE) || !e->ring[0]) {
+		return;
+	}
+	mdmi_waves *waves = &e->waves[e->wave_back];
+	const uint64_t end = e->ring_write;
+	uint32_t count = MDMI_WAVE_FRAMES < e->ring_mask + 1 ? MDMI_WAVE_FRAMES : e->ring_mask + 1;
+	count = end < count ? (uint32_t)end : count;
+	waves->end = end;
+	waves->count = count;
+	for (int o = 0; o < MDMI_OUTPUTS; o++) {
+		const float *l = e->ring[2 + o * 2], *r = e->ring[3 + o * 2];
+		for (uint32_t i = 0; i < count; i++) {
+			const uint64_t at = (end - count + i) & e->ring_mask;
+			waves->samples[o][i] = (l[at] + r[at]) * 0.5f;
+		}
+	}
+	e->wave_back = __atomic_exchange_n(&e->wave_shared, e->wave_back | FRAME_NEW, __ATOMIC_ACQ_REL) & FRAME_INDEX;
+}
 
 static int16_t input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id)
 {
@@ -1012,6 +1043,7 @@ static DWORD WINAPI worker_main(LPVOID param)
 		double run_start = now_ms();
 		e->retro_run();
 		double run_ms = now_ms() - run_start;
+		publish_waves(e);
 		if (run_ms > e->worst_run_ms) {
 			e->worst_run_ms = run_ms;
 			e->worst_run_pos = write;
@@ -1051,13 +1083,17 @@ mdmi_engine *mdmi_engine_create(void)
 	e->rs = malloc(sizeof(resampler));
 	e->midi_queue = calloc(MIDI_QUEUE_SIZE, sizeof(midi_chunk));
 	e->frames = calloc(3, sizeof(mdmi_frame));
-	if (!e->wake || !e->rs || !e->midi_queue || !e->frames) {
+	e->waves = calloc(3, sizeof(mdmi_waves));
+	if (!e->wake || !e->rs || !e->midi_queue || !e->frames || !e->waves) {
 		mdmi_engine_destroy(e);
 		return NULL;
 	}
 	e->frame_front = 0;
 	e->frame_back = 1;
 	e->frame_shared = 2;
+	e->wave_front = 0;
+	e->wave_back = 1;
+	e->wave_shared = 2;
 	return e;
 }
 
@@ -1113,6 +1149,7 @@ void mdmi_engine_destroy(mdmi_engine *e)
 		}
 		free(e->midi_queue);
 		free(e->frames);
+		free(e->waves);
 		free(e);
 	}
 }
@@ -1359,6 +1396,19 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching)
 {
 	__atomic_store_n(&e->frames_watched, watching, __ATOMIC_RELEASE);
+}
+
+void mdmi_engine_watch_waves(mdmi_engine *e, bool watching)
+{
+	__atomic_store_n(&e->waves_watched, watching, __ATOMIC_RELEASE);
+}
+
+const mdmi_waves *mdmi_engine_latest_waves(mdmi_engine *e)
+{
+	if (__atomic_load_n(&e->wave_shared, __ATOMIC_ACQUIRE) & FRAME_NEW) {
+		e->wave_front = __atomic_exchange_n(&e->wave_shared, e->wave_front, __ATOMIC_ACQ_REL) & FRAME_INDEX;
+	}
+	return &e->waves[e->wave_front];
 }
 
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e)

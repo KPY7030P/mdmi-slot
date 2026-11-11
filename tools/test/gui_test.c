@@ -1382,9 +1382,6 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "all-envelopes");
-		const int row2_boxes = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP + ROW_H, RAIL_CH1_TOP + 2 * ROW_H, COLOR_FM);
-		const int row2_curves = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP + ROW_H, RAIL_CH1_TOP + 2 * ROW_H, COLOR_FM_LIGHT);
-		const int row1_boxes = count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + ROW_H, COLOR_FM);
 		click(window, ALL_SOUND_X, ALL_CH2_Y);
 		run_ms(100);
 		capture(window);
@@ -1395,7 +1392,67 @@ int main(int argc, char **argv)
 		run_ms(300);
 		capture(window);
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, COLOR_PLAYING) > 20, "a held note on channel 8 draws the envelope's cursor");
+		// Stage 24e (D60): the OUT box shows channel 8's output, 2 periods of its square, standing still.
+		{
+			int top = -1;
+			for (int y = RAIL_CH8_Y - 30; y < RAIL_CH8_Y + 30 && top < 0; y++) {
+				top = count_color_in(537, 615, y, y + 1, COLOR_PSG) > 0 ? y : -1;
+			}
+			const int crests = top >= 0 ? runs_of(top, 537, 615, COLOR_PSG) : 0;
+			const int first = top >= 0 ? first_of(top, 537, 615, COLOR_PSG) : -1;
+			save_bmp(argv[2], "all-out");
+			run_ms(150);
+			capture(window);
+			const int later = top >= 0 ? first_of(top, 537, 615, COLOR_PSG) : -1;
+			CHECK(crests == 2 && first >= 0 && abs(later - first) < 1, "channel 8's OUT box draws 2 periods of its note (%d crests), its first crest at x %d, 150 ms later at %d", crests, first, later);
+		}
+		// A chord: the picture holds by its lowest note, C3 under C4. Each column's top in two frames 120 ms
+		// apart; the shift that matches them best is under 2 px (the sound decays, so tops move a little).
+		{
+			send_midi(0x90, 48, 110);
+			send_midi(0x90, 60, 110);
+			run_ms(300);
+			int tops[2][78];
+			for (int k = 0; k < 2; k++) {
+				capture(window);
+				for (int x = 0; x < 78; x++) {
+					tops[k][x] = -1;
+					for (int y = RAIL_CH1_TOP + 5; y < RAIL_CH1_TOP + 34 && tops[k][x] < 0; y++) {
+						tops[k][x] = (pixels[y * WIDTH + 537 + x] & 0xFFFFFF) == COLOR_FM_LIGHT ? y : -1;
+					}
+				}
+				run_ms(120);
+			}
+			send_midi(0x80, 48, 0);
+			send_midi(0x80, 60, 0);
+			run_ms(100);
+			int best_shift = 99, best = 1 << 30, drawn = 0;
+			for (int x = 0; x < 78; x++) {
+				drawn += tops[0][x] >= 0;
+			}
+			for (int d = -20; d <= 20; d++) {
+				int cost = 0, n = 0;
+				for (int x = 20; x < 58; x++) {
+					if (tops[0][x] >= 0 && tops[1][x + d] >= 0) {
+						cost += abs(tops[0][x] - tops[1][x + d]);
+						n++;
+					}
+				}
+				cost = n ? cost * 38 / n : 1 << 30;
+				if (cost < best) {
+					best = cost;
+					best_shift = d;
+				}
+			}
+			CHECK(drawn > 60 && abs(best_shift) < 2, "a chord's OUT box holds by its lowest note: %d columns drawn, 120 ms later it matches best shifted by %d px", drawn, best_shift);
+		}
 		save_bmp(argv[2], "all");
+		send_midi(0x87, 72, 0);
+		run_ms(200);
+		capture(window);
+		CHECK(count_color_in(537, 615, RAIL_CH8_Y - 30, RAIL_CH8_Y + 30, COLOR_PSG) == 0, "without a held note the OUT box is empty");
+		send_midi(0x97, 72, 100);
+		run_ms(100);
 		click(window, ALL_SOUND_X, RAIL_CH8_Y);
 		run_ms(100);
 		capture(window);
@@ -2024,6 +2081,23 @@ int main(int argc, char **argv)
 		send_midi(0x85, 38, 0);
 		run_ms(100);
 		CHECK(dac_two > 20 && dac_rest == 0, "two held DAC notes fill two lines of the column (%d px, %d below)", dac_two, dac_rest);
+		// Stage 24e: on ALL the DAC's row has VOL and PAN, the last sample and a green line where its voice is.
+		click(window, BUTTON_ALL_X, BUTTON_Y);
+		send_midi(0xB5, 10, 0);
+		send_midi(0x95, 38, 100);
+		run_ms(60);
+		capture(window);
+		save_bmp(argv[2], "all-dac");
+		const int dac_sample_px = count_color_in(242, 346, 244 + 3, 244 + 36, COLOR_DAC), dac_line = count_color_in(242, 346, 244 + 2, 244 + 37, COLOR_PLAYING);
+		const int dac_left = count_color_in(474, 491, 244 + 4, 244 + 24, COLOR_TEXT), dac_vol = count_color_in(354, 466, 244 + 4, 244 + 24, COLOR_DAC_DARK);
+		send_midi(0x85, 38, 0);
+		send_midi(0xB5, 10, 64);
+		run_ms(100);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(100);
+		capture(window);
+		CHECK(dac_sample_px > 50 && dac_line > 10 && dac_left > 100 && dac_vol > 100,
+			"ALL's DAC row: the sample (%d px), its voice's line (%d px), PAN L from CC 10 (%d px), VOL in the DAC's colour (%d px)", dac_sample_px, dac_line, dac_left, dac_vol);
 		// Stage 20: the window still shows FM rows instead of graphs, but channel 6 on the DAC has no row.
 		CHECK(count_color_in(242, 708, HEADER_H, 460, COLOR_FM_LIGHT) + count_color_in(242, 708, HEADER_H, 460, COLOR_FM_DARK) == 0, "the DAC's page draws no arp row");
 		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);

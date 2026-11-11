@@ -193,7 +193,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..b8986d9 100644
+index 5145b6a..a7046df 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -71,7 +71,14 @@ static const u16 portaTimeToInterval[128]
@@ -490,7 +490,7 @@ index 5145b6a..b8986d9 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1171,85 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1171,89 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -570,6 +570,10 @@ index 5145b6a..b8986d9 100644
 +    if (switches) {
 +        midi_dac_reset();
 +    }
++    // Not MDMI canon (D61): the DAC's new voices follow channel 6's volume, also one set before it.
++    if (enable) {
++        midi_dac_channel_volume(devChan->num, devChan->volume);
++    }
 +    // update_pan drops a pan equal to the one cached, so the side now in charge of channel 6
 +    // gets it here: the DAC a pan set before it, FM the pan after the driver swap (stage 18).
 +    devChan->ops->pan(devChan->num, devChan->pan);
@@ -577,7 +581,7 @@ index 5145b6a..b8986d9 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1247,11 +1495,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1499,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -609,7 +613,7 @@ index 5145b6a..b8986d9 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1579,12 @@ void midi_reset(void)
+@@ -1311,11 +1583,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -624,15 +628,14 @@ index 5145b6a..b8986d9 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1608,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1612,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
 -    set_downstream_pitch(chan);
 +    return true;
- }
- 
--static void process_portamento(void)
++}
++
 +// MDMI plugin fork, stage 20: one step of the row per frame while the key is held. True when the
 +// shift changed.
 +static bool process_channel_arp(DeviceChannel* chan)
@@ -651,8 +654,9 @@ index 5145b6a..b8986d9 100644
 +    s8 before = arp->steps[chan->arpStep];
 +    chan->arpStep = next;
 +    return arp->steps[next] != before;
-+}
-+
+ }
+ 
+-static void process_portamento(void)
 +// Portamento and the arpeggio row write a voice's pitch at most once per frame between them.
 +static void process_pitch(void)
  {
@@ -785,10 +789,10 @@ index 731aa8c..bb5b010 100644
  void midi_note_off(u8 chan, u8 pitch);
  void midi_pitch_bend(u8 chan, u16 bend);
 diff --git a/src/midi_dac.c b/src/midi_dac.c
-index 33ac142..54fabc9 100644
+index 33ac142..8491218 100644
 --- a/src/midi_dac.c
 +++ b/src/midi_dac.c
-@@ -1,38 +1,265 @@
+@@ -1,38 +1,277 @@
  #include "midi_dac.h"
  #include "pcm_sample.h"
 +#include "synth.h"
@@ -818,6 +822,10 @@ index 33ac142..54fabc9 100644
 +
 +static Voice voices[PCM_DRV_VOICES];
 +static u16 starts;
++// Not MDMI canon (MDMI plugin, stage 24e, D61): channel 6's CC 7 scales the velocity of the DAC's new
++// voices, so the DAC can be turned down without the FM and PSG channels. The chip has no DAC volume;
++// a voice already sounding keeps its own, so a CC costs no Z80 bus.
++static u8 channelVolume = 127;
 +
 +static u16 read16(u16 address)
 +{
@@ -881,7 +889,8 @@ index 33ac142..54fabc9 100644
 +    voices[v].key = NO_KEY;
 +}
 +
-+// The key's sample on a voice: velocity >> 3 its volume, 15 as it is (0 is about -24 dB).
++// The key's sample on a voice: velocity x (CC 7 + 1) >> 10 its volume, velocity >> 3 at CC 7 127, 15 as it
++// is (0 is about -24 dB, not silence).
 +void midi_dac_play(u8 key, u8 pitch, u8 velocity)
  {
      const PcmSample* sample = percussionPcmSample[pitch];
@@ -904,11 +913,14 @@ index 33ac142..54fabc9 100644
 +        voice->loopStart = voice->start + marked->loopStart;
 +        voice->loopEnd = voice->start + marked->loopEnd;
 +    }
-+    pcm_driver_write(PCM_DRV_VOLUME(v), velocity >> 3);
++    pcm_driver_write(PCM_DRV_VOLUME(v), (u8)(((u16)velocity * (channelVolume + 1)) >> 10));
 +    write16(PCM_DRV_WAVADR(v), voice->start);
 +    write16(PCM_DRV_WAVLEN(v), voice->loopEnd - voice->start);
 +    // Playing comes back only once the driver has copied the params.
 +    set_bit(PCM_DRV_STATUS, v, false);
++    // The pass playing must not end before the command is taken: its stop would clear the loop bit
++    // (an idle voice ends its null pass every pass). The copy comes within a pass, one update at most.
++    write16(PCM_DRV_IWAVLEN(v), 2);
 +    set_bit(PCM_DRV_LOOP, v, sample->flags & (PCM_LOOP | PCM_MARKS));
 +    set_bit(PCM_DRV_COMMAND, v, true);
 +    pcm_driver_give();
@@ -1021,19 +1033,23 @@ index 33ac142..54fabc9 100644
  {
 -    SND_PCM_stopPlay();
 +    midi_dac_release(pitch);
-+}
-+
-+// The DAC switched: the driver starts afresh, nothing of a sample is awaited any more.
+ }
+ 
++// The DAC switched: the driver starts afresh, nothing of a sample is awaited any more. enable_dac then
++// hands it channel 6's volume (D61).
 +void midi_dac_reset(void)
 +{
++    channelVolume = 127;
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        voices[v].state = VOICE_FREE;
 +        voices[v].key = NO_KEY;
 +    }
- }
- 
++}
++
++// Not MDMI canon (D61): see channelVolume.
  void midi_dac_channel_volume(u8 chan, u8 volume)
  {
++    channelVolume = volume;
  }
  
 -void midi_dac_pan(u8 chan, u8 pan)
@@ -3450,7 +3466,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..f97e412 100644
+index d2449c4..d2f63a4 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -3488,7 +3504,7 @@ index d2449c4..f97e412 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +239,49 @@ int main(void)
+@@ -226,10 +239,50 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -3508,6 +3524,7 @@ index d2449c4..f97e412 100644
 +        midi_dac_test(test_midi_dac_plays_on_a_voice),
          midi_dac_test(test_midi_dac_does_not_play_null_sample),
 +        midi_dac_test(test_midi_dac_velocity_is_voice_volume),
++        midi_dac_test(test_midi_dac_channel_volume_scales_velocity),
 +        midi_dac_test(test_midi_dac_fifth_note_takes_oldest_voice),
 +        midi_dac_test(test_midi_dac_same_key_restarts_its_voice),
 +        midi_dac_test(test_midi_dac_free_voice_after_sample_ends),
@@ -3540,7 +3557,7 @@ index d2449c4..f97e412 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +301,8 @@ int main(void)
+@@ -249,6 +302,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -3549,7 +3566,7 @@ index d2449c4..f97e412 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,6 +366,20 @@ int main(void)
+@@ -312,6 +367,20 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -3570,7 +3587,7 @@ index d2449c4..f97e412 100644
          synth_test(test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded),
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
-@@ -382,6 +450,7 @@ int main(void)
+@@ -382,6 +451,7 @@ int main(void)
          log_test(test_log_info_writes_to_log_buffer),
          log_test(test_log_warn_writes_to_log_buffer),
          log_test(test_log_stores_two_logs),
@@ -3578,7 +3595,7 @@ index d2449c4..f97e412 100644
          log_test(test_log_stores_multiple_logs_and_overwrites_older),
          log_test(
              test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
-@@ -440,6 +509,64 @@ int main(void)
+@@ -440,6 +510,64 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
@@ -4893,7 +4910,7 @@ index 0000000..77ef1c1
 +void test_midi_ch3_csm_portamento_moves_timer_a(UNUSED void** state);
 +void test_midi_ch3_one_note_portamento(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..1ae6a88 100644
+index 9650279..06e2960 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,8 +1,12 @@
@@ -4932,7 +4949,7 @@ index 9650279..1ae6a88 100644
  
      __real_midi_cc(0, 78, 0x7F);
  }
-@@ -28,37 +39,342 @@ void test_midi_enables_dac(UNUSED void** state)
+@@ -28,37 +39,355 @@ void test_midi_enables_dac(UNUSED void** state)
  void test_midi_disables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, false);
@@ -5107,11 +5124,17 @@ index 9650279..1ae6a88 100644
  {
      __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
-+}
-+
+ }
+ 
+-void test_midi_dac_stops_note(UNUSED void** state)
 +// Velocity >> 3 is the voice's volume, 0-15.
 +void test_midi_dac_velocity_is_voice_volume(UNUSED void** state)
-+{
+ {
+-    expect_any(__wrap_SND_PCM_startPlay, sample);
+-    expect_any(__wrap_SND_PCM_startPlay, len);
+-    expect_any(__wrap_SND_PCM_startPlay, rate);
+-    expect_value(__wrap_SND_PCM_startPlay, pan, SOUND_PAN_CENTER);
+-    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
 +    use_samples();
 +    __real_midi_note_on(dacFmChannel, keys[0], 127);
 +    __real_midi_note_on(dacFmChannel, keys[1], 64);
@@ -5122,6 +5145,19 @@ index 9650279..1ae6a88 100644
 +    put_back();
 +}
 +
++// Not MDMI canon (stage 24e, D61): channel 6's CC 7 scales the velocity of new voices; 127 is as before.
++void test_midi_dac_channel_volume_scales_velocity(UNUSED void** state)
++{
++    use_samples();
++    __real_midi_cc(dacFmChannel, CC_VOLUME, 64);
++    __real_midi_note_on(dacFmChannel, keys[0], 127);
++    __real_midi_cc(dacFmChannel, CC_VOLUME, 127);
++    __real_midi_note_on(dacFmChannel, keys[1], 127);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_VOLUME(voice_of(0))], 8);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_VOLUME(voice_of(1))], 15);
++    put_back();
++}
+ 
 +// Four keys on four voices; a fifth takes the voice of the oldest start.
 +void test_midi_dac_fifth_note_takes_oldest_voice(UNUSED void** state)
 +{
@@ -5214,17 +5250,11 @@ index 9650279..1ae6a88 100644
 +    assert_int_equal(mock_pcm_takes, takes);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 1, 1);
 +    put_back();
- }
- 
--void test_midi_dac_stops_note(UNUSED void** state)
++}
++
 +// The stop button and the panic silence all four, one-shots too, and starts not yet taken.
 +void test_midi_dac_all_notes_off_stops_all_voices(UNUSED void** state)
- {
--    expect_any(__wrap_SND_PCM_startPlay, sample);
--    expect_any(__wrap_SND_PCM_startPlay, len);
--    expect_any(__wrap_SND_PCM_startPlay, rate);
--    expect_value(__wrap_SND_PCM_startPlay, pan, SOUND_PAN_CENTER);
--    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
++{
 +    use_samples();
 +    for (u8 cc = 120; cc <= 123; cc += 3) {
 +        for (u8 i = 2; i < 6; i++) {
@@ -5239,7 +5269,7 @@ index 9650279..1ae6a88 100644
 +    }
 +    put_back();
 +}
- 
++
 +// A LOOP sample goes to its voice with the loop bit and stops at Note Off (stage 18).
 +void test_midi_dac_loop_sample_loops_until_note_off(UNUSED void** state)
 +{
@@ -5290,10 +5320,10 @@ index 9650279..1ae6a88 100644
 +    put_back();
  }
 diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
-index 5e63f7b..de0bf95 100644
+index 5e63f7b..7d9edef 100644
 --- a/tests/unit/test_midi_dac.h
 +++ b/tests/unit/test_midi_dac.h
-@@ -1,8 +1,22 @@
+@@ -1,8 +1,23 @@
  #include "cmocka_inc.h"
 -
  int test_midi_dac_setup(UNUSED void** state);
@@ -5307,6 +5337,7 @@ index 5e63f7b..de0bf95 100644
  void test_midi_dac_does_not_play_null_sample(UNUSED void** state);
 -void test_midi_dac_stops_note(UNUSED void** state);
 +void test_midi_dac_velocity_is_voice_volume(UNUSED void** state);
++void test_midi_dac_channel_volume_scales_velocity(UNUSED void** state);
 +void test_midi_dac_fifth_note_takes_oldest_voice(UNUSED void** state);
 +void test_midi_dac_same_key_restarts_its_voice(UNUSED void** state);
 +void test_midi_dac_free_voice_after_sample_ends(UNUSED void** state);

@@ -59,6 +59,17 @@ typedef struct {
 	uint32_t pixels[MDMI_FRAME_MAX_WIDTH * MDMI_FRAME_MAX_HEIGHT];
 } mdmi_frame;
 
+// Stage 24e (D60): the last MDMI_WAVE_FRAMES samples of each output (stage 17), left and right
+// averaged, at the output's rate; `end` counts the outputs' samples up to the last one. Copied by the
+// worker after each core run while the window watches, the same way as the ROM's screen. Valid until
+// the next call to mdmi_engine_latest_waves.
+#define MDMI_WAVE_FRAMES 8192
+typedef struct {
+	uint64_t end;
+	uint32_t count;
+	float samples[MDMI_OUTPUTS][MDMI_WAVE_FRAMES];
+} mdmi_waves;
+
 bool mdmi_engine_global_init(void);
 void mdmi_engine_global_deinit(void);
 
@@ -112,6 +123,9 @@ uint8_t mdmi_engine_test_z80(const mdmi_engine *e, uint16_t address);
 // Main thread. Frames are only copied while someone is watching.
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);
+// Main thread (stage 24e): the outputs' last samples are only copied while someone watches them.
+void mdmi_engine_watch_waves(mdmi_engine *e, bool watching);
+const mdmi_waves *mdmi_engine_latest_waves(mdmi_engine *e);
 
 // Audio thread. Queue a block's MIDI first, then render that block.
 void mdmi_engine_midi(mdmi_engine *e, uint32_t sample_offset, const uint8_t *bytes, size_t length);

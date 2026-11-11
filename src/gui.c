@@ -215,7 +215,11 @@ enum { OP_TL, OP_MUL, OP_DT, OP_RS, OP_AR, OP_DR, OP_SR, OP_SL, OP_RR, OP_AM, OP
 #define ALL_VOL_X 354
 #define ALL_PAN_X 474
 #define ALL_PAN_W 17
-#define ALL_SOURCE_X 536
+// Stage 24e: the channel's live output (D60) where the source began; the source moved right.
+#define ALL_OUT_X 536
+#define ALL_OUT_W 80
+#define ALL_OUT_H 31
+#define ALL_SOURCE_X 620
 enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTION_STORE, ACTION_EXPORT, ACTIONS };
 static const int ACTION_X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X, ACTION_STORE_X, ACTION_EXPORT_X};
 static const int ACTION_WIDTH[ACTIONS] = {ACTION_W, ACTION_W, ACTION_W, ACTION_W, ACTION_STORE_W, ACTION_EXPORT_W};
@@ -1102,9 +1106,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		// Per row: VOL, PAN L C R on FM, the source dragged like the page's.
 		for (int c = 0; c < PATCH_NUM_CHANNELS; c++) {
 			const int y = row_y(c);
-			if (is_dac(values, c)) {
-				continue;
-			}
+			// The DAC's row has VOL (D61, not MDMI canon) and PAN too, no source (stage 24e).
 			add_cell(g, ALL_VOL_X, y + 4, GRID_W, CELL_H, PATCH_CHANNEL_ID(c, PARAM_VOLUME), "", CELL_ROW);
 			if (patch_channel_has(c, PARAM_PAN)) {
 				for (int pan = 0; pan < 3; pan++) {
@@ -1112,7 +1114,9 @@ static void layout(mdmi_gui *g, const patch_values *values)
 					g->cells[g->cell_count - 1].choice = pan;
 				}
 			}
-			add_cell(g, ALL_SOURCE_X, y + 4, PAGE_RIGHT - ALL_SOURCE_X, 22, PATCH_CHANNEL_ID(c, PARAM_PRESET), "PRESET", CELL_SOURCE);
+			if (!is_dac(values, c)) {
+				add_cell(g, ALL_SOURCE_X, y + 4, PAGE_RIGHT - ALL_SOURCE_X, 22, PATCH_CHANNEL_ID(c, PARAM_PRESET), "PRESET", CELL_SOURCE);
+			}
 		}
 	} else if (is_dac(values, channel) && (*g->source.page == PAGE_EDITOR || bank)) {
 		// On the DAC page only TUNE: it alone changes which sample a note plays.
@@ -1366,7 +1370,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 	patch_format(patch_bank_view(g->source.patch), c->id, value, buffer, sizeof(buffer));
 	// Channel 3's AR in CSM: dim, still editable (stage 22b, D57).
 	const bool forced = csm_ar(values, c->id);
-	const uint32_t dark = held ? C_LINE : forced ? C_LINE : fm ? C_FM_DARK : C_PSG_DARK;
+	const uint32_t dark = held ? C_LINE : forced ? C_LINE : channel >= 0 && is_dac(values, channel) ? C_DAC_DARK : fm ? C_FM_DARK : C_PSG_DARK;
 	const int max = patch_param(c->id)->max > 0 ? patch_param(c->id)->max : 1;
 	if (c->id == GLOBAL_MASTER) {
 		// Grey, as it belongs to no chip: a bar from the left, a tick at 0 dB as TUNE marks its middle.
@@ -4632,6 +4636,8 @@ static void footer_text(mdmi_gui *g, const char *message, uint32_t color)
 
 // Stage 22c: the lists of BANK under the mouse, defined with them.
 static bool bank_hint(mdmi_gui *g, char *hint, size_t size, uint32_t *color);
+// Stage 24e: ALL's OUT box and the DAC's VOL, defined with ALL.
+static bool out_hint(mdmi_gui *g, char *hint, size_t size);
 
 // One line, by what matters most: a dead engine, a file being dragged, the button under the mouse,
 // what just happened, then the engine's numbers.
@@ -4673,6 +4679,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (bank_hint(g, buffer, sizeof(buffer), &color)) {
 		footer_text(g, buffer, color);
+	} else if (out_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (noise_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (dac_hint(g, buffer, sizeof(buffer))) {
@@ -5494,6 +5502,202 @@ static int envelope_frame(mdmi_gui *g, const patch_shape *shape, int psg, unsign
 	return patch_shape_position(shape, held, total - held);
 }
 
+// Stage 24e (D60): the lowest key the channel sounds now, its own and its chord's voices, or -1.
+static int lowest_key(mdmi_gui *g, const patch_values *values, int channel)
+{
+	const uint32_t note = __atomic_load_n(&g->source.notes[channel], __ATOMIC_ACQUIRE);
+	int lowest = GUI_NOTE_SEEN(note) && GUI_NOTE_HELD(note) ? (int)GUI_NOTE_KEY(note) : -1;
+	if (channel_is_fm(channel) && !(channel == 2 && patch_ch3_ops(values))) {
+		lowest = -1;
+		for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+			if (patch_voice_player(g->source.patch, voice) == channel) {
+				const int key = patch_voice_key(g->source.patch, voice);
+				lowest = lowest < 0 || key < lowest ? key : lowest;
+			}
+		}
+	}
+	return lowest;
+}
+
+// Where the picture of a channel's output starts and how long it is, in samples back from the end of
+// `count`: 2 periods of the lowest key, from the last rising zero crossing that leaves room for them,
+// so a held note stands still (art-director's frame, build/stage24e). The noise has a fixed 5 ms.
+static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, unsigned rate, int *start, int *span, int *key)
+{
+	*key = lowest_key(g, values, channel);
+	if (*key < 0 || !waves || waves->count < 64 || rate == 0) {
+		return false;
+	}
+	const float *s = waves->samples[channel];
+	const int count = (int)waves->count;
+	if (channel == PATCH_NUM_CHANNELS - 1) {
+		*span = (int)(rate * 5 / 1000);
+		*span = *span < count ? *span : count;
+		*start = count - *span;
+		return true;
+	}
+	const double cents = values->channels[channel][PARAM_FINE_TUNE] - 64;
+	const double hz = 440.0 * pow(2.0, (*key - 69) / 12.0 + cents / 1200.0);
+	const double period = rate / hz;
+	*span = (int)(2 * period + 0.5);
+	if (*span < 2 || *span + period + 1 > count) {
+		return false;
+	}
+	// An anchor on a grid of whole periods of the outputs' own clock, so it moves only as far as the
+	// chip's pitch is off the key's; then the rising zero crossing nearest to it, the same crest from
+	// frame to frame even when a chord crosses zero several times a period.
+	const uint64_t first = waves->end - (uint64_t)count;
+	const double latest = (double)(waves->end - (uint64_t)*span) - period / 2;
+	const double anchor = floor(latest / period) * period - (double)first;
+	*start = (int)anchor;
+	int best = -1;
+	for (int i = (int)(anchor - period / 2); i <= (int)(anchor + period / 2); i++) {
+		if (i > 0 && i + *span <= count && s[i - 1] < 0 && s[i] >= 0 && (best < 0 || fabs(i - anchor) < fabs(best - anchor))) {
+			best = i;
+		}
+	}
+	*start = best >= 0 ? best : *start;
+	*start = *start < 0 ? 0 : *start + *span > count ? count - *span : *start;
+	return true;
+}
+
+// The OUT box of an FM or PSG row (stage 24e, D60): the channel's output now, at one scale, the dark
+// colour a pixel wider under the light one as a phosphor's glow; only its frame and middle line when
+// the channel holds no note. Channel 3 in Ch3 Special is pink through g->sp.
+#define OUT_FULL 0.25f
+static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y, const mdmi_waves *waves, unsigned rate)
+{
+	const int x0 = ALL_OUT_X + 1, w = ALL_OUT_W - 2, mid = y + 19;
+	fill(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_BG);
+	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
+	fill(g, x0, mid, w, 1, C_CELL);
+	int start, span, key;
+	if (!out_span(g, values, channel, waves, rate, &start, &span, &key)) {
+		return;
+	}
+	const float *s = waves->samples[channel];
+	const bool fm = channel_is_fm(channel);
+	const uint32_t light = fm ? C_FM_LIGHT : C_PSG, dark = fm ? C_FM_DARK : C_PSG_DARK;
+	int tops[ALL_OUT_W], bottoms[ALL_OUT_W];
+	for (int k = 0; k < w; k++) {
+		const double a = start + (double)k * span / w, b = start + (double)(k + 1) * span / w;
+		float lo, hi;
+		if (b - a < 1) {
+			const int i = (int)a;
+			const double f = a - i;
+			const float v = i + 1 < (int)waves->count ? (float)(s[i] + (s[i + 1] - s[i]) * f) : s[i];
+			lo = hi = v;
+		} else {
+			lo = hi = s[(int)a];
+			for (int i = (int)a; i < (int)b && i < (int)waves->count; i++) {
+				lo = s[i] < lo ? s[i] : lo;
+				hi = s[i] > hi ? s[i] : hi;
+			}
+		}
+		int top = mid - (int)(hi / OUT_FULL * 13), bottom = mid - (int)(lo / OUT_FULL * 13);
+		top = top < mid - 14 ? mid - 14 : top > mid + 14 ? mid + 14 : top;
+		bottom = bottom < mid - 14 ? mid - 14 : bottom > mid + 14 ? mid + 14 : bottom;
+		// Joined to the column before, so a step is a line, not a gap.
+		if (k > 0) {
+			top = bottoms[k - 1] < top ? bottoms[k - 1] : top;
+			bottom = tops[k - 1] > bottom ? tops[k - 1] : bottom;
+		}
+		tops[k] = top;
+		bottoms[k] = bottom;
+	}
+	for (int pass = 0; pass < 2; pass++) {
+		for (int k = 0; k < w; k++) {
+			const int top = tops[k] - (pass == 0), bottom = bottoms[k] + (pass == 0);
+			fill(g, x0 + k, top, 1, bottom - top + 1, pass == 0 ? dark : light);
+		}
+	}
+}
+
+// The DAC's row on ALL (stage 24e): the last sample struck, from its start's tab to its end's, its loop
+// on a grey ground, and a line for each sounding voice (D59): green on this sample, grey on another.
+static void draw_all_dac(mdmi_gui *g, int y, unsigned rate)
+{
+	const int x0 = ALL_SOUND_X, w = ALL_SOUND_W, mid = y + 19;
+	fill(g, x0, y + 36, w, 1, C_LINE);
+	const uint32_t note = __atomic_load_n(&g->source.notes[PATCH_NUM_FM_CHANNELS - 1], __ATOMIC_ACQUIRE);
+	rom_sample sample = {0};
+	const char *name = NULL;
+	bool file = false;
+	const int key = GUI_NOTE_SEEN(note) ? (int)GUI_NOTE_KEY(note) : -1;
+	const bool shown = key >= 0 && note_sample(g, key, &sample, &name, &file) && sample.length > 0;
+	if (shown && sample.flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS)) {
+		const uint32_t blocks = sample.length / ROM_SAMPLE_BLOCK;
+		const uint32_t ls = sample.flags & ROM_SAMPLE_MARKS ? sample.loop_start : 0, le = sample.flags & ROM_SAMPLE_MARKS ? sample.loop_end : blocks;
+		if (blocks > 0 && le > ls) {
+			fill(g, x0 + (int)(ls * w / blocks), y + 3, (int)((le - ls) * w / blocks), 33, C_CELL);
+		}
+	}
+	fill(g, x0, mid, w, 1, C_DAC_DARK);
+	if (shown) {
+		for (int k = 0; k < w; k++) {
+			const uint32_t from = (uint32_t)((uint64_t)sample.length * k / w), to = (uint32_t)((uint64_t)sample.length * (k + 1) / w);
+			int lo = 0, hi = 0;
+			for (uint32_t i = from; i < to || i == from; i++) {
+				lo = sample.bytes[i] < lo ? sample.bytes[i] : lo;
+				hi = sample.bytes[i] > hi ? sample.bytes[i] : hi;
+			}
+			const int top = mid - hi * 15 / 128, bottom = mid - lo * 15 / 128;
+			fill(g, x0 + k, top, 1, bottom - top + 1, C_DAC);
+		}
+		text_right(g, PAGE_RIGHT - 2, y + 8, name ? name : "", C_DAC, 2, 170);
+	}
+	const uint64_t now = g->source.psg_times ? __atomic_load_n(&g->source.psg_times->clock, __ATOMIC_ACQUIRE) : 0;
+	for (int pass = 0; pass < 2; pass++) {
+		for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+			int voice_key = 0;
+			if (patch_dac_voice_state(g->source.patch, v, &voice_key) == PATCH_DAC_FREE) {
+				continue;
+			}
+			const double place = patch_dac_voice_place(g->source.patch, v, now, rate);
+			const bool mine = shown && voice_key == key;
+			if (place < 0 || mine != (pass == 1)) {
+				continue;
+			}
+			const int x = x0 + (int)(place * (w - 1));
+			if (mine) {
+				fill(g, x - 1, y + 2, 3, 35, C_BG);
+			}
+			fill(g, x, y + 2, 1, 35, mine ? C_PLAYING : C_HINT);
+		}
+	}
+}
+
+// What the footer says over ALL's OUT box, and over the DAC's VOL (stage 24e).
+static bool out_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (g->file_over || g->dragging || *g->source.page != PAGE_ALL) {
+		return false;
+	}
+	const patch_values *values = patch_view(g->source.patch);
+	const int channel = rail_channel_at(0, g->mouse_y);
+	if (channel < 0) {
+		return false;
+	}
+	if (is_dac(values, channel) && in_box(g->mouse_x, g->mouse_y, ALL_VOL_X, row_y(channel) + 4, GRID_W, CELL_H)) {
+		snprintf(hint, size, "DAC VOL: SCALES NEW NOTES, NOT MDMI CANON");
+		return true;
+	}
+	if (is_dac(values, channel) || !in_box(g->mouse_x, g->mouse_y, ALL_OUT_X, row_y(channel) + 4, ALL_OUT_W, ALL_OUT_H)) {
+		return false;
+	}
+	const int key = lowest_key(g, values, channel);
+	if (channel == PATCH_NUM_CHANNELS - 1) {
+		snprintf(hint, size, "CH10 OUT: LAST 5 MS");
+	} else if (key >= 0) {
+		char name[8];
+		note_name(key, name, sizeof(name));
+		snprintf(hint, size, "CH%d OUT: 2 PERIODS OF %s", channel + 1, name);
+	} else {
+		snprintf(hint, size, "CH%d OUT: SILENT, NO NOTE HELD", channel + 1);
+	}
+	return true;
+}
+
 // TUNE, BEND and PORTA of a row, only those not at their default (1B).
 static void draw_all_more(mdmi_gui *g, const patch_values *values, int channel, int y)
 {
@@ -5526,15 +5730,19 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 	text_right(g, PAGE_RIGHT - 2, HEADER_H + 4, "SOURCE", C_HINT, 1, 60);
 	text(g, ALL_VOL_X, RAIL_PSG_Y - GROUP_H + 4, "VOL", C_HINT, 1);
 	text_right(g, PAGE_RIGHT - 2, RAIL_PSG_Y - GROUP_H + 4, "SOURCE", C_HINT, 1, 60);
+	text(g, ALL_OUT_X, HEADER_H + 4, "OUT", C_HINT, 1);
+	text(g, ALL_OUT_X, RAIL_PSG_Y - GROUP_H + 4, "OUT", C_HINT, 1);
+	const mdmi_waves *waves = mdmi_engine_latest_waves(g->source.engine);
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		const int y = row_y(channel);
 		// Channel 3 in Ch3 Special in its pink (D62); draw_editor puts FM's colours back after the page.
 		g->sp = channel == 2 && is_special(values, 2);
 		fill(g, RAIL_W + 1, y + ROW_H - 1, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
 		if (is_dac(values, channel)) {
-			text(g, ALL_VOL_X, y + 14, "PLAYS SAMPLES (DAC)", C_DAC, 1);
+			draw_all_dac(g, y, rate);
 			continue;
 		}
+		draw_out(g, values, channel, y, waves, rate);
 		if (channel_is_fm(channel)) {
 			const int16_t *v = values->channels[channel];
 			// The diagram or, after a click on it, the four envelopes in small, each row its own.
@@ -5706,6 +5914,8 @@ static void render(mdmi_gui *g)
 	if (shows_store(g)) {
 		action_button(g, ACTION_STORE, "STORE", files_can_store(g->source.files, *g->source.channel));
 	}
+	// Stage 24e: the outputs' last samples are copied only while ALL shows them.
+	mdmi_engine_watch_waves(g->source.engine, page == PAGE_ALL);
 	if (rom) {
 		action_button(g, ACTION_EXPORT, "EXPORT", !g->exporting);
 		send_screen_names(g);
@@ -7166,6 +7376,7 @@ void gui_destroy(mdmi_gui *g)
 		return;
 	}
 	mdmi_engine_watch_frames(g->source.engine, false);
+	mdmi_engine_watch_waves(g->source.engine, false);
 	dac_free(g->rom_copy);
 	g->rom_copy = NULL;
 	if (g->window) {

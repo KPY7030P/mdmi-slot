@@ -283,6 +283,7 @@ typedef struct {
 	// For the window: key | state << 8 per voice, and the voice's start on the writer's clock.
 	uint32_t dac_shown[PATCH_DAC_VOICES];
 	uint64_t dac_shown_start[PATCH_DAC_VOICES];
+	uint64_t dac_shown_note[PATCH_DAC_VOICES];
 	// Told whose note each FM voice starts; NULL when nobody listens.
 	patch_owner_fn owner;
 	// The dealer of FM voices: one for all receivers, so all get the same layout.
@@ -489,6 +490,9 @@ void patch_set_dac_note(mdmi_patch *patch, int note, uint32_t blocks, uint16_t l
 void patch_set_dac_image(mdmi_patch *patch, const uint8_t *image, size_t size);
 // Any thread: a DAC voice's state (PATCH_DAC_*) and key.
 int patch_dac_voice_state(const mdmi_patch *patch, int voice, int *key);
+// Any thread (stage 24e): where a sounding DAC voice is in its sample at the writer's clock `now` and
+// `rate`, as a share of the sample from its start, wrapped inside its loop; -1 for a free voice.
+double patch_dac_voice_place(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate);
 // Any thread: how many held notes of a channel don't sound.
 int patch_muted_notes(const mdmi_patch *patch, int channel);
 // Any thread: the channel playing on an FM voice, or -1, and the key it plays there.

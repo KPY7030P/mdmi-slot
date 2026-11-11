@@ -1401,6 +1401,9 @@ static void test_dac_shown(void)
 	set.notes[75]->sample.flags = ROM_SAMPLE_ONE_SHOT;
 	dac_put(&set, 76, marked_sample(1, 4, 6, 10));
 	dac_put(&set, 77, marked_sample(1, 4, 6, 10));
+	// The same loop on its own key, held long: let go in its intro on 76 just before, the same key's new
+	// voice stops after one pass in the ROM (parking, stage 24e).
+	dac_put(&set, 79, marked_sample(1, 4, 6, 10));
 	// A loop with no release: Note Off stops it.
 	set.notes[77]->sample.loop_end = (uint16_t)20;
 	dac_put(&set, 78, square_sample(8 * ROM_SAMPLE_BLOCK, 60));
@@ -1447,7 +1450,7 @@ static void test_dac_shown(void)
 	// A loop with a release, let go in its intro and in its loop; one that stops; a whole-sample loop.
 	static const int HOLD[4] = {40, 500, 500, 500};
 	for (int k = 0; k < 4; k++) {
-		const uint8_t note = (uint8_t)(k < 2 ? 76 : 75 + k);
+		const uint8_t note = (uint8_t)(k == 0 ? 76 : k == 1 ? 79 : 75 + k);
 		midi(0x95, note, 100);
 		dac_shown_follow(HOLD[k]);
 		midi(0x85, note, 0);
@@ -4663,7 +4666,12 @@ static bool export_same_dac(const double (*a)[2], const double (*b)[2], const ch
 	}
 	bool same = loudest > 0;
 	for (int n = 0; n < EXPORT_DAC_NOTES; n++) {
-		const bool ok = export_same_energy(a[n][0], b[n][0], loudest) && export_same_energy(a[n][1], b[n][1], loudest);
+		// After Note Off the two runs may differ by up to a ROM frame of the held sound: the ROM takes the
+		// Note Off at its next frame, and two boots of the core have their frames at other phases of the
+		// test's clock (stage 24e: a change of the ROM's code moved them). Held is 300 ms, a frame 16.7.
+		const double frame_of_held = fmax(a[n][0], b[n][0]) * (1000.0 / 59.92) / 300.0;
+		const bool after = export_same_energy(a[n][1], b[n][1], loudest) || fabs(a[n][1] - b[n][1]) <= frame_of_held;
+		const bool ok = export_same_energy(a[n][0], b[n][0], loudest) && after;
 		printf("    %s, note %d, %s: held %.3g and %.3g, after Note Off %.3g and %.3g%s\n", run, EXPORT_DAC[n], EXPORT_DAC_WHAT[n], a[n][0], b[n][0], a[n][1], b[n][1], ok ? "" : ": DIFFER");
 		same = same && ok;
 	}

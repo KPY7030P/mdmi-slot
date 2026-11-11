@@ -1719,6 +1719,7 @@ static void dac_publish(mdmi_patch *patch)
 		const patch_dac_voice *voice = &patch->dac[v];
 		const int state = !dac_busy(patch, v) ? PATCH_DAC_FREE : voice->held ? PATCH_DAC_HELD : PATCH_DAC_OUT;
 		__atomic_store_n(&patch->dac_shown_start[v], voice->start, __ATOMIC_RELAXED);
+		__atomic_store_n(&patch->dac_shown_note[v], voice->note, __ATOMIC_RELAXED);
 		__atomic_store_n(&patch->dac_shown[v], (uint32_t)voice->key | (uint32_t)state << 8, __ATOMIC_RELEASE);
 	}
 }
@@ -1739,6 +1740,28 @@ int patch_dac_voice_state(const mdmi_patch *patch, int voice, int *key)
 		*key = (int)(shown & 0xFF);
 	}
 	return (int)(shown >> 8);
+}
+
+double patch_dac_voice_place(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate)
+{
+	if (patch_dac_voice_state(patch, voice, NULL) == PATCH_DAC_FREE || rate == 0) {
+		return -1;
+	}
+	const uint64_t start = __atomic_load_n(&patch->dac_shown_start[voice], __ATOMIC_RELAXED);
+	const uint64_t note = __atomic_load_n(&patch->dac_shown_note[voice], __ATOMIC_RELAXED);
+	const double blocks = DAC_NOTE_BLOCKS(note);
+	if (blocks <= 0) {
+		return -1;
+	}
+	const uint8_t flags = DAC_NOTE_FLAGS(note);
+	const double loop_start = flags & ROM_SAMPLE_MARKS ? DAC_NOTE_LOOP_START(note) : 0;
+	const double loop_end = flags & ROM_SAMPLE_MARKS ? DAC_NOTE_LOOP_END(note) : blocks;
+	double at = now > start ? (double)(now - start) * ROM_PCM4_HZ / ROM_SAMPLE_BLOCK / rate : 0;
+	// A loop repeats while it is held; let go, the copy doesn't follow the pass into the release.
+	if (flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS) && at >= loop_end && loop_end > loop_start) {
+		at = loop_start + fmod(at - loop_end, loop_end - loop_start);
+	}
+	return at < blocks ? at / blocks : 1;
 }
 
 // pick_voice: the key's own voice while it sounds, else a free one, else the oldest start.
