@@ -120,6 +120,14 @@ uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel);
 uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel);
 // A byte of the Z80's RAM, for tests (stage 24c: PCM4's STATUS at 0x102, D6).
 uint8_t mdmi_engine_test_z80(const mdmi_engine *e, uint16_t address);
+// A word of the VDP's memory, for tests of the ROM's screen (stage 24a, D6): space 0 VRAM by byte
+// address, 1 CRAM and 2 VSRAM by word index.
+uint16_t mdmi_engine_test_vdp(const mdmi_engine *e, uint8_t space, uint32_t address);
+// A word of the 68000's work RAM by its address (0xFF0000-0xFFFFFF), for tests reading the ROM's
+// counters, whose addresses symbol.txt gives.
+uint16_t mdmi_engine_test_ram(const mdmi_engine *e, uint32_t address);
+// Writes such a word, so a test can start the counters from zero.
+void mdmi_engine_test_ram_write(const mdmi_engine *e, uint32_t address, uint16_t value);
 // Main thread. Frames are only copied while someone is watching.
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);

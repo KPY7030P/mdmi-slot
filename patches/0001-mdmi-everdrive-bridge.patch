@@ -117,10 +117,10 @@ index 3472c7f..4058e37 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..dd20b88
+index 0000000..ab37820
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,207 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
@@ -225,6 +225,30 @@ index 0000000..dd20b88
 +{
 +	extern system_header *current_system;
 +	return ((genesis_context *)current_system)->zram[address & 0x1FFF];
++}
++
++//Host API: a word of the VDP's memory, for tests of the ROM's screen (MDMI plugin, stage 24a):
++//space 0 is VRAM by byte address, 1 CRAM, 2 VSRAM, both by word index
++RETRO_API uint16_t mdmi_test_vdp_read(uint8_t space, uint32_t address)
++{
++	extern system_header *current_system;
++	vdp_context *vdp = ((genesis_context *)current_system)->vdp;
++	if (space == 1) {
++		return vdp->cram[address % CRAM_SIZE];
++	}
++	if (space == 2) {
++		return vdp->vsram[address % MAX_VSRAM_SIZE];
++	}
++	address &= 0xFFFE;
++	return vdp->vdpmem[address] << 8 | vdp->vdpmem[address + 1];
++}
++
++//Host API: a word of the 68000's 64 KB work RAM by its 68000 address, for tests reading the ROM's
++//counters (MDMI plugin, stage 24a)
++RETRO_API uint16_t mdmi_test_ram_read(uint32_t address)
++{
++	extern system_header *current_system;
++	return ((genesis_context *)current_system)->work_ram[(address & 0xFFFF) >> 1];
 +}
 +
 +//Host API: a PSG channel's attenuation, 0 loudest and 15 silent, for tests

@@ -9,6 +9,9 @@ import re
 import sys
 
 RAM = 0xE0FF0000
+STATS = ("ui_stat_lines", "ui_stat_lines_max", "ui_stat_ambig", "ui_stat_words", "ui_stat_words_max",
+         "ui_stat_lag", "ui_stat_lag_max", "ui_stat_late_notes", "ui_stat_frames", "ui_stat_missed",
+         "ui_stat_draw_lines", "ui_stat_draw_lines_max", "ui_stat_parts", "ui_stat_calib", "ui_stat_draw_sum", "ui_test_off")
 
 
 def main():
@@ -65,6 +68,13 @@ def main():
         f"#define ROM_ENVELOPES 0x{data['ENVELOPES']:06X}u",
         f"#define ROM_ARP_ROWS 0x{data['ARP_ROWS']:06X}u",
         f"#define ROM_PROGRAM_NAMES 0x{data['PROGRAM_NAMES']:06X}u",
+    ]
+    # Stage 24a: where the screen's counters live in the 68000's RAM, for reg_test (rom-screen.md 10.4).
+    for name in STATS:
+        if not RAM <= symbols.get(name, 0) < RAM + 0x10000:
+            raise SystemExit(f"{symbols_path}: no RAM symbol {name}")
+        lines.append(f"#define ROM_{name.upper()} 0x{symbols[name] & 0xFFFFFF:06X}u")
+    lines += [
         "static const char *const ROM_SAMPLE_NAMES[128] = {",
     ]
     for i in range(0, 128, 8):

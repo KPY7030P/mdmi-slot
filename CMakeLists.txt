@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 # 0.N.M: N is the stage in docs/ROADMAP.md, M the delivery within it.
-project(mdmi_plugin VERSION 0.24.5 LANGUAGES C CXX)
+project(mdmi_plugin VERSION 0.24.6 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
@@ -71,7 +71,7 @@ add_dependencies(mdmi_all vst3_host)
 
 add_executable(reg_test tools/test/reg_test.c)
 target_compile_options(reg_test PRIVATE -Wall -Wextra -Wno-cast-function-type)
-target_include_directories(reg_test PRIVATE src "${CLAP_SDK_ROOT}/include")
+target_include_directories(reg_test PRIVATE src "${CLAP_SDK_ROOT}/include" "${CMAKE_SOURCE_DIR}/build/rom")
 target_link_libraries(reg_test PRIVATE mdmi_impl)
 add_dependencies(mdmi_all reg_test)
 

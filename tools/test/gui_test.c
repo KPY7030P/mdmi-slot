@@ -753,12 +753,12 @@ int main(int argc, char **argv)
 		CHECK(memcmp(before + HEADER_H * WIDTH, pixels + HEADER_H * WIDTH, (HEIGHT - HEADER_H) * WIDTH * sizeof(uint32_t)) != 0, "ROM screen is live: it changes when notes stop");
 
 		// Stage 24: the ROM's screen names each channel's sound where CC7B=00 and P=116 were, and
-		// EXPORT writes the ROM for the SD card. The ROM's picture is at (40, 54), 16 px a tile; the
-		// names start at column 11 of FM1's row 3.
+		// EXPORT writes the ROM for the SD card. The ROM's picture is at (40, 54), 16 px a tile; since
+		// stage 24a the names are columns 7-22 of FM1's row 2.
 		run_ms(3500);
 		capture(window);
 		save_bmp(argv[2], "rom-names");
-		const int name_pixels = count_not_black_in(216, 216 + 23 * 16, 54 + 3 * 16, 54 + 4 * 16);
+		const int name_pixels = count_not_black_in(40 + 7 * 16, 40 + 23 * 16, 54 + 2 * 16, 54 + 3 * 16);
 		CHECK(name_pixels > 200, "FM1's row names its sound, also long after the last change (%d px)", name_pixels);
 		char export_path[MAX_PATH];
 		snprintf(export_path, sizeof(export_path), "%s-export.bin", argv[2]);
@@ -2409,6 +2409,47 @@ int main(int argc, char **argv)
 		}
 		DeleteFileA(wav_path);
 		DeleteFileA(tfi_path);
+		// Last, so its modes and notes touch no other check.
+		click(window, BUTTON_ROM_X, BUTTON_Y);
+		run_ms(500);
+		// Stage 24a1's frames for the art-director: FM and PSG playing, the DAC's four voices,
+		// Ch3 Special's squares.
+		for (int ch = 0; ch < 5; ch++) {
+			send_midi((uint8_t)(0x90 | ch), (uint8_t)(48 + ch * 5), (uint8_t)(40 + ch * 20));
+		}
+		for (int ch = 6; ch < 9; ch++) {
+			send_midi((uint8_t)(0x90 | ch), (uint8_t)(57 + (ch - 6) * 12), (uint8_t)(50 + (ch - 6) * 35));
+		}
+		run_ms(700);
+		capture(window);
+		save_bmp(argv[2], "rom-24a1-play");
+		for (int ch = 0; ch < 5; ch++) {
+			send_midi((uint8_t)(0x80 | ch), (uint8_t)(48 + ch * 5), 0);
+		}
+		for (int ch = 6; ch < 9; ch++) {
+			send_midi((uint8_t)(0x80 | ch), (uint8_t)(57 + (ch - 6) * 12), 0);
+		}
+		send_midi(0xB0, 78, 127);
+		run_ms(300);
+		for (int i = 0; i < 4; i++) {
+			send_midi(0x95, (uint8_t)(36 + i * 2), 127);
+		}
+		run_ms(400);
+		capture(window);
+		save_bmp(argv[2], "rom-24a1-dac");
+		for (int i = 0; i < 4; i++) {
+			send_midi(0x85, (uint8_t)(36 + i * 2), 0);
+		}
+		send_midi(0xB0, 78, 0);
+		send_midi(0xB0, 80, 127);
+		run_ms(300);
+		send_midi(0x92, 60, 110);
+		run_ms(400);
+		capture(window);
+		save_bmp(argv[2], "rom-24a1-special");
+		send_midi(0x82, 60, 0);
+		send_midi(0xB0, 80, 0);
+		run_ms(3000);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		send_midi(0xB0, 78, 0);
 		run_ms(800);

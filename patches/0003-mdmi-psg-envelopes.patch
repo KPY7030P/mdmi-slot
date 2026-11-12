@@ -193,7 +193,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..a7046df 100644
+index 5145b6a..bed0547 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -71,7 +71,14 @@ static const u16 portaTimeToInterval[128]
@@ -410,7 +410,7 @@ index 5145b6a..a7046df 100644
 +static void store_psg_program(u8 program, const u8* data, u16 length)
 +{
 +    if (length % 2 != 0 || length / 2 > MAX_STORED_ENVELOPE_STEPS || program >= MIDI_PROGRAMS) {
-+        log_warn("Prg %d: Invalid PSG envelope", program);
++        log_warn("Prg %d: Invalid PSG envelope", program + 1);
 +        return;
 +    }
 +    u8 eef[MAX_STORED_ENVELOPE_STEPS];
@@ -418,7 +418,7 @@ index 5145b6a..a7046df 100644
 +        eef[i / 2] = (data[i] << 4) | data[i + 1];
 +    }
 +    midi_psg_store_envelope(program, eef, length / 2);
-+    log_info("Prg %d: PSG envelope stored", program);
++    log_info("Prg %d: PSG envelope stored", program + 1);
 +}
 +
 +// MDMI plugin fork, stage 20: <loop> <step + 64>..., the number of steps is the length of the data.
@@ -433,9 +433,9 @@ index 5145b6a..a7046df 100644
 +    }
 +    if (!valid) {
 +        if (fm) {
-+            log_warn("Prg %d: Invalid FM arpeggio", program);
++            log_warn("Prg %d: Invalid FM arpeggio", program + 1);
 +        } else {
-+            log_warn("Prg %d: Invalid PSG arpeggio", program);
++            log_warn("Prg %d: Invalid PSG arpeggio", program + 1);
 +        }
 +        return;
 +    }
@@ -446,9 +446,9 @@ index 5145b6a..a7046df 100644
 +        row->steps[i] = data[i + 1] - ARP_STEP_CENTRE;
 +    }
 +    if (fm) {
-+        log_info("Prg %d: FM arpeggio stored", program);
++        log_info("Prg %d: FM arpeggio stored", program + 1);
 +    } else {
-+        log_info("Prg %d: PSG arpeggio stored", program);
++        log_info("Prg %d: PSG arpeggio stored", program + 1);
 +    }
 +}
 +
@@ -481,6 +481,36 @@ index 5145b6a..a7046df 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
+@@ -675,7 +848,7 @@ static void store_program(const u8* data, u16 length)
+             fmPreset.operators[i].ssgEg = data[16 + i * 11];
+         }
+         midi_fm_store_preset(program, &fmPreset);
+-        log_info("Prg %d: FM preset stored", program);
++        log_info("Prg %d: FM preset stored", program + 1);
+         break;
+     }
+     default:
+@@ -692,7 +865,7 @@ static void clear_program(const u8* data, u16 length)
+     switch (type) {
+     case STORE_PROGRAM_TYPE_FM:
+         midi_fm_clear_preset(program);
+-        log_info("Prg %d: FM preset cleared", program);
++        log_info("Prg %d: FM preset cleared", program + 1);
+         break;
+     default:
+         log_warn("Invalid clear program type: %d", type);
+@@ -811,9 +984,9 @@ static void dump_preset_request(const u8* data, u16 length)
+         const FmPreset* preset = midi_fm_get_stored_preset(program);
+         if (preset != NULL) {
+             send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
+-            log_info("Prg %d: FM preset dumped", program);
++            log_info("Prg %d: FM preset dumped", program + 1);
+         } else {
+-            log_warn("Prg %d: No FM preset to dump", program);
++            log_warn("Prg %d: No FM preset to dump", program + 1);
+         }
+         break;
+     }
 @@ -841,7 +1014,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
@@ -581,6 +611,15 @@ index 5145b6a..a7046df 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
+@@ -1220,7 +1472,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+     FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
+         if (devChan->ops == &FM_VTable) {
+             midi_fm_store_preset_from_channel(devChan->num, program);
+-            log_info("Prg %d: FM preset stored", program);
++            log_info("Prg %d: FM preset stored", program + 1);
+             break; // first chan we find only
+         }
+     }
 @@ -1247,11 +1499,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
@@ -789,10 +828,10 @@ index 731aa8c..bb5b010 100644
  void midi_note_off(u8 chan, u8 pitch);
  void midi_pitch_bend(u8 chan, u16 bend);
 diff --git a/src/midi_dac.c b/src/midi_dac.c
-index 33ac142..8491218 100644
+index 33ac142..a3b3048 100644
 --- a/src/midi_dac.c
 +++ b/src/midi_dac.c
-@@ -1,38 +1,277 @@
+@@ -1,40 +1,290 @@
  #include "midi_dac.h"
  #include "pcm_sample.h"
 +#include "synth.h"
@@ -932,7 +971,7 @@ index 33ac142..8491218 100644
 -void midi_dac_reset(void)
 +// Each frame, for the voices whose start's copy is awaited: then the loop alone becomes their params.
 +void midi_dac_tick(void)
-+{
+ {
 +    bool waiting = false;
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        waiting = waiting || voices[v].state == VOICE_WAIT_COPY;
@@ -1025,7 +1064,7 @@ index 33ac142..8491218 100644
 +}
 +
 +void midi_dac_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity)
- {
++{
 +    midi_dac_play(pitch, pitch, velocity);
  }
  
@@ -1033,8 +1072,8 @@ index 33ac142..8491218 100644
  {
 -    SND_PCM_stopPlay();
 +    midi_dac_release(pitch);
- }
- 
++}
++
 +// The DAC switched: the driver starts afresh, nothing of a sample is awaited any more. enable_dac then
 +// hands it channel 6's volume (D61).
 +void midi_dac_reset(void)
@@ -1044,8 +1083,8 @@ index 33ac142..8491218 100644
 +        voices[v].state = VOICE_FREE;
 +        voices[v].key = NO_KEY;
 +    }
-+}
-+
+ }
+ 
 +// Not MDMI canon (D61): see channelVolume.
  void midi_dac_channel_volume(u8 chan, u8 volume)
  {
@@ -1075,11 +1114,24 @@ index 33ac142..8491218 100644
  }
  
  void midi_dac_pitch(u8 chan, u8 pitch, s8 cents)
+ {
+ }
++
++// MDMI plugin fork, stage 24a: see MidiDacVoiceView.
++void midi_dac_voice_view(u8 v, MidiDacVoiceView* view)
++{
++    const Voice* voice = &voices[v];
++    view->key = voice->key;
++    view->state = voice->state;
++    view->order = voice->order;
++    view->blocks = voice->end - voice->start;
++    view->releaseBlocks = voice->end - voice->loopEnd;
++}
 diff --git a/src/midi_dac.h b/src/midi_dac.h
-index c37b89a..92c9873 100644
+index c37b89a..66b1f35 100644
 --- a/src/midi_dac.h
 +++ b/src/midi_dac.h
-@@ -9,3 +9,9 @@ void midi_dac_pan(u8 chan, u8 pan);
+@@ -9,3 +9,22 @@ void midi_dac_pan(u8 chan, u8 pan);
  void midi_dac_program(u8 chan, u8 program);
  void midi_dac_all_notes_off(u8 chan);
  void midi_dac_pitch(u8 chan, u8 pitch, s8 cents);
@@ -1089,8 +1141,21 @@ index c37b89a..92c9873 100644
 +void midi_dac_release(u8 key);
 +// Each frame: a sample with loop marks moves on to its loop (stage 18b).
 +void midi_dac_tick(void);
++// MDMI plugin fork, stage 24a: a voice as the screen shows it. The ROM never reads the Z80 for it:
++// how long a sample plays is known only in 256-byte blocks, and its end is estimated by the screen.
++enum { MIDI_DAC_VOICE_FREE, MIDI_DAC_VOICE_PLAYING, MIDI_DAC_VOICE_WAIT_COPY, MIDI_DAC_VOICE_LOOPING, MIDI_DAC_VOICE_RELEASE };
++typedef struct MidiDacVoiceView {
++    u8 key;
++    u8 state;
++    // Which start this is: a new one changes it.
++    u16 order;
++    // The sample's blocks, and those after its loop.
++    u16 blocks;
++    u16 releaseBlocks;
++} MidiDacVoiceView;
++void midi_dac_voice_view(u8 v, MidiDacVoiceView* view);
 diff --git a/src/midi_fm.c b/src/midi_fm.c
-index d14f920..1074eb3 100644
+index d14f920..3529a27 100644
 --- a/src/midi_fm.c
 +++ b/src/midi_fm.c
 @@ -1,5 +1,6 @@
@@ -1160,6 +1225,32 @@ index d14f920..1074eb3 100644
      synth_note_off(chan);
  }
  
+@@ -216,3 +248,14 @@ const FmPreset* midi_fm_get_stored_preset(u8 program)
+ 
+     return activeUserPresets[program] ? activeUserPresets[program] : defaultPresets[program];
+ }
++
++// MDMI plugin fork, stage 24a: what the screen's estimate of a channel's level is made of.
++u8 midi_fm_velocity(u8 chan)
++{
++    return fmChannels[chan].velocity;
++}
++
++u8 midi_fm_volume(u8 chan)
++{
++    return fmChannels[chan].volume;
++}
+diff --git a/src/midi_fm.h b/src/midi_fm.h
+index 487ca90..b3890e7 100644
+--- a/src/midi_fm.h
++++ b/src/midi_fm.h
+@@ -27,3 +27,6 @@ void midi_fm_store_preset(u8 program, const FmPreset* preset);
+ void midi_fm_clear_preset(u8 program);
+ void midi_fm_store_preset_from_channel(u8 chan, u8 program);
+ const FmPreset* midi_fm_get_stored_preset(u8 program);
++// MDMI plugin fork, stage 24a: the last note's velocity and the channel's CC 7, for the screen.
++u8 midi_fm_velocity(u8 chan);
++u8 midi_fm_volume(u8 chan);
 diff --git a/src/midi_fm_sm.c b/src/midi_fm_sm.c
 index 90752a2..1e98e2d 100644
 --- a/src/midi_fm_sm.c
@@ -1414,7 +1505,7 @@ index c1b1091..b1e782e 100644
  void midi_fm_sm_program(u8 chan, u8 program);
 -void midi_fm_sm_all_notes_off(u8 chan);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..60d50cb 100644
+index 82a5655..5a9b3b6 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
 @@ -11,6 +11,28 @@
@@ -1754,8 +1845,24 @@ index 82a5655..60d50cb 100644
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
  {
      MidiPsgChannel* psgChan = psg_channel(chan);
+@@ -317,3 +527,15 @@ void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
+     psgChan->cents = cents;
+     apply_tone(psgChan, envelope_tone(psgChan));
+ }
++
++// MDMI plugin fork, stage 24a: what the chip plays now, for the screen: the attenuation written,
++// 15 silence, and the tone period written, 0xFFFF before the first.
++u8 midi_psg_attenuation(u8 chan)
++{
++    return psgChannels[chan].attenuation;
++}
++
++u16 midi_psg_tone(u8 chan)
++{
++    return psgChannels[chan].freq;
++}
 diff --git a/src/midi_psg.h b/src/midi_psg.h
-index e5bb02e..dcd7bc6 100644
+index e5bb02e..5f1cc23 100644
 --- a/src/midi_psg.h
 +++ b/src/midi_psg.h
 @@ -9,6 +9,8 @@
@@ -1775,7 +1882,7 @@ index e5bb02e..dcd7bc6 100644
  void midi_psg_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity);
  void midi_psg_note_off(u8 chan, u8 pitch);
  void midi_psg_all_notes_off(u8 chan);
-@@ -24,4 +27,8 @@ void midi_psg_program(u8 chan, u8 program);
+@@ -24,4 +27,11 @@ void midi_psg_program(u8 chan, u8 program);
  void midi_psg_pan(u8 chan, u8 pan);
  void midi_psg_tick(u16 delta);
  void midi_psg_load_envelope(const u8* eef);
@@ -1784,6 +1891,9 @@ index e5bb02e..dcd7bc6 100644
 +void midi_psg_noise_type(u8 white);
 +void midi_psg_noise_rate(u8 rate);
 +bool midi_psg_plays_key(u8 chan);
++// MDMI plugin fork, stage 24a: the attenuation and tone period written to a channel, for the screen.
++u8 midi_psg_attenuation(u8 chan);
++u16 midi_psg_tone(u8 chan);
 diff --git a/src/note_priority.c b/src/note_priority.c
 index e5b3c90..d3154d7 100644
 --- a/src/note_priority.c
@@ -2431,39 +2541,119 @@ index 222a443..caee9ff 100644
  void synth_direct_write_ym2612(u8 part, u8 reg, u8 data);
  void synth_enable_dac(bool enable);
 diff --git a/src/ui.c b/src/ui.c
-index 66cd230..5060d67 100644
+index 66cd230..23e5cd9 100644
 --- a/src/ui.c
 +++ b/src/ui.c
-@@ -14,6 +14,7 @@
+@@ -2,552 +2,1221 @@
+ #include "comm/comm.h"
+ #include "comm/comm_everdrive.h"
+ #include "comm/comm_everdrive_pro.h"
+-#include "comm/comm_serial.h"
+-#include "comm/comm_megawifi.h"
+ #include "log.h"
+ #include "utils.h"
+ #include "midi.h"
+-#include "midi_rx.h"
+-#include "comm/serial.h"
++#include "midi_dac.h"
++#include "midi_fm.h"
++#include "midi_fm_sm.h"
++#include "midi_psg.h"
++#include "pcm_driver.h"
+ #include "synth.h"
+ #include "ui_fm.h"
++#include "ui_tiles.h"
  #include "sprite.h"
  #include "scheduler.h"
- #include "settings.h"
-+#include "program_names.h"
- 
- #define DEVICE_X 1
- #define FM_DEVICE_Y 3
-@@ -64,7 +65,10 @@
- #define LED_TILE_OFF_OFFSET (LED_TILE_COUNT)
- #define LOAD_TILE_Y (MAX_EFFECTIVE_Y + 1)
- 
+-#include "settings.h"
+-
+-#define DEVICE_X 1
+-#define FM_DEVICE_Y 3
+-#define PSG_DEVICE_Y 14
+-#define CHAN_Y 2
+-#define MIDI_Y (CHAN_Y)
+-
+-#if DEBUG_SHOW_LOGS == 1
+-#define MAX_LOG_LINES 22
+-#define LOG_X 5
+-#else
+-#define MAX_LOG_LINES 2
+-#define LOG_X 2
+-#endif
+-
+-#define LOG_Y (MAX_EFFECTIVE_Y - MAX_LOG_LINES - 2)
+-
+-#define COMM_EXTRA_X 17
+-#define PITCH_X 6
+-#define CHANGE_X (PITCH_X + 4)
+-
+-#define ROUTING_X 1
+-#define ROUTING_Y (MAX_EFFECTIVE_Y - 2)
+-
+-#define PALETTE_INDEX(pal, index) ((pal * 16) + index)
+-#define FONT_COLOUR_INDEX 15
+-#define BG_COLOUR_INDEX 0
+-
+-#define FRAMES_BEFORE_UPDATE_CHAN_ACTIVITY 1
+-#define FRAMES_BEFORE_UPDATE_ACTIVITY 5
+-#define FRAMES_BEFORE_UPDATE_LOAD 15
+-#define FRAMES_BEFORE_UPDATE_LOAD_PERCENT 15
+-
+-#define TILE_LED_INDEX TILE_USER_INDEX
+-#define TILE_ROUTING_INDEX (TILE_LED_INDEX + 8)
+-#define TILE_BORDERS_INDEX (TILE_ROUTING_INDEX + 4)
+-#define TILE_IMAGES_INDEX (TILE_BORDERS_INDEX + 8)
+-#define TILE_DEVICE_FM_INDEX (TILE_IMAGES_INDEX + 7)
+-#define TILE_DEVICE_PSG_INDEX (TILE_DEVICE_FM_INDEX + 6)
+-#define TILE_WAITING_ED_INDEX (TILE_DEVICE_PSG_INDEX + 4)
+-#define TILE_SP_INDEX (TILE_WAITING_ED_INDEX + 8)
+-
+-#define TILE_BORDERS_LINE_START_INDEX (TILE_BORDERS_INDEX)
+-#define TILE_BORDERS_LINE_INDEX (TILE_BORDERS_INDEX + 1)
+-#define TILE_BORDERS_LINE_END_INDEX (TILE_BORDERS_INDEX + 2)
+-
+-#define LED_TILE_COUNT 4
+-#define LED_TILE_OFF_OFFSET (LED_TILE_COUNT)
+-#define LOAD_TILE_Y (MAX_EFFECTIVE_Y + 1)
+-
 -#define UI_CHANGE_TTL (50 * 3)
-+// MDMI plugin fork, stage 24: each channel's row shows its sound's name where the last CC or
-+// program change was printed, and the header the bank's signature.
-+#define NAME_X CHANGE_X
-+#define NAME_CHARS 23
- 
- static const char MIDI_CH_TEXT[16][3] = { " 1", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9",
-     "10", "11", "12", "13", "14", "15", "16" };
-@@ -98,18 +102,15 @@ static void print_routing_mode(bool enabled);
- static void print_mappings_if_dirty(u8* midiChans);
- static void print_mappings(void);
- static void update(u16 delta);
+-
+-static const char MIDI_CH_TEXT[16][3] = { " 1", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9",
+-    "10", "11", "12", "13", "14", "15", "16" };
+-static const char DEV_CH_TEXT[10][2] = { "1", "2", "3", "4", "5", "6", "1", "2", "3", "4" };
+-static const char MIDI_CH_UNASSIGNED_TEXT[] = " -";
+-
+-#define MIN_UI_MIDI_PITCH 21 // A0
+-
+-static const char MIDI_PITCH_NAMES[128 - MIN_UI_MIDI_PITCH][4] = { "A-0", "A#0", "B-0", "C-1",
+-    "C#1", "D-1", "D#1", "E-1", "F-1", "F#1", "G-1", "G#1", "A-1", "A#1", "B-1", "C-2", "C#2",
+-    "D-2", "D#2", "E-2", "F-2", "F#2", "G-2", "G#2", "A-2", "A#2", "B-2", "C-3", "C#3", "D-3",
+-    "D#3", "E-3", "F-3", "F#3", "G-3", "G#3", "A-3", "A#3", "B-3", "C-4", "C#4", "D-4", "D#4",
+-    "E-4", "F-4", "F#4", "G-4", "G#4", "A-4", "A#4", "B-4", "C-5", "C#5", "D-5", "D#5", "E-5",
+-    "F-5", "F#5", "G-5", "G#5", "A-5", "A#5", "B-5", "C-6", "C#6", "D-6", "D#6", "E-6", "F-6",
+-    "F#6", "G-6", "G#6", "A-6", "A#6", "B-6", "C-7", "C#7", "D-7", "D#7", "E-7", "F-7", "F#7",
+-    "G-7", "G#7", "A-7", "A#7", "B-7", "C-8", "C#8", "D-8", "D#8", "E-8", "F-8", "F#8", "G-8",
+-    "G#8", "A-8", "A#8", "B-8", "C-9", "C#9", "D-9", "D#9", "E-9", "F-9", "F#9", "G-9" };
+-
+-static void init_load(void);
+-static void print_channels(void);
+-static void print_header(void);
+-static void update_load(void);
+-static u16 load_percent(void);
+-static void update_key_on_off(void);
+-static void draw_text(const char* text, u16 x, u16 y);
+-static void print_chan_activity(u8* pitches);
+-static void print_comm_mode(void);
+-static void init_routing_mode_tiles(void);
+-static void print_routing_mode_if_needed(void);
+-static void print_routing_mode(bool enabled);
+-static void print_mappings_if_dirty(u8* midiChans);
+-static void print_mappings(void);
+-static void update(u16 delta);
 -static void midi_change_callback(MidiChangeEvent event);
-+static void print_names(void);
-+static void print_signature(void);
- 
- static u8 lastPitches[DEV_PHYSICAL_CHANS] = { 0 };
- 
+-
+-static u8 lastPitches[DEV_PHYSICAL_CHANS] = { 0 };
+-
 -typedef struct MidiUiChange {
 -    MidiChangeType type;
 -    u8 key;
@@ -2472,27 +2662,159 @@ index 66cd230..5060d67 100644
 -} MidiUiChange;
 -
 -static MidiUiChange lastMidiChangeEvent[DEV_PHYSICAL_CHANS] = { 0 };
-+// What each row and the header show now, so only a change is drawn; the byte past the name's end
-+// is its palette.
-+static char lastNames[DEV_PHYSICAL_CHANS][NAME_CHARS + 2];
-+static char lastSignature[PROGRAM_SIGNATURE_BYTES];
+-
+-static u16 loadPercentSum = 0;
+-static bool commInited = false;
+-static CommMode lastCommMode = Unknown;
+-static bool lastCh3SpecialMode = false;
++#include "program_names.h"
++
++// MDMI plugin fork, stage 24a (D63): the status screen of docs/design/rom-screen.md in the plugin.
++// Every cell of plane A has a shadow of what it holds; each frame every element says what its
++// cells should hold, and only a cell that differs is written, under one ceiling of 64 words for the
++// whole frame, in the order of what matters most. What the ceiling leaves stays different from its
++// shadow and is drawn in a following frame by itself. No formatting, no division while music plays.
++
++#define COLS 40
++#define ROWS 27
++#define WORD_CEILING 32
++#define UNKNOWN_CELL 0xFFFF
++#define CHANS DEV_PHYSICAL_CHANS
++#define FM_CHANS MAX_FM_CHANS
++#define DAC_CHAN (MAX_FM_CHANS - 1)
++#define CH3_CHAN 2
++#define NOISE_CHAN (CHANS - 1)
++
++#define ROW(ch) ((ch) < FM_CHANS ? 2 + 2 * (ch) : 16 + 2 * ((ch) - FM_CHANS))
++#define X_LABEL 0
++#define X_BRACKET 1
++#define X_NUMBER 3
++#define X_STRIPE 4
++#define X_OWNER 5
++#define X_NAME 7
++#define NAME_CELLS 16
++#define X_LEVEL 24
++#define LEVEL_CELLS 4
++#define X_NOTE 29
++#define X_ENVELOPE 33
++#define ENVELOPE_CELLS 6
++#define DAC_CELL_X(v) (24 + 4 * (v))
++#define Y_LOG 25
++#define X_LOG 1
++#define LOG_CELLS 28
++#define X_SIGNATURE_END 38
++#define SIGNATURE_CELLS 9
++#define Y_FOOTER 26
++#define X_LOAD 2
++#define X_COMM 7
++#define COMM_CELLS 9
++#define X_CPU_TEXT 18
++#define X_CPU 22
++#define X_VERSION_END 38
++#define VERSION_CELLS 11
++#define VIEW_LAST_ROW 23
++
++// Channel 3's live note cell (PAL0, index 8) in and out of Ch3 Special (D62).
++#define FM_NOTE_COLOUR 0xE88
++#define SPECIAL_NOTE_COLOUR 0xC8E
++
++#define ATTR(pal, tile) TILE_ATTR_FULL(pal, 0, FALSE, FALSE, tile)
++#define BLANK 0
++#define MASK ATTR(PAL0, 5)
++#define FONT(pal, c) ATTR(pal, fontBase + (u8)((c) - 32))
++
++// Counters for the plugin's tests (rom-screen.md 10.4), global and volatile so LTO keeps them.
++volatile u16 ui_stat_lines, ui_stat_lines_max, ui_stat_ambig, ui_stat_words, ui_stat_words_max;
++volatile u16 ui_stat_lag, ui_stat_lag_max, ui_stat_late_notes, ui_stat_frames, ui_stat_missed;
++// The lines of the screen's own work, without the FM view and SGDK's VBlank process after it.
++volatile u16 ui_stat_draw_lines, ui_stat_draw_lines_max;
++volatile u16 ui_stat_parts[12];
++// The sum of the drawing's lines over the frames, for an average, and a switch that turns the screen
++// off, both for tests only: what the screen costs at idle, and what the frames lose without it.
++volatile u16 ui_stat_draw_sum;
++volatile u16 ui_test_off;
++static u16 parts[12];
++volatile u16 ui_stat_calib;
++static volatile u16 calibSink;
++#define PART(i) if (ui_test_off == 3) parts[i] = lines_within(start, line_stamp())
++
++// 64 wide, as the plane: a cell's offset is (row << 6) + column, in the shadow and on the plane.
++static u16 shadow[ROWS * 64];
++// The first word of a VRAM write address for plane A's cell 0 (rom-screen.md 10.3).
++static u16 planeCtrl;
++static u16 fontBase;
++// Read once a frame: what the elements ask over and over.
++static bool dacOn, specialOn;
++static u16 words;
++static bool ceilingOn;
++static bool leftover;
++static u16 uiFrame;
++
++// The FM parameter view of CC 83 (D64) takes the channels' rows for itself: the screen empties them
++// first, then lets it draw, and fills them again once it is gone.
++static bool viewOn;
++static bool viewReady;
++
++// The ceiling is reached: what an element would still compare waits for the next frame.
++static inline bool full(void)
++{
++    if (ceilingOn && words >= WORD_CEILING) {
++        leftover = TRUE;
++        return TRUE;
++    }
++    return FALSE;
++}
  
- static u16 loadPercentSum = 0;
- static bool commInited = false;
-@@ -119,7 +120,6 @@ static bool lastCh3SpecialMode = false;
- void ui_init(void)
+-void ui_init(void)
++// A 68000 is slow: a cell costs a compare when it holds what it should, and three port writes when not.
++static inline __attribute__((always_inline)) bool cell_at(u16 offset, u16 attr)
  {
-     scheduler_addFrameHandler(update);
+-    scheduler_addFrameHandler(update);
 -    midi_register_change_callback(midi_change_callback);
++    if (shadow[offset] == attr) {
++        return TRUE;
++    }
++    if (words >= WORD_CEILING && ceilingOn) {
++        leftover = TRUE;
++        return FALSE;
++    }
++    // Plane A is 64 cells wide at 0xE000 (SGDK's layout): the address in two words, its top bits 3
++    // for all of it, and the word, straight to the ports.
++    *(volatile u16*)VDP_CTRL_PORT = planeCtrl + (offset << 1);
++    *(volatile u16*)VDP_CTRL_PORT = 3;
++    *(volatile u16*)VDP_DATA_PORT = attr;
++    shadow[offset] = attr;
++    words++;
++    return TRUE;
++}
  
-     SPR_init();
-     VDP_loadFont(custom_font.tileset, DMA);
-@@ -141,22 +141,6 @@ void ui_init(void)
-     ui_fm_init();
+-    SPR_init();
+-    VDP_loadFont(custom_font.tileset, DMA);
+-    VDP_setBackgroundColor(BG_COLOUR_INDEX);
+-    PAL_setColors((PAL0 * 16), pal_0.data, pal_0.length, CPU);
+-    PAL_setColors((PAL1 * 16), pal_1.data, pal_1.length, CPU);
+-    PAL_setColors((PAL2 * 16), pal_2.data, pal_2.length, CPU);
+-    PAL_setColor(PALETTE_INDEX(PAL3, 1), RGB24_TO_VDPCOLOR(0x808080));
+-    PAL_setColor(PALETTE_INDEX(PAL3, 2), RGB24_TO_VDPCOLOR(0x3b2dee));
+-    print_header();
+-    print_channels();
+-
+-    update_load();
+-    init_load();
+-    print_comm_mode();
+-    print_mappings();
+-    init_routing_mode_tiles();
+-    print_routing_mode(midi_dynamic_mode());
+-    ui_fm_init();
++static inline __attribute__((always_inline)) bool cell(u8 x, u8 y, u16 attr)
++{
++    return cell_at(((u16)y << 6) + x, attr);
  }
  
 -static void midi_change_callback(MidiChangeEvent event)
--{
++// The rows of the ribbon (24a2) hold the mask outside its columns, so plane B behind shows only there.
++static u16 empty(u8 x, u8 y)
+ {
 -    u8 midiChannel = event.chan;
 -    DeviceChannel* devChans = midi_channel_mappings();
 -    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
@@ -2503,109 +2825,265 @@ index 66cd230..5060d67 100644
 -                .value = event.value,
 -                .ttl = UI_CHANGE_TTL,
 -            };
--        }
--    }
--}
--
- static void update_ch3sp(bool enabled)
- {
-     if (enabled) {
-@@ -194,6 +178,11 @@ static void print_log(void)
++    const bool ribbonRow = (y & 1) && ((y >= 3 && y <= 13) || (y >= 17 && y <= 23));
++    return ribbonRow && (x < X_NAME || x >= X_NAME + NAME_CELLS) ? MASK : BLANK;
++}
++
++// Once a cell is refused the ceiling is full and every later one would be too: stop at the first.
++static bool blank_cells(u8 x, u8 y, u8 cells)
++{
++    for (u8 i = 0; i < cells; i++) {
++        if (!cell(x + i, y, empty(x + i, y))) {
++            return FALSE;
+         }
      }
++    return TRUE;
+ }
  
-     Log* log = log_dequeue();
-+    // Stage 24: only warnings reach the screen; the info lines were what the plugin's own stores and
-+    // service numbers left there.
-+    while (log != NULL && !ui_log_shown(log)) {
-+        log = log_dequeue();
-+    }
-     if (log == NULL) {
-         return;
+-static void update_ch3sp(bool enabled)
++static bool text(u8 x, u8 y, u8 pal, const char* s, u8 cells)
+ {
+-    if (enabled) {
+-        VDP_drawImageEx(BG_A, &img_sp, TILE_ATTR_FULL(PAL3, 0, FALSE, FALSE, TILE_SP_INDEX),
+-            DEVICE_X + 2, FM_DEVICE_Y + (2 * 2), FALSE, FALSE);
+-    } else {
+-        VDP_clearTextArea(DEVICE_X + 2, FM_DEVICE_Y + (2 * 2), 1, 1);
++    u8 i = 0;
++    for (; i < cells && s[i]; i++) {
++        if (!cell(x + i, y, s[i] == ' ' ? empty(x + i, y) : FONT(pal, s[i]))) {
++            return FALSE;
++        }
      }
-@@ -245,51 +234,122 @@ static void print_ticks(void)
-     draw_text(t, 0, 1);
++    return blank_cells(x + i, y, cells - i);
+ }
+ 
+-static void print_mappings(void)
++static bool right_text(u8 lastX, u8 y, u8 pal, const char* s, u8 cells)
+ {
+-    u8 midiChans[DEV_PHYSICAL_CHANS] = { 0 };
+-    DeviceChannel* chans = midi_channel_mappings();
+-    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
+-        midiChans[i] = chans[i].midiChannel;
++    u8 length = 0;
++    while (length < cells && s[length]) {
++        length++;
+     }
+-    print_mappings_if_dirty(midiChans);
++    const bool all = blank_cells(lastX + 1 - cells, y, cells - length);
++    return text(lastX + 1 - length, y, pal, s, length) && all;
+ }
+ 
+-static bool showLogs = true;
+-static u8 logCurrentY = 0;
++// Lines since the last VInt, 0..261 on NTSC. The V counter repeats 0xE5-0xEA in VBlank; those
++// take the early line, up to 6 too many, and are counted (rom-screen.md 10.4).
++typedef struct LineStamp {
++    u16 frame;
++    u16 line;
++} LineStamp;
+ 
+-static void clear_log_area(void)
++static LineStamp line_stamp(void)
+ {
+-    VDP_clearTextArea(
+-        MARGIN_X + LOG_X, LOG_Y + MARGIN_Y, MAX_EFFECTIVE_X - LOG_X, MAX_LOG_LINES + 1);
+-    logCurrentY = 0;
++    u16 frame;
++    u8 v;
++    u16 status;
++    do {
++        frame = (u16)vtimer;
++        v = *(volatile u8*)0xC00008;
++        status = *(volatile u16*)0xC00004;
++    } while (frame != (u16)vtimer);
++    // By the counter alone: the VBlank flag doesn't turn at the very line the counter does.
++    LineStamp stamp;
++    if (v < 0xE0) {
++        stamp.line = v + 38;
++    } else {
++        if (v >= 0xE5 && v <= 0xEA) {
++            ui_stat_ambig++;
++        }
++        stamp.line = v >= 0xEB ? v - 0xDA : v - 0xE0;
++        if (status & 0x80) {
++            frame++;
++        }
++    }
++    stamp.frame = frame;
++    return stamp;
+ }
+ 
+-static void print_log(void)
++static u16 lines_between(LineStamp from, LineStamp to)
+ {
+-    if (!showLogs) {
+-        return;
+-    }
++    return (u16)(to.frame - from.frame) * 262 + to.line - from.line;
++}
+ 
+-    Log* log = log_dequeue();
+-    if (log == NULL) {
+-        return;
+-    }
+-    if (logCurrentY >= MAX_LOG_LINES) {
+-        clear_log_area();
+-        logCurrentY = 0;
+-    }
+-    switch (log->level) {
+-    case Warn:
+-        VDP_setTextPalette(PAL1);
+-        break;
+-    default:
+-        VDP_setTextPalette(PAL2);
+-        break;
++// Within a frame, for the drawing and its parts, which never take one: by the lines alone, so a
++// VInt's flag read at the wrong moment can't add a frame.
++static u16 lines_within(LineStamp from, LineStamp to)
++{
++    return to.line >= from.line ? to.line - from.line : to.line + 262 - from.line;
++}
++
++// Tests only (ui_test_off = 2): update starts once the V counter is out of its window 0xE5-0xEA, so
++// the stamps are exact.
++static void wait_clear_stamp(void)
++{
++    for (;;) {
++        const u8 v = *(volatile u8*)0xC00008;
++        if (v < 0xE5 || v >= 0xEB || ui_test_off < 2) {
++            return;
++        }
+     }
+-    draw_text(log->msg, MARGIN_X + LOG_X, LOG_Y + MARGIN_Y + logCurrentY);
+-    VDP_setTextPalette(PAL0);
+-    logCurrentY++;
+ }
+ 
+-void ui_show_logs(void)
++static inline bool dac_on(void)
+ {
+-    showLogs = true;
++    return dacOn;
+ }
+ 
+-void ui_hide_logs(void)
++static inline bool special_on(void)
+ {
+-    clear_log_area();
+-    showLogs = false;
++    return specialOn;
+ }
+ 
+-void ui_print_present_devices(void)
++// Each element remembers what it last drew completely under a key; only a changed key, or one the
++// ceiling cut short, costs cells. A key of NOT_DRAWN draws again.
++#define NOT_DRAWN 0xFFFF
++
++// One pass over the channels a frame: a channel whose note, owner and program are as last frame costs
++// a compare; a change sets the bits of the channels the notes, owners and names look at.
++// A channel's noteOn, midiChannel, program and pitch lie side by side: one long word to compare.
++typedef u32 __attribute__((may_alias)) Seen;
++_Static_assert(__builtin_offsetof(DeviceChannel, noteOn) % 2 == 0 && __builtin_offsetof(DeviceChannel, midiChannel) == __builtin_offsetof(DeviceChannel, noteOn) + 1
++        && __builtin_offsetof(DeviceChannel, program) == __builtin_offsetof(DeviceChannel, noteOn) + 2
++        && __builtin_offsetof(DeviceChannel, pitch) == __builtin_offsetof(DeviceChannel, noteOn) + 3,
++    "DeviceChannel's noteOn, midiChannel, program and pitch must be one aligned long word");
++#define SEEN_NOTE 0xFF0000FF
++#define SEEN_OWNER 0x00FF0000
++#define SEEN_NAME 0x00FFFF00
++static Seen channelSeen[CHANS];
++static u16 noteMask, nameMask;
++static bool nameDirty[CHANS];
++static bool ownersMoved;
++static u8 modesSeen;
++
++static void follow_channels(void)
+ {
+-    if (comm_everdrive_pro_is_present()) {
+-        VDP_drawImageEx(BG_A, &img_wait_edpro,
+-            TILE_ATTR_FULL(PAL2, 0, FALSE, FALSE, TILE_WAITING_ED_INDEX), COMM_EXTRA_X,
+-            MAX_EFFECTIVE_Y + 1, FALSE, FALSE);
+-    } else if (comm_everdrive_is_present()) {
+-        VDP_drawImageEx(BG_A, &img_wait_edx7,
+-            TILE_ATTR_FULL(PAL2, 0, FALSE, FALSE, TILE_WAITING_ED_INDEX), COMM_EXTRA_X,
+-            MAX_EFFECTIVE_Y + 1, FALSE, FALSE);
++    const DeviceChannel* devChan = midi_channel_mappings();
++    const u8 modes = dacOn | specialOn << 1;
++    if (modes != modesSeen) {
++        // Only what a mode changes: the DAC takes channel 6's name and note cells, Ch3 Special
++        // channel 3's note; rebuilding all ten names cost some 80 lines in one frame.
++        const u8 changed = modes ^ modesSeen;
++        modesSeen = modes;
++        if (changed & 1) {
++            noteMask |= 1 << DAC_CHAN;
++            nameMask |= 1 << DAC_CHAN;
++            nameDirty[DAC_CHAN] = FALSE;
++        }
++        if (changed & 2) {
++            noteMask |= 1 << CH3_CHAN;
++        }
++        ownersMoved = TRUE;
++    }
++    Seen* seen = channelSeen;
++    for (u8 ch = 0; ch < CHANS; ch++, devChan++, seen++) {
++        const Seen now = *(const Seen*)&devChan->noteOn;
++        const Seen moved = now ^ *seen;
++        if (!moved) {
++            continue;
++        }
++        *seen = now;
++        if (moved & SEEN_NOTE) {
++            noteMask |= 1 << ch;
++        }
++        if (moved & SEEN_OWNER) {
++            ownersMoved = TRUE;
++        }
++        if (moved & SEEN_NAME) {
++            nameMask |= 1 << ch;
++            nameDirty[ch] = FALSE;
++        }
+     }
+ }
+ 
+-static void print_ticks(void)
++// Notes ---------------------------------------------------------------------------------------
++
++// Each channel's note is a copy of the glyphs in its own live cell (rom-screen.md 10.2).
++static const u8 NOTE_PAL[CHANS] = { PAL0, PAL0, PAL0, PAL1, PAL1, PAL1, PAL2, PAL2, PAL2, PAL3 };
++static const u8 NOTE_COPY[CHANS] = { 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 };
++static u16 noteDrawn[CHANS];
++
++// The first glyph's whole attribute: a glyph's is this plus its number.
++static bool note_cells(u8 x, u8 y, u16 first, u8 key)
+ {
+-    char t[6];
+-    sprintf(t, "%-5u", scheduler_ticks());
+-    draw_text(t, 0, 1);
++    const u8* g = UI_NOTE[key & 0x7F];
++    const u16 offset = ((u16)y << 6) + x;
++    bool all = cell_at(offset, first + g[0]);
++    all &= cell_at(offset + 1, first + g[1]);
++    all &= cell_at(offset + 2, first + g[2]);
++    return all;
  }
  
 -static void print_midi_changes(void)
-+bool ui_log_shown(const Log* log)
-+{
-+    return log->level == Warn;
-+}
-+
-+// The name a device channel's row shows: its program's, DAC on FM6 while the DAC plays, nothing
-+// without a MIDI channel, and the program's number where the table has no name.
-+static void name_of_channel(u8 chan, char* text, u8* pal)
-+{
-+    const DeviceChannel* devChan = &midi_channel_mappings()[chan];
-+    *pal = PAL0;
-+    text[0] = 0;
-+    if (devChan->midiChannel == UNASSIGNED_MIDI_CHANNEL) {
-+        return;
-+    }
-+    if (chan == MAX_FM_CHANS - 1 && synth_global_parameters()->dacEnable) {
-+        strcpy(text, "DAC");
-+        return;
-+    }
-+    const char* name = program_names()->names[chan >= DEV_CHAN_MIN_PSG][devChan->program];
-+    if (!name[0]) {
-+        sprintf(text, "PROGRAM %d", devChan->program + 1);
-+        *pal = PAL3;
-+        return;
-+    }
-+    u8 i = 0;
-+    for (; i < NAME_CHARS && name[i]; i++) {
-+        text[i] = name[i];
-+    }
-+    text[i] = 0;
-+}
-+
-+// What a row's name was made from: the program, the MIDI channel, the DAC and the table's bytes.
-+// The frame handler runs every frame beside the MIDI it reads, so a row is made again only when
-+// one of them changed: the rest costs a compare.
-+typedef struct NameSource {
-+    u8 program;
-+    u8 midiChannel;
-+    bool dac;
-+    char name[PROGRAM_NAME_BYTES];
-+} NameSource;
-+static NameSource lastSources[DEV_PHYSICAL_CHANS];
-+static bool sourcesKnown;
-+
-+static bool name_source_changed(u8 chan)
-+{
-+    const DeviceChannel* devChan = &midi_channel_mappings()[chan];
-+    NameSource* last = &lastSources[chan];
-+    const bool dac = chan == MAX_FM_CHANS - 1 && synth_global_parameters()->dacEnable;
-+    const char* name = program_names()->names[chan >= DEV_CHAN_MIN_PSG][devChan->program];
-+    if (sourcesKnown && last->program == devChan->program && last->midiChannel == devChan->midiChannel
-+        && last->dac == dac && !memcmp(last->name, name, PROGRAM_NAME_BYTES)) {
-+        return false;
-+    }
-+    last->program = devChan->program;
-+    last->midiChannel = devChan->midiChannel;
-+    last->dac = dac;
-+    memcpy(last->name, name, PROGRAM_NAME_BYTES);
-+    return true;
-+}
-+
-+static void print_names(void)
++static void draw_notes(void)
  {
-     for (u8 chan = 0; chan < DEV_PHYSICAL_CHANS; chan++) {
+-    for (u8 chan = 0; chan < DEV_PHYSICAL_CHANS; chan++) {
 -        MidiUiChange* change = &lastMidiChangeEvent[chan];
 -        if (change->type == MidiChangeType_None) {
-+        if (!name_source_changed(chan)) {
++    const DeviceChannel* chans = midi_channel_mappings();
++    for (u8 ch = 0; noteMask >> ch && !full(); ch++) {
++        if (!(noteMask & 1 << ch)) {
              continue;
          }
 -        if (change->ttl == 0) {
 -            change->type = MidiChangeType_None;
 -            VDP_clearTextArea(CHANGE_X + MARGIN_X, MARGIN_Y + MIDI_Y + (chan * 2), 7, 1);
--            continue;
-+        char text[NAME_CHARS + 2];
-+        u8 pal;
-+        name_of_channel(chan, text, &pal);
-+        u8 length = strlen(text);
-+        while (length < NAME_CHARS) {
-+            text[length++] = ' ';
++        noteMask &= ~(1 << ch);
++        if (ch == DAC_CHAN && dac_on()) {
++            noteDrawn[ch] = NOT_DRAWN;
+             continue;
          }
 -        if (change->ttl == UI_CHANGE_TTL) {
 -            VDP_setTextPalette(PAL2);
@@ -2625,55 +3103,1069 @@ index 66cd230..5060d67 100644
 -                break;
 -            }
 -            VDP_setTextPalette(PAL0);
-+        text[NAME_CHARS] = 0;
-+        text[NAME_CHARS + 1] = pal;
-+        if (!memcmp(text, lastNames[chan], sizeof(text))) {
++        const DeviceChannel* devChan = &chans[ch];
++        const u16 want = devChan->noteOn ? devChan->pitch : 0x100;
++        if (want == noteDrawn[ch]) {
 +            continue;
++        }
++        const bool all = want == 0x100
++            ? blank_cells(X_NOTE, ROW(ch), 3)
++            : note_cells(X_NOTE, ROW(ch), ATTR(NOTE_PAL[ch], UI_T_NOTE + NOTE_COPY[ch] * UI_NOTE_GLYPHS), devChan->pitch);
++        if (all) {
++            noteDrawn[ch] = want;
++        } else {
++            noteMask |= 1 << ch;
++            ui_stat_late_notes++;
          }
 -        change->ttl--;
-+        memcpy(lastNames[chan], text, sizeof(text));
-+        VDP_setTextPalette(pal);
-+        draw_text(text, NAME_X, MIDI_Y + (chan * 2));
-+        VDP_setTextPalette(PAL0);
      }
-+    sourcesKnown = true;
-+}
-+
-+// Right aligned, ending at the screen's last column but the margin.
-+static void print_signature(void)
-+{
-+    const char* signature = program_names()->signature;
-+    if (!memcmp(signature, lastSignature, PROGRAM_SIGNATURE_BYTES)) {
-+        return;
-+    }
-+    memcpy(lastSignature, signature, PROGRAM_SIGNATURE_BYTES);
-+    char text[PROGRAM_SIGNATURE_BYTES + 1];
-+    memcpy(text, signature, PROGRAM_SIGNATURE_BYTES);
-+    text[PROGRAM_SIGNATURE_BYTES] = 0;
-+    u8 length = strlen(text);
-+    VDP_clearTextArea(MAX_X - MARGIN_X - PROGRAM_SIGNATURE_BYTES + 1, MARGIN_Y, PROGRAM_SIGNATURE_BYTES, 1);
-+    VDP_setTextPalette(PAL3);
-+    draw_text(text, MAX_X - MARGIN_X - length, 0);
-+    VDP_setTextPalette(PAL0);
  }
  
- static void update(u16 delta)
+-static void update(u16 delta)
++// Owners: who holds a voice, a stripe and the MIDI channel's digit in a shade of the chip -----
++
++// Index 2 of the chip's palette or 12-14 by the MIDI channel (rom-screen.md 10.2); the DAC and
++// channel 3 in Ch3 Special always their own palette's index 2.
++static u16 owner_attr(u8 ch, u8 midiChannel, bool stripe)
  {
-     update_key_on_off();
+-    update_key_on_off();
 -    print_midi_changes();
++    u8 pal = ch < FM_CHANS ? PAL0 : PAL1;
++    u8 inkIndex = midiChannel & 3;
++    if (ch == DAC_CHAN && dac_on()) {
++        pal = PAL2;
++        inkIndex = 0;
++    } else if (ch == CH3_CHAN && special_on()) {
++        pal = PAL3;
++        inkIndex = 0;
++    }
++    return stripe ? ATTR(pal, UI_T_STRIPE + inkIndex) : ATTR(pal, UI_T_OWNER + inkIndex * 16 + midiChannel);
++}
  
-     static u16 activityFrame = 0;
-     activityFrame += delta;
-     if (activityFrame >= FRAMES_BEFORE_UPDATE_ACTIVITY) {
-         activityFrame = 0;
-         print_mappings();
-+        print_names();
-+        print_signature();
-         print_comm_mode();
-         print_log();
-         print_routing_mode_if_needed();
+-    static u16 activityFrame = 0;
+-    activityFrame += delta;
+-    if (activityFrame >= FRAMES_BEFORE_UPDATE_ACTIVITY) {
+-        activityFrame = 0;
+-        print_mappings();
+-        print_comm_mode();
+-        print_log();
+-        print_routing_mode_if_needed();
+-        if (settings_debug_ticks()) {
+-            print_ticks();
+-        }
++static u16 ownerDrawn[CHANS];
++static bool ownersPending;
+ 
+-        bool ch3SpecialMode = synth_global_parameters()->specialMode;
+-        if (ch3SpecialMode != lastCh3SpecialMode) {
+-            update_ch3sp(ch3SpecialMode);
+-            lastCh3SpecialMode = ch3SpecialMode;
++static void draw_owners(void)
++{
++    const DeviceChannel* chans = midi_channel_mappings();
++    if (!ownersPending && !ownersMoved) {
++        return;
++    }
++    ownersMoved = FALSE;
++    ownersPending = FALSE;
++    for (u8 ch = 0; ch < CHANS; ch++) {
++        if (full()) {
++            ownersPending = TRUE;
++            return;
++        }
++        const u8 midiChannel = chans[ch].midiChannel;
++        const u8 y = ROW(ch);
++        const bool assigned = midiChannel <= 15;
++        const u16 stripe = assigned ? owner_attr(ch, midiChannel, TRUE) : 0;
++        // Joined to the next row's stripe when the same channel holds both, never across the chips.
++        const bool joined = assigned && ch + 1 < CHANS && ch != FM_CHANS - 1
++            && chans[ch + 1].midiChannel == midiChannel && owner_attr(ch + 1, midiChannel, TRUE) == stripe;
++        // The stripe's palette and ink, the MIDI channel and the join.
++        const u16 want = assigned ? (stripe >> 13 & 3) | (stripe & 3) << 2 | midiChannel << 4 | (joined ? 0x100 : 0) : 0x200;
++        if (want == ownerDrawn[ch]) {
++            continue;
++        }
++        bool all;
++        if (!assigned) {
++            all = cell(X_STRIPE, y, empty(X_STRIPE, y));
++            all &= cell(X_OWNER, y, empty(X_OWNER, y));
++            all &= cell(X_STRIPE, y + 1, empty(X_STRIPE, y + 1));
++        } else {
++            all = cell(X_STRIPE, y, stripe);
++            all &= cell(X_OWNER, y, owner_attr(ch, midiChannel, FALSE));
++            all &= cell(X_STRIPE, y + 1, joined ? stripe : empty(X_STRIPE, y + 1));
++        }
++        if (all) {
++            ownerDrawn[ch] = want;
++        } else {
++            ownersPending = TRUE;
+         }
+     }
++}
+ 
+-    static u16 loadCalculationFrame = 0;
+-    loadCalculationFrame += delta;
+-    if (loadCalculationFrame >= FRAMES_BEFORE_UPDATE_LOAD_PERCENT) {
+-        loadCalculationFrame = 0;
+-        loadPercentSum += load_percent();
+-    }
++// The DAC's four voices on channel 6's row ---------------------------------------------------
+ 
+-    static u16 loadFrame = 0;
+-    loadFrame += delta;
+-    if (loadFrame >= FRAMES_BEFORE_UPDATE_LOAD) {
+-        loadFrame = 0;
+-        update_load();
++// Where each voice's sample ends, estimated: a 256-byte block lasts about a frame at BlastEm's
++// PCM4 rate (rom-screen.md 10.5). A loop that holds has no end.
++#define NO_END 0xFFFF
++static u16 dacOrder[PCM_DRV_VOICES];
++static u8 dacState[PCM_DRV_VOICES];
++static u8 dacKey[PCM_DRV_VOICES];
++static u16 dacEnd[PCM_DRV_VOICES];
++static u16 dacDrawn[PCM_DRV_VOICES];
++static u16 dacRowDrawn;
++
++static void follow_dac(void)
++{
++    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++        MidiDacVoiceView view;
++        midi_dac_voice_view(v, &view);
++        if (view.order == dacOrder[v] && view.state == dacState[v]) {
++            continue;
++        }
++        if (view.state == MIDI_DAC_VOICE_PLAYING) {
++            if (view.order != dacOrder[v]) {
++                dacEnd[v] = uiFrame + view.blocks;
++            }
++        } else if (view.state == MIDI_DAC_VOICE_RELEASE) {
++            dacEnd[v] = uiFrame + view.releaseBlocks;
++        } else {
++            dacEnd[v] = NO_END;
++        }
++        dacOrder[v] = view.order;
++        dacState[v] = view.state;
++        dacKey[v] = view.key;
+     }
++}
+ 
+-    ui_fm_update();
+-    SYS_doVBlankProcessEx(IMMEDIATELY);
++static bool dac_voice_sounds(u8 v)
++{
++    return dacEnd[v] == NO_END || (s16)(dacEnd[v] - uiFrame) > 0;
+ }
+ 
+-static u16 load_percent(void)
++static void draw_dac(void)
+ {
+-    u16 idle = comm_idle_count();
+-    u16 busy = comm_busy_count();
+-    if (idle == 0 && busy == 0) {
+-        return 0;
++    const u8 y = ROW(DAC_CHAN);
++    const u16 on = dac_on();
++    if (on != dacRowDrawn) {
++        // The gaps between the voices' cells, or between the level, the note and the envelope.
++        bool all = cell(27, y, BLANK);
++        all &= cell(28, y, BLANK);
++        all &= cell(31, y, BLANK);
++        all &= cell(32, y, BLANK);
++        all &= cell(35, y, BLANK);
++        if (all) {
++            dacRowDrawn = on;
++        }
++        for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++            dacDrawn[v] = NOT_DRAWN;
++        }
++    }
++    if (!on) {
++        return;
++    }
++    for (u8 v = 0; v < PCM_DRV_VOICES && !full(); v++) {
++        const bool sounds = dac_voice_sounds(v);
++        const u16 want = dacState[v] == MIDI_DAC_VOICE_FREE ? 0x200 : (sounds ? 0x100 : 0) | dacKey[v];
++        if (want == dacDrawn[v]) {
++            continue;
++        }
++        const u8 x = DAC_CELL_X(v);
++        bool all;
++        if (want == 0x200) {
++            const u16 dash = ATTR(PAL2, UI_T_DASH);
++            all = cell(x, y, dash);
++            all &= cell(x + 1, y, dash);
++            all &= cell(x + 2, y, dash);
++        } else {
++            all = note_cells(x, y, ATTR(PAL2, sounds ? UI_T_DAC_NOTE : UI_T_DAC_DIM), dacKey[v]);
++        }
++        if (all) {
++            dacDrawn[v] = want;
++        }
+     }
+-    return (busy * 100) / (idle + busy);
+ }
+ 
+-void ui_draw_text(const char* text, u16 x, u16 y)
++// Levels: FM by velocity x CC 7 and the release of operator 4 (an estimate) ------------------
++
++static u8 level[FM_CHANS];
++static u8 peak[FM_CHANS];
++static u8 peakHold[FM_CHANS];
++static u8 releaseWait[FM_CHANS];
++static u8 levelTarget[FM_CHANS];
++static u8 releaseFrames[FM_CHANS];
++static bool levelOn[FM_CHANS];
++static u16 levelDrawn[FM_CHANS];
++
++#define PEAK_FRAMES 30
++// Frames per stripe of the release by RR, roughly the chip's release times.
++static const u8 RELEASE_FRAMES[16] = { 255, 60, 40, 30, 20, 15, 10, 8, 6, 4, 3, 2, 1, 1, 1, 1 };
++
++static void follow_level(u8 ch, const DeviceChannel* devChan)
+ {
+-    draw_text(text, x, y);
++    if (!devChan->noteOn && !level[ch] && !peak[ch]) {
++        return;
++    }
++    if (devChan->noteOn) {
++        // At the Note On, and every 8 frames or so for CC 7.
++        if (!levelOn[ch] || !(uiFrame & 14)) {
++            levelTarget[ch] = (((u16)midi_fm_velocity(ch) * (midi_fm_volume(ch) + 1)) >> 10) + 1;
++        }
++        level[ch] = levelTarget[ch];
++        releaseWait[ch] = 0;
++    } else if (level[ch]) {
++        if (levelOn[ch]) {
++            releaseFrames[ch] = RELEASE_FRAMES[synth_channel_parameters(ch)->operators[3].releaseRate & 15];
++        }
++        // Followed every other frame: two frames at a time.
++        releaseWait[ch] += 2;
++        if (releaseWait[ch] >= releaseFrames[ch]) {
++            releaseWait[ch] = 0;
++            level[ch]--;
++        }
++    }
++    levelOn[ch] = devChan->noteOn;
++    if (level[ch] >= peak[ch]) {
++        peak[ch] = level[ch];
++        peakHold[ch] = PEAK_FRAMES >> 1;
++    } else if (peakHold[ch]) {
++        peakHold[ch]--;
++    } else {
++        peak[ch] = level[ch];
++    }
+ }
+ 
+-static void draw_text(const char* text, u16 x, u16 y)
++// A 16-stripe bar over 4 cells; coloured ones are green, green, yellow, red.
++static bool bar_cells(u8 x, u8 y, u8 pal, u16 base, bool coloured, u8 lit, u8 top)
+ {
+-    VDP_drawText(text, MARGIN_X + x, MARGIN_Y + y);
++    bool all = TRUE;
++    for (u8 t = 0; t < 4; t++) {
++        const u8 from = t * 4;
++        const u8 n = lit > from ? (lit - from > 4 ? 4 : lit - from) : 0;
++        u8 peakAt = 0;
++        if (top > lit && top - 1 >= from && top - 1 < from + 4) {
++            peakAt = top - from;
++        }
++        const u16 colour = coloured ? (t < 2 ? 0 : t - 1) * UI_LEVEL_PATTERNS : 0;
++        all &= cell(x + t, y, ATTR(pal, base + colour + UI_LEVEL_PATTERN[n][peakAt]));
++    }
++    return all;
+ }
+ 
+-static void set_tile(u16 tileIndex, u8 pal, u16 x, u16 y)
++// Channel 3's operators in Ch3 Special: a square each, filled by channel 3's level while it sounds.
++static u16 squares_key(const DeviceChannel* chans)
+ {
+-    VDP_setTileMapXY(BG_A, TILE_ATTR_FULL(pal, 0, FALSE, FALSE, tileIndex), x, y);
++    const bool ops = midi_fm_sm_plays_operators();
++    u8 fill = (level[CH3_CHAN] + 3) >> 2;
++    if (fill < 1) {
++        fill = 1;
++    }
++    u16 key = 0x8000 | fill;
++    for (u8 op = 0; op < 4; op++) {
++        const bool on = op == 3 || !ops ? chans[CH3_CHAN].noteOn : chans[DEV_CHAN_MIN_SPECIAL_MODE + op].noteOn;
++        key |= on ? 0x10 << op : 0;
++    }
++    return key;
+ }
+ 
+-static void print_header(void)
++static bool draw_squares(u16 key)
+ {
+-    draw_text("MDMI", 0, 0);
+-    draw_text(BUILD, 5, 0);
+-
+-    VDP_loadTileSet(&ts_borders, TILE_BORDERS_INDEX, DMA);
+-
+-    set_tile(TILE_BORDERS_LINE_START_INDEX, PAL3, DEVICE_X, FM_DEVICE_Y);
+-    set_tile(TILE_BORDERS_LINE_INDEX, PAL3, DEVICE_X, FM_DEVICE_Y + 1);
+-    set_tile(TILE_BORDERS_LINE_INDEX, PAL3, DEVICE_X, FM_DEVICE_Y + 2);
+-    VDP_drawImageEx(BG_A, &img_device_fm,
+-        TILE_ATTR_FULL(PAL3, 0, FALSE, FALSE, TILE_DEVICE_FM_INDEX), DEVICE_X, FM_DEVICE_Y + 3,
+-        FALSE, FALSE);
+-    set_tile(TILE_BORDERS_LINE_INDEX, PAL3, DEVICE_X, FM_DEVICE_Y + 8);
+-    set_tile(TILE_BORDERS_LINE_INDEX, PAL3, DEVICE_X, FM_DEVICE_Y + 9);
+-    set_tile(TILE_BORDERS_LINE_END_INDEX, PAL3, DEVICE_X, FM_DEVICE_Y + 10);
+-
+-    set_tile(TILE_BORDERS_LINE_START_INDEX, PAL3, DEVICE_X, PSG_DEVICE_Y + 1);
+-    set_tile(TILE_BORDERS_LINE_INDEX, PAL3, DEVICE_X, PSG_DEVICE_Y + 2);
+-    VDP_drawImageEx(BG_A, &img_device_psg,
+-        TILE_ATTR_FULL(PAL3, 0, FALSE, FALSE, TILE_DEVICE_PSG_INDEX), DEVICE_X, PSG_DEVICE_Y + 3,
+-        FALSE, FALSE);
+-    set_tile(TILE_BORDERS_LINE_INDEX, PAL3, DEVICE_X, PSG_DEVICE_Y + 6);
+-    set_tile(TILE_BORDERS_LINE_END_INDEX, PAL3, DEVICE_X, PSG_DEVICE_Y + 7);
++    bool all = TRUE;
++    for (u8 op = 0; op < 4; op++) {
++        all &= cell(X_LEVEL + op, ROW(CH3_CHAN), ATTR(PAL3, UI_T_SQUARE + (key & (0x10 << op) ? key & 7 : 5)));
++    }
++    return all;
+ }
+ 
+-static void print_channels(void)
++static u8 levelTurn;
++
++static void draw_levels(void)
+ {
+-    VDP_setTextPalette(PAL3);
+-    for (u8 i = 0; i < 10; i++) {
+-        draw_text(DEV_CH_TEXT[i], 1, MIDI_Y + (i * 2));
++    const DeviceChannel* chans = midi_channel_mappings();
++    // Three channels a frame, round the six: each is followed and drawn every other frame.
++    for (u8 i = 0; i < 3 && !full(); i++) {
++        const u8 ch = levelTurn;
++        levelTurn = levelTurn == FM_CHANS - 1 ? 0 : levelTurn + 1;
++        follow_level(ch, &chans[ch]);
++        if (ch == DAC_CHAN && dac_on()) {
++            levelDrawn[ch] = NOT_DRAWN;
++            continue;
++        }
++        const bool squares = ch == CH3_CHAN && special_on();
++        const u16 want = squares ? squares_key(chans) : level[ch] | peak[ch] << 5;
++        if (want == levelDrawn[ch]) {
++            continue;
++        }
++        if (squares ? draw_squares(want) : bar_cells(X_LEVEL, ROW(ch), PAL2, UI_T_LEVEL, TRUE, level[ch], peak[ch])) {
++            levelDrawn[ch] = want;
++        }
+     }
+-    VDP_setTextPalette(PAL0);
+ }
+ 
+-static void update_key_on_off(void)
++// The PSG's tone channels: a square wave whose crests follow the period the chip plays ---------
++
++static u16 waveDrawn[3];
++static u16 waveTone[3];
++static u8 waveLoud[3];
++static u8 waveTurn;
++
++// Two of the three channels a frame: each is looked at in the frame of its tone write or the next.
++static void draw_waves(void)
+ {
+-    u8 pitches[DEV_PHYSICAL_CHANS];
+-    for (u8 chan = 0; chan < MAX_FM_CHANS + MAX_PSG_CHANS; chan++) {
+-        DeviceChannel* devChan = &midi_channel_mappings()[chan];
+-        if (devChan->noteOn) {
+-            pitches[chan] = devChan->pitch;
++    for (u8 n = 0; n < 2 && !full(); n++) {
++        const u8 i = waveTurn;
++        waveTurn = waveTurn == 2 ? 0 : waveTurn + 1;
++        const u8 loud = 15 - (midi_psg_attenuation(i) & 15);
++        const u16 tone = midi_psg_tone(i);
++        if (tone == waveTone[i] && loud == waveLoud[i] && waveDrawn[i] != NOT_DRAWN) {
++            continue;
++        }
++        waveTone[i] = tone;
++        waveLoud[i] = loud;
++        u16 want = 0xFF;
++        if (loud && tone != 0xFFFF) {
++            u8 cls = 0;
++            while (cls < UI_WAVE_CLASSES - 1 && tone <= UI_WAVE_PERIOD[cls]) {
++                cls++;
++            }
++            want = cls << 2 | (loud >= 11 ? 2 : loud >= 6 ? 1 : 0);
++        }
++        if (want == waveDrawn[i]) {
++            continue;
++        }
++        const u8* tiles = want == 0xFF ? NULL : UI_WAVE[want >> 2][want & 3];
++        bool all = TRUE;
++        for (u8 t = 0; t < 4; t++) {
++            all &= cell(X_LEVEL + t, ROW(FM_CHANS + i), ATTR(PAL1, UI_T_WAVE + (tiles ? tiles[t] : UI_WAVE_FLAT)));
++        }
++        if (all) {
++            waveDrawn[i] = want;
+         } else {
+-            pitches[chan] = 0;
++            waveDrawn[i] = NOT_DRAWN;
+         }
+     }
+-    print_chan_activity(pitches);
+ }
+ 
+-static void print_mappings_if_dirty(u8* midiChans)
++// What 24a3 draws on the right: empty until then, but for the DAC's table on channel 6's row.
++static u16 envelopeDrawn[CHANS];
++static u16 envelopesFor;
++
++static void draw_envelopes(void)
+ {
+-    static u8 lastMidiChans[DEV_PHYSICAL_CHANS];
+-    if (memcmp(lastMidiChans, midiChans, sizeof(u8) * DEV_PHYSICAL_CHANS) == 0) {
++    if (envelopesFor == dacOn) {
+         return;
+     }
+-
+-    for (u8 devChan = 0; devChan < 10; devChan++) {
+-        u8 midiCh = midiChans[devChan];
+-        const char* text;
+-        if (midiCh == UNASSIGNED_MIDI_CHANNEL) {
+-            text = MIDI_CH_UNASSIGNED_TEXT;
++    envelopesFor = dacOn;
++    for (u8 ch = 0; ch < CHANS; ch++) {
++        if (full()) {
++            envelopesFor = NOT_DRAWN;
++            return;
++        }
++        const u16 want = ch == DAC_CHAN && dac_on();
++        if (want == envelopeDrawn[ch]) {
++            continue;
++        }
++        const u8 y = ROW(ch);
++        bool all = blank_cells(X_ENVELOPE, y - 1, ENVELOPE_CELLS);
++        if (!want) {
++            all &= blank_cells(X_ENVELOPE, y, ENVELOPE_CELLS);
++        }
++        if (all) {
++            envelopeDrawn[ch] = want;
+         } else {
+-            text = MIDI_CH_TEXT[midiChans[devChan]];
++            envelopesFor = NOT_DRAWN;
+         }
+-        draw_text(text, 3, MIDI_Y + (devChan * 2));
+     }
+ }
+ 
+-static void print_chan_activity(u8* pitches)
++// Names ------------------------------------------------------------------------------------------
++
++// A row's name is made again when its program, MIDI channel or the DAC change, or the bank's names
++// (its signature changes with them).
++static char nameText[CHANS][NAME_CELLS + 1];
++static bool namesStale;
++
++// A number's digits without division: hundreds, tens and ones by subtraction.
++static void put_number(char* out, u16 value)
+ {
+-    bool setPalette = false;
+-    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
+-        u8 pitch = pitches[i];
+-        if (pitch == lastPitches[i]) {
+-            continue;
++    static const u16 POWERS[] = { 100, 10, 1 };
++    u8 n = 0;
++    for (u8 p = 0; p < 3; p++) {
++        char digit = '0';
++        while (value >= POWERS[p]) {
++            value -= POWERS[p];
++            digit++;
+         }
+-        if (pitch == 0) {
+-            VDP_clearTextArea(PITCH_X + MARGIN_X, MIDI_Y + (i * 2) + MARGIN_Y, 3, 1);
+-        } else {
+-            if (!setPalette) {
+-                VDP_setTextPalette(PAL2);
+-                setPalette = true;
+-            }
+-            draw_text(
+-                pitch > MIN_UI_MIDI_PITCH ? MIDI_PITCH_NAMES[pitch - MIN_UI_MIDI_PITCH] : "???",
+-                PITCH_X, MIDI_Y + (i * 2));
++        if (digit != '0' || n || p == 2) {
++            out[n++] = digit;
++        }
++    }
++    out[n] = 0;
++}
++
++static void make_name(u8 ch, char* text)
++{
++    const DeviceChannel* devChan = &midi_channel_mappings()[ch];
++    text[0] = 0;
++    if (devChan->midiChannel == UNASSIGNED_MIDI_CHANNEL) {
++        return;
++    }
++    if (ch == DAC_CHAN && dac_on()) {
++        strcpy(text, "DAC");
++        return;
++    }
++    const char* name = program_names()->names[ch >= DEV_CHAN_MIN_PSG][devChan->program];
++    if (!name[0]) {
++        strcpy(text, "PROGRAM ");
++        put_number(text + 8, devChan->program + 1);
++        return;
++    }
++    u8 i = 0;
++    for (; i < NAME_CELLS && i < PROGRAM_NAME_BYTES && name[i]; i++) {
++        text[i] = name[i];
++    }
++    text[i] = 0;
++}
++
++static void draw_names(void)
++{
++    if (namesStale) {
++        namesStale = FALSE;
++        nameMask = (1 << CHANS) - 1;
++        for (u8 ch = 0; ch < CHANS; ch++) {
++            nameDirty[ch] = FALSE;
+         }
+-        lastPitches[i] = pitch;
+     }
+-    if (setPalette) {
+-        VDP_setTextPalette(PAL0);
++    for (u8 ch = 0; nameMask >> ch && !full(); ch++) {
++        if (!(nameMask & 1 << ch)) {
++            continue;
++        }
++        if (!nameDirty[ch]) {
++            make_name(ch, nameText[ch]);
++            nameDirty[ch] = TRUE;
++        }
++        if (text(X_NAME, ROW(ch), PAL3, nameText[ch], NAME_CELLS)) {
++            nameDirty[ch] = FALSE;
++            nameMask &= ~(1 << ch);
++        }
+     }
+ }
+ 
+-static void print_comm_mode(void)
++// Footer: load, link, CPU, the journal's last warning, the bank and the version ---------------
++
++static u16 cpuLines[4];
++static u8 cpuTurn;
++static u8 cpuLit, cpuPeak, cpuPeakHold;
++static u8 loadLit;
++static u16 loadFrame;
++
++// update's lines in 16 stripes of 16 lines, the most of 4 frames, 15 times a second.
++static void follow_cpu(u16 lines)
+ {
+-    if (commInited) {
++    cpuLines[cpuTurn & 3] = lines;
++    if ((++cpuTurn & 3) != 0) {
+         return;
+     }
++    u16 most = 0;
++    for (u8 i = 0; i < 4; i++) {
++        if (cpuLines[i] > most) {
++            most = cpuLines[i];
++        }
++    }
++    const u16 stripes = (most + 15) >> 4;
++    cpuLit = stripes > 16 ? 16 : stripes;
++    if (cpuLit >= cpuPeak) {
++        cpuPeak = cpuLit;
++        cpuPeakHold = PEAK_FRAMES >> 2;
++    } else if (cpuPeakHold) {
++        cpuPeakHold--;
++    } else {
++        cpuPeak = cpuLit;
++    }
++}
+ 
+-    if (lastCommMode == comm_mode()) {
++// The share of the link's busy time in 16 stripes, by comparing instead of dividing.
++static void follow_load(u16 delta)
++{
++    loadFrame += delta;
++    if (loadFrame < 15) {
+         return;
+     }
+-    lastCommMode = comm_mode();
++    loadFrame = 0;
++    const u32 idle = comm_idle_count(), busy = comm_busy_count();
++    u8 lit = 0;
++    while (lit < 16 && busy * 16 > (u32)lit * (idle + busy)) {
++        lit++;
++    }
++    loadLit = lit;
++    comm_reset_counts();
++}
++
++static char logText[LOG_CELLS + 1];
++static bool logDirty;
++static bool showLogs = TRUE;
++
++static void follow_log(void)
++{
++    const Log* log;
++    while ((log = log_dequeue()) != NULL) {
++        if (!showLogs || !ui_log_shown(log)) {
++            continue;
++        }
++        u8 i = 0;
++        for (; i < LOG_CELLS && log->msg[i]; i++) {
++            logText[i] = log->msg[i];
++        }
++        logText[i] = 0;
++        logDirty = TRUE;
++    }
++}
++
++static char signatureText[PROGRAM_SIGNATURE_BYTES + 1];
++static bool signatureDirty;
+ 
+-    const Image* MODES_IMAGES[] = { &img_comm_waiting, &img_comm_ed_usb, &img_comm_ed_pro_usb,
+-        &img_comm_serial, &img_comm_megawifi, &img_comm_demo, 0 };
+-    u16 index;
+-    switch (lastCommMode) {
++static void follow_signature(void)
++{
++    const char* signature = program_names()->signature;
++    if (memcmp(signature, signatureText, PROGRAM_SIGNATURE_BYTES)) {
++        memcpy(signatureText, signature, PROGRAM_SIGNATURE_BYTES);
++        signatureDirty = TRUE;
++        namesStale = TRUE;
++    }
++}
++
++static CommMode shownComm = Unknown;
++static bool commDirty;
++static u8 presentDevice;
++
++static const char* comm_text(void)
++{
++    switch (comm_mode()) {
+     case Discovery:
+-        index = 0;
+-        break;
++        return presentDevice == 2 ? "WAIT PRO" : presentDevice == 1 ? "WAIT X7" : "WAITING";
+     case Everdrive:
+-        index = 1;
+-        commInited = true;
+-        break;
++        return "ED X7 USB";
+     case EverdrivePro:
+-        index = 2;
+-        commInited = true;
+-        break;
++        return "EDPRO USB";
+     case Serial:
+-        index = 3;
+-        commInited = true;
+-        break;
++        return "SERIAL";
+     case MegaWiFi:
+-        index = 4;
+-        commInited = true;
+-        break;
++        return "MEGAWIFI";
+     case Demo:
+-        index = 5;
+-        commInited = true;
+-        break;
++        return "DEMO";
+     default:
+-        index = 0;
+-        break;
++        return "";
+     }
++}
+ 
+-    VDP_clearTextArea(9, MAX_EFFECTIVE_Y + 1, 7, 1);
+-    VDP_drawImageEx(BG_A, MODES_IMAGES[index],
+-        TILE_ATTR_FULL(PAL0, 0, FALSE, FALSE, TILE_IMAGES_INDEX), 9, MAX_EFFECTIVE_Y + 1, FALSE,
+-        FALSE);
++static u16 loadDrawn, cpuDrawn;
+ 
+-    if (commInited) {
+-        VDP_clearTextArea(COMM_EXTRA_X, MAX_EFFECTIVE_Y + 1, 5, 1);
++static void draw_footer(void)
++{
++    if (loadLit != loadDrawn && bar_cells(X_LOAD, Y_FOOTER, PAL3, UI_T_BAR, FALSE, loadLit, 0)) {
++        loadDrawn = loadLit;
++    }
++    const u16 cpu = cpuLit | cpuPeak << 5;
++    if (cpu != cpuDrawn && bar_cells(X_CPU, Y_FOOTER, PAL3, UI_T_BAR, FALSE, cpuLit, cpuPeak)) {
++        cpuDrawn = cpu;
++    }
++    if ((uiFrame & 15) == 0 && comm_mode() != shownComm) {
++        shownComm = comm_mode();
++        commDirty = TRUE;
++    }
++    if (commDirty && text(X_COMM, Y_FOOTER, PAL1, comm_text(), COMM_CELLS)) {
++        commDirty = FALSE;
++    }
++    if (signatureDirty && right_text(X_SIGNATURE_END, Y_LOG, PAL1, signatureText, SIGNATURE_CELLS)) {
++        signatureDirty = FALSE;
++    }
++    if (logDirty && text(X_LOG, Y_LOG, PAL3, logText, LOG_CELLS)) {
++        logDirty = FALSE;
++    }
++}
++
++// What never changes: brackets, chip labels, row numbers, the footer's words and the version.
++static bool staticDirty;
++
++static void draw_static(void)
++{
++    static const char NUMBERS[CHANS][3] = { " 1", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9", "10" };
++    static char version[VERSION_CELLS + 1];
++    for (u8 y = 2; y <= 13; y++) {
++        if (!cell(X_BRACKET, y, ATTR(PAL0, UI_T_BRACKET + (y == 2 ? 0 : y == 13 ? 2 : 1)))) {
++            return;
++        }
++    }
++    for (u8 y = 16; y <= 23; y++) {
++        if (!cell(X_BRACKET, y, ATTR(PAL0, UI_T_BRACKET + (y == 16 ? 0 : y == 23 ? 2 : 1)))) {
++            return;
++        }
++    }
++    for (u8 i = 0; i < UI_LABEL_FM_TILES; i++) {
++        if (!cell(X_LABEL, 5 + i, ATTR(PAL3, UI_T_LABEL_FM + i))) {
++            return;
++        }
++    }
++    for (u8 i = 0; i < UI_LABEL_PSG_TILES; i++) {
++        if (!cell(X_LABEL, 18 + i, ATTR(PAL3, UI_T_LABEL_PSG + i))) {
++            return;
++        }
+     }
++    for (u8 ch = 0; ch < CHANS; ch++) {
++        if (!text(X_NUMBER - 1, ROW(ch), PAL1, NUMBERS[ch], 2)) {
++            return;
++        }
++    }
++    if (!cell(1, Y_FOOTER, FONT(PAL1, '%'))) {
++        return;
++    }
++    if (!text(X_CPU_TEXT, Y_FOOTER, PAL1, "CPU", 3)) {
++        return;
++    }
++    if (!version[0]) {
++        strcpy(version, "MDMI ");
++        for (u8 i = 0; i < VERSION_CELLS - 5 && BUILD[i]; i++) {
++            version[5 + i] = BUILD[i];
++        }
++    }
++    if (!right_text(X_VERSION_END, Y_FOOTER, PAL1, version, VERSION_CELLS)) {
++        return;
++    }
++    staticDirty = FALSE;
+ }
+ 
+-static void init_load(void)
++// The CC 83 view ---------------------------------------------------------------------------------
++
++static u8 viewY;
++
++// Empties the channels' rows under the ceiling; true once they are.
++static bool clear_for_view(void)
+ {
+-    draw_text("%", 0, MAX_EFFECTIVE_Y);
+-    VDP_loadTileSet(&ts_load, TILE_LED_INDEX, CPU);
++    for (; viewY <= VIEW_LAST_ROW && !full(); viewY++) {
++        for (u8 x = 0; x < COLS; x++) {
++            if (!cell(x, viewY, BLANK)) {
++                return FALSE;
++            }
++        }
++    }
++    return TRUE;
+ }
+ 
+-static void print_load_text(u16 percent)
++// Every element draws its cells again.
++static void forget_keys(void)
+ {
+-    static char text_buffer[3];
+-    if (percent > 99) {
+-        percent = 99;
++    noteMask = nameMask = (1 << CHANS) - 1;
++    ownersMoved = TRUE;
++    ownersPending = TRUE;
++    envelopesFor = NOT_DRAWN;
++    for (u8 ch = 0; ch < CHANS; ch++) {
++        noteDrawn[ch] = ownerDrawn[ch] = envelopeDrawn[ch] = NOT_DRAWN;
++        nameDirty[ch] = FALSE;
++    }
++    for (u8 ch = 0; ch < FM_CHANS; ch++) {
++        levelDrawn[ch] = NOT_DRAWN;
++    }
++    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++        dacDrawn[v] = NOT_DRAWN;
++    }
++    for (u8 i = 0; i < 3; i++) {
++        waveDrawn[i] = NOT_DRAWN;
+     }
+-    sprintf(text_buffer, "%-2i", percent);
+-    draw_text(text_buffer, 5, MAX_EFFECTIVE_Y);
++    dacRowDrawn = NOT_DRAWN;
++    staticDirty = TRUE;
+ }
+ 
+-static void update_load(void)
++// Back from the view: nothing on the channels' rows is known; every element draws again and what
++// none of them claims is emptied after them.
++static void forget_rows(void)
+ {
+-    u16 percent = loadPercentSum / (FRAMES_BEFORE_UPDATE_LOAD / FRAMES_BEFORE_UPDATE_LOAD_PERCENT);
+-    loadPercentSum = 0;
++    for (u8 y = 0; y <= VIEW_LAST_ROW; y++) {
++        for (u8 x = 0; x < COLS; x++) {
++            shadow[(y << 6) + x] = UNKNOWN_CELL;
++        }
++    }
++    forget_keys();
++    viewY = 0;
++}
+ 
+-    s16 led_level = percent == 0 ? 0 : (percent / (100 / LED_TILE_COUNT)) + 1;
+-    for (u16 i = 0; i < LED_TILE_COUNT; i++) {
+-        u16 tile_index = TILE_LED_INDEX + i + LED_TILE_OFF_OFFSET;
+-        if (i < led_level) {
+-            tile_index -= LED_TILE_OFF_OFFSET;
++static void sweep_unknown(void)
++{
++    for (; viewY <= VIEW_LAST_ROW && !full(); viewY++) {
++        for (u8 x = 0; x < COLS; x++) {
++            if (shadow[((u16)viewY << 6) + x] == UNKNOWN_CELL && !cell(x, viewY, empty(x, viewY))) {
++                return;
++            }
+         }
+-        set_tile(tile_index, PAL2, 2 + i, LOAD_TILE_Y);
+     }
+-    if (settings_debug_load()) {
+-        print_load_text(percent);
++}
++
++void ui_view(bool on)
++{
++    viewOn = on;
++    viewReady = FALSE;
++    viewY = 0;
++    if (!on) {
++        forget_rows();
+     }
+-    comm_reset_counts();
+ }
+ 
+-static void init_routing_mode_tiles(void)
++bool ui_view_ready(void)
+ {
+-    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
+-    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
++    return viewReady;
+ }
+ 
+-static void print_routing_mode(bool enabled)
++// The frame ----------------------------------------------------------------------------------------
++
++static bool lastSpecial;
++
++static void follow_special(void)
+ {
+-    VDP_loadTileSet(enabled ? &ts_dynamic : &ts_static, TILE_ROUTING_INDEX, DMA);
++    const bool special = special_on();
++    if (special != lastSpecial) {
++        lastSpecial = special;
++        // One colour, rarely; 24a2 brings the colours to VInt.
++        PAL_setColor(PAL0 * 16 + 8, special ? SPECIAL_NOTE_COLOUR : FM_NOTE_COLOUR);
++    }
+ }
+ 
+-static void print_routing_mode_if_needed(void)
++static void update(u16 delta)
+ {
+-    static bool lastDynamicModeStatus = false;
+-    bool enabled = midi_dynamic_mode();
+-    if (lastDynamicModeStatus != enabled) {
+-        print_routing_mode(enabled);
+-        lastDynamicModeStatus = enabled;
++    if (ui_test_off >= 2) {
++        wait_clear_stamp();
++    }
++    const LineStamp start = line_stamp();
++    ui_stat_frames++;
++    ui_stat_missed += delta - 1;
++    uiFrame += delta;
++    if (ui_test_off == 1) {
++        SYS_doVBlankProcessEx(IMMEDIATELY);
++        return;
++    }
++    words = 0;
++    leftover = FALSE;
++    if (ui_test_off == 4) {
++        ui_stat_draw_lines = lines_within(start, line_stamp());
++        ui_stat_draw_sum += ui_stat_draw_lines;
++        SYS_doVBlankProcessEx(IMMEDIATELY);
++        return;
++    }
++
++    const Global* global = synth_global_parameters();
++    dacOn = global->dacEnable;
++    specialOn = global->specialMode;
++    if (dacOn) {
++        follow_dac();
+     }
++    follow_channels();
++    PART(0);
++    if (!(uiFrame & 3)) {
++        follow_log();
++    }
++    if ((uiFrame & 15) < delta) {
++        follow_signature();
++    }
++    follow_load(delta);
++    follow_special();
++    PART(1);
++    if (viewOn) {
++        viewReady = viewReady || clear_for_view();
++    } else {
++        draw_notes();
++        PART(2);
++        draw_owners();
++        PART(3);
++        draw_dac();
++        draw_envelopes();
++        PART(4);
++        draw_levels();
++        PART(5);
++        draw_waves();
++        PART(6);
++        if (staticDirty && !full()) {
++            draw_static();
++        }
++        draw_names();
++        PART(7);
++        sweep_unknown();
++        PART(8);
++    }
++    draw_footer();
++    PART(9);
++
++    ui_stat_words = words;
++    if (words > ui_stat_words_max) {
++        ui_stat_words_max = words;
++    }
++    if (leftover) {
++        if (++ui_stat_lag > ui_stat_lag_max) {
++            ui_stat_lag_max = ui_stat_lag;
++        }
++    } else {
++        ui_stat_lag = 0;
++    }
++
++    ui_stat_draw_lines = lines_within(start, line_stamp());
++    ui_stat_draw_sum += ui_stat_draw_lines;
++    if (ui_stat_draw_lines > ui_stat_draw_lines_max) {
++        ui_stat_draw_lines_max = ui_stat_draw_lines;
++        for (u8 i = 0; i < 10; i++) {
++            ui_stat_parts[i] = parts[i];
++        }
++        ui_stat_parts[10] = words;
++    }
++    ui_fm_update();
++    SYS_doVBlankProcessEx(IMMEDIATELY);
++    ui_stat_lines = lines_between(start, line_stamp());
++    if (ui_stat_lines > ui_stat_lines_max) {
++        ui_stat_lines_max = ui_stat_lines;
++    }
++    follow_cpu(ui_stat_lines);
++}
++
++// The font without its shadow: index 2 becomes paper (rom-screen.md 10.1).
++static void load_font(void)
++{
++    const TileSet* font = custom_font.tileset;
++    u32 tile[8];
++    for (u16 t = 0; t < font->numTile; t++) {
++        for (u8 i = 0; i < 8; i++) {
++            tile[i] = font->tiles[t * 8 + i] & 0x11111111;
++        }
++        VDP_loadTileData(tile, TILE_FONT_INDEX + t, 1, CPU);
++    }
++}
++
++void ui_init(void)
++{
++    scheduler_addFrameHandler(update);
++
++    SPR_init();
++    load_font();
++    VDP_loadTileData(UI_TILES, UI_TILE_BASE, UI_TILE_COUNT, CPU);
++    PAL_setColors(0, UI_PALETTE, 64, CPU);
++    VDP_setBackgroundColor(0);
++    VDP_clearPlane(BG_A, TRUE);
++    planeCtrl = 0x4000 | (VDP_getBGAAddress() & 0x3FFF);
++    fontBase = TILE_FONT_INDEX;
++    for (u16 i = 0; i < ROWS * 64; i++) {
++        shadow[i] = BLANK;
++    }
++    forget_keys();
++    viewY = VIEW_LAST_ROW + 1;
++    for (u8 ch = 0; ch < CHANS; ch++) {
++        nameDirty[ch] = FALSE;
++        channelSeen[ch] = 0xFFFFFFFF;
++    }
++    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++        dacEnd[v] = NO_END;
++    }
++    loadDrawn = cpuDrawn = NOT_DRAWN;
++    commDirty = TRUE;
++    // At start the whole screen is drawn at once, before any music.
++    dacOn = synth_global_parameters()->dacEnable;
++    specialOn = synth_global_parameters()->specialMode;
++    ceilingOn = FALSE;
++    draw_static();
++    draw_names();
++    draw_footer();
++    ceilingOn = TRUE;
++    {
++        const LineStamp a = line_stamp();
++        for (u16 i = 0; i < 1000; i++) {
++            calibSink++;
++        }
++        ui_stat_calib = lines_between(a, line_stamp());
++    }
++    ui_fm_init();
++}
++
++void ui_show_logs(void)
++{
++    showLogs = TRUE;
++}
++
++void ui_hide_logs(void)
++{
++    showLogs = FALSE;
++    logText[0] = 0;
++    logDirty = TRUE;
++}
++
++void ui_print_present_devices(void)
++{
++    presentDevice = comm_everdrive_pro_is_present() ? 2 : comm_everdrive_is_present() ? 1 : 0;
++    commDirty = TRUE;
++}
++
++bool ui_log_shown(const Log* log)
++{
++    return log->level == Warn;
++}
++
++void ui_draw_text(const char* text, u16 x, u16 y)
++{
++    VDP_drawText(text, MARGIN_X + x, MARGIN_Y + y);
+ }
 diff --git a/src/ui.h b/src/ui.h
-index 675cc67..7d10b36 100644
+index 675cc67..3643eb7 100644
 --- a/src/ui.h
 +++ b/src/ui.h
 @@ -1,5 +1,6 @@
@@ -2683,12 +4175,522 @@ index 675cc67..7d10b36 100644
  
  #define MAX_Y 27
  #define MAX_X 39
-@@ -11,3 +12,5 @@
+@@ -11,3 +12,11 @@
  void ui_init(void);
  void ui_draw_text(const char* text, u16 x, u16 y);
  void ui_print_present_devices(void);
 +// Stage 24: whether a journal line reaches the screen; only warnings do.
 +bool ui_log_shown(const Log* log);
++// MDMI plugin fork, stage 24a (D64): the FM parameter view of CC 83 takes the channels' rows; the
++// status screen empties them first and says when it has.
++void ui_view(bool on);
++bool ui_view_ready(void);
++void ui_show_logs(void);
++void ui_hide_logs(void);
+diff --git a/src/ui_fm.c b/src/ui_fm.c
+index 30787c8..0bdc7f8 100644
+--- a/src/ui_fm.c
++++ b/src/ui_fm.c
+@@ -48,6 +48,8 @@ static Sprite* algorSprites[FM_ALGORITHMS];
+ 
+ static u8 lastAlgorithm = 0xFF;
+ static bool forceRefresh = false;
++// MDMI plugin fork, stage 24a (D64): the view draws once the status screen has emptied its rows.
++static bool headingsShown = false;
+ 
+ static void update_fm_values(void);
+ static void init_algorithm_sprites(void);
+@@ -392,9 +394,14 @@ static void update_fm_values(void)
+ 
+ static void update_fm_values_if_chan_selected(void)
+ {
+-    if (!showChanParameters) {
++    if (!showChanParameters || !ui_view_ready()) {
+         return;
+     }
++    if (!headingsShown) {
++        print_channel_parameter_headings();
++        headingsShown = true;
++        forceRefresh = true;
++    }
+ 
+     u8 chan = get_fm_chan_for_midi_chan(chanParasMidiChan);
+     if (chan == UNKNOWN_FM_CHANNEL) {
+@@ -413,13 +420,16 @@ static void update_fm_values_if_chan_selected(void)
+ 
+ void ui_fm_set_parameters_visibility(u8 chan, bool show)
+ {
++    // The status screen empties the channels' rows before the view draws, and draws them again after.
++    if (show != showChanParameters) {
++        ui_view(show);
++        headingsShown = false;
++    }
+     showChanParameters = show;
+     chanParasMidiChan = chan;
+     if (show) {
+         forceRefresh = true;
+-        print_channel_parameter_headings();
+     } else {
+-        VDP_clearTextArea(FM_HEADING_X, MARGIN_Y + BASE_Y, MAX_X, 20);
+         hide_all_algorithms();
+         SPR_update();
+     }
+diff --git a/src/ui_tiles.c b/src/ui_tiles.c
+new file mode 100644
+index 0000000..e889c42
+--- /dev/null
++++ b/src/ui_tiles.c
+@@ -0,0 +1,400 @@
++// Generated by tools/gen_rom_screen.py (MDMI plugin, stage 24a). Do not edit.
++#include "ui_tiles.h"
++
++const u32 UI_TILES[UI_TILE_COUNT * 8] = {
++    0x66666660, 0x60000660, 0x60006060, 0x60060060, 0x60600060, 0x66000060, 0x66666660, 0x00000000,
++    0x00060000, 0x00660000, 0x00060000, 0x00060000, 0x00060000, 0x00060000, 0x00060000, 0x00000000,
++    0x66666660, 0x60000060, 0x00000060, 0x66666660, 0x60000000, 0x60000000, 0x66666660, 0x00000000,
++    0x66666660, 0x60000060, 0x00000060, 0x06666660, 0x00000060, 0x60000060, 0x66666660, 0x00000000,
++    0x60000000, 0x60000600, 0x60000600, 0x60000600, 0x66666660, 0x00000600, 0x00000600, 0x00000000,
++    0x66666660, 0x60000000, 0x60000000, 0x66666660, 0x00000060, 0x60000060, 0x66666660, 0x00000000,
++    0x66666660, 0x60000000, 0x60000000, 0x66666660, 0x60000060, 0x60000060, 0x66666660, 0x00000000,
++    0x66666660, 0x60000060, 0x00000060, 0x00000600, 0x00006000, 0x00060000, 0x00060000, 0x00000000,
++    0x66666660, 0x60000060, 0x60000060, 0x66666660, 0x60000060, 0x60000060, 0x66666660, 0x00000000,
++    0x66666660, 0x60000060, 0x60000060, 0x66666660, 0x00000060, 0x60000060, 0x66666660, 0x00000000,
++    0x00000060, 0x00000660, 0x00006060, 0x00060060, 0x00666660, 0x06000060, 0x60000060, 0x00000000,
++    0x66666600, 0x60000060, 0x60000060, 0x66666600, 0x60000060, 0x60000060, 0x66666600, 0x00000000,
++    0x06666660, 0x60000000, 0x60000000, 0x60000000, 0x60000000, 0x60000000, 0x06666660, 0x00000000,
++    0x66660000, 0x60006000, 0x60000600, 0x60000060, 0x60000600, 0x60006000, 0x66660000, 0x00000000,
++    0x66666660, 0x60000000, 0x60000000, 0x66666600, 0x60000000, 0x60000000, 0x66666660, 0x00000000,
++    0x66666660, 0x60000000, 0x60000000, 0x66666600, 0x60000000, 0x60000000, 0x60000000, 0x00000000,
++    0x66666660, 0x60000000, 0x60000000, 0x60006660, 0x60000060, 0x60000060, 0x66666660, 0x00000000,
++    0x06000600, 0x66666660, 0x06000600, 0x06000600, 0x06000600, 0x66666660, 0x06000600, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x66666660, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x06666600, 0x60000060, 0x00000060, 0x00066600, 0x00060000, 0x00000000, 0x00060000, 0x00000000,
++    0x77777770, 0x70000770, 0x70007070, 0x70070070, 0x70700070, 0x77000070, 0x77777770, 0x00000000,
++    0x00070000, 0x00770000, 0x00070000, 0x00070000, 0x00070000, 0x00070000, 0x00070000, 0x00000000,
++    0x77777770, 0x70000070, 0x00000070, 0x77777770, 0x70000000, 0x70000000, 0x77777770, 0x00000000,
++    0x77777770, 0x70000070, 0x00000070, 0x07777770, 0x00000070, 0x70000070, 0x77777770, 0x00000000,
++    0x70000000, 0x70000700, 0x70000700, 0x70000700, 0x77777770, 0x00000700, 0x00000700, 0x00000000,
++    0x77777770, 0x70000000, 0x70000000, 0x77777770, 0x00000070, 0x70000070, 0x77777770, 0x00000000,
++    0x77777770, 0x70000000, 0x70000000, 0x77777770, 0x70000070, 0x70000070, 0x77777770, 0x00000000,
++    0x77777770, 0x70000070, 0x00000070, 0x00000700, 0x00007000, 0x00070000, 0x00070000, 0x00000000,
++    0x77777770, 0x70000070, 0x70000070, 0x77777770, 0x70000070, 0x70000070, 0x77777770, 0x00000000,
++    0x77777770, 0x70000070, 0x70000070, 0x77777770, 0x00000070, 0x70000070, 0x77777770, 0x00000000,
++    0x00000070, 0x00000770, 0x00007070, 0x00070070, 0x00777770, 0x07000070, 0x70000070, 0x00000000,
++    0x77777700, 0x70000070, 0x70000070, 0x77777700, 0x70000070, 0x70000070, 0x77777700, 0x00000000,
++    0x07777770, 0x70000000, 0x70000000, 0x70000000, 0x70000000, 0x70000000, 0x07777770, 0x00000000,
++    0x77770000, 0x70007000, 0x70000700, 0x70000070, 0x70000700, 0x70007000, 0x77770000, 0x00000000,
++    0x77777770, 0x70000000, 0x70000000, 0x77777700, 0x70000000, 0x70000000, 0x77777770, 0x00000000,
++    0x77777770, 0x70000000, 0x70000000, 0x77777700, 0x70000000, 0x70000000, 0x70000000, 0x00000000,
++    0x77777770, 0x70000000, 0x70000000, 0x70007770, 0x70000070, 0x70000070, 0x77777770, 0x00000000,
++    0x07000700, 0x77777770, 0x07000700, 0x07000700, 0x07000700, 0x77777770, 0x07000700, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x77777770, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x07777700, 0x70000070, 0x00000070, 0x00077700, 0x00070000, 0x00000000, 0x00070000, 0x00000000,
++    0x88888880, 0x80000880, 0x80008080, 0x80080080, 0x80800080, 0x88000080, 0x88888880, 0x00000000,
++    0x00080000, 0x00880000, 0x00080000, 0x00080000, 0x00080000, 0x00080000, 0x00080000, 0x00000000,
++    0x88888880, 0x80000080, 0x00000080, 0x88888880, 0x80000000, 0x80000000, 0x88888880, 0x00000000,
++    0x88888880, 0x80000080, 0x00000080, 0x08888880, 0x00000080, 0x80000080, 0x88888880, 0x00000000,
++    0x80000000, 0x80000800, 0x80000800, 0x80000800, 0x88888880, 0x00000800, 0x00000800, 0x00000000,
++    0x88888880, 0x80000000, 0x80000000, 0x88888880, 0x00000080, 0x80000080, 0x88888880, 0x00000000,
++    0x88888880, 0x80000000, 0x80000000, 0x88888880, 0x80000080, 0x80000080, 0x88888880, 0x00000000,
++    0x88888880, 0x80000080, 0x00000080, 0x00000800, 0x00008000, 0x00080000, 0x00080000, 0x00000000,
++    0x88888880, 0x80000080, 0x80000080, 0x88888880, 0x80000080, 0x80000080, 0x88888880, 0x00000000,
++    0x88888880, 0x80000080, 0x80000080, 0x88888880, 0x00000080, 0x80000080, 0x88888880, 0x00000000,
++    0x00000080, 0x00000880, 0x00008080, 0x00080080, 0x00888880, 0x08000080, 0x80000080, 0x00000000,
++    0x88888800, 0x80000080, 0x80000080, 0x88888800, 0x80000080, 0x80000080, 0x88888800, 0x00000000,
++    0x08888880, 0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x80000000, 0x08888880, 0x00000000,
++    0x88880000, 0x80008000, 0x80000800, 0x80000080, 0x80000800, 0x80008000, 0x88880000, 0x00000000,
++    0x88888880, 0x80000000, 0x80000000, 0x88888800, 0x80000000, 0x80000000, 0x88888880, 0x00000000,
++    0x88888880, 0x80000000, 0x80000000, 0x88888800, 0x80000000, 0x80000000, 0x80000000, 0x00000000,
++    0x88888880, 0x80000000, 0x80000000, 0x80008880, 0x80000080, 0x80000080, 0x88888880, 0x00000000,
++    0x08000800, 0x88888880, 0x08000800, 0x08000800, 0x08000800, 0x88888880, 0x08000800, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x88888880, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x08888800, 0x80000080, 0x00000080, 0x00088800, 0x00080000, 0x00000000, 0x00080000, 0x00000000,
++    0xBBBBBBB3, 0xB3333BB3, 0xB333B3B3, 0xB33B33B3, 0xB3B333B3, 0xBB3333B3, 0xBBBBBBB3, 0x33333333,
++    0x333B3333, 0x33BB3333, 0x333B3333, 0x333B3333, 0x333B3333, 0x333B3333, 0x333B3333, 0x33333333,
++    0xBBBBBBB3, 0xB33333B3, 0x333333B3, 0xBBBBBBB3, 0xB3333333, 0xB3333333, 0xBBBBBBB3, 0x33333333,
++    0xBBBBBBB3, 0xB33333B3, 0x333333B3, 0x3BBBBBB3, 0x333333B3, 0xB33333B3, 0xBBBBBBB3, 0x33333333,
++    0xB3333333, 0xB3333B33, 0xB3333B33, 0xB3333B33, 0xBBBBBBB3, 0x33333B33, 0x33333B33, 0x33333333,
++    0xBBBBBBB3, 0xB3333333, 0xB3333333, 0xBBBBBBB3, 0x333333B3, 0xB33333B3, 0xBBBBBBB3, 0x33333333,
++    0xBBBBBBB3, 0xB3333333, 0xB3333333, 0xBBBBBBB3, 0xB33333B3, 0xB33333B3, 0xBBBBBBB3, 0x33333333,
++    0xBBBBBBB3, 0xB33333B3, 0x333333B3, 0x33333B33, 0x3333B333, 0x333B3333, 0x333B3333, 0x33333333,
++    0xBBBBBBB3, 0xB33333B3, 0xB33333B3, 0xBBBBBBB3, 0xB33333B3, 0xB33333B3, 0xBBBBBBB3, 0x33333333,
++    0xBBBBBBB3, 0xB33333B3, 0xB33333B3, 0xBBBBBBB3, 0x333333B3, 0xB33333B3, 0xBBBBBBB3, 0x33333333,
++    0x333333B3, 0x33333BB3, 0x3333B3B3, 0x333B33B3, 0x33BBBBB3, 0x3B3333B3, 0xB33333B3, 0x33333333,
++    0xBBBBBB33, 0xB33333B3, 0xB33333B3, 0xBBBBBB33, 0xB33333B3, 0xB33333B3, 0xBBBBBB33, 0x33333333,
++    0x3BBBBBB3, 0xB3333333, 0xB3333333, 0xB3333333, 0xB3333333, 0xB3333333, 0x3BBBBBB3, 0x33333333,
++    0xBBBB3333, 0xB333B333, 0xB3333B33, 0xB33333B3, 0xB3333B33, 0xB333B333, 0xBBBB3333, 0x33333333,
++    0xBBBBBBB3, 0xB3333333, 0xB3333333, 0xBBBBBB33, 0xB3333333, 0xB3333333, 0xBBBBBBB3, 0x33333333,
++    0xBBBBBBB3, 0xB3333333, 0xB3333333, 0xBBBBBB33, 0xB3333333, 0xB3333333, 0xB3333333, 0x33333333,
++    0xBBBBBBB3, 0xB3333333, 0xB3333333, 0xB333BBB3, 0xB33333B3, 0xB33333B3, 0xBBBBBBB3, 0x33333333,
++    0x3B333B33, 0xBBBBBBB3, 0x3B333B33, 0x3B333B33, 0x3B333B33, 0xBBBBBBB3, 0x3B333B33, 0x33333333,
++    0x33333333, 0x33333333, 0x33333333, 0xBBBBBBB3, 0x33333333, 0x33333333, 0x33333333, 0x33333333,
++    0x3BBBBB33, 0xB33333B3, 0x333333B3, 0x333BBB33, 0x333B3333, 0x33333333, 0x333B3333, 0x33333333,
++    0x11111110, 0x10000110, 0x10001010, 0x10010010, 0x10100010, 0x11000010, 0x11111110, 0x00000000,
++    0x00010000, 0x00110000, 0x00010000, 0x00010000, 0x00010000, 0x00010000, 0x00010000, 0x00000000,
++    0x11111110, 0x10000010, 0x00000010, 0x11111110, 0x10000000, 0x10000000, 0x11111110, 0x00000000,
++    0x11111110, 0x10000010, 0x00000010, 0x01111110, 0x00000010, 0x10000010, 0x11111110, 0x00000000,
++    0x10000000, 0x10000100, 0x10000100, 0x10000100, 0x11111110, 0x00000100, 0x00000100, 0x00000000,
++    0x11111110, 0x10000000, 0x10000000, 0x11111110, 0x00000010, 0x10000010, 0x11111110, 0x00000000,
++    0x11111110, 0x10000000, 0x10000000, 0x11111110, 0x10000010, 0x10000010, 0x11111110, 0x00000000,
++    0x11111110, 0x10000010, 0x00000010, 0x00000100, 0x00001000, 0x00010000, 0x00010000, 0x00000000,
++    0x11111110, 0x10000010, 0x10000010, 0x11111110, 0x10000010, 0x10000010, 0x11111110, 0x00000000,
++    0x11111110, 0x10000010, 0x10000010, 0x11111110, 0x00000010, 0x10000010, 0x11111110, 0x00000000,
++    0x00000010, 0x00000110, 0x00001010, 0x00010010, 0x00111110, 0x01000010, 0x10000010, 0x00000000,
++    0x11111100, 0x10000010, 0x10000010, 0x11111100, 0x10000010, 0x10000010, 0x11111100, 0x00000000,
++    0x01111110, 0x10000000, 0x10000000, 0x10000000, 0x10000000, 0x10000000, 0x01111110, 0x00000000,
++    0x11110000, 0x10001000, 0x10000100, 0x10000010, 0x10000100, 0x10001000, 0x11110000, 0x00000000,
++    0x11111110, 0x10000000, 0x10000000, 0x11111100, 0x10000000, 0x10000000, 0x11111110, 0x00000000,
++    0x11111110, 0x10000000, 0x10000000, 0x11111100, 0x10000000, 0x10000000, 0x10000000, 0x00000000,
++    0x11111110, 0x10000000, 0x10000000, 0x10001110, 0x10000010, 0x10000010, 0x11111110, 0x00000000,
++    0x01000100, 0x11111110, 0x01000100, 0x01000100, 0x01000100, 0x11111110, 0x01000100, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x11111110, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x01111100, 0x10000010, 0x00000010, 0x00011100, 0x00010000, 0x00000000, 0x00010000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x44444440, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00020000, 0x00220000, 0x00020000, 0x00020000, 0x00020000, 0x00020000, 0x00020000, 0x00000000,
++    0x22222220, 0x20000020, 0x00000020, 0x22222220, 0x20000000, 0x20000000, 0x22222220, 0x00000000,
++    0x22222220, 0x20000020, 0x00000020, 0x02222220, 0x00000020, 0x20000020, 0x22222220, 0x00000000,
++    0x20000000, 0x20000200, 0x20000200, 0x20000200, 0x22222220, 0x00000200, 0x00000200, 0x00000000,
++    0x22222220, 0x20000000, 0x20000000, 0x22222220, 0x00000020, 0x20000020, 0x22222220, 0x00000000,
++    0x22222220, 0x20000000, 0x20000000, 0x22222220, 0x20000020, 0x20000020, 0x22222220, 0x00000000,
++    0x22222220, 0x20000020, 0x00000020, 0x00000200, 0x00002000, 0x00020000, 0x00020000, 0x00000000,
++    0x22222220, 0x20000020, 0x20000020, 0x22222220, 0x20000020, 0x20000020, 0x22222220, 0x00000000,
++    0x22222220, 0x20000020, 0x20000020, 0x22222220, 0x00000020, 0x20000020, 0x22222220, 0x00000000,
++    0x00000000, 0x02002220, 0x22002020, 0x02002020, 0x02002020, 0x22202220, 0x00000000, 0x00000000,
++    0x00000000, 0x02000200, 0x22002200, 0x02000200, 0x02000200, 0x22202220, 0x00000000, 0x00000000,
++    0x00000000, 0x02002220, 0x22000020, 0x02002220, 0x02002000, 0x22202220, 0x00000000, 0x00000000,
++    0x00000000, 0x02002220, 0x22000020, 0x02002220, 0x02000020, 0x22202220, 0x00000000, 0x00000000,
++    0x00000000, 0x02002020, 0x22002020, 0x02002220, 0x02000020, 0x22200020, 0x00000000, 0x00000000,
++    0x00000000, 0x02002220, 0x22002000, 0x02002220, 0x02000020, 0x22202220, 0x00000000, 0x00000000,
++    0x00000000, 0x02002220, 0x22002000, 0x02002220, 0x02002020, 0x22202220, 0x00000000, 0x00000000,
++    0x000C0000, 0x00CC0000, 0x000C0000, 0x000C0000, 0x000C0000, 0x000C0000, 0x000C0000, 0x00000000,
++    0xCCCCCCC0, 0xC00000C0, 0x000000C0, 0xCCCCCCC0, 0xC0000000, 0xC0000000, 0xCCCCCCC0, 0x00000000,
++    0xCCCCCCC0, 0xC00000C0, 0x000000C0, 0x0CCCCCC0, 0x000000C0, 0xC00000C0, 0xCCCCCCC0, 0x00000000,
++    0xC0000000, 0xC0000C00, 0xC0000C00, 0xC0000C00, 0xCCCCCCC0, 0x00000C00, 0x00000C00, 0x00000000,
++    0xCCCCCCC0, 0xC0000000, 0xC0000000, 0xCCCCCCC0, 0x000000C0, 0xC00000C0, 0xCCCCCCC0, 0x00000000,
++    0xCCCCCCC0, 0xC0000000, 0xC0000000, 0xCCCCCCC0, 0xC00000C0, 0xC00000C0, 0xCCCCCCC0, 0x00000000,
++    0xCCCCCCC0, 0xC00000C0, 0x000000C0, 0x00000C00, 0x0000C000, 0x000C0000, 0x000C0000, 0x00000000,
++    0xCCCCCCC0, 0xC00000C0, 0xC00000C0, 0xCCCCCCC0, 0xC00000C0, 0xC00000C0, 0xCCCCCCC0, 0x00000000,
++    0xCCCCCCC0, 0xC00000C0, 0xC00000C0, 0xCCCCCCC0, 0x000000C0, 0xC00000C0, 0xCCCCCCC0, 0x00000000,
++    0x00000000, 0x0C00CCC0, 0xCC00C0C0, 0x0C00C0C0, 0x0C00C0C0, 0xCCC0CCC0, 0x00000000, 0x00000000,
++    0x00000000, 0x0C000C00, 0xCC00CC00, 0x0C000C00, 0x0C000C00, 0xCCC0CCC0, 0x00000000, 0x00000000,
++    0x00000000, 0x0C00CCC0, 0xCC0000C0, 0x0C00CCC0, 0x0C00C000, 0xCCC0CCC0, 0x00000000, 0x00000000,
++    0x00000000, 0x0C00CCC0, 0xCC0000C0, 0x0C00CCC0, 0x0C0000C0, 0xCCC0CCC0, 0x00000000, 0x00000000,
++    0x00000000, 0x0C00C0C0, 0xCC00C0C0, 0x0C00CCC0, 0x0C0000C0, 0xCCC000C0, 0x00000000, 0x00000000,
++    0x00000000, 0x0C00CCC0, 0xCC00C000, 0x0C00CCC0, 0x0C0000C0, 0xCCC0CCC0, 0x00000000, 0x00000000,
++    0x00000000, 0x0C00CCC0, 0xCC00C000, 0x0C00CCC0, 0x0C00C0C0, 0xCCC0CCC0, 0x00000000, 0x00000000,
++    0x000D0000, 0x00DD0000, 0x000D0000, 0x000D0000, 0x000D0000, 0x000D0000, 0x000D0000, 0x00000000,
++    0xDDDDDDD0, 0xD00000D0, 0x000000D0, 0xDDDDDDD0, 0xD0000000, 0xD0000000, 0xDDDDDDD0, 0x00000000,
++    0xDDDDDDD0, 0xD00000D0, 0x000000D0, 0x0DDDDDD0, 0x000000D0, 0xD00000D0, 0xDDDDDDD0, 0x00000000,
++    0xD0000000, 0xD0000D00, 0xD0000D00, 0xD0000D00, 0xDDDDDDD0, 0x00000D00, 0x00000D00, 0x00000000,
++    0xDDDDDDD0, 0xD0000000, 0xD0000000, 0xDDDDDDD0, 0x000000D0, 0xD00000D0, 0xDDDDDDD0, 0x00000000,
++    0xDDDDDDD0, 0xD0000000, 0xD0000000, 0xDDDDDDD0, 0xD00000D0, 0xD00000D0, 0xDDDDDDD0, 0x00000000,
++    0xDDDDDDD0, 0xD00000D0, 0x000000D0, 0x00000D00, 0x0000D000, 0x000D0000, 0x000D0000, 0x00000000,
++    0xDDDDDDD0, 0xD00000D0, 0xD00000D0, 0xDDDDDDD0, 0xD00000D0, 0xD00000D0, 0xDDDDDDD0, 0x00000000,
++    0xDDDDDDD0, 0xD00000D0, 0xD00000D0, 0xDDDDDDD0, 0x000000D0, 0xD00000D0, 0xDDDDDDD0, 0x00000000,
++    0x00000000, 0x0D00DDD0, 0xDD00D0D0, 0x0D00D0D0, 0x0D00D0D0, 0xDDD0DDD0, 0x00000000, 0x00000000,
++    0x00000000, 0x0D000D00, 0xDD00DD00, 0x0D000D00, 0x0D000D00, 0xDDD0DDD0, 0x00000000, 0x00000000,
++    0x00000000, 0x0D00DDD0, 0xDD0000D0, 0x0D00DDD0, 0x0D00D000, 0xDDD0DDD0, 0x00000000, 0x00000000,
++    0x00000000, 0x0D00DDD0, 0xDD0000D0, 0x0D00DDD0, 0x0D0000D0, 0xDDD0DDD0, 0x00000000, 0x00000000,
++    0x00000000, 0x0D00D0D0, 0xDD00D0D0, 0x0D00DDD0, 0x0D0000D0, 0xDDD000D0, 0x00000000, 0x00000000,
++    0x00000000, 0x0D00DDD0, 0xDD00D000, 0x0D00DDD0, 0x0D0000D0, 0xDDD0DDD0, 0x00000000, 0x00000000,
++    0x00000000, 0x0D00DDD0, 0xDD00D000, 0x0D00DDD0, 0x0D00D0D0, 0xDDD0DDD0, 0x00000000, 0x00000000,
++    0x000E0000, 0x00EE0000, 0x000E0000, 0x000E0000, 0x000E0000, 0x000E0000, 0x000E0000, 0x00000000,
++    0xEEEEEEE0, 0xE00000E0, 0x000000E0, 0xEEEEEEE0, 0xE0000000, 0xE0000000, 0xEEEEEEE0, 0x00000000,
++    0xEEEEEEE0, 0xE00000E0, 0x000000E0, 0x0EEEEEE0, 0x000000E0, 0xE00000E0, 0xEEEEEEE0, 0x00000000,
++    0xE0000000, 0xE0000E00, 0xE0000E00, 0xE0000E00, 0xEEEEEEE0, 0x00000E00, 0x00000E00, 0x00000000,
++    0xEEEEEEE0, 0xE0000000, 0xE0000000, 0xEEEEEEE0, 0x000000E0, 0xE00000E0, 0xEEEEEEE0, 0x00000000,
++    0xEEEEEEE0, 0xE0000000, 0xE0000000, 0xEEEEEEE0, 0xE00000E0, 0xE00000E0, 0xEEEEEEE0, 0x00000000,
++    0xEEEEEEE0, 0xE00000E0, 0x000000E0, 0x00000E00, 0x0000E000, 0x000E0000, 0x000E0000, 0x00000000,
++    0xEEEEEEE0, 0xE00000E0, 0xE00000E0, 0xEEEEEEE0, 0xE00000E0, 0xE00000E0, 0xEEEEEEE0, 0x00000000,
++    0xEEEEEEE0, 0xE00000E0, 0xE00000E0, 0xEEEEEEE0, 0x000000E0, 0xE00000E0, 0xEEEEEEE0, 0x00000000,
++    0x00000000, 0x0E00EEE0, 0xEE00E0E0, 0x0E00E0E0, 0x0E00E0E0, 0xEEE0EEE0, 0x00000000, 0x00000000,
++    0x00000000, 0x0E000E00, 0xEE00EE00, 0x0E000E00, 0x0E000E00, 0xEEE0EEE0, 0x00000000, 0x00000000,
++    0x00000000, 0x0E00EEE0, 0xEE0000E0, 0x0E00EEE0, 0x0E00E000, 0xEEE0EEE0, 0x00000000, 0x00000000,
++    0x00000000, 0x0E00EEE0, 0xEE0000E0, 0x0E00EEE0, 0x0E0000E0, 0xEEE0EEE0, 0x00000000, 0x00000000,
++    0x00000000, 0x0E00E0E0, 0xEE00E0E0, 0x0E00EEE0, 0x0E0000E0, 0xEEE000E0, 0x00000000, 0x00000000,
++    0x00000000, 0x0E00EEE0, 0xEE00E000, 0x0E00EEE0, 0x0E0000E0, 0xEEE0EEE0, 0x00000000, 0x00000000,
++    0x00000000, 0x0E00EEE0, 0xEE00E000, 0x0E00EEE0, 0x0E00E0E0, 0xEEE0EEE0, 0x00000000, 0x00000000,
++    0x00022200, 0x00022200, 0x00022200, 0x00022200, 0x00022200, 0x00022200, 0x00022200, 0x00022200,
++    0x000CCC00, 0x000CCC00, 0x000CCC00, 0x000CCC00, 0x000CCC00, 0x000CCC00, 0x000CCC00, 0x000CCC00,
++    0x000DDD00, 0x000DDD00, 0x000DDD00, 0x000DDD00, 0x000DDD00, 0x000DDD00, 0x000DDD00, 0x000DDD00,
++    0x000EEE00, 0x000EEE00, 0x000EEE00, 0x000EEE00, 0x000EEE00, 0x000EEE00, 0x000EEE00, 0x000EEE00,
++    0x55555555, 0x55555555, 0x55555555, 0x55522225, 0x55525555, 0x55525555, 0x55525555, 0x55525555,
++    0x55525555, 0x55525555, 0x55525555, 0x55525555, 0x55525555, 0x55525555, 0x55525555, 0x55525555,
++    0x55525555, 0x55525555, 0x55525555, 0x55525555, 0x55522225, 0x55555555, 0x55555555, 0x55555555,
++    0x55555555, 0x55555555, 0x51551555, 0x15151555, 0x15511555, 0x15551555, 0x51551555, 0x55555555,
++    0x55551555, 0x55551555, 0x11111555, 0x51551555, 0x55151555, 0x55555555, 0x55515555, 0x15151555,
++    0x15151555, 0x15151555, 0x51115555, 0x55555555, 0x51551555, 0x15151555, 0x15511555, 0x15551555,
++    0x51551555, 0x55555555, 0x11111555, 0x51555555, 0x55155555, 0x51555555, 0x11111555, 0x55555555,
++    0x15555555, 0x51555555, 0x55111555, 0x51555555, 0x15555555, 0x55555555, 0x55555555, 0x55555555,
++    0x55555555, 0x55555555, 0x55555555, 0x15111555, 0x15151555, 0x15551555, 0x15551555, 0x51115555,
++    0x55555555, 0x15515555, 0x15151555, 0x15151555, 0x15151555, 0x51551555, 0x55555555, 0x51555555,
++    0x15155555, 0x15155555, 0x15155555, 0x11111555, 0x55555555, 0x55555555, 0x55555555, 0x55555555,
++    0x00000000, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x00000000,
++    0x00000000, 0xC0404040, 0xC0404040, 0xC0404040, 0xC0404040, 0xC0404040, 0xC0404040, 0x00000000,
++    0x00000000, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0x00000000,
++    0x00000000, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0x00000000,
++    0x00000000, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0x00000000,
++    0x00000000, 0xC0404040, 0xC0404040, 0xC0404040, 0xC0404040, 0xC0404040, 0xC0404040, 0x00000000,
++    0x00000000, 0x40C04040, 0x40C04040, 0x40C04040, 0x40C04040, 0x40C04040, 0x40C04040, 0x00000000,
++    0x00000000, 0x4040C040, 0x4040C040, 0x4040C040, 0x4040C040, 0x4040C040, 0x4040C040, 0x00000000,
++    0x00000000, 0x404040C0, 0x404040C0, 0x404040C0, 0x404040C0, 0x404040C0, 0x404040C0, 0x00000000,
++    0x00000000, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0xC0C04040, 0x00000000,
++    0x00000000, 0xC040C040, 0xC040C040, 0xC040C040, 0xC040C040, 0xC040C040, 0xC040C040, 0x00000000,
++    0x00000000, 0xC04040C0, 0xC04040C0, 0xC04040C0, 0xC04040C0, 0xC04040C0, 0xC04040C0, 0x00000000,
++    0x00000000, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0xC0C0C040, 0x00000000,
++    0x00000000, 0xC0C040C0, 0xC0C040C0, 0xC0C040C0, 0xC0C040C0, 0xC0C040C0, 0xC0C040C0, 0x00000000,
++    0x00000000, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0xC0C0C0C0, 0x00000000,
++    0x00000000, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x00000000,
++    0x00000000, 0xD0404040, 0xD0404040, 0xD0404040, 0xD0404040, 0xD0404040, 0xD0404040, 0x00000000,
++    0x00000000, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0x00000000,
++    0x00000000, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0x00000000,
++    0x00000000, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0x00000000,
++    0x00000000, 0xD0404040, 0xD0404040, 0xD0404040, 0xD0404040, 0xD0404040, 0xD0404040, 0x00000000,
++    0x00000000, 0x40D04040, 0x40D04040, 0x40D04040, 0x40D04040, 0x40D04040, 0x40D04040, 0x00000000,
++    0x00000000, 0x4040D040, 0x4040D040, 0x4040D040, 0x4040D040, 0x4040D040, 0x4040D040, 0x00000000,
++    0x00000000, 0x404040D0, 0x404040D0, 0x404040D0, 0x404040D0, 0x404040D0, 0x404040D0, 0x00000000,
++    0x00000000, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0xD0D04040, 0x00000000,
++    0x00000000, 0xD040D040, 0xD040D040, 0xD040D040, 0xD040D040, 0xD040D040, 0xD040D040, 0x00000000,
++    0x00000000, 0xD04040D0, 0xD04040D0, 0xD04040D0, 0xD04040D0, 0xD04040D0, 0xD04040D0, 0x00000000,
++    0x00000000, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0xD0D0D040, 0x00000000,
++    0x00000000, 0xD0D040D0, 0xD0D040D0, 0xD0D040D0, 0xD0D040D0, 0xD0D040D0, 0xD0D040D0, 0x00000000,
++    0x00000000, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0xD0D0D0D0, 0x00000000,
++    0x00000000, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x00000000,
++    0x00000000, 0xE0404040, 0xE0404040, 0xE0404040, 0xE0404040, 0xE0404040, 0xE0404040, 0x00000000,
++    0x00000000, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0x00000000,
++    0x00000000, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0x00000000,
++    0x00000000, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0x00000000,
++    0x00000000, 0xE0404040, 0xE0404040, 0xE0404040, 0xE0404040, 0xE0404040, 0xE0404040, 0x00000000,
++    0x00000000, 0x40E04040, 0x40E04040, 0x40E04040, 0x40E04040, 0x40E04040, 0x40E04040, 0x00000000,
++    0x00000000, 0x4040E040, 0x4040E040, 0x4040E040, 0x4040E040, 0x4040E040, 0x4040E040, 0x00000000,
++    0x00000000, 0x404040E0, 0x404040E0, 0x404040E0, 0x404040E0, 0x404040E0, 0x404040E0, 0x00000000,
++    0x00000000, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0xE0E04040, 0x00000000,
++    0x00000000, 0xE040E040, 0xE040E040, 0xE040E040, 0xE040E040, 0xE040E040, 0xE040E040, 0x00000000,
++    0x00000000, 0xE04040E0, 0xE04040E0, 0xE04040E0, 0xE04040E0, 0xE04040E0, 0xE04040E0, 0x00000000,
++    0x00000000, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0xE0E0E040, 0x00000000,
++    0x00000000, 0xE0E040E0, 0xE0E040E0, 0xE0E040E0, 0xE0E040E0, 0xE0E040E0, 0xE0E040E0, 0x00000000,
++    0x00000000, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0xE0E0E0E0, 0x00000000,
++    0x00000000, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x40404040, 0x00000000,
++    0x00000000, 0x10404040, 0x10404040, 0x10404040, 0x10404040, 0x10404040, 0x10404040, 0x00000000,
++    0x00000000, 0x10104040, 0x10104040, 0x10104040, 0x10104040, 0x10104040, 0x10104040, 0x00000000,
++    0x00000000, 0x10101040, 0x10101040, 0x10101040, 0x10101040, 0x10101040, 0x10101040, 0x00000000,
++    0x00000000, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x00000000,
++    0x00000000, 0x10404040, 0x10404040, 0x10404040, 0x10404040, 0x10404040, 0x10404040, 0x00000000,
++    0x00000000, 0x40104040, 0x40104040, 0x40104040, 0x40104040, 0x40104040, 0x40104040, 0x00000000,
++    0x00000000, 0x40401040, 0x40401040, 0x40401040, 0x40401040, 0x40401040, 0x40401040, 0x00000000,
++    0x00000000, 0x40404010, 0x40404010, 0x40404010, 0x40404010, 0x40404010, 0x40404010, 0x00000000,
++    0x00000000, 0x10104040, 0x10104040, 0x10104040, 0x10104040, 0x10104040, 0x10104040, 0x00000000,
++    0x00000000, 0x10401040, 0x10401040, 0x10401040, 0x10401040, 0x10401040, 0x10401040, 0x00000000,
++    0x00000000, 0x10404010, 0x10404010, 0x10404010, 0x10404010, 0x10404010, 0x10404010, 0x00000000,
++    0x00000000, 0x10101040, 0x10101040, 0x10101040, 0x10101040, 0x10101040, 0x10101040, 0x00000000,
++    0x00000000, 0x10104010, 0x10104010, 0x10104010, 0x10104010, 0x10104010, 0x10104010, 0x00000000,
++    0x00000000, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x10101010, 0x00000000,
++    0x00000000, 0x03333330, 0x03000030, 0x03000030, 0x03000030, 0x03000030, 0x03333330, 0x00000000,
++    0x00000000, 0x03333330, 0x03000030, 0x03000030, 0x03000030, 0x03222230, 0x03333330, 0x00000000,
++    0x00000000, 0x03333330, 0x03000030, 0x03000030, 0x03222230, 0x03222230, 0x03333330, 0x00000000,
++    0x00000000, 0x03333330, 0x03000030, 0x03222230, 0x03222230, 0x03222230, 0x03333330, 0x00000000,
++    0x00000000, 0x03333330, 0x03222230, 0x03222230, 0x03222230, 0x03222230, 0x03333330, 0x00000000,
++    0x00000000, 0x04444440, 0x04000040, 0x04000040, 0x04000040, 0x04000040, 0x04444440, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x33333333, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22222222, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x20000000, 0x20000000, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22222222, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x22222222, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x22222222, 0x00000000,
++    0x00000000, 0x22222222, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x22222222,
++    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x22222222,
++    0x00000000, 0x00000000, 0x00000000, 0x22222200, 0x00000200, 0x00000222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00022222, 0x00020000, 0x22220000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22222200, 0x00000200, 0x00000200, 0x00000200, 0x00000222, 0x00000000,
++    0x00000000, 0x00000000, 0x00022222, 0x00020000, 0x00020000, 0x00020000, 0x22220000, 0x00000000,
++    0x00000000, 0x22222200, 0x00000200, 0x00000200, 0x00000200, 0x00000200, 0x00000200, 0x00000222,
++    0x00000000, 0x00022222, 0x00020000, 0x00020000, 0x00020000, 0x00020000, 0x00020000, 0x22220000,
++    0x00000000, 0x00000000, 0x00000000, 0x22220000, 0x00020000, 0x00022222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x00000002, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22220000, 0x00020000, 0x00020000, 0x00020000, 0x00022222, 0x00000000,
++    0x00000000, 0x00000000, 0x00000002, 0x00000002, 0x00000002, 0x00000002, 0x22222222, 0x00000000,
++    0x00000000, 0x22220000, 0x00020000, 0x00020000, 0x00020000, 0x00020000, 0x00020000, 0x00022222,
++    0x00000000, 0x00000002, 0x00000002, 0x00000002, 0x00000002, 0x00000002, 0x00000002, 0x22222222,
++    0x00000000, 0x00000000, 0x00000000, 0x22000000, 0x02000000, 0x02222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22222000, 0x00002000, 0x00002222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22000000, 0x02000000, 0x02000000, 0x02000000, 0x02222222, 0x00000000,
++    0x00000000, 0x00000000, 0x22222000, 0x00002000, 0x00002000, 0x00002000, 0x00002222, 0x00000000,
++    0x00000000, 0x22000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02000000, 0x02222222,
++    0x00000000, 0x22222000, 0x00002000, 0x00002000, 0x00002000, 0x00002000, 0x00002000, 0x00002222,
++    0x00000000, 0x00000000, 0x00000000, 0x22222222, 0x20000000, 0x20000000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22222222, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x00000000,
++    0x00000000, 0x22222222, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x20000000, 0x20000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22222220, 0x00000020, 0x00000022, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00000222, 0x00000200, 0x22222200, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00222222, 0x00200000, 0x22200000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22222220, 0x00000020, 0x00000020, 0x00000020, 0x00000022, 0x00000000,
++    0x00000000, 0x00000000, 0x00000222, 0x00000200, 0x00000200, 0x00000200, 0x22222200, 0x00000000,
++    0x00000000, 0x00000000, 0x00222222, 0x00200000, 0x00200000, 0x00200000, 0x22200000, 0x00000000,
++    0x00000000, 0x22222220, 0x00000020, 0x00000020, 0x00000020, 0x00000020, 0x00000020, 0x00000022,
++    0x00000000, 0x00000222, 0x00000200, 0x00000200, 0x00000200, 0x00000200, 0x00000200, 0x22222200,
++    0x00000000, 0x00222222, 0x00200000, 0x00200000, 0x00200000, 0x00200000, 0x00200000, 0x22200000,
++    0x00000000, 0x00000000, 0x00000000, 0x20000022, 0x20000020, 0x22222220, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x20000022, 0x20000020, 0x20000020, 0x20000020, 0x22222220, 0x00000000,
++    0x00000000, 0x20000022, 0x20000020, 0x20000020, 0x20000020, 0x20000020, 0x20000020, 0x22222220,
++    0x00000000, 0x00000000, 0x00000000, 0x00222222, 0x00200002, 0x22200002, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00002222, 0x00002000, 0x22222000, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22000022, 0x02000020, 0x02222220, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00222222, 0x00200002, 0x00200002, 0x00200002, 0x22200002, 0x00000000,
++    0x00000000, 0x00000000, 0x00002222, 0x00002000, 0x00002000, 0x00002000, 0x22222000, 0x00000000,
++    0x00000000, 0x00000000, 0x22000022, 0x02000020, 0x02000020, 0x02000020, 0x02222220, 0x00000000,
++    0x00000000, 0x00222222, 0x00200002, 0x00200002, 0x00200002, 0x00200002, 0x00200002, 0x22200002,
++    0x00000000, 0x00002222, 0x00002000, 0x00002000, 0x00002000, 0x00002000, 0x00002000, 0x22222000,
++    0x00000000, 0x22000022, 0x02000020, 0x02000020, 0x02000020, 0x02000020, 0x02000020, 0x02222220,
++    0x00000000, 0x00000000, 0x00000000, 0x22222000, 0x20002000, 0x20002222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22222000, 0x20002000, 0x20002000, 0x20002000, 0x20002222, 0x00000000,
++    0x00000000, 0x22222000, 0x20002000, 0x20002000, 0x20002000, 0x20002000, 0x20002000, 0x20002222,
++    0x00000000, 0x00000000, 0x00000000, 0x22220002, 0x00020002, 0x00022222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22200022, 0x00200020, 0x00222220, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22000222, 0x02000200, 0x02222200, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x20002222, 0x20002002, 0x22222002, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22220002, 0x00020002, 0x00020002, 0x00020002, 0x00022222, 0x00000000,
++    0x00000000, 0x00000000, 0x22200022, 0x00200020, 0x00200020, 0x00200020, 0x00222220, 0x00000000,
++    0x00000000, 0x00000000, 0x22000222, 0x02000200, 0x02000200, 0x02000200, 0x02222200, 0x00000000,
++    0x00000000, 0x00000000, 0x20002222, 0x20002002, 0x20002002, 0x20002002, 0x22222002, 0x00000000,
++    0x00000000, 0x22220002, 0x00020002, 0x00020002, 0x00020002, 0x00020002, 0x00020002, 0x00022222,
++    0x00000000, 0x22200022, 0x00200020, 0x00200020, 0x00200020, 0x00200020, 0x00200020, 0x00222220,
++    0x00000000, 0x22000222, 0x02000200, 0x02000200, 0x02000200, 0x02000200, 0x02000200, 0x02222200,
++    0x00000000, 0x20002222, 0x20002002, 0x20002002, 0x20002002, 0x20002002, 0x20002002, 0x22222002,
++    0x00000000, 0x00000000, 0x00000000, 0x22220022, 0x00020020, 0x00022220, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22002222, 0x02002002, 0x02222002, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00222200, 0x00200200, 0x22200222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22220022, 0x20020020, 0x20022220, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22220022, 0x00020020, 0x00020020, 0x00020020, 0x00022220, 0x00000000,
++    0x00000000, 0x00000000, 0x22002222, 0x02002002, 0x02002002, 0x02002002, 0x02222002, 0x00000000,
++    0x00000000, 0x00000000, 0x00222200, 0x00200200, 0x00200200, 0x00200200, 0x22200222, 0x00000000,
++    0x00000000, 0x00000000, 0x22220022, 0x20020020, 0x20020020, 0x20020020, 0x20022220, 0x00000000,
++    0x00000000, 0x22220022, 0x00020020, 0x00020020, 0x00020020, 0x00020020, 0x00020020, 0x00022220,
++    0x00000000, 0x22002222, 0x02002002, 0x02002002, 0x02002002, 0x02002002, 0x02002002, 0x02222002,
++    0x00000000, 0x00222200, 0x00200200, 0x00200200, 0x00200200, 0x00200200, 0x00200200, 0x22200222,
++    0x00000000, 0x22220022, 0x20020020, 0x20020020, 0x20020020, 0x20020020, 0x20020020, 0x20022220,
++    0x00000000, 0x00000000, 0x00000000, 0x22200222, 0x00200202, 0x00222202, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x00222002, 0x00202002, 0x22202222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22002220, 0x02002020, 0x02222022, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x02220022, 0x02020020, 0x22022220, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22200222, 0x00200202, 0x00200202, 0x00200202, 0x00222202, 0x00000000,
++    0x00000000, 0x00000000, 0x00222002, 0x00202002, 0x00202002, 0x00202002, 0x22202222, 0x00000000,
++    0x00000000, 0x00000000, 0x22002220, 0x02002020, 0x02002020, 0x02002020, 0x02222022, 0x00000000,
++    0x00000000, 0x00000000, 0x02220022, 0x02020020, 0x02020020, 0x02020020, 0x22022220, 0x00000000,
++    0x00000000, 0x22200222, 0x00200202, 0x00200202, 0x00200202, 0x00200202, 0x00200202, 0x00222202,
++    0x00000000, 0x00222002, 0x00202002, 0x00202002, 0x00202002, 0x00202002, 0x00202002, 0x22202222,
++    0x00000000, 0x22002220, 0x02002020, 0x02002020, 0x02002020, 0x02002020, 0x02002020, 0x02222022,
++    0x00000000, 0x02220022, 0x02020020, 0x02020020, 0x02020020, 0x02020020, 0x02020020, 0x22022220,
++    0x00000000, 0x00000000, 0x00000000, 0x22202220, 0x00202020, 0x00222022, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22202220, 0x20202020, 0x20222022, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22202220, 0x00202020, 0x00202020, 0x00202020, 0x00222022, 0x00000000,
++    0x00000000, 0x00000000, 0x22202220, 0x20202020, 0x20202020, 0x20202020, 0x20222022, 0x00000000,
++    0x00000000, 0x22202220, 0x00202020, 0x00202020, 0x00202020, 0x00202020, 0x00202020, 0x00222022,
++    0x00000000, 0x22202220, 0x20202020, 0x20202020, 0x20202020, 0x20202020, 0x20202020, 0x20222022,
++};
++
++const u16 UI_PALETTE[64] = {
++    0x000, 0xEEE, 0xE24, 0x822, 0x222, 0x000, 0xE88, 0xE88, 0xE88, 0xEC2, 0xEC2, 0xE88, 0xE86, 0xE4A, 0xECC, 0x00E,
++    0x000, 0x444, 0xEC2, 0x640, 0x222, 0x000, 0xE88, 0xE88, 0xE88, 0xEC2, 0xEEE, 0x000, 0xEEA, 0xA80, 0xCA6, 0x000,
++    0x000, 0x026, 0x08E, 0x026, 0x222, 0x000, 0xEEA, 0xEEA, 0xEEA, 0xEEE, 0x640, 0xEEE, 0x0E0, 0x0EE, 0x00E, 0x000,
++    0x000, 0x888, 0xA2E, 0x206, 0x222, 0x000, 0xEEA, 0x000, 0x000, 0x640, 0x640, 0xA2E, 0x222, 0x222, 0x222, 0x222,
++};
++
++const u8 UI_NOTE[128][3] = {
++    { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 },
++    { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 },
++    { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 10, 18, 0 }, { 10, 17, 0 }, { 11, 18, 0 },
++    { 12, 18, 1 }, { 12, 17, 1 }, { 13, 18, 1 }, { 13, 17, 1 }, { 14, 18, 1 }, { 15, 18, 1 }, { 15, 17, 1 }, { 16, 18, 1 },
++    { 16, 17, 1 }, { 10, 18, 1 }, { 10, 17, 1 }, { 11, 18, 1 }, { 12, 18, 2 }, { 12, 17, 2 }, { 13, 18, 2 }, { 13, 17, 2 },
++    { 14, 18, 2 }, { 15, 18, 2 }, { 15, 17, 2 }, { 16, 18, 2 }, { 16, 17, 2 }, { 10, 18, 2 }, { 10, 17, 2 }, { 11, 18, 2 },
++    { 12, 18, 3 }, { 12, 17, 3 }, { 13, 18, 3 }, { 13, 17, 3 }, { 14, 18, 3 }, { 15, 18, 3 }, { 15, 17, 3 }, { 16, 18, 3 },
++    { 16, 17, 3 }, { 10, 18, 3 }, { 10, 17, 3 }, { 11, 18, 3 }, { 12, 18, 4 }, { 12, 17, 4 }, { 13, 18, 4 }, { 13, 17, 4 },
++    { 14, 18, 4 }, { 15, 18, 4 }, { 15, 17, 4 }, { 16, 18, 4 }, { 16, 17, 4 }, { 10, 18, 4 }, { 10, 17, 4 }, { 11, 18, 4 },
++    { 12, 18, 5 }, { 12, 17, 5 }, { 13, 18, 5 }, { 13, 17, 5 }, { 14, 18, 5 }, { 15, 18, 5 }, { 15, 17, 5 }, { 16, 18, 5 },
++    { 16, 17, 5 }, { 10, 18, 5 }, { 10, 17, 5 }, { 11, 18, 5 }, { 12, 18, 6 }, { 12, 17, 6 }, { 13, 18, 6 }, { 13, 17, 6 },
++    { 14, 18, 6 }, { 15, 18, 6 }, { 15, 17, 6 }, { 16, 18, 6 }, { 16, 17, 6 }, { 10, 18, 6 }, { 10, 17, 6 }, { 11, 18, 6 },
++    { 12, 18, 7 }, { 12, 17, 7 }, { 13, 18, 7 }, { 13, 17, 7 }, { 14, 18, 7 }, { 15, 18, 7 }, { 15, 17, 7 }, { 16, 18, 7 },
++    { 16, 17, 7 }, { 10, 18, 7 }, { 10, 17, 7 }, { 11, 18, 7 }, { 12, 18, 8 }, { 12, 17, 8 }, { 13, 18, 8 }, { 13, 17, 8 },
++    { 14, 18, 8 }, { 15, 18, 8 }, { 15, 17, 8 }, { 16, 18, 8 }, { 16, 17, 8 }, { 10, 18, 8 }, { 10, 17, 8 }, { 11, 18, 8 },
++    { 12, 18, 9 }, { 12, 17, 9 }, { 13, 18, 9 }, { 13, 17, 9 }, { 14, 18, 9 }, { 15, 18, 9 }, { 15, 17, 9 }, { 16, 18, 9 },
++};
++
++const s8 UI_LEVEL_PATTERN[5][5] = {
++    { 0, 5, 6, 7, 8 },
++    { 1, -1, 9, 10, 11 },
++    { 2, -1, -1, 12, 13 },
++    { 3, -1, -1, -1, 14 },
++    { 4, -1, -1, -1, -1 },
++};
++
++const u16 UI_WAVE_PERIOD[UI_WAVE_CLASSES - 1] = { 880, 740, 622, 523, 440, 370, 311, 262, 220, 185, 156, 131 };
++
++const u8 UI_WAVE[UI_WAVE_CLASSES][3][4] = {
++    { { 1, 1, 2, 3 }, { 4, 4, 5, 6 }, { 7, 7, 8, 9 } },
++    { { 1, 10, 3, 11 }, { 4, 12, 6, 13 }, { 7, 14, 9, 15 } },
++    { { 1, 16, 17, 1 }, { 4, 18, 19, 4 }, { 7, 20, 21, 7 } },
++    { { 1, 22, 11, 23 }, { 4, 24, 13, 25 }, { 7, 26, 15, 27 } },
++    { { 1, 2, 28, 2 }, { 4, 5, 29, 5 }, { 7, 8, 30, 8 } },
++    { { 31, 32, 16, 33 }, { 34, 35, 18, 36 }, { 37, 38, 20, 39 } },
++    { { 10, 11, 40, 16 }, { 12, 13, 41, 18 }, { 14, 15, 42, 20 } },
++    { { 10, 43, 44, 45 }, { 12, 46, 47, 48 }, { 14, 49, 50, 51 } },
++    { { 23, 52, 52, 52 }, { 25, 53, 53, 53 }, { 27, 54, 54, 54 } },
++    { { 55, 56, 57, 58 }, { 59, 60, 61, 62 }, { 63, 64, 65, 66 } },
++    { { 67, 68, 69, 70 }, { 71, 72, 73, 74 }, { 75, 76, 77, 78 } },
++    { { 79, 80, 81, 82 }, { 83, 84, 85, 86 }, { 87, 88, 89, 90 } },
++    { { 91, 92, 92, 92 }, { 93, 94, 94, 94 }, { 95, 96, 96, 96 } },
++};
+diff --git a/src/ui_tiles.h b/src/ui_tiles.h
+new file mode 100644
+index 0000000..5a5e16a
+--- /dev/null
++++ b/src/ui_tiles.h
+@@ -0,0 +1,44 @@
++// Generated by tools/gen_rom_screen.py (MDMI plugin, stage 24a). Do not edit.
++#pragma once
++
++// Where the screen's own tiles start in VRAM (rom-screen.md 10.3).
++#define UI_TILE_BASE 16
++#define UI_T_NOTE (UI_TILE_BASE + 0)
++#define UI_T_DAC_NOTE (UI_TILE_BASE + 60)
++#define UI_T_DAC_DIM (UI_TILE_BASE + 80)
++#define UI_T_DASH (UI_TILE_BASE + 100)
++#define UI_T_OWNER (UI_TILE_BASE + 101)
++#define UI_T_STRIPE (UI_TILE_BASE + 165)
++#define UI_T_BRACKET (UI_TILE_BASE + 169)
++#define UI_T_LABEL_FM (UI_TILE_BASE + 172)
++#define UI_T_LABEL_PSG (UI_TILE_BASE + 177)
++#define UI_T_LEVEL (UI_TILE_BASE + 180)
++#define UI_T_BAR (UI_TILE_BASE + 225)
++#define UI_T_SQUARE (UI_TILE_BASE + 240)
++#define UI_T_WAVE (UI_TILE_BASE + 246)
++#define UI_T_END (UI_TILE_BASE + 343)
++#define UI_TILE_COUNT 343
++#define UI_NOTE_GLYPHS 20
++#define UI_GLYPH_QUESTION 19
++#define UI_GLYPH_DASH 18
++#define UI_LEVEL_PATTERNS 15
++#define UI_WAVE_CLASSES 13
++#define UI_WAVE_FLAT 0
++
++// The plugin's tests read the tile numbers alone.
++#ifndef UI_TILE_NUMBERS_ONLY
++#include "genesis.h"
++extern const u32 UI_TILES[UI_TILE_COUNT * 8];
++extern const u16 UI_PALETTE[64];
++// A key's name as 3 note glyphs: C-4, C#4, ??? below A0.
++extern const u8 UI_NOTE[128][3];
++// A tile of a 16-stripe bar: its pattern by how many of its 4 stripes are lit and where
++// the peak is, +1 (0 none).
++extern const s8 UI_LEVEL_PATTERN[5][5];
++// The tone period below which the wave has the next class, from A2's class 0 up.
++extern const u16 UI_WAVE_PERIOD[UI_WAVE_CLASSES - 1];
++// The wave's 4 tiles from UI_T_WAVE by class and height (3, 5, 7 points).
++extern const u8 UI_WAVE[UI_WAVE_CLASSES][3][4];
++#endif
++#define UI_LABEL_FM_TILES 5
++#define UI_LABEL_PSG_TILES 3
 diff --git a/src/ym2612_regs.h b/src/ym2612_regs.h
 index 9919ce7..8db9e5b 100644
 --- a/src/ym2612_regs.h
@@ -2869,6 +4871,32 @@ index 0fd5ac6..ff2f83e 100644
  
  void _expect_psg_tone(u8 channel, u16 value, const char* const file, const int line);
  void _expect_psg_attenuation(u8 channel, u8 value, const char* const file, const int line);
+diff --git a/tests/mocks/mock_sgdk.c b/tests/mocks/mock_sgdk.c
+index 24b7452..fde1991 100644
+--- a/tests/mocks/mock_sgdk.c
++++ b/tests/mocks/mock_sgdk.c
+@@ -397,3 +397,21 @@ fix32 __wrap_fix32Frac(fix32 value)
+ {
+     return 0;
+ }
++
++// MDMI plugin fork, stage 24a: what the new status screen takes from SGDK beyond the wrapped calls.
++// The unit tests never run its frame handler.
++u16 maps_addr;
++vu32 vtimer;
++
++void VDP_loadTileData(const u32* data, u16 index, u16 num, TransferMethod tm)
++{
++}
++
++void VDP_clearPlane(VDPPlane plane, bool wait)
++{
++}
++
++u16 VDP_getBGAAddress(void)
++{
++    return 0xE000;
++}
 diff --git a/tests/mocks/mock_synth.c b/tests/mocks/mock_synth.c
 index 965d8a7..29bf93b 100644
 --- a/tests/mocks/mock_synth.c
@@ -3466,7 +5494,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..d2f63a4 100644
+index d2449c4..419b838 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -3480,7 +5508,17 @@ index d2449c4..d2f63a4 100644
  #include "test_midi_dynamic.h"
  #include "test_midi_finetune.h"
  #include "test_midi_fm.h"
-@@ -126,6 +129,10 @@ int main(void)
+@@ -91,6 +94,9 @@ int main(void)
+         midi_test(
+             test_midi_changing_volume_during_psg_note_on_respects_velocity),
+         midi_test(test_midi_changing_volume_during_note_on_respects_velocity),
++        midi_test(test_midi_fm_velocity_and_volume_read_back),
++        midi_test(test_midi_psg_tone_and_attenuation_read_back),
++        midi_test(test_midi_psg_wave_classes_follow_the_period),
+         midi_test(test_midi_triggers_psg_note_off),
+         midi_test(test_midi_drops_psg_key_below_45),
+         midi_test(test_midi_psg_note_off_only_triggered_if_specific_note_is_on),
+@@ -126,6 +132,10 @@ int main(void)
          midi_test(test_midi_sets_psg_pitch_bend_up),
          midi_test(test_midi_psg_pitch_bend_persists_after_tick),
          midi_test(test_midi_loads_psg_envelope),
@@ -3491,7 +5529,7 @@ index d2449c4..d2f63a4 100644
          midi_test(test_midi_polyphonic_mode_returns_state),
          midi_test(test_midi_polyphonic_mode_uses_multiple_fm_channels),
          midi_test(
-@@ -207,6 +214,12 @@ int main(void)
+@@ -207,6 +217,12 @@ int main(void)
          midi_test(test_midi_sysex_sets_mapping_mode_to_auto),
          midi_test(test_midi_sysex_disables_fm_parameter_CCs),
          midi_test(test_midi_sysex_loads_psg_envelope),
@@ -3504,7 +5542,7 @@ index d2449c4..d2f63a4 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +239,50 @@ int main(void)
+@@ -226,10 +242,51 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -3553,11 +5591,12 @@ index d2449c4..d2f63a4 100644
 +        midi_dac_test(test_midi_dac_marks_on_voice_3),
 +        midi_dac_test(test_midi_dac_marks_lost_start_does_not_hang),
 +        midi_dac_test(test_midi_dac_repeated_enable_keeps_voices),
++        midi_dac_test(test_midi_dac_voice_view_reads_a_start),
 +        midi_test(test_midi_dac_pan_before_enable_applies),
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +302,8 @@ int main(void)
+@@ -249,6 +306,8 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -3566,7 +5605,7 @@ index d2449c4..d2f63a4 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,6 +367,20 @@ int main(void)
+@@ -312,6 +371,20 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -3587,15 +5626,18 @@ index d2449c4..d2f63a4 100644
          synth_test(test_writes_without_getting_or_releasing_Z80_bus_when_pcm_driver_unloaded),
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
-@@ -382,6 +451,7 @@ int main(void)
+@@ -380,8 +453,10 @@ int main(void)
+         dynamic_midi_test(test_midi_static_mode_plays_correct_note_off_after_multiple_notes_played),
+ 
          log_test(test_log_info_writes_to_log_buffer),
++        log_test(test_log_screen_shows_warnings_only),
          log_test(test_log_warn_writes_to_log_buffer),
          log_test(test_log_stores_two_logs),
 +        log_test(test_log_screen_shows_only_warnings),
          log_test(test_log_stores_multiple_logs_and_overwrites_older),
          log_test(
              test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
-@@ -440,6 +510,64 @@ int main(void)
+@@ -440,6 +515,64 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
@@ -3661,7 +5703,7 @@ index d2449c4..d2f63a4 100644
          midi_finetune_test(test_midi_finetune_max),
          midi_finetune_test(test_midi_finetune_min),
 diff --git a/tests/unit/test_log.c b/tests/unit/test_log.c
-index 5377c79..9de5c05 100644
+index 5377c79..697e427 100644
 --- a/tests/unit/test_log.c
 +++ b/tests/unit/test_log.c
 @@ -1,5 +1,6 @@
@@ -3671,7 +5713,7 @@ index 5377c79..9de5c05 100644
  #include "string.h"
  #include "mocks/mock_log.h"
  
-@@ -68,3 +69,14 @@ void test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued(UNUSED
+@@ -68,3 +69,24 @@ void test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued(UNUSED
      assert_non_null(__real_log_dequeue());
      assert_null(__real_log_dequeue());
  }
@@ -3686,15 +5728,27 @@ index 5377c79..9de5c05 100644
 +    assert_false(ui_log_shown(__real_log_dequeue()));
 +    assert_true(ui_log_shown(__real_log_dequeue()));
 +}
++
++// Stage 24a: the screen's warning line shows warnings and none of the journal's other entries.
++void test_log_screen_shows_warnings_only(UNUSED void** state)
++{
++    Log log = { 0 };
++    log.level = Warn;
++    assert_true(ui_log_shown(&log));
++    log.level = Info;
++    assert_false(ui_log_shown(&log));
++}
 diff --git a/tests/unit/test_log.h b/tests/unit/test_log.h
-index e212165..06af454 100644
+index e212165..befcfbe 100644
 --- a/tests/unit/test_log.h
 +++ b/tests/unit/test_log.h
-@@ -6,3 +6,4 @@ void test_log_warn_writes_to_log_buffer(UNUSED void** state);
+@@ -6,3 +6,6 @@ void test_log_warn_writes_to_log_buffer(UNUSED void** state);
  void test_log_stores_two_logs(UNUSED void** state);
  void test_log_stores_multiple_logs_and_overwrites_older(UNUSED void** state);
  void test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued(UNUSED void** state);
 +void test_log_screen_shows_only_warnings(UNUSED void** state);
++
++void test_log_screen_shows_warnings_only(UNUSED void** state);
 diff --git a/tests/unit/test_midi.c b/tests/unit/test_midi.c
 index e17b775..146571d 100644
 --- a/tests/unit/test_midi.c
@@ -4910,7 +6964,7 @@ index 0000000..77ef1c1
 +void test_midi_ch3_csm_portamento_moves_timer_a(UNUSED void** state);
 +void test_midi_ch3_one_note_portamento(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..06e2960 100644
+index 9650279..50c6af9 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,8 +1,12 @@
@@ -4949,7 +7003,7 @@ index 9650279..06e2960 100644
  
      __real_midi_cc(0, 78, 0x7F);
  }
-@@ -28,37 +39,355 @@ void test_midi_enables_dac(UNUSED void** state)
+@@ -28,37 +39,374 @@ void test_midi_enables_dac(UNUSED void** state)
  void test_midi_disables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, false);
@@ -5124,17 +7178,11 @@ index 9650279..06e2960 100644
  {
      __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
- }
- 
--void test_midi_dac_stops_note(UNUSED void** state)
++}
++
 +// Velocity >> 3 is the voice's volume, 0-15.
 +void test_midi_dac_velocity_is_voice_volume(UNUSED void** state)
- {
--    expect_any(__wrap_SND_PCM_startPlay, sample);
--    expect_any(__wrap_SND_PCM_startPlay, len);
--    expect_any(__wrap_SND_PCM_startPlay, rate);
--    expect_value(__wrap_SND_PCM_startPlay, pan, SOUND_PAN_CENTER);
--    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
++{
 +    use_samples();
 +    __real_midi_note_on(dacFmChannel, keys[0], 127);
 +    __real_midi_note_on(dacFmChannel, keys[1], 64);
@@ -5157,7 +7205,7 @@ index 9650279..06e2960 100644
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_VOLUME(voice_of(1))], 15);
 +    put_back();
 +}
- 
++
 +// Four keys on four voices; a fifth takes the voice of the oldest start.
 +void test_midi_dac_fifth_note_takes_oldest_voice(UNUSED void** state)
 +{
@@ -5174,11 +7222,17 @@ index 9650279..06e2960 100644
 +    assert_int_equal(voice_of(4), 0);
 +    assert_int_equal(voice_of(0), -1);
 +    put_back();
-+}
-+
+ }
+ 
+-void test_midi_dac_stops_note(UNUSED void** state)
 +// The same key again restarts its own voice: a roll of hats keeps to one voice.
 +void test_midi_dac_same_key_restarts_its_voice(UNUSED void** state)
-+{
+ {
+-    expect_any(__wrap_SND_PCM_startPlay, sample);
+-    expect_any(__wrap_SND_PCM_startPlay, len);
+-    expect_any(__wrap_SND_PCM_startPlay, rate);
+-    expect_value(__wrap_SND_PCM_startPlay, pan, SOUND_PAN_CENTER);
+-    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
 +    use_samples();
 +    __real_midi_note_on(dacFmChannel, keys[0], 100);
 +    driver_takes();
@@ -5223,7 +7277,7 @@ index 9650279..06e2960 100644
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
 +    put_back();
 +}
-+
+ 
 +// A key whose voice another key took writes nothing at Note Off.
 +void test_midi_dac_note_off_of_taken_voice_does_nothing(UNUSED void** state)
 +{
@@ -5318,12 +7372,31 @@ index 9650279..06e2960 100644
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 1, 0);
 +    percussionPcmSample[noteKey] = was;
 +    put_back();
++}
++
++// Stage 24a: the screen's DAC table reads each voice's key, state and start.
++void test_midi_dac_voice_view_reads_a_start(UNUSED void** state)
++{
++    use_samples();
++    MidiDacVoiceView before, view;
++    midi_dac_voice_view(0, &before);
++    __real_midi_note_on(dacFmChannel, keys[0], 100);
++    midi_dac_voice_view(0, &view);
++    assert_int_equal(view.key, keys[0]);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_PLAYING);
++    assert_int_not_equal(view.order, before.order);
++    driver_takes();
++    __real_midi_note_on(dacFmChannel, keys[0], 100);
++    MidiDacVoiceView again;
++    midi_dac_voice_view(0, &again);
++    assert_int_not_equal(again.order, view.order);
++    put_back();
  }
 diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
-index 5e63f7b..7d9edef 100644
+index 5e63f7b..93e2e42 100644
 --- a/tests/unit/test_midi_dac.h
 +++ b/tests/unit/test_midi_dac.h
-@@ -1,8 +1,23 @@
+@@ -1,8 +1,25 @@
  #include "cmocka_inc.h"
 -
  int test_midi_dac_setup(UNUSED void** state);
@@ -5350,6 +7423,8 @@ index 5e63f7b..7d9edef 100644
 +void test_midi_dac_pan_sets_b6(UNUSED void** state);
 +void test_midi_dac_disable_rewrites_fm_pan(UNUSED void** state);
 +void test_midi_dac_repeated_enable_keeps_voices(UNUSED void** state);
++
++void test_midi_dac_voice_view_reads_a_start(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac_marks.c b/tests/unit/test_midi_dac_marks.c
 new file mode 100644
 index 0000000..b97b712
@@ -5739,7 +7814,7 @@ index a9ca2a6..e96539f 100644
      __real_midi_note_on(MIDI_CHANNEL, 60, MAX_MIDI_VOLUME);
  }
 diff --git a/tests/unit/test_midi_fm.c b/tests/unit/test_midi_fm.c
-index 24d50dd..8bf27a0 100644
+index 24d50dd..5b25afc 100644
 --- a/tests/unit/test_midi_fm.c
 +++ b/tests/unit/test_midi_fm.c
 @@ -538,6 +538,7 @@ void test_midi_enables_fm_special_mode(UNUSED void** state)
@@ -5843,6 +7918,34 @@ index 24d50dd..8bf27a0 100644
      __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
  }
  
+@@ -736,3 +758,17 @@ void test_midi_sets_pitch_bend_sensitivity_with_odd_ordering(UNUSED void** state
+     expect_synth_pitch(YM_CH1, 4, SYNTH_NTSC_E);
+     __real_midi_pitch_bend(MIDI_CHANNEL_1, MIDI_PITCH_BEND_MAX);
+ }
++
++// Stage 24a: the screen's level reads the velocity and CC 7 a channel was last given.
++void test_midi_fm_velocity_and_volume_read_back(UNUSED void** state)
++{
++    expect_synth_volume(0, 100);
++    __real_midi_cc(0, CC_VOLUME, 100);
++    expect_synth_pitch(0, 4, SYNTH_NTSC_C);
++    expect_any(__wrap_synth_volume, channel);
++    expect_any(__wrap_synth_volume, volume);
++    expect_value(__wrap_synth_note_on, channel, 0);
++    __real_midi_note_on(0, MIDI_PITCH_C4, 90);
++    assert_int_equal(midi_fm_velocity(0), 90);
++    assert_int_equal(midi_fm_volume(0), 100);
++}
+diff --git a/tests/unit/test_midi_fm.h b/tests/unit/test_midi_fm.h
+index e629bae..6d1268f 100644
+--- a/tests/unit/test_midi_fm.h
++++ b/tests/unit/test_midi_fm.h
+@@ -54,3 +54,5 @@ void test_midi_sets_pitch_bend_sensitivity_coarse(UNUSED void** state);
+ void test_midi_sets_pitch_bend_sensitivity_fine(UNUSED void** state);
+ void test_midi_ignores_further_data_entry_messages_after_null_rpn(UNUSED void** state);
+ void test_midi_sets_pitch_bend_sensitivity_with_odd_ordering(UNUSED void** state);
++
++void test_midi_fm_velocity_and_volume_read_back(UNUSED void** state);
 diff --git a/tests/unit/test_midi_portamento.c b/tests/unit/test_midi_portamento.c
 index 13ce5a1..1ecae59 100644
 --- a/tests/unit/test_midi_portamento.c
@@ -5968,22 +8071,24 @@ index 892e0c2..70fcd31 100644
 +void test_midi_portamento_raising_a_held_key_below_keeps_the_glide(UNUSED void** state);
 +void test_midi_note_stack_without_portamento_as_before(UNUSED void** state);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..5c896ea 100644
+index affbb29..b68df7a 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
-@@ -3,13 +3,19 @@
+@@ -2,6 +2,13 @@
+ #include "test_midi.h"
  #include "mocks/mock_psg.h"
  #include "mocks/mock_sgdk.h"
- 
++#include "ui_tiles.h"
++
 +#define MAX_PSG_TONE_CHAN (MAX_PSG_CHAN - 1)
 +#define NOISE_MIDI_CHAN MAX_PSG_CHAN
 +#define TONE3_MIDI_CHAN MAX_PSG_TONE_CHAN
 +#define CC_NOISE_TYPE 12
 +#define CC_NOISE_RATE 13
-+
+ 
  void test_midi_triggers_psg_note_on(UNUSED void** state)
  {
-     const u8 midiKeys[] = { 45, 69, 108 };
+@@ -9,7 +16,7 @@ void test_midi_triggers_psg_note_on(UNUSED void** state)
      const u16 tones[] = { 1016, 254, 26 };
  
      for (u8 i = 0; i < sizeof(midiKeys); i++) {
@@ -5992,7 +8097,7 @@ index affbb29..5c896ea 100644
  
              u16 expectedFrequency = tones[i];
              u8 expectedMidiKey = midiKeys[i];
-@@ -81,7 +87,7 @@ void test_midi_changing_volume_during_psg_note_on_respects_velocity(UNUSED void*
+@@ -81,7 +88,7 @@ void test_midi_changing_volume_during_psg_note_on_respects_velocity(UNUSED void*
  
  void test_midi_triggers_psg_note_off(UNUSED void** state)
  {
@@ -6001,7 +8106,7 @@ index affbb29..5c896ea 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          u8 midiKey = MIDI_PITCH_C4;
  
-@@ -98,7 +104,7 @@ void test_midi_triggers_psg_note_off(UNUSED void** state)
+@@ -98,7 +105,7 @@ void test_midi_triggers_psg_note_off(UNUSED void** state)
  
  void test_midi_drops_psg_key_below_45(UNUSED void** state)
  {
@@ -6010,7 +8115,7 @@ index affbb29..5c896ea 100644
  
          u8 expectedMidiKey = 44;
          __real_midi_note_on(chan, expectedMidiKey, MAX_MIDI_VOLUME);
-@@ -109,7 +115,7 @@ void test_midi_triggers_psg_note_off_and_volume_change_does_not_cause_psg_channe
+@@ -109,7 +116,7 @@ void test_midi_triggers_psg_note_off_and_volume_change_does_not_cause_psg_channe
      UNUSED void** state)
  {
      u8 midiKey = MIDI_PITCH_C4;
@@ -6019,7 +8124,7 @@ index affbb29..5c896ea 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
  
          expect_any_psg_tone();
-@@ -159,7 +165,7 @@ void test_midi_channel_volume_sets_psg_attenuation_2(UNUSED void** state)
+@@ -159,7 +166,7 @@ void test_midi_channel_volume_sets_psg_attenuation_2(UNUSED void** state)
  
  void test_midi_sets_psg_pitch_bend_down(UNUSED void** state)
  {
@@ -6028,7 +8133,7 @@ index affbb29..5c896ea 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          expect_psg_tone(expectedPsgChan, TONE_NTSC_C4);
          expect_psg_attenuation(expectedPsgChan, PSG_ATTENUATION_LOUDEST);
-@@ -172,7 +178,7 @@ void test_midi_sets_psg_pitch_bend_down(UNUSED void** state)
+@@ -172,7 +179,7 @@ void test_midi_sets_psg_pitch_bend_down(UNUSED void** state)
  
  void test_midi_sets_psg_pitch_bend_up(UNUSED void** state)
  {
@@ -6037,7 +8142,7 @@ index affbb29..5c896ea 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          expect_psg_tone(expectedPsgChan, TONE_NTSC_C4);
          expect_psg_attenuation(expectedPsgChan, PSG_ATTENUATION_LOUDEST);
-@@ -185,7 +191,7 @@ void test_midi_sets_psg_pitch_bend_up(UNUSED void** state)
+@@ -185,7 +192,7 @@ void test_midi_sets_psg_pitch_bend_up(UNUSED void** state)
  
  void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state)
  {
@@ -6046,7 +8151,7 @@ index affbb29..5c896ea 100644
          debug_message("channel %d\n", chan);
          __real_midi_program(chan, 8);
  
-@@ -211,7 +217,7 @@ void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state)
+@@ -211,7 +218,7 @@ void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state)
  void test_midi_plays_psg_envelope(UNUSED void** state)
  {
      u8 pitch = MIDI_PITCH_C4;
@@ -6055,7 +8160,7 @@ index affbb29..5c896ea 100644
  
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          __real_midi_program(chan, 1);
-@@ -355,10 +361,94 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state)
+@@ -355,10 +362,94 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state)
          expect_psg_tone(expectedPsgChan, expectedInitialTone);
          __real_midi_psg_tick();
  
@@ -6150,7 +8255,7 @@ index affbb29..5c896ea 100644
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state)
  {
      const u8 chan = MIN_PSG_CHAN;
-@@ -428,4 +518,222 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +519,254 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -6375,11 +8480,43 @@ index affbb29..5c896ea 100644
 +    __real_midi_pitch_bend(NOISE_MIDI_CHAN, 0x3FFF);
 +    __real_midi_cc(NOISE_MIDI_CHAN, CC_FINE_TUNE, 127);
 +}
++
++// Stage 24a: the screen's wave reads the tone and attenuation the chip was last given.
++void test_midi_psg_tone_and_attenuation_read_back(UNUSED void** state)
++{
++    expect_psg_attenuation(0, 0x3);
++    expect_psg_tone(0, 254);
++    __real_midi_note_on(MIN_PSG_CHAN, 69, MAX_MIDI_VOLUME / 2);
++    assert_int_equal(midi_psg_tone(0), 254);
++    assert_int_equal(midi_psg_attenuation(0) & 15, 0x3);
++}
++
++// Stage 24a: the wave's class by tone period, from the PSG's lowest note. The thresholds fall, about three semitones apart, so
++// a glide steps through the classes in one direction; every class and height names wave tiles.
++void test_midi_psg_wave_classes_follow_the_period(UNUSED void** state)
++{
++    // Class 0 is the PSG's lowest note, A2 (period 1017), and class 1 begins three semitones up.
++    assert_in_range(UI_WAVE_PERIOD[0], 820, 900);
++    for (u8 i = 1; i < UI_WAVE_CLASSES - 1; i++) {
++        assert_true(UI_WAVE_PERIOD[i] < UI_WAVE_PERIOD[i - 1]);
++        const u32 ratio = (u32)UI_WAVE_PERIOD[i - 1] * 100 / UI_WAVE_PERIOD[i];
++        assert_in_range(ratio, 112, 126);
++    }
++    for (u8 c = 0; c < UI_WAVE_CLASSES; c++) {
++        for (u8 h = 0; h < 3; h++) {
++            for (u8 t = 0; t < 4; t++) {
++                assert_true(UI_T_WAVE + UI_WAVE[c][h][t] < UI_T_END);
++            }
++        }
++    }
++    assert_true(UI_WAVE[0][2][0] != UI_WAVE[UI_WAVE_CLASSES - 1][2][0]
++        || UI_WAVE[0][2][1] != UI_WAVE[UI_WAVE_CLASSES - 1][2][1]);
++}
 diff --git a/tests/unit/test_midi_psg.h b/tests/unit/test_midi_psg.h
-index bfb01a6..3c27a9b 100644
+index bfb01a6..8c7f1b3 100644
 --- a/tests/unit/test_midi_psg.h
 +++ b/tests/unit/test_midi_psg.h
-@@ -26,4 +26,18 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
+@@ -26,4 +26,22 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_lower_limit_psg_envelope(UNUSED void** state);
  void test_midi_loads_psg_envelope(UNUSED void** state);
@@ -6400,6 +8537,10 @@ index bfb01a6..3c27a9b 100644
 +void test_midi_psg_noise_kit_repeats_every_octave(UNUSED void** state);
 +void test_midi_psg_noise_switched_to_kit_while_sounding(UNUSED void** state);
 +void test_midi_psg_noise_kit_ignores_bend_and_fine_tune(UNUSED void** state);
++
++void test_midi_psg_tone_and_attenuation_read_back(UNUSED void** state);
++
++void test_midi_psg_wave_classes_follow_the_period(UNUSED void** state);
 diff --git a/tests/unit/test_midi_sysex.c b/tests/unit/test_midi_sysex.c
 index 9ce9691..a325b9e 100644
 --- a/tests/unit/test_midi_sysex.c
