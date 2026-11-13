@@ -107,6 +107,15 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   draw: Cyrillic transliterated, two letters at most, so a name cut to bytes still fits its columns; the
   window's `text()` draws through it. `names_cut_utf8` ends a file's name cut to 24 bytes on a whole
   letter. Tests name the file in `MDMI_TEST_EXPORT` instead of the save dialog.
+- Stage 24a's ROM status screen (`docs/design/rom-screen.md`, D63-D66) lives in the fork's `ui.c`. Plane A cells are
+  written by `update` under one ceiling (32 words a frame), compared with a shadow. Colours (the live note cells,
+  the noise's 4 cells) and plane B's scroll go through a fixed-slot queue that `ui_vint` (called from
+  `scheduler_vsync`) writes at the start of VBlank, only inside it. Cell writes go as one long control word plus
+  the data, again if a VInt came between (the VInt parks the address on 0xFFFE). The ribbon is plane B: it
+  scrolls a point a frame, and only its leading cell at c22 is written, against a shadow per column. A
+  channel's `hits` (in `DeviceChannel`) counts Note Ons for the ribbon and the white flash. For timing tests,
+  `ui_test_off` (read once a frame) is 1 screen off, 2 clean stamps, 3 by part, 4 stamps alone, 5 without
+  24a2's elements, 6 the same by part. `reg_test --screen` runs the screen's tests alone.
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
 - PSG noise (stage 16, D45): Noise Type (Periodic, White) and Noise Rate (High, Mid, Low: the chip's clock

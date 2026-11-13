@@ -27,7 +27,7 @@ PALETTE = [
     # PAL2, DAC
     [0x000, 0x026, 0x08E, 0x026, 0x222, 0x000, PSG_BRIGHT, PSG_BRIGHT, PSG_BRIGHT, 0xEEE, 0x640, 0xEEE, 0x0E0, 0x0EE, 0x00E, 0x000],
     # PAL3, Ch3 Special; 12-15 the noise's cells (24a2)
-    [0x000, 0x888, 0xA2E, 0x206, 0x222, 0x000, PSG_BRIGHT, 0x000, 0x000, 0x640, 0x640, 0xA2E, 0x222, 0x222, 0x222, 0x222],
+    [0x000, 0x888, 0xA2E, 0x206, 0x222, 0x000, PSG_BRIGHT, 0x000, 0x000, 0x640, 0x640, 0xA2E, 0x444, 0x000, 0x000, 0x000],
 ]
 I_TEXT, I_CHIP, I_DIM, I_GREY, I_MASK = 1, 2, 3, 4, 5
 I_LIVE = (6, 7, 8)
@@ -166,6 +166,107 @@ def tone_period(key):
     return PSG_CLOCK / (32.0 * f)
 
 
+# Stage 24a2. The ribbon's tiles start at 384 (rom-screen.md 10.3): pattern n is tile 384 + n, its
+# bits the tile's columns that hold a hit; then the hold tile and the noise's 8.
+RIBBON_BASE = 384
+LINE_Y = 1
+BAR_ROWS = 4
+
+
+def ribbon_pattern(n):
+    """The line on the tile's 2nd row in dark grey; a hit is a bar 1x4 of the chip's colour hanging
+    down from it, the line's own point included (as rom-screen.png)."""
+    t = blank()
+    for x in range(8):
+        t[LINE_Y][x] = I_GREY
+    for x in range(8):
+        if n >> x & 1:
+            for y in range(LINE_Y, LINE_Y + BAR_ROWS):
+                t[y][x] = I_CHIP
+    return t
+
+
+def ribbon_hold():
+    t = blank()
+    for x in range(8):
+        t[LINE_Y][x] = I_DIM
+    return t
+
+
+I_NOISE = (12, 13, 14, 15)
+
+
+def noise_tiles(periodic):
+    """W19 over 32 points (the mockup's motion.py w19_texture): periodic stripes or white grain, each
+    point one of the 4 cycling cells PAL3 12-15."""
+    import random
+    rnd = random.Random(19)
+    a = [[0] * WAVE_WIDTH for _ in range(8)]
+    for y in range(8):
+        for x in range(WAVE_WIDTH):
+            if periodic:
+                k = (x // 2) % 4
+                a[y][x] = I_NOISE[k] if (y % 2 == 0 or k < 2) else 0
+            else:
+                r = rnd.random()
+                a[y][x] = I_NOISE[rnd.randrange(4)] if r < 0.55 else 0
+    return [[row[t * 8:(t + 1) * 8] for row in a] for t in range(4)]
+
+
+# The console's 8 levels of a colour component, and an RGB colour as the VDP's 0BGR.
+LEVELS = (0, 52, 87, 116, 144, 172, 206, 255)
+
+
+def vdp(rgb):
+    out = 0
+    for i, c in enumerate(rgb):
+        step = min(range(8), key=lambda k: abs(LEVELS[k] - c))
+        out |= (step * 2) << (4 * i)
+    return out
+
+
+def mix(a, b, f):
+    return tuple(a[i] + (b[i] - a[i]) * f for i in range(3))
+
+
+WHITE = (255, 255, 255)
+# The live cells' chips (rom-screen.md 3): FM, PSG, channel 3 in Ch3 Special; held and dim.
+LIVE_CHIPS = (((144, 144, 255), (52, 52, 144)), ((172, 255, 255), (0, 87, 116)), ((255, 144, 206), (116, 0, 52)))
+# The mockup's live_colour (motion.py): white 3 frames, then over 18 to the target; a release mixes
+# held to dim over 14.
+FLASH_FRAMES = 21
+RELEASE_FRAMES = 14
+
+
+def flash(target, h):
+    return WHITE if h < 3 else mix(WHITE, target, (h - 3) / 18.0)
+
+
+# W19's colours (motion.py palette_for): 4 loudness steps; periodic runs a ramp every 2 frames,
+# white shuffles 4 greys every frame (8 fixed shuffles here).
+NOISE_RAMP = [(0, 255, 206), (0, 172, 144), (0, 87, 87), (0, 52, 52)]
+NOISE_GREYS = [(255, 255, 255), (172, 172, 172), (87, 87, 87), (0, 0, 0)]
+NOISE_SHUFFLES = 8
+
+
+def noise_colours():
+    import random
+    rnd = random.Random(24)
+    periodic = []
+    white = []
+    shuffles = []
+    for _ in range(NOISE_SHUFFLES):
+        s = list(NOISE_GREYS)
+        rnd.shuffle(s)
+        shuffles.append(s)
+    for step in range(4):
+        lv = (step + 1) / 4.0
+        periodic.append([[vdp(mix((0, 0, 0), NOISE_RAMP[(k + p) % 4], 0.25 + 0.75 * lv)) for k in range(4)] for p in range(4)])
+        white.append([[vdp(mix((0, 0, 0), s[k], 0.2 + 0.8 * lv)) for k in range(4)] for s in shuffles])
+    silent = [[vdp((0, 52, 52)), 0, 0, 0], [vdp((52, 52, 52)), 0, 0, 0]]
+    return periodic, white, silent
+
+
 def main():
     glyphs = font()
     T = Tiles()
@@ -255,6 +356,20 @@ def main():
             per_amp.append(idxs)
         wave_map.append(per_amp)
     T.mark("UI_T_END")
+    assert 16 + len(T.tiles) <= RIBBON_BASE
+
+    B = Tiles()
+    B.mark("UI_T_RIBBON")
+    for n in range(256):
+        B.add(ribbon_pattern(n))
+    B.mark("UI_T_HOLD")
+    B.add(ribbon_hold())
+    B.mark("UI_T_NOISE")  # periodic 4, then white 4
+    for periodic in (True, False):
+        for t in noise_tiles(periodic):
+            B.add(t)
+    B.mark("UI_T_B_END")
+    noise_periodic, noise_white, noise_silent = noise_colours()
 
     # Wave classes by the tone period the ROM wrote: class c holds keys 45+3c to 47+3c (A2 up).
     thresholds = [int(round(tone_period(45 + 3 * c - 0.5))) for c in range(1, len(WAVE_PERIODS))]
@@ -276,6 +391,14 @@ def main():
     for name, offset in T.marks:
         h.append(f"#define {name} (UI_TILE_BASE + {offset})")
     h.append(f"#define UI_TILE_COUNT {len(T.tiles)}")
+    h.append("// Stage 24a2: the ribbon's patterns from 384, the hold tile and the noise's (rom-screen.md 10.3).")
+    h.append(f"#define UI_TILE_B_BASE {RIBBON_BASE}")
+    for name, offset in B.marks:
+        h.append(f"#define {name} (UI_TILE_B_BASE + {offset})")
+    h.append(f"#define UI_TILE_B_COUNT {len(B.tiles)}")
+    h.append(f"#define UI_FLASH_FRAMES {FLASH_FRAMES}")
+    h.append(f"#define UI_RELEASE_FRAMES {RELEASE_FRAMES}")
+    h.append(f"#define UI_NOISE_SHUFFLES {NOISE_SHUFFLES}")
     h.append("#define UI_NOTE_GLYPHS 20")
     h.append(f"#define UI_GLYPH_QUESTION {NOTE_GLYPHS.index('?')}")
     h.append(f"#define UI_GLYPH_DASH {NOTE_GLYPHS.index('-')}")
@@ -297,6 +420,17 @@ def main():
     h.append("extern const u16 UI_WAVE_PERIOD[UI_WAVE_CLASSES - 1];")
     h.append("// The wave's 4 tiles from UI_T_WAVE by class and height (3, 5, 7 points).")
     h.append("extern const u8 UI_WAVE[UI_WAVE_CLASSES][3][4];")
+    h.append("extern const u32 UI_TILES_B[UI_TILE_B_COUNT * 8];")
+    h.append("// A live note cell's colour by chip (FM, PSG, Ch3 Special): frames since the hit toward the held")
+    h.append("// colour [0] or the dim one [1]; frames since the release from held to dim; held and dim.")
+    h.append("extern const u16 UI_FLASH[3][2][UI_FLASH_FRAMES];")
+    h.append("extern const u16 UI_RELEASE[3][UI_RELEASE_FRAMES];")
+    h.append("extern const u16 UI_LIVE_HELD[3];")
+    h.append("extern const u16 UI_LIVE_DIM[3];")
+    h.append("// The noise's 4 cells PAL3 12-15 by loudness step: periodic by phase, white by shuffle; silent.")
+    h.append("extern const u16 UI_NOISE_PERIODIC[4][4][4];")
+    h.append("extern const u16 UI_NOISE_WHITE[4][UI_NOISE_SHUFFLES][4];")
+    h.append("extern const u16 UI_NOISE_SILENT[2][4];")
     h.append("#endif")
     h.append(f"#define UI_LABEL_FM_TILES {len(fm_label)}")
     h.append(f"#define UI_LABEL_PSG_TILES {len(psg_label)}")
@@ -337,12 +471,43 @@ def main():
     c.append("};")
     c.append("")
 
+    c.append("const u32 UI_TILES_B[UI_TILE_B_COUNT * 8] = {")
+    for tile in B.tiles:
+        c.append("    " + ", ".join(f"0x{w:08X}" for w in pack(tile)) + ",")
+    c.append("};")
+    c.append("")
+
+    def row(values):
+        return "{ " + ", ".join(f"0x{v:03X}" for v in values) + " }"
+
+    c.append("const u16 UI_FLASH[3][2][UI_FLASH_FRAMES] = {")
+    for held, dim in LIVE_CHIPS:
+        c.append("    { " + ", ".join(row(vdp(flash(t, h)) for h in range(FLASH_FRAMES)) for t in (held, dim)) + " },")
+    c.append("};")
+    c.append("const u16 UI_RELEASE[3][UI_RELEASE_FRAMES] = {")
+    for held, dim in LIVE_CHIPS:
+        c.append("    " + row(vdp(mix(held, dim, s_ / float(RELEASE_FRAMES))) for s_ in range(RELEASE_FRAMES)) + ",")
+    c.append("};")
+    c.append("const u16 UI_LIVE_HELD[3] = " + row(vdp(h_) for h_, d_ in LIVE_CHIPS) + ";")
+    c.append("const u16 UI_LIVE_DIM[3] = " + row(vdp(d_) for h_, d_ in LIVE_CHIPS) + ";")
+    c.append("")
+    c.append("const u16 UI_NOISE_PERIODIC[4][4][4] = {")
+    for step in noise_periodic:
+        c.append("    { " + ", ".join(row(p) for p in step) + " },")
+    c.append("};")
+    c.append("const u16 UI_NOISE_WHITE[4][UI_NOISE_SHUFFLES][4] = {")
+    for step in noise_white:
+        c.append("    { " + ", ".join(row(p) for p in step) + " },")
+    c.append("};")
+    c.append("const u16 UI_NOISE_SILENT[2][4] = { " + ", ".join(row(p) for p in noise_silent) + " };")
+    c.append("")
+
     src = os.path.join(MDMI, "src")
     with open(os.path.join(src, "ui_tiles.h"), "w", newline="\n") as f:
         f.write("\n".join(h))
     with open(os.path.join(src, "ui_tiles.c"), "w", newline="\n") as f:
         f.write("\n".join(c))
-    print(f"{len(T.tiles)} tiles, wave {len(seen)} distinct, thresholds {thresholds}")
+    print(f"{len(T.tiles)} + {len(B.tiles)} tiles, wave {len(seen)} distinct, thresholds {thresholds}")
 
 
 if __name__ == "__main__":

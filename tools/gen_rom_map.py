@@ -11,7 +11,8 @@ import sys
 RAM = 0xE0FF0000
 STATS = ("ui_stat_lines", "ui_stat_lines_max", "ui_stat_ambig", "ui_stat_words", "ui_stat_words_max",
          "ui_stat_lag", "ui_stat_lag_max", "ui_stat_late_notes", "ui_stat_frames", "ui_stat_missed",
-         "ui_stat_draw_lines", "ui_stat_draw_lines_max", "ui_stat_parts", "ui_stat_calib", "ui_stat_draw_sum", "ui_test_off")
+         "ui_stat_draw_lines", "ui_stat_draw_lines_max", "ui_stat_parts", "ui_stat_calib", "ui_stat_draw_sum", "ui_test_off",
+         "ui_stat_vint_words_max", "ui_stat_vint_lines_max", "ui_stat_vdp_outside", "ui_stat_vint_late", "ui_shadow", "ui_stat_parts_sum")
 
 
 def main():
@@ -69,6 +70,11 @@ def main():
         f"#define ROM_ARP_ROWS 0x{data['ARP_ROWS']:06X}u",
         f"#define ROM_PROGRAM_NAMES 0x{data['PROGRAM_NAMES']:06X}u",
     ]
+    # Stage 24a2: the screen's tile patterns in the image, which reg_test compares with VRAM.
+    for name in ("UI_TILES", "UI_TILES_B"):
+        if not symbols.get(name, RAM) < symbols["_etext"]:
+            raise SystemExit(f"{symbols_path}: no .rodata symbol {name}")
+        lines.append(f"#define ROM_{name} 0x{symbols[name]:06X}u")
     # Stage 24a: where the screen's counters live in the 68000's RAM, for reg_test (rom-screen.md 10.4).
     for name in STATS:
         if not RAM <= symbols.get(name, 0) < RAM + 0x10000:

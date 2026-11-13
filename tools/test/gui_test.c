@@ -2412,42 +2412,75 @@ int main(int argc, char **argv)
 		// Last, so its modes and notes touch no other check.
 		click(window, BUTTON_ROM_X, BUTTON_Y);
 		run_ms(500);
-		// Stage 24a1's frames for the art-director: FM and PSG playing, the DAC's four voices,
-		// Ch3 Special's squares.
-		for (int ch = 0; ch < 5; ch++) {
+		// Stage 24a2's frames for the art-director: a beat on FM, PSG and the noise for about 1.5 s so
+		// the ribbon has bars and holds, a fresh hit white, released notes dim.
+		for (int step = 0; step < 12; step++) {
+			const int ch = step % 3;
+			send_midi((uint8_t)(0x90 | ch), (uint8_t)(48 + ch * 7), 100);
+			send_midi(0x96, (uint8_t)(60 + (step & 3) * 2), 90);
+			if (step % 2 == 0) {
+				send_midi(0x99, 60, (uint8_t)(60 + step * 5));
+			}
+			run_ms(60);
+			send_midi((uint8_t)(0x80 | ch), (uint8_t)(48 + ch * 7), 0);
+			send_midi(0x86, (uint8_t)(60 + (step & 3) * 2), 0);
+			send_midi(0x89, 60, 0);
+			run_ms(60);
+		}
+		for (int ch = 3; ch < 5; ch++) {
 			send_midi((uint8_t)(0x90 | ch), (uint8_t)(48 + ch * 5), (uint8_t)(40 + ch * 20));
 		}
-		for (int ch = 6; ch < 9; ch++) {
+		for (int ch = 7; ch < 9; ch++) {
 			send_midi((uint8_t)(0x90 | ch), (uint8_t)(57 + (ch - 6) * 12), (uint8_t)(50 + (ch - 6) * 35));
+		}
+		// Held long enough for their notes bright, their waves and a long hold line; then a fresh hit
+		// on FM1 and the noise, caught while it is still white or near: its colour lands a VBlank after its note, white
+		// 3 frames, then over 18 to the held colour.
+		run_ms(700);
+		send_midi(0x99, 60, 120);
+		send_midi(0x90, 72, 110);
+		run_ms(70);
+		capture(window);
+		save_bmp(argv[2], "rom-24a2-play");
+		send_midi(0x80, 72, 0);
+		send_midi(0x89, 60, 0);
+		for (int ch = 3; ch < 5; ch++) {
+			send_midi((uint8_t)(0x80 | ch), (uint8_t)(48 + ch * 5), 0);
+		}
+		for (int ch = 7; ch < 9; ch++) {
+			send_midi((uint8_t)(0x80 | ch), (uint8_t)(57 + (ch - 6) * 12), 0);
 		}
 		run_ms(700);
 		capture(window);
-		save_bmp(argv[2], "rom-24a1-play");
-		for (int ch = 0; ch < 5; ch++) {
-			send_midi((uint8_t)(0x80 | ch), (uint8_t)(48 + ch * 5), 0);
-		}
-		for (int ch = 6; ch < 9; ch++) {
-			send_midi((uint8_t)(0x80 | ch), (uint8_t)(57 + (ch - 6) * 12), 0);
-		}
+		save_bmp(argv[2], "rom-24a2-released");
 		send_midi(0xB0, 78, 127);
 		run_ms(300);
 		for (int i = 0; i < 4; i++) {
 			send_midi(0x95, (uint8_t)(36 + i * 2), 127);
+			run_ms(150);
 		}
-		run_ms(400);
+		run_ms(200);
 		capture(window);
-		save_bmp(argv[2], "rom-24a1-dac");
+		save_bmp(argv[2], "rom-24a2-dac");
 		for (int i = 0; i < 4; i++) {
 			send_midi(0x85, (uint8_t)(36 + i * 2), 0);
 		}
 		send_midi(0xB0, 78, 0);
 		send_midi(0xB0, 80, 127);
 		run_ms(300);
+		// Ch3 OPS: operators 1-3 on MIDI 11-13 strike channel 3's ribbon in pink.
 		send_midi(0x92, 60, 110);
-		run_ms(400);
+		for (int op = 0; op < 3; op++) {
+			run_ms(150);
+			send_midi((uint8_t)(0x9A + op), (uint8_t)(64 + op * 3), 100);
+		}
+		run_ms(300);
 		capture(window);
-		save_bmp(argv[2], "rom-24a1-special");
+		save_bmp(argv[2], "rom-24a2-special");
 		send_midi(0x82, 60, 0);
+		for (int op = 0; op < 3; op++) {
+			send_midi((uint8_t)(0x8A + op), (uint8_t)(64 + op * 3), 0);
+		}
 		send_midi(0xB0, 80, 0);
 		run_ms(3000);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);

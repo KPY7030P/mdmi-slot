@@ -4922,8 +4922,8 @@ static void rom_cc(int channel, int cc, int value)
 // The busy clip of stage 24a, one for 24a1-24a3: every message of a moment comes at once, as over
 // USB, which is the screen's worst case. A ROM frame is about three blocks.
 // The worst update since the last moment, and the counter from zero for the next. With a limit
-// (ROADMAP, stage 24a, D65: 0.24.5's update for the moment, at least 40 lines), the moment is a
-// check: update within it, drawing at most 150 lines, lag at most lag_limit frames.
+// (ROADMAP, stage 24a, D65, D66: 0.24.5's update for the moment, at least 55 lines), the moment is a
+// check: update within it, drawing at most 165 lines, lag at most lag_limit frames.
 static bool screen_on_in_clip = true;
 
 static unsigned clip_moment_limited(const char *what, unsigned limit, unsigned lag_limit)
@@ -4941,7 +4941,7 @@ static unsigned clip_moment_limited(const char *what, unsigned limit, unsigned l
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_MISSED, 0);
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_LAG_MAX, 0);
 	if (limit && screen_on_in_clip) {
-		checkf(update <= limit && drawing <= 150 && lag <= lag_limit, "busy clip, %s: update %u lines (at most %u), drawing %u (at most 150), lag %u (at most %u)",
+		checkf(update <= limit && drawing <= 165 && lag <= lag_limit, "busy clip, %s: update %u lines (at most %u), drawing %u (at most 165, D66), lag %u (at most %u)",
 			what, update, limit, drawing, lag, lag_limit);
 	}
 	return drawing;
@@ -4991,7 +4991,7 @@ static void busy_clip(void)
 	clip_moment_limited("4 DAC voices", 252, 3);
 	set_global(GLOBAL_DAC, 0);
 	sync_and_settle();
-	clip_moment_limited("DAC off", 40, 3);
+	clip_moment_limited("DAC off", 55, 3);
 	set_global(GLOBAL_CH3_MODE, 1);
 	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
 	sync_and_settle();
@@ -5011,7 +5011,7 @@ static void busy_clip(void)
 	clip_moment_limited("Ch3 Special off", 81, 3);
 	set_on(6, PARAM_PORTA_ON, 1);
 	set_on(6, PARAM_PORTA_TIME, 64);
-	clip_moment_limited("PSG porta on", 40, 3);
+	clip_moment_limited("PSG porta on", 55, 3);
 	midi(0x96, 48, 100);
 	render(10);
 	midi(0x96, 84, 100);
@@ -5020,7 +5020,7 @@ static void busy_clip(void)
 	midi(0x86, 84, 0);
 	clip_moment_limited("PSG portamento C3-C6", 271, 3);
 	set_on(6, PARAM_PORTA_ON, 0);
-	clip_moment_limited("PSG porta off", 40, 3);
+	clip_moment_limited("PSG porta off", 55, 3);
 	// The view empties its rows under the ceiling before it draws: a long wait each way. Its frames
 	// are measured with clean stamps: its drawing otherwise lands in the V counter's ambiguous window.
 	if (screen_on_in_clip) {
@@ -5032,7 +5032,7 @@ static void busy_clip(void)
 	rom_cc(0, 83, 0);
 	render(90);
 	// The rows come back under the ceiling over some 30 frames (D64, D65): lag is the redraw.
-	clip_moment_limited("CC 83 off", 85, 40);
+	clip_moment_limited("CC 83 off", 102, 40);
 	if (screen_on_in_clip) {
 		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 0);
 	}
@@ -5133,11 +5133,12 @@ static void test_screen_cells(void)
 	const int row = SCREEN_ROW(0);
 	uint16_t noteIdle[3];
 	read_cells(SCREEN_X_NOTE, row, 3, noteIdle);
-	midi(0x90, 60, 100);
+	// Not a key the cells already show: since 24a2 a released note stays.
+	midi(0x90, 61, 100);
 	render(10);
 	const bool noteShown = tiles_within(SCREEN_X_NOTE, row, 3, UI_T_NOTE, UI_T_DAC_NOTE) && cells_unlike(SCREEN_X_NOTE, row, 3, noteIdle) > 0;
 	const bool ownerShown = tiles_within(SCREEN_X_OWNER, row, 1, UI_T_OWNER, UI_T_STRIPE);
-	midi(0x80, 60, 0);
+	midi(0x80, 61, 0);
 	render(20);
 	check(noteShown && ownerShown, "screen: a note shows its name and its owner on its row");
 	uint16_t ownOwner[6];
@@ -5286,7 +5287,8 @@ static void test_screen_cells(void)
 	}
 	render(300);
 	printf("      PSG vibrato on 3 channels: channel 7's wave changed %d times in 60 bends, at most %u words a frame\n", flips, vibratoWords);
-	check(flips >= 15 && vibratoWords <= 12, "screen: vibrato by bend on three PSG channels changes the wave in at most 12 words a frame");
+	// Since 24a2 the frame's words also hold the three held rows' ribbon cells (1 each on a new column).
+	check(flips >= 15 && vibratoWords <= 12 + 3, "screen: vibrato by bend on three PSG channels changes the wave in at most 12 words a frame, with 3 ribbon cells");
 
 	// CC 83: the view takes the channels' rows, and after it the status screen is whole again.
 	static uint16_t before[24][40];
@@ -5347,6 +5349,242 @@ static void test_screen_cells(void)
 	check(changed > 100 && differ == 0, "screen: the CC 83 view takes the rows and the status screen comes back whole");
 }
 
+// Stage 24a2: plane B's ribbon, the live note cells, the noise's texture, the VInt's queue.
+static uint16_t ribbon_cell(int ch, int col)
+{
+	return mdmi_engine_test_vdp(engine, 0, 0xC000u + (uint32_t)((SCREEN_ROW(ch) + 1) * 64 + col) * 2u);
+}
+
+static uint16_t cram(int index)
+{
+	return mdmi_engine_test_vdp(engine, 1, (uint32_t)index);
+}
+
+static uint16_t ribbon_scroll(void)
+{
+	return mdmi_engine_test_vdp(engine, 0, 0xF002u) & 0x3FF;
+}
+
+// Renders until the ROM's screen has run n more frames.
+static void rom_frames(unsigned n)
+{
+	const uint16_t from = rom_stat(ROM_UI_STAT_FRAMES);
+	while ((uint16_t)(rom_stat(ROM_UI_STAT_FRAMES) - from) < n) {
+		render(1);
+	}
+}
+
+// The columns of a ribbon row holding a pattern with hits, and the hold tile.
+static int ribbon_count(int ch, int first, int end)
+{
+	int n = 0;
+	for (int col = 0; col < 64; col++) {
+		const int tile = ribbon_cell(ch, col) & 0x7FF;
+		n += tile >= first && tile < end;
+	}
+	return n;
+}
+
+static int ribbon_hits(int ch)
+{
+	return ribbon_count(ch, UI_T_RIBBON + 1, UI_T_RIBBON + 256);
+}
+
+static void test_screen_ribbon(void)
+{
+	printf("    the ribbon, the note flash and the noise\n");
+	render(600);
+	const int quiet = ribbon_hits(0) + ribbon_count(0, UI_T_HOLD, UI_T_HOLD + 1);
+	// The scroll grows a point a frame (the VInt writes it a frame after update asks).
+	const uint16_t s0 = ribbon_scroll(), f0 = rom_stat(ROM_UI_STAT_FRAMES);
+	rom_frames(40);
+	const uint16_t s1 = ribbon_scroll(), f1 = rom_stat(ROM_UI_STAT_FRAMES);
+	const int scrolled = (s0 - s1) & 0x3FF, frames = (uint16_t)(f1 - f0);
+	printf("      scroll %d points in %d frames; ribbon row 1 holds %d hit or hold cells after a silence\n", scrolled, frames, quiet);
+	check(abs(scrolled - frames) <= 1 && quiet == 0, "screen: plane B scrolls a point a frame, the ribbon is a bare line in silence");
+
+	// A hit: a bar in channel 1's leading cell within a frame, the note cell white in the first VBlank.
+	// The colour lands in the VBlank after the frame that saw the hit: look block by block. The bar
+	// is in the leading cell, the one at c22's last point by the scroll (a frame behind at most).
+	// Counted from the frame whose update saw the hit (its bar is there): MIDI takes its own time to
+	// reach the ROM.
+	midi(0x90, 60, 100);
+	uint16_t white = cram(6);
+	int bar_frame = -1, white_frame = -1;
+	for (int i = 0; i < 30 && white_frame < 0; i++) {
+		render(1);
+		const int f = rom_stat(ROM_UI_STAT_FRAMES);
+		if (bar_frame < 0 && ribbon_hits(0)) {
+			bar_frame = f;
+		}
+		white = cram(6);
+		if (white == 0xEEE) {
+			white_frame = f;
+		}
+	}
+	const int white_frames = bar_frame < 0 || white_frame < 0 ? 99 : (uint16_t)(white_frame - bar_frame);
+	const int hit = ribbon_hits(0);
+	const int lead = ((183 + ((-ribbon_scroll()) & 0x3FF)) >> 3) & 63;
+	int bar_col = -1;
+	for (int col = 0; col < 64; col++) {
+		const int tile = ribbon_cell(0, col) & 0x7FF;
+		if (tile > UI_T_RIBBON && tile < UI_T_RIBBON + 256) {
+			bar_col = col;
+		}
+	}
+	const bool leading = bar_col == lead || bar_col == ((lead + 1) & 63) || bar_col == ((lead + 63) & 63);
+	rom_frames(30);
+	const uint16_t held = cram(6);
+	const int holds = ribbon_count(0, UI_T_HOLD, UI_T_HOLD + 1);
+	midi(0x80, 60, 0);
+	rom_frames(30);
+	const uint16_t dim = cram(6);
+	const bool kept = tiles_within(SCREEN_X_NOTE, SCREEN_ROW(0), 3, UI_T_NOTE, UI_T_DAC_NOTE);
+	printf("      hit: %d bars, in column %d, leading %d; live cell %03X %d frames after its bar, then %03X held, %03X released; %d hold cells; note kept %d\n",
+		hit, bar_col, lead, white, white_frames, held, dim, holds, kept);
+	check(hit == 1 && leading && white_frames <= 1, "screen: a hit puts a bar in the channel's leading ribbon cell, the note white by the next frame");
+	check(holds >= 2, "screen: a held note lays the hold tile on the ribbon");
+	check(white == 0xEEE && held == 0xE88 && dim == 0x822 && kept, "screen: the note cell is white on the hit, bright FM while held, dim after the release and still shows the note");
+
+	// A note shorter than a frame and a repeat of the same note: a bar each.
+	for (int i = 0; i < 2; i++) {
+		midi(0x90, 62, 100);
+		midi(0x80, 62, 0);
+		rom_frames(12);
+	}
+	const int short_hits = ribbon_hits(0);
+	printf("      two notes shorter than a frame: %d bars on the ribbon\n", short_hits);
+	check(short_hits == 3, "screen: a note shorter than a frame and its repeat each put a bar on the ribbon");
+
+	// 64 columns later the leading cell writes over what it left: the bars are gone.
+	rom_frames(520);
+	const int gone = ribbon_hits(0) + ribbon_count(0, UI_T_HOLD, UI_T_HOLD + 1);
+	printf("      after 520 frames: %d hit or hold cells left on row 1\n", gone);
+	check(gone == 0, "screen: the leading cell writes over the ribbon's old cells 64 columns later");
+
+	// Held PSG notes after a beat with the noise (gui_test's rom-24a2-play): each held row's live cell
+	// is the bright PSG colour, the same moment its ribbon holds.
+	for (int i = 0; i < 6; i++) {
+		midi(0x99, 60, 100);
+		rom_frames(3);
+		midi(0x89, 60, 0);
+		rom_frames(3);
+	}
+	midi(0x97, 69, 85);
+	midi(0x98, 81, 120);
+	rom_frames(45);
+	const uint16_t live8 = cram(32 + 7), live9 = cram(32 + 8);
+	const int hold8 = ribbon_count(7, UI_T_HOLD, UI_T_HOLD + 1), hold9 = ribbon_count(8, UI_T_HOLD, UI_T_HOLD + 1);
+	midi(0x87, 69, 0);
+	midi(0x88, 81, 0);
+	render(300);
+	printf("      held PSG 8 and 9 after a noise beat: live cells %03X %03X, hold cells %d %d\n", live8, live9, hold8, hold9);
+	check(live8 == 0xEEA && live9 == 0xEEA && hold8 >= 2 && hold9 >= 2, "screen: held PSG notes after a noise beat are bright and hold their ribbons");
+
+	// The DAC's voice starts and Ch3 Special's operators strike their rows' ribbons too.
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(600);
+	for (int i = 0; i < 4; i++) {
+		midi(0x95, (uint8_t)(36 + i * 2), 127);
+		rom_frames(12);
+	}
+	const int dac_bars = ribbon_hits(5);
+	for (int i = 0; i < 4; i++) {
+		midi(0x85, (uint8_t)(36 + i * 2), 0);
+	}
+	set_global(GLOBAL_DAC, 0);
+	set_global(GLOBAL_CH3_MODE, 1);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	sync_and_settle();
+	render(600);
+	midi(0x92, 60, 100);
+	rom_frames(12);
+	for (int op = 0; op < 3; op++) {
+		midi((uint8_t)(0x9A + op), (uint8_t)(64 + op * 3), 100);
+		rom_frames(12);
+	}
+	const int op_bars = ribbon_hits(2);
+	int pink = 0;
+	for (int col = 0; col < 64; col++) {
+		const uint16_t c = ribbon_cell(2, col);
+		pink += (c & 0x7FF) > UI_T_RIBBON && (c & 0x7FF) < UI_T_RIBBON + 256 && (c >> 13 & 3) == 3;
+	}
+	midi(0x82, 60, 0);
+	for (int op = 0; op < 3; op++) {
+		midi((uint8_t)(0x8A + op), (uint8_t)(64 + op * 3), 0);
+	}
+	set_global(GLOBAL_CH3_MODE, 0);
+	sync_and_settle();
+	render(300);
+	printf("      DAC: %d bars for 4 voice starts; Ch3 OPS: %d bars for channel 3 and its 3 operators, %d pink\n", dac_bars, op_bars, pink);
+	check(dac_bars == 4 && op_bars == 4 && pink == 4, "screen: the DAC's voice starts and Ch3 Special's operators each put a bar on their row's ribbon");
+
+	// The noise's texture: its 4 cells turn while channel 10 sounds, brighter when louder.
+	const int noise = 48 + 12;
+	int turns = 0, lit_low = 0, lit_high = 0;
+	uint16_t last = cram(noise);
+	midi(0x99, 60, 30);
+	rom_frames(2);
+	for (int i = 0; i < 20; i++) {
+		rom_frames(1);
+		turns += cram(noise) != last;
+		last = cram(noise);
+		for (int k = 0; k < 4; k++) {
+			const uint16_t c = cram(noise + k);
+			const int sum = (c & 0xF) + (c >> 4 & 0xF) + (c >> 8 & 0xF);
+			lit_low = sum > lit_low ? sum : lit_low;
+		}
+	}
+	midi(0x89, 60, 0);
+	rom_frames(10);
+	midi(0x99, 60, 127);
+	rom_frames(2);
+	for (int i = 0; i < 20; i++) {
+		rom_frames(1);
+		for (int k = 0; k < 4; k++) {
+			const uint16_t c = cram(noise + k);
+			const int sum = (c & 0xF) + (c >> 4 & 0xF) + (c >> 8 & 0xF);
+			lit_high = sum > lit_high ? sum : lit_high;
+		}
+	}
+	midi(0x89, 60, 0);
+	render(300);
+	const bool texture = tiles_within(SCREEN_X_LEVEL, SCREEN_ROW(9), 4, UI_T_NOISE, UI_T_B_END);
+	printf("      noise: texture %d, cells turned %d times in 20 frames, brightest %d quiet and %d loud\n", texture, turns, lit_low, lit_high);
+	check(texture && turns >= 5 && lit_high > lit_low, "screen: the noise's texture turns while channel 10 sounds and its brightness follows the loudness");
+}
+
+// After the busy clip: plane A as the ROM's shadow says, the tile patterns as loaded, the VInt within
+// its limits and never outside VBlank.
+static void test_screen_vdp_whole(void)
+{
+	int differ = 0;
+	for (int y = 0; y < 27; y++) {
+		for (int x = 0; x < 40; x++) {
+			const uint16_t want = rom_stat(ROM_UI_SHADOW + 2u * (uint32_t)(y * 64 + x));
+			differ += want != 0xFFFF && want != screen_cell(x, y);
+		}
+	}
+	size_t size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&size);
+	int tiles = 0;
+	for (int t = 0; t < UI_TILE_COUNT + UI_TILE_B_COUNT; t++) {
+		const int tile = t < UI_TILE_COUNT ? UI_TILE_BASE + t : UI_TILE_B_BASE + t - UI_TILE_COUNT;
+		const uint32_t from = t < UI_TILE_COUNT ? ROM_UI_TILES + 32u * (uint32_t)t : ROM_UI_TILES_B + 32u * (uint32_t)(t - UI_TILE_COUNT);
+		bool same = true;
+		for (int i = 0; i < 32; i += 2) {
+			same = same && mdmi_engine_test_vdp(engine, 0, (uint32_t)tile * 32u + (uint32_t)i) == (rom[from + i] << 8 | rom[from + i + 1]);
+		}
+		tiles += !same;
+	}
+	const unsigned vint_words = rom_stat(ROM_UI_STAT_VINT_WORDS_MAX), vint_lines = rom_stat(ROM_UI_STAT_VINT_LINES_MAX), outside = rom_stat(ROM_UI_STAT_VDP_OUTSIDE);
+	printf("    plane A against the shadow: %d cells differ; %d tiles changed; VInt at most %u words, %u lines, %u writes outside VBlank, %u taken late and left\n",
+		differ, tiles, vint_words, vint_lines, outside, rom_stat(ROM_UI_STAT_VINT_LATE));
+	check(differ == 0 && tiles == 0, "screen: after the busy clip plane A is the ROM's shadow and the tiles are as loaded");
+	check(vint_words <= 24 && vint_lines <= 4 && outside == 0, "screen: the VInt writes at most 24 words in at most 4 lines, all in VBlank");
+}
+
 static void test_screen(void)
 {
 	printf("screen (stage 24a)\n");
@@ -5359,17 +5597,26 @@ static void test_screen(void)
 		rom_stat(ROM_UI_STAT_LINES_MAX), rom_stat(ROM_UI_STAT_AMBIG), frames, missed, rom_stat(ROM_UI_STAT_WORDS_MAX),
 		rom_stat(ROM_UI_STAT_LAG_MAX), rom_stat(ROM_UI_STAT_LATE_NOTES));
 	check(frames > 100, "the screen's frame handler ran through the busy clip");
+	render(60);
+	test_screen_vdp_whole();
 	// Idle: the average of about 100 frames once everything is drawn, the stamps outside the V
 	// counter's ambiguous window.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 2);
 	render(60);
+	// Idle means drawn: after the CC 83 view the rows come back under the ceiling for a while.
+	int settle = 0;
+	while (rom_stat(ROM_UI_STAT_LAG) && settle < 600) {
+		render(1);
+		settle++;
+	}
+	printf("    the screen was whole %d blocks later\n", settle);
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_DRAW_SUM, 0);
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
-	render(100);
+	render(300);
 	const unsigned idle_frames = rom_stat(ROM_UI_STAT_FRAMES);
 	const double idle_lines = (double)rom_stat(ROM_UI_STAT_DRAW_SUM) / idle_frames;
 	printf("    idle: drawing %.1f lines a frame on average over %u frames\n", idle_lines, idle_frames);
-	checkf(idle_lines <= 12.5, "screen: idle drawing %.1f lines a frame, at most 12.5 (D65, 2026-11-13)", idle_lines);
+	checkf(idle_lines <= 17.5, "screen: idle drawing %.1f lines a frame, at most 17.5 (D66)", idle_lines);
 	clip_moment("idle");
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 4);
 	render(10);
@@ -5377,10 +5624,43 @@ static void test_screen(void)
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
 	render(100);
 	printf("    the stamps alone: %.1f lines a frame\n", (double)rom_stat(ROM_UI_STAT_DRAW_SUM) / rom_stat(ROM_UI_STAT_FRAMES));
+	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 5);
+	render(10);
+	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_DRAW_SUM, 0);
+	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
+	render(100);
+	printf("    idle without 24a2's elements (switch 5): %.1f lines a frame\n", (double)rom_stat(ROM_UI_STAT_DRAW_SUM) / rom_stat(ROM_UI_STAT_FRAMES));
 	// The parts of a frame, each stamp costing about a line of its own.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 3);
 	render(20);
 	clip_moment("idle, by parts");
+	// The average of each part over some 30 idle frames (D65: where idle's lines go).
+	for (int i = 0; i < 10; i++) {
+		mdmi_engine_test_ram_write(engine, ROM_UI_STAT_PARTS_SUM + 2u * (uint32_t)i, 0);
+	}
+	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
+	render(100);
+	for (int pass = 0; pass < 2; pass++) {
+		if (pass) {
+			mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 6);
+			render(10);
+			for (int i = 0; i < 10; i++) {
+				mdmi_engine_test_ram_write(engine, ROM_UI_STAT_PARTS_SUM + 2u * (uint32_t)i, 0);
+			}
+			mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
+			render(100);
+			printf("      without 24a2's elements:");
+		}
+		const unsigned n = rom_stat(ROM_UI_STAT_FRAMES);
+		printf("      idle parts on average over %u frames:", n);
+		double last = 0;
+		for (int i = 0; i < 10; i++) {
+			const double at = (double)rom_stat(ROM_UI_STAT_PARTS_SUM + 2u * (uint32_t)i) / n;
+			printf(" %.1f", at - last);
+			last = at;
+		}
+		printf("\n");
+	}
 	// One note on one channel, then its release: the light frames between MIDI messages, measured
 	// with clean stamps and without the parts'.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 2);
@@ -5392,9 +5672,11 @@ static void test_screen(void)
 	midi(0x80, 60, 0);
 	render(30);
 	const unsigned released = clip_moment("its release");
-	checkf(note_on <= 21 && released <= 21, "screen: one note's frames draw in %u and %u lines, at most 21 (D65, 2026-11-13)", note_on, released);
+	// Either frame can meet the ribbon's column change, every 8 frames (D66).
+	checkf(note_on <= 38 && released <= 38, "screen: one note's frames draw in %u and %u lines, at most 38 each (D66)", note_on, released);
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 0);
 	test_screen_cells();
+	test_screen_ribbon();
 	// The same clip without the screen: which frames the MIDI handling loses by itself.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 1);
 	screen_on_in_clip = false;
