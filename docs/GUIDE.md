@@ -464,9 +464,9 @@ sanitizer needs address randomization off. `fetch_deps.sh` clones `third_party/`
 `BUILD.txt` there. It fails if Ableton Live has the VST3 locked. Live does not show plugin versions, so `BUILD.txt`
 is how to tell what is installed.
 
-The version is `0.N.M+revision`: N is the stage in `docs/ROADMAP.md`, M the delivery (a lettered stage
-such as 18a is a delivery of its stage: 0.18.1), and the revision is
-`git describe`, ending in `-dirty` for uncommitted code.
+The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
+stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
+is `git describe`, ending in `-dirty` for uncommitted code.
 
 ## Release
 
