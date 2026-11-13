@@ -2441,7 +2441,7 @@ int main(int argc, char **argv)
 		send_midi(0x90, 72, 110);
 		run_ms(70);
 		capture(window);
-		save_bmp(argv[2], "rom-24a2-play");
+		save_bmp(argv[2], "rom-24a3-play");
 		send_midi(0x80, 72, 0);
 		send_midi(0x89, 60, 0);
 		for (int ch = 3; ch < 5; ch++) {
@@ -2452,7 +2452,7 @@ int main(int argc, char **argv)
 		}
 		run_ms(700);
 		capture(window);
-		save_bmp(argv[2], "rom-24a2-released");
+		save_bmp(argv[2], "rom-24a3-released");
 		send_midi(0xB0, 78, 127);
 		run_ms(300);
 		for (int i = 0; i < 4; i++) {
@@ -2461,7 +2461,7 @@ int main(int argc, char **argv)
 		}
 		run_ms(200);
 		capture(window);
-		save_bmp(argv[2], "rom-24a2-dac");
+		save_bmp(argv[2], "rom-24a3-dac");
 		for (int i = 0; i < 4; i++) {
 			send_midi(0x85, (uint8_t)(36 + i * 2), 0);
 		}
@@ -2476,7 +2476,7 @@ int main(int argc, char **argv)
 		}
 		run_ms(300);
 		capture(window);
-		save_bmp(argv[2], "rom-24a2-special");
+		save_bmp(argv[2], "rom-24a3-special");
 		send_midi(0x82, 60, 0);
 		for (int op = 0; op < 3; op++) {
 			send_midi((uint8_t)(0x8A + op), (uint8_t)(64 + op * 3), 0);

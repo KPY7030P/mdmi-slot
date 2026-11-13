@@ -12,7 +12,7 @@ RAM = 0xE0FF0000
 STATS = ("ui_stat_lines", "ui_stat_lines_max", "ui_stat_ambig", "ui_stat_words", "ui_stat_words_max",
          "ui_stat_lag", "ui_stat_lag_max", "ui_stat_late_notes", "ui_stat_frames", "ui_stat_missed",
          "ui_stat_draw_lines", "ui_stat_draw_lines_max", "ui_stat_parts", "ui_stat_calib", "ui_stat_draw_sum", "ui_test_off",
-         "ui_stat_vint_words_max", "ui_stat_vint_lines_max", "ui_stat_vdp_outside", "ui_stat_vint_late", "ui_shadow", "ui_stat_parts_sum")
+         "ui_stat_vint_words_max", "ui_stat_vint_lines_max", "ui_stat_vdp_outside", "ui_stat_vint_late", "ui_shadow", "ui_stat_parts_sum", "ui_stat_curve_lag_max", "ui_stat_vint_lines_count")
 
 
 def main():
@@ -23,6 +23,10 @@ def main():
         if len(parts) == 3:
             # Link-time optimization may add a suffix to a local name.
             symbols.setdefault(parts[2].split(".")[0], int(parts[0], 16))
+    # Stage 24a3 (D64): the SGDK sprite engine is gone from the ROM; its DMA of the sprite table
+    # would overwrite the screen's dots.
+    if "SPR_update" in symbols:
+        raise SystemExit(f"{symbols_path}: SPR_update is in the ROM (D64)")
     for name in ("_stext", "_etext", "_edata", "percussionPcmSample", "M_BANK_0", "ENVELOPES", "ARP_ROWS", "PROGRAM_NAMES"):
         if name not in symbols:
             raise SystemExit(f"{symbols_path}: no symbol {name}")

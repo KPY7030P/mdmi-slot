@@ -116,6 +116,23 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   channel's `hits` (in `DeviceChannel`) counts Note Ons for the ribbon and the white flash. For timing tests,
   `ui_test_off` (read once a frame) is 1 screen off, 2 clean stamps, 3 by part, 4 stamps alone, 5 without
   24a2's elements, 6 the same by part. `reg_test --screen` runs the screen's tests alone.
+- 24a3 (D64, D67, the owner's option B). The SGDK sprite engine is gone: the ROM owns the sprite table, and CC 83's
+  algorithm picture is plane A tiles (1285-1335). `UiEnvelope` (`ui.h`) is an operator's envelope estimate, built by
+  tables from AR, D1R, SL, D2R, RR (`gen_rom_screen.py`, BlastEm's YM timing). Frame counters since Note On / Off
+  run for FM 1-6 and channel 3's operator channels. They feed the Ch3 squares, the FM dots (a segment at a time, a
+  step a frame) and W1 (the dot's height). Curves (1020 + 36k) and PSG bars (1237 + 12k) are tiles written while
+  music plays, one address and 16 words each. A rebuild starts only in a frame with fewer than 53 lines so far
+  and goes a raster column or a tile at a time until 64 lines (N is `ui_stat_curve_lag_max`). The VInt queue writes runs: a
+  palette's live colours, the noise's 4, each dot's whole sprite entry. Hard limits found:
+  - the 68000's RAM: SGDK takes its 8 KB DMA buffer from the heap before `main`, so bss must end below about
+    0xFFC300 or the ROM hangs at boot (the plane A shadow keeps 40 columns);
+  - an address + word pair costs about 0.5 line in active display;
+  - `bool` is a u8;
+  - a u32 product goes to `__mulsi3` (use `mul16`);
+  - a u8 array may sit at an odd address.
+  For the tests: `reg_test --adjacent N` and `--loop N` run one test with switch N; `MDMI_SCREEN_SWITCH=N` holds
+  it for a whole run; `MDMI_CLIP_PARTS=1` breaks the busy clip down by part; the run prints the worst owner wait
+  after each test.
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
 - PSG noise (stage 16, D45): Noise Type (Periodic, White) and Noise Rate (High, Mid, Low: the chip's clock

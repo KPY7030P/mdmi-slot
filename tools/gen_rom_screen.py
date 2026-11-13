@@ -168,7 +168,34 @@ def tone_period(key):
 
 # Stage 24a2. The ribbon's tiles start at 384 (rom-screen.md 10.3): pattern n is tile 384 + n, its
 # bits the tile's columns that hold a hit; then the hold tile and the noise's 8.
+# Stage 24a3: the YM2612's envelope times in NTSC frames for the screen's estimate (hardware-specialist
+# from BlastEm's ym2612.c and ym_common.c, 2026-11-13). KS is not counted. A decay at effective rate r
+# takes DECAY over the whole 0..1023 range, linear in dB; an attack from silence takes ATTACK[AR].
+EG_TICKS_PER_FRAME = 53693175 / 1008 / 3 / (53693175 / (3420 * 262))
+ATTACK = [None, 1002.2, 501.1, 335.2, 250.6, 167.6, 125.3, 83.8, 62.6, 41.9, 31.3, 20.95, 15.66, 10.48, 7.83,
+          5.24, 3.92, 2.62, 1.96, 1.31, 0.98, 0.66, 0.49, 0.33, 0.25, 0.18, 0.13, 0.09, 0.07, 0.04, 0.03, 0.0]
+
+
+def decay_frames(r):
+    if r < 2:
+        return None
+    if r < 6:
+        a = 0.5
+    elif r < 8:
+        a = 0.75
+    elif r < 48:
+        a = (4 + (r & 3)) / 8.0
+    elif r < 60:
+        a = (4 + (r & 3)) / 4.0 * 2 ** ((r - 48) >> 2)
+    else:
+        a = 8.0
+    shift = (47 - r) >> 2 if r < 48 else 0
+    return 1023.0 * 2 ** shift / a / EG_TICKS_PER_FRAME
+
+
 RIBBON_BASE = 384
+ALGO_BASE = 1285
+ALGO_ROWS = 4
 LINE_Y = 1
 BAR_ROWS = 4
 
@@ -371,6 +398,29 @@ def main():
     B.mark("UI_T_B_END")
     noise_periodic, noise_white, noise_silent = noise_colours()
 
+    # Stage 24a3 (D64): the CC 83 view's algorithm pictures as plane A tiles from 1285 (rom-screen.md
+    # 10.3), from res/sprite/algor_N.bmp; index 3 becomes 15 (red) and 14 becomes 1 (white, 10.1).
+    C = Tiles()
+    C.mark("UI_T_ALGO")
+    algo_seen = {}
+    algo_map = []
+    for n in range(8):
+        tiles = sheet_tiles(os.path.join(RES, "sprite", "algor_%d.bmp" % n),
+                            lambda px: {3: 15, 14: 1}.get(px, px))
+        rows = Image.open(os.path.join(RES, "sprite", "algor_%d.bmp" % n)).size[1] // 8
+        cells = []
+        for t in tiles:
+            key = tuple(map(tuple, t))
+            if not any(any(row) for row in t):
+                cells.append(0)
+                continue
+            if key not in algo_seen:
+                algo_seen[key] = C.add(t)
+            cells.append(algo_seen[key] + 1)
+        cells += [0] * (6 * ALGO_ROWS - len(cells))
+        algo_map.append(cells)
+    C.mark("UI_T_C_END")
+
     # Wave classes by the tone period the ROM wrote: class c holds keys 45+3c to 47+3c (A2 up).
     thresholds = [int(round(tone_period(45 + 3 * c - 0.5))) for c in range(1, len(WAVE_PERIODS))]
 
@@ -396,6 +446,13 @@ def main():
     for name, offset in B.marks:
         h.append(f"#define {name} (UI_TILE_B_BASE + {offset})")
     h.append(f"#define UI_TILE_B_COUNT {len(B.tiles)}")
+    h.append("// Stage 24a3: the CC 83 view's algorithm pictures from 1285 (rom-screen.md 10.3).")
+    h.append(f"#define UI_TILE_C_BASE {ALGO_BASE}")
+    for name, offset in C.marks:
+        h.append(f"#define {name} (UI_TILE_C_BASE + {offset})")
+    h.append(f"#define UI_TILE_C_COUNT {len(C.tiles)}")
+    h.append(f"#define UI_ALGO_COLS 6")
+    h.append(f"#define UI_ALGO_ROWS {ALGO_ROWS}")
     h.append(f"#define UI_FLASH_FRAMES {FLASH_FRAMES}")
     h.append(f"#define UI_RELEASE_FRAMES {RELEASE_FRAMES}")
     h.append(f"#define UI_NOISE_SHUFFLES {NOISE_SHUFFLES}")
@@ -421,6 +478,18 @@ def main():
     h.append("// The wave's 4 tiles from UI_T_WAVE by class and height (3, 5, 7 points).")
     h.append("extern const u8 UI_WAVE[UI_WAVE_CLASSES][3][4];")
     h.append("extern const u32 UI_TILES_B[UI_TILE_B_COUNT * 8];")
+    h.append("extern const u32 UI_TILES_C[UI_TILE_C_COUNT * 8];")
+    h.append("// The YM2612's envelope for the screen's estimate (24a3): an attack's frames and its step, a")
+    h.append("// decay's frames over 0..1023 and its step by effective rate (D1R, D2R 2n; RR 4n + 2); steps")
+    h.append("// are attenuation a frame in 10.6 fixed point. 65536 / n for fractions.")
+    h.append("extern const u8 UI_ATTACK_FRAMES[32];")
+    h.append("extern const u16 UI_ATTACK_STEP[32];")
+    h.append("extern const u16 UI_DECAY_FRAMES[64];")
+    h.append("extern const u16 UI_DECAY_STEP[64];")
+    h.append("extern const u16 UI_RECIP[251];")
+    h.append("extern const u32 UI_NIBBLES[256];")
+    h.append("// An algorithm's picture, 6 x 4 cells by row: 0 empty, else the tile from UI_T_ALGO, + 1.")
+    h.append("extern const u8 UI_ALGO[8][UI_ALGO_COLS * UI_ALGO_ROWS];")
     h.append("// A live note cell's colour by chip (FM, PSG, Ch3 Special): frames since the hit toward the held")
     h.append("// colour [0] or the dim one [1]; frames since the release from held to dim; held and dim.")
     h.append("extern const u16 UI_FLASH[3][2][UI_FLASH_FRAMES];")
@@ -471,6 +540,36 @@ def main():
     c.append("};")
     c.append("")
 
+    # Envelope tables (24a3): frames capped to 250 (the screen's u8 counters), and the attenuation
+    # (0..1023) a frame moves, in 10.6 fixed point; 0 is no move, 65535 a full move in one frame.
+    def q(frames):
+        if frames is None:
+            return 0
+        return 65535 if frames <= 1.0 else min(65535, int(round(1023 * 64 / frames)))
+
+    def cap(frames):
+        if frames is None:
+            return 250
+        return max(1, min(250, int(round(frames))))
+    # An attack longer than the counters (250 frames) is 255: it never ends on the screen.
+    c.append("const u8 UI_ATTACK_FRAMES[32] = { " + ", ".join(str(0 if a is None else 255 if a > 250 else cap(a) if a >= 0.5 else 0) for a in ATTACK) + " };")
+    c.append("const u16 UI_ATTACK_STEP[32] = { " + ", ".join(str(0 if a is None else q(a)) for a in ATTACK) + " };")
+    c.append("const u16 UI_DECAY_FRAMES[64] = { " + ", ".join(str(65535 if decay_frames(r) is None else min(65535, int(round(decay_frames(r))))) for r in range(64)) + " };")
+    c.append("const u16 UI_DECAY_STEP[64] = { " + ", ".join(str(q(decay_frames(r))) for r in range(64)) + " };")
+    c.append("// A byte's 8 bits as 8 nibbles (bit 7 the first point), for tile rows without a loop a point.")
+    c.append("const u32 UI_NIBBLES[256] = { " + ", ".join("0x%08X" % sum(1 << (4 * (7 - i)) for i in range(8) if n >> (7 - i) & 1) for n in range(256)) + " };")
+    c.append("// 65536 / n for n frames 1..250, for fractions without division.")
+    c.append("const u16 UI_RECIP[251] = { 0, " + ", ".join(str(min(65535, 65536 // n)) for n in range(1, 251)) + " };")
+    c.append("")
+    c.append("const u32 UI_TILES_C[UI_TILE_C_COUNT * 8] = {")
+    for tile in C.tiles:
+        c.append("    " + ", ".join(f"0x{w:08X}" for w in pack(tile)) + ",")
+    c.append("};")
+    c.append("const u8 UI_ALGO[8][UI_ALGO_COLS * UI_ALGO_ROWS] = {")
+    for cells in algo_map:
+        c.append("    { " + ", ".join(str(v) for v in cells) + " },")
+    c.append("};")
+    c.append("")
     c.append("const u32 UI_TILES_B[UI_TILE_B_COUNT * 8] = {")
     for tile in B.tiles:
         c.append("    " + ", ".join(f"0x{w:08X}" for w in pack(tile)) + ",")
@@ -507,7 +606,7 @@ def main():
         f.write("\n".join(h))
     with open(os.path.join(src, "ui_tiles.c"), "w", newline="\n") as f:
         f.write("\n".join(c))
-    print(f"{len(T.tiles)} + {len(B.tiles)} tiles, wave {len(seen)} distinct, thresholds {thresholds}")
+    print(f"{len(T.tiles)} + {len(B.tiles)} + {len(C.tiles)} tiles, wave {len(seen)} distinct, thresholds {thresholds}")
 
 
 if __name__ == "__main__":

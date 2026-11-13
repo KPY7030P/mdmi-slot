@@ -88,11 +88,29 @@ static void tick(int frames)
 	patch_set_now(patch, clock_samples, RATE);
 }
 
+// MDMI_SCREEN_SWITCH (24a3, D66): a whole run with the ROM screen's test switch held (1 the screen off,
+// 5 without 24a2's elements: the ribbon, live cells and noise; 24a3's stay), to tell whether a timing
+// check moves with the screen.
+static int screen_switch = -1;
+
 static void render(int blocks)
 {
 	for (int i = 0; i < blocks; i++) {
+		if (screen_switch >= 0) {
+			mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, (uint16_t)screen_switch);
+		}
 		tick(BLOCK);
 	}
+}
+
+// D67: the worst wait of an owner for its key-on after each test, to tell which test sets it.
+static float owner_wait_max;
+
+static void owner_wait_after(const char *name)
+{
+	const float wait = mdmi_engine_test_take_owner_wait(engine);
+	printf("    owner wait after %s: %.1f ms\n", name, wait);
+	owner_wait_max = wait > owner_wait_max ? wait : owner_wait_max;
 }
 
 static void sync_and_settle(void)
@@ -4922,8 +4940,8 @@ static void rom_cc(int channel, int cc, int value)
 // The busy clip of stage 24a, one for 24a1-24a3: every message of a moment comes at once, as over
 // USB, which is the screen's worst case. A ROM frame is about three blocks.
 // The worst update since the last moment, and the counter from zero for the next. With a limit
-// (ROADMAP, stage 24a, D65, D66: 0.24.5's update for the moment, at least 55 lines), the moment is a
-// check: update within it, drawing at most 165 lines, lag at most lag_limit frames.
+// (ROADMAP, stage 24a, D65, D66: 0.24.5's update for the moment, at least 95 lines in 24a3, D67), the moment is a
+// check: update within it, drawing at most 250 lines, lag at most lag_limit frames.
 static bool screen_on_in_clip = true;
 
 static unsigned clip_moment_limited(const char *what, unsigned limit, unsigned lag_limit)
@@ -4941,7 +4959,7 @@ static unsigned clip_moment_limited(const char *what, unsigned limit, unsigned l
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_MISSED, 0);
 	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_LAG_MAX, 0);
 	if (limit && screen_on_in_clip) {
-		checkf(update <= limit && drawing <= 165 && lag <= lag_limit, "busy clip, %s: update %u lines (at most %u), drawing %u (at most 165, D66), lag %u (at most %u)",
+		checkf(update <= limit && drawing <= 250 && lag <= lag_limit, "busy clip, %s: update %u lines (at most %u), drawing %u (at most 250, D67), lag %u (at most %u)",
 			what, update, limit, drawing, lag, lag_limit);
 	}
 	return drawing;
@@ -4954,6 +4972,10 @@ static unsigned clip_moment(const char *what)
 
 static void busy_clip(void)
 {
+	// MDMI_CLIP_PARTS: the clip by part (switch 3), each moment's worst frame broken down.
+	if (getenv("MDMI_CLIP_PARTS") && screen_on_in_clip) {
+		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 3);
+	}
 	clip_moment("before the clip");
 	for (int i = 0; i < 6; i++) {
 		midi(0x90, (uint8_t)(48 + i * 4), 110);
@@ -4977,10 +4999,10 @@ static void busy_clip(void)
 		midi((uint8_t)(0xB0 | ch), 123, 0);
 	}
 	render(20);
-	clip_moment_limited("all notes off", 104, 3);
+	clip_moment_limited("all notes off", 190, 3);
 	set_global(GLOBAL_DAC, 1);
 	sync_and_settle();
-	clip_moment_limited("DAC on", 79, 3);
+	clip_moment_limited("DAC on", 95, 3);
 	for (int i = 0; i < 4; i++) {
 		midi(0x95, (uint8_t)(36 + i * 2), 127);
 	}
@@ -4991,7 +5013,7 @@ static void busy_clip(void)
 	clip_moment_limited("4 DAC voices", 252, 3);
 	set_global(GLOBAL_DAC, 0);
 	sync_and_settle();
-	clip_moment_limited("DAC off", 55, 3);
+	clip_moment_limited("DAC off", 95, 3);
 	set_global(GLOBAL_CH3_MODE, 1);
 	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
 	sync_and_settle();
@@ -5005,13 +5027,13 @@ static void busy_clip(void)
 	midi(0x8A, 64, 0);
 	midi(0x8B, 67, 0);
 	midi(0x8C, 72, 0);
-	clip_moment_limited("Ch3 OPS notes", 79, 3);
+	clip_moment_limited("Ch3 OPS notes", 95, 3);
 	set_global(GLOBAL_CH3_MODE, 0);
 	sync_and_settle();
-	clip_moment_limited("Ch3 Special off", 81, 3);
+	clip_moment_limited("Ch3 Special off", 95, 3);
 	set_on(6, PARAM_PORTA_ON, 1);
 	set_on(6, PARAM_PORTA_TIME, 64);
-	clip_moment_limited("PSG porta on", 55, 3);
+	clip_moment_limited("PSG porta on", 95, 3);
 	midi(0x96, 48, 100);
 	render(10);
 	midi(0x96, 84, 100);
@@ -5020,7 +5042,7 @@ static void busy_clip(void)
 	midi(0x86, 84, 0);
 	clip_moment_limited("PSG portamento C3-C6", 271, 3);
 	set_on(6, PARAM_PORTA_ON, 0);
-	clip_moment_limited("PSG porta off", 55, 3);
+	clip_moment_limited("PSG porta off", 95, 3);
 	// The view empties its rows under the ceiling before it draws: a long wait each way. Its frames
 	// are measured with clean stamps: its drawing otherwise lands in the V counter's ambiguous window.
 	if (screen_on_in_clip) {
@@ -5028,11 +5050,12 @@ static void busy_clip(void)
 	}
 	rom_cc(0, 83, 127);
 	render(90);
-	clip_moment("CC 83 on");
+	// D66, 24a3: the view's text from tables and its algorithm as tiles; lag is its rows emptying.
+	clip_moment_limited("CC 83 on", 603, 40);
 	rom_cc(0, 83, 0);
 	render(90);
 	// The rows come back under the ceiling over some 30 frames (D64, D65): lag is the redraw.
-	clip_moment_limited("CC 83 off", 102, 40);
+	clip_moment_limited("CC 83 off", 125, 40);
 	if (screen_on_in_clip) {
 		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 0);
 	}
@@ -5099,13 +5122,18 @@ static int level_cells_lit(int y)
 // A held FM note's level once its peak has settled on it.
 static int level_of_note(uint8_t velocity)
 {
+	// Since 24a3 the level follows the carrier's envelope; its peak, a few frames after the attack,
+	// is velocity x CC 7.
 	midi(0x90, 60, velocity);
-	render(150);
+	render(20);
 	const int lit = level_cells_lit(SCREEN_ROW(0));
 	midi(0x80, 60, 0);
-	render(20);
+	// The release and the peak's hold run out before the next note.
+	render(300);
 	return lit;
 }
+
+static void rom_frames(unsigned n);
 
 static bool wave_changed(int y, uint16_t *last)
 {
@@ -5217,6 +5245,32 @@ static void test_screen_cells(void)
 	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
 	sync_and_settle();
 	const bool squares = tiles_within(SCREEN_X_LEVEL, SCREEN_ROW(2), 4, UI_T_SQUARE, UI_T_WAVE);
+	// 24a3 (the owner's remark): each square fills by its own operator's envelope while it sounds,
+	// and is free again once the release has ended.
+	// In ONE NOTE a note plays all four operators: all four light, each by its own envelope.
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE);
+	sync_and_settle();
+	int fills_seen = 0, lit_max = 0;
+	uint16_t fill_last[4];
+	read_cells(SCREEN_X_LEVEL, SCREEN_ROW(2), 4, fill_last);
+	midi(0x92, 60, 100);
+	for (int i = 0; i < 60; i++) {
+		rom_frames(1);
+		fills_seen += cells_unlike(SCREEN_X_LEVEL, SCREEN_ROW(2), 4, fill_last) > 0;
+		read_cells(SCREEN_X_LEVEL, SCREEN_ROW(2), 4, fill_last);
+		int lit = 0;
+		for (int op = 0; op < 4; op++) {
+			lit += screen_tile(SCREEN_X_LEVEL + op, SCREEN_ROW(2)) != UI_T_SQUARE + 5;
+		}
+		lit_max = lit > lit_max ? lit : lit_max;
+	}
+	midi(0x82, 60, 0);
+	render(900);
+	const bool freed = tiles_within(SCREEN_X_LEVEL, SCREEN_ROW(2), 4, UI_T_SQUARE + 5, UI_T_SQUARE + 6);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	sync_and_settle();
+	printf("      Ch3 squares: %d lit at most, the fills changed in %d of 60 frames, free after the release %d\n", lit_max, fills_seen, freed);
+	check(lit_max == 4 && fills_seen >= 1 && freed, "screen: Ch3 Special's squares fill by their operators' envelopes and are free after the release");
 	set_global(GLOBAL_CH3_MODE, 0);
 	sync_and_settle();
 	const bool bar = tiles_within(SCREEN_X_LEVEL, SCREEN_ROW(2), 4, UI_T_LEVEL, UI_T_BAR);
@@ -5287,8 +5341,9 @@ static void test_screen_cells(void)
 	}
 	render(300);
 	printf("      PSG vibrato on 3 channels: channel 7's wave changed %d times in 60 bends, at most %u words a frame\n", flips, vibratoWords);
-	// Since 24a2 the frame's words also hold the three held rows' ribbon cells (1 each on a new column).
-	check(flips >= 15 && vibratoWords <= 12 + 3, "screen: vibrato by bend on three PSG channels changes the wave in at most 12 words a frame, with 3 ribbon cells");
+	// Since 24a2 the frame's words also hold the three held rows' ribbon cells (1 each on a new column),
+	// since 24a3 the envelope bars' cursor (up to 3 cells a channel at a step).
+	check(flips >= 15 && vibratoWords <= 12 + 3 + 9, "screen: vibrato by bend on three PSG channels changes the wave in at most 12 words a frame, with 3 ribbon cells and 9 cells of the envelope bars' cursor (D67)");
 
 	// CC 83: the view takes the channels' rows, and after it the status screen is whole again.
 	static uint16_t before[24][40];
@@ -5297,6 +5352,13 @@ static void test_screen_cells(void)
 	}
 	rom_cc(0, 83, 127);
 	render(90);
+	// The algorithm's picture as plane A tiles at c32-37 from r3 (24a3, D64), no sprites.
+	bool algo = false;
+	for (int x = 32; x < 38; x++) {
+		const int tile = screen_tile(x, 3);
+		algo = algo || (tile >= UI_T_ALGO && tile < UI_T_C_END);
+	}
+	check(algo, "screen: the CC 83 view draws its algorithm as plane A tiles");
 	int changed = 0;
 	for (int y = 0; y < 24; y++) {
 		changed += cells_unlike(0, y, 40, before[y]);
@@ -5481,6 +5543,105 @@ static void test_screen_ribbon(void)
 	printf("      held PSG 8 and 9 after a noise beat: live cells %03X %03X, hold cells %d %d\n", live8, live9, hold8, hold9);
 	check(live8 == 0xEEA && live9 == 0xEEA && hold8 >= 2 && hold9 >= 2, "screen: held PSG notes after a noise beat are bright and hold their ribbons");
 
+	// 24a3 (option B): channel 1's dot, sprite 0 of the table at 0xF400, comes with the note, runs right
+	// along the curve while held, and is hidden (Y 0) once the release has ended; the curve's cells are
+	// its tiles from 1020.
+	render(900);
+	const int dot_hidden_before = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	midi(0x90, 60, 100);
+	rom_frames(3);
+	const int dot_y = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF, dot_x0 = mdmi_engine_test_vdp(engine, 0, 0xF406) & 0x1FF;
+	rom_frames(40);
+	const int dot_x1 = mdmi_engine_test_vdp(engine, 0, 0xF406) & 0x1FF;
+	int curve_cells = 0;
+	for (int y = SCREEN_ROW(0) - 1; y <= SCREEN_ROW(0); y++) {
+		curve_cells += tiles_within(33, y, 1, 1020, 1020 + 36) + tiles_within(34, y, 1, 1020, 1020 + 36) + tiles_within(35, y, 1, 1020, 1020 + 36)
+			+ tiles_within(36, y, 1, 1020, 1020 + 36) + tiles_within(37, y, 1, 1020, 1020 + 36) + tiles_within(38, y, 1, 1020, 1020 + 36);
+	}
+	midi(0x80, 60, 0);
+	render(900);
+	const int dot_hidden_after = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	printf("      dot: Y %d before, %d with the note at X %d then %d, %d after the release; %d curve cells\n", dot_hidden_before, dot_y, dot_x0, dot_x1, dot_hidden_after, curve_cells);
+	check(dot_hidden_before == 0 && dot_y >= 128 && dot_x1 > dot_x0 && dot_hidden_after == 0 && curve_cells >= 6,
+		"screen: an FM note's dot comes with it, runs along its curve and is hidden after the release");
+	// A Note Off starts the release where the dot is: no jump in height (art-director, 24a3).
+	midi(0x90, 60, 100);
+	rom_frames(4);
+	const int held_y = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	midi(0x80, 60, 0);
+	rom_frames(2);
+	const int released_y = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	render(900);
+	printf("      dot at the Note Off: Y %d held, %d two frames into the release\n", held_y, released_y);
+	check(held_y >= 128 && released_y >= held_y && released_y <= held_y + 3, "screen: the release starts where the dot is, without a jump");
+
+	// 24a3: the dots hide while the CC 83 view is on and come back after it.
+	midi(0x90, 60, 100);
+	rom_frames(10);
+	const int dot_shown = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	rom_cc(0, 83, 127);
+	render(90);
+	const int dot_in_view = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	rom_cc(0, 83, 0);
+	render(180);
+	const int dot_back = mdmi_engine_test_vdp(engine, 0, 0xF400) & 0x3FF;
+	midi(0x80, 60, 0);
+	render(900);
+	printf("      dot and the CC 83 view: Y %d before, %d during, %d after\n", dot_shown, dot_in_view, dot_back);
+	check(dot_shown >= 128 && dot_in_view == 0 && dot_back >= 128, "screen: the dots hide while the CC 83 view is on and come back after it");
+
+	// 24a3: a curve's tiles follow its carrier's numbers. A CC on operator 4's AR redraws channel 1's
+	// curve within 30 frames; a program change on all ten channels in silence redraws every curve and
+	// bar set within 120 frames (N, D67).
+	{
+		uint16_t before[12 * 16], after[12 * 16];
+		for (int i = 0; i < 12 * 16; i++) {
+			before[i] = mdmi_engine_test_vdp(engine, 0, (uint32_t)(1020 + (i >> 4) * 3) * 32u + (uint32_t)(i & 15) * 2u);
+		}
+		mdmi_engine_test_ram_write(engine, ROM_UI_STAT_CURVE_LAG_MAX, 0);
+		rom_cc(0, 46, 8);
+		rom_frames(60);
+		const unsigned one = rom_stat(ROM_UI_STAT_CURVE_LAG_MAX);
+		int changed_words = 0;
+		for (int i = 0; i < 12 * 16; i++) {
+			after[i] = mdmi_engine_test_vdp(engine, 0, (uint32_t)(1020 + (i >> 4) * 3) * 32u + (uint32_t)(i & 15) * 2u);
+			changed_words += after[i] != before[i];
+		}
+		rom_cc(0, 46, 124);
+		rom_frames(60);
+		mdmi_engine_test_ram_write(engine, ROM_UI_STAT_CURVE_LAG_MAX, 0);
+		for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
+			midi((uint8_t)(0xC0 | ch), (uint8_t)((ch * 5 + 9) & 0x7F), 0);
+		}
+		rom_frames(200);
+		const unsigned all = rom_stat(ROM_UI_STAT_CURVE_LAG_MAX);
+		for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
+			midi((uint8_t)(0xC0 | ch), 0, 0);
+		}
+		rom_frames(200);
+		printf("      curves: an AR CC changed %d words of channel 1's curve tiles in %u frames; a program change on all, %u frames\n", changed_words, one, all);
+		check(changed_words > 0 && one <= 30 && all <= 120, "screen: a curve follows its carrier's AR within 30 frames, all curves and bars a program change within 120 (N, D67)");
+	}
+
+	// 24a3: a PSG note's 12 bars from its envelope, the playing one moving (cell palettes) while it sounds.
+	{
+		const int row = SCREEN_ROW(6) - 1;
+		midi(0x96, 60, 110);
+		int moves = 0, bars = 0;
+		uint16_t last[6];
+		read_cells(33, row, 6, last);
+		for (int i = 0; i < 60; i++) {
+			rom_frames(1);
+			moves += cells_unlike(33, row, 6, last) > 0;
+			read_cells(33, row, 6, last);
+		}
+		bars = tiles_within(33, row, 6, 1237, 1237 + 12) + tiles_within(33, row + 1, 6, 1237, 1237 + 12);
+		midi(0x86, 60, 0);
+		render(600);
+		printf("      PSG bars: %d of 2 rows in the bar tiles, the cursor moved in %d of 60 frames\n", bars, moves);
+		check(bars == 2 && moves >= 1, "screen: a PSG note shows its envelope as 12 bars and the playing bar moves");
+	}
+
 	// The DAC's voice starts and Ch3 Special's operators strike their rows' ribbons too.
 	set_global(GLOBAL_DAC, 1);
 	sync_and_settle();
@@ -5562,7 +5723,8 @@ static void test_screen_vdp_whole(void)
 	int differ = 0;
 	for (int y = 0; y < 27; y++) {
 		for (int x = 0; x < 40; x++) {
-			const uint16_t want = rom_stat(ROM_UI_SHADOW + 2u * (uint32_t)(y * 64 + x));
+			// The ROM's shadow keeps the 40 columns it shows (24a3).
+			const uint16_t want = rom_stat(ROM_UI_SHADOW + 2u * (uint32_t)(y * 40 + x));
 			differ += want != 0xFFFF && want != screen_cell(x, y);
 		}
 	}
@@ -5579,10 +5741,17 @@ static void test_screen_vdp_whole(void)
 		tiles += !same;
 	}
 	const unsigned vint_words = rom_stat(ROM_UI_STAT_VINT_WORDS_MAX), vint_lines = rom_stat(ROM_UI_STAT_VINT_LINES_MAX), outside = rom_stat(ROM_UI_STAT_VDP_OUTSIDE);
-	printf("    plane A against the shadow: %d cells differ; %d tiles changed; VInt at most %u words, %u lines, %u writes outside VBlank, %u taken late and left\n",
-		differ, tiles, vint_words, vint_lines, outside, rom_stat(ROM_UI_STAT_VINT_LATE));
+	printf("    plane A against the shadow: %d cells differ; %d tiles changed; VInt at most %u words, %u lines, %u writes outside VBlank, %u taken late and left; curve and bar rebuilds at most %u frames (N)\n",
+		differ, tiles, vint_words, vint_lines, outside, rom_stat(ROM_UI_STAT_VINT_LATE), rom_stat(ROM_UI_STAT_CURVE_LAG_MAX));
+	printf("    VInts by lines 0-11+:");
+	for (int i = 0; i < 12; i++) {
+		printf(" %u", rom_stat(ROM_UI_STAT_VINT_LINES_COUNT + 2u * (uint32_t)i));
+	}
+	printf("\n");
 	check(differ == 0 && tiles == 0, "screen: after the busy clip plane A is the ROM's shadow and the tiles are as loaded");
-	check(vint_words <= 24 && vint_lines <= 4 && outside == 0, "screen: the VInt writes at most 24 words in at most 4 lines, all in VBlank");
+	check(vint_words <= 40 && vint_lines <= 10 && outside == 0, "screen: the VInt writes at most 40 words in at most 10 lines, all in VBlank (D67)");
+	// D67: 120, or 170 where the time-bounded slice can't make 120 (it measured 145).
+	checkf(rom_stat(ROM_UI_STAT_CURVE_LAG_MAX) <= 170, "screen: the curves and bars are rebuilt within %u frames, at most 170 (N, D67)", rom_stat(ROM_UI_STAT_CURVE_LAG_MAX));
 }
 
 static void test_screen(void)
@@ -5602,7 +5771,8 @@ static void test_screen(void)
 	// Idle: the average of about 100 frames once everything is drawn, the stamps outside the V
 	// counter's ambiguous window.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 2);
-	render(60);
+	// Idle means silent and drawn (24a3): the envelopes' releases have ended, some 4 s at most.
+	render(800);
 	// Idle means drawn: after the CC 83 view the rows come back under the ceiling for a while.
 	int settle = 0;
 	while (rom_stat(ROM_UI_STAT_LAG) && settle < 600) {
@@ -5616,7 +5786,7 @@ static void test_screen(void)
 	const unsigned idle_frames = rom_stat(ROM_UI_STAT_FRAMES);
 	const double idle_lines = (double)rom_stat(ROM_UI_STAT_DRAW_SUM) / idle_frames;
 	printf("    idle: drawing %.1f lines a frame on average over %u frames\n", idle_lines, idle_frames);
-	checkf(idle_lines <= 17.5, "screen: idle drawing %.1f lines a frame, at most 17.5 (D66)", idle_lines);
+	checkf(idle_lines <= 20.5, "screen: idle drawing %.1f lines a frame, at most 20.5 (D67)", idle_lines);
 	clip_moment("idle");
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 4);
 	render(10);
@@ -5673,7 +5843,45 @@ static void test_screen(void)
 	render(30);
 	const unsigned released = clip_moment("its release");
 	// Either frame can meet the ribbon's column change, every 8 frames (D66).
-	checkf(note_on <= 38 && released <= 38, "screen: one note's frames draw in %u and %u lines, at most 38 each (D66)", note_on, released);
+	checkf(note_on <= 46 && released <= 46, "screen: one note's frames draw in %u and %u lines, at most 46 each (D67)", note_on, released);
+	// Steady play (24a3): a chord of 6 held 2 s, the frames that move its dots and curves every frame.
+	for (int i = 0; i < 6; i++) {
+		midi(0x90, (uint8_t)(48 + i * 4), 100);
+	}
+	// Steady: after the lent channels' curves are rebuilt (N, D67), only the dots and cursors move.
+	render(400);
+	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_DRAW_SUM, 0);
+	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
+	clip_moment("before the steady chord");
+	render(375);
+	const double chord_average = (double)rom_stat(ROM_UI_STAT_DRAW_SUM) / rom_stat(ROM_UI_STAT_FRAMES);
+	const unsigned chord_worst = clip_moment("a chord held 2 s");
+	// The same chord by part (switch 3), to tell which means costs what.
+	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 3);
+	render(10);
+	for (int i = 0; i < 10; i++) {
+		mdmi_engine_test_ram_write(engine, ROM_UI_STAT_PARTS_SUM + 2u * (uint32_t)i, 0);
+	}
+	mdmi_engine_test_ram_write(engine, ROM_UI_STAT_FRAMES, 0);
+	render(200);
+	{
+		const unsigned n = rom_stat(ROM_UI_STAT_FRAMES);
+		printf("      steady chord parts on average over %u frames:", n);
+		double last = 0;
+		for (int i = 0; i < 10; i++) {
+			const double at = (double)rom_stat(ROM_UI_STAT_PARTS_SUM + 2u * (uint32_t)i) / n;
+			printf(" %.1f", at - last);
+			last = at;
+		}
+		printf("\n");
+	}
+	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 2);
+	for (int i = 0; i < 6; i++) {
+		midi(0x80, (uint8_t)(48 + i * 4), 0);
+	}
+	render(800);
+	printf("    steady chord of 6: %.1f lines a frame on average, %u at worst, %.1f a voice over idle\n", chord_average, chord_worst, (chord_average - idle_lines) / 6);
+	checkf(chord_worst <= 95 && chord_average <= 46, "screen: a steady chord of 6 draws in %u lines at worst (at most 95) and %.1f on average (at most 46, D67)", chord_worst, chord_average);
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 0);
 	test_screen_cells();
 	test_screen_ribbon();
@@ -5715,11 +5923,35 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	render(SETTLE_BLOCKS);
+	{
+		const char *value = getenv("MDMI_SCREEN_SWITCH");
+		screen_switch = value ? atoi(value) : -1;
+	}
 	if (argc == 5 && !strcmp(argv[2], "--ch3-on-ref")) {
 		return write_ch3_on_reference(argv[3], argv[4]);
 	}
 	if (argc == 5 && !strcmp(argv[2], "--ch3-off-ref")) {
 		return write_ch3_off_reference(argv[3], argv[4]);
+	}
+	if (argc == 4 && !strcmp(argv[2], "--loop")) {
+		// 24a3 experiment 5: the DAC loop marks' timing check with the screen's switch set.
+		full_velocity();
+		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, (uint16_t)atoi(argv[3]));
+		render(SETTLE_BLOCKS);
+		test_loop_marks();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
+	}
+	if (argc == 4 && !strcmp(argv[2], "--adjacent")) {
+		// D66: Retrigger Cut and its neighbours with the screen's test switch set (0 as is,
+		// 5 without 24a2's elements, 1 the screen off), to tell what moves its key-on.
+		full_velocity();
+		test_reset();
+		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, (uint16_t)atoi(argv[3]));
+		render(SETTLE_BLOCKS);
+		test_adjacent();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
 	}
 	if (argc == 3 && !strcmp(argv[2], "--screen")) {
 		// Stage 24a: the screen's test alone, while its timing is worked on.
@@ -5754,38 +5986,56 @@ int main(int argc, char **argv)
 	// From here on no restart: an owner's wait is the ROM's reaction alone (architect: 40 ms at most).
 	mdmi_engine_test_take_owner_wait(engine);
 	test_voice_by_hand();
+	owner_wait_after("voice_by_hand");
 	test_reset();
 	test_dealer();
+	owner_wait_after("dealer");
 	test_reset();
 	test_files();
+	owner_wait_after("files");
 	test_bank_place();
+	owner_wait_after("bank_place");
 	test_library_try();
+	owner_wait_after("library_try");
 	test_reset();
 	test_envelopes();
+	owner_wait_after("envelopes");
 	test_reset();
 	test_drawing();
+	owner_wait_after("drawing");
 	test_reset();
 	test_adjacent();
+	owner_wait_after("adjacent");
 	test_reset();
 	test_outputs();
+	owner_wait_after("outputs");
 	test_reset();
 	test_psg_level();
+	owner_wait_after("psg_level");
 	test_reset();
 	test_arp();
+	owner_wait_after("arp");
 	test_reset();
 	test_ch3_keys();
+	owner_wait_after("ch3_keys");
 	test_reset();
 	test_lfo_reset();
+	owner_wait_after("lfo_reset");
 	test_reset();
 	test_csm();
+	owner_wait_after("csm");
 	test_reset();
 	test_csm_portamento();
+	owner_wait_after("csm_portamento");
 	test_reset();
 	test_csm_attack();
+	owner_wait_after("csm_attack");
 	test_reset();
 	test_screen();
+	owner_wait_after("screen");
 	test_reset();
-	const float wait_no_restart = mdmi_engine_test_take_owner_wait(engine);
+	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
+	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
 	if (stats.dropped_midi) {
 		printf("  FAIL: %u MIDI messages lost\n", stats.dropped_midi);
