@@ -6062,6 +6062,149 @@ static void rom_frames(unsigned n)
 	}
 }
 
+// Stage 31's count: the ribbon's cells by how many strikes they hold (0 none, 1, 2, 3 or more),
+// over all ten rows and both pattern sets.
+static void ribbon_histogram(int counts[4])
+{
+	for (int ch = 0; ch < 10; ch++) {
+		for (int col = 0; col < 64; col++) {
+			const int tile = ribbon_cell(ch, col) & 0x7FF;
+			int bits = -1;
+			if (tile > UI_T_RIBBON && tile < UI_T_RIBBON + 256) {
+				bits = tile - UI_T_RIBBON;
+			} else if (tile > UI_T_RIBBON_HOLD && tile < UI_T_RIBBON_HOLD + 256) {
+				bits = tile - UI_T_RIBBON_HOLD;
+			}
+			if (bits > 0) {
+				const int n = __builtin_popcount((unsigned)bits);
+				counts[n >= 3 ? 3 : n]++;
+			}
+		}
+	}
+}
+
+static void ribbon_count_experiment(void)
+{
+	printf("ribbon cells by strikes (stage 31)\n");
+	render(SETTLE_BLOCKS);
+	int total[4] = {0};
+	// The busy clip, its ribbon read every 4 s (the ribbon holds 512 frames, about 8.5 s).
+	busy_clip();
+	ribbon_histogram(total);
+	printf("    busy clip: %d cells with 1 strike, %d with 2, %d with 3 or more\n", total[1], total[2], total[3]);
+	render(2000);
+	// Fast repeats on one channel: 8, 12, 16, 24 notes a second for 6 s each.
+	static const int RATES[4] = {8, 12, 16, 24};
+	for (int r = 0; r < 4; r++) {
+		int counts[4] = {0};
+		const int gap = RATE / RATES[r];
+		for (int i = 0; i < 6 * RATES[r]; i++) {
+			midi(0x90, 60, 100);
+			for (int left_frames = gap / 2; left_frames > 0; left_frames -= BLOCK) {
+				tick(left_frames < BLOCK ? left_frames : BLOCK);
+			}
+			midi(0x80, 60, 0);
+			for (int left_frames = gap - gap / 2; left_frames > 0; left_frames -= BLOCK) {
+				tick(left_frames < BLOCK ? left_frames : BLOCK);
+			}
+		}
+		ribbon_histogram(counts);
+		printf("    %d notes a second: %d cells with 1 strike, %d with 2, %d with 3 or more\n", RATES[r], counts[1], counts[2], counts[3]);
+		render(2000);
+	}
+}
+
+// Stage 31 (rom-screen.md 13): cells of a row in hue set k (1-3), or in the chip's sets (k = 0).
+static const int UI_HUE_BASE[3] = {UI_T_HUE_1, UI_T_HUE_2, UI_T_HUE_3};
+static int ribbon_count(int ch, int first, int end);
+
+static int hue_cells(int ch, int k)
+{
+	if (!k) {
+		return ribbon_count(ch, UI_T_RIBBON + 1, UI_T_RIBBON + 256) + ribbon_count(ch, UI_T_RIBBON_HOLD + 1, UI_T_RIBBON_HOLD + 256);
+	}
+	return ribbon_count(ch, UI_HUE_BASE[k - 1], UI_HUE_BASE[k - 1] + UI_HUE_TILES);
+}
+
+static void test_screen_hue(void)
+{
+	printf("    the ribbon in the owner's hue (31)\n");
+	render(1200);
+	// Each FM channel 1-4 holds a note on its own voice: k = 0, 1, 2, 3.
+	for (int ch = 0; ch < 4; ch++) {
+		midi((uint8_t)(0x90 | ch), (uint8_t)(48 + ch * 5), 100);
+	}
+	rom_frames(30);
+	int own[4], chip[4], held[4];
+	for (int ch = 0; ch < 4; ch++) {
+		own[ch] = hue_cells(ch, ch);
+		chip[ch] = ch ? hue_cells(ch, 0) : 0;
+		held[ch] = ch ? ribbon_count(ch, UI_HUE_BASE[ch - 1] + 92, UI_HUE_BASE[ch - 1] + 100) : ribbon_count(ch, UI_T_RIBBON_HOLD + 1, UI_T_RIBBON_HOLD + 256);
+	}
+	for (int ch = 0; ch < 4; ch++) {
+		midi((uint8_t)(0x80 | ch), (uint8_t)(48 + ch * 5), 0);
+	}
+	printf("      channels 1-4 held: strike cells in their own set %d %d %d %d, in the chip's %d %d %d, with the hold from the strike %d %d %d %d\n",
+		own[0], own[1], own[2], own[3], chip[1], chip[2], chip[3], held[0], held[1], held[2], held[3]);
+	check(own[0] == 1 && own[1] == 1 && own[2] == 1 && own[3] == 1 && !chip[1] && !chip[2] && !chip[3],
+		"screen: a channel's strikes are drawn in its owner's hue, k = 0 in the chip's set as before (31)");
+	check(held[0] == 1 && held[1] == 1 && held[2] == 1 && held[3] == 1, "screen: in every hue the hold line starts at the strike (30, 31)");
+	// A chord of 3 on MIDI 2 (k = 1) lends voices: new cells there in hue 1; the rows' cells of before stay.
+	render(1200);
+	int before[6];
+	for (int ch = 0; ch < 6; ch++) {
+		before[ch] = hue_cells(ch, 1);
+	}
+	for (int i = 0; i < 3; i++) {
+		midi(0x91, (uint8_t)(60 + i * 4), 100);
+	}
+	rom_frames(12);
+	for (int i = 0; i < 3; i++) {
+		midi(0x81, (uint8_t)(60 + i * 4), 0);
+	}
+	rom_frames(4);
+	int lent = 0;
+	for (int ch = 0; ch < 6; ch++) {
+		lent += ch != 1 && hue_cells(ch, 1) > before[ch];
+	}
+	// Channel 1 (k = 0) plays again on its own voice: back in the chip's set.
+	midi(0x90, 72, 100);
+	rom_frames(12);
+	midi(0x80, 72, 0);
+	rom_frames(4);
+	const int back = hue_cells(0, 0);
+	printf("      a chord on MIDI 2: %d lent rows got cells in its hue; channel 1 again: %d cells in the chip's set\n", lent, back);
+	check(lent == 2 && back >= 1, "screen: a voice lent to a chord draws new cells in the chord channel's hue (31)");
+	// 24 notes a second on MIDI 2 (k = 1): cells of 4 or more strikes draw a comb (rom-screen.md 13).
+	render(1200);
+	for (int i = 0; i < 24; i++) {
+		midi(0x91, 60, 100);
+		for (int f = RATE / 48; f > 0; f -= BLOCK) {
+			tick(f < BLOCK ? f : BLOCK);
+		}
+		midi(0x81, 60, 0);
+		for (int f = RATE / 48; f > 0; f -= BLOCK) {
+			tick(f < BLOCK ? f : BLOCK);
+		}
+	}
+	rom_frames(4);
+	const int combs = ribbon_count(1, UI_HUE_BASE[0] + 100, UI_HUE_BASE[0] + 102);
+	printf("      24 notes a second on MIDI 2: %d comb cells of %d in hue 1\n", combs, hue_cells(1, 1));
+	check(combs >= 1, "screen: a cell of 4 or more strikes in a hue draws a comb, not 3 strikes (31)");
+	// PSG: MIDI 8 is k = 3 on its own row.
+	render(1200);
+	midi(0x97, 72, 100);
+	rom_frames(12);
+	midi(0x87, 72, 0);
+	rom_frames(4);
+	const int psg = hue_cells(7, 3);
+	const uint16_t psg_cell = ribbon_cell(7, 0);
+	printf("      MIDI 8 on PSG: %d cells in hue 3\n", psg);
+	(void)psg_cell;
+	check(psg == 1, "screen: PSG rows take the owner's hue too, the same tiles in PSG's palette (31)");
+	render(1200);
+}
+
 // After the check of 0.26.0: which FM rows show their curve: a row's 12 envelope cells hold at least one of its own
 // curve tiles (1020 + 12k).
 static int curve_rows(void)
@@ -6705,6 +6848,7 @@ static void test_screen(void)
 	test_screen_cells();
 	test_screen_ribbon();
 	test_screen_meter();
+	test_screen_hue();
 	// The owner's remark after 0.26.0: a curve rebuilt after a chord's lending comes back (D67).
 	curves_after_lending();
 	// The same clip without the screen: which frames the MIDI handling loses by itself.
@@ -6801,6 +6945,20 @@ int main(int argc, char **argv)
 		test_dac_input();
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
+	}
+	if (argc == 3 && !strcmp(argv[2], "--hue")) {
+		full_velocity();
+		test_reset();
+		render(SETTLE_BLOCKS);
+		test_screen_hue();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
+	}
+	if (argc == 3 && !strcmp(argv[2], "--ribbon-count")) {
+		full_velocity();
+		test_reset();
+		ribbon_count_experiment();
+		return 0;
 	}
 	if (argc == 3 && !strcmp(argv[2], "--curves")) {
 		// Curves after chord lending, alone (check of 0.26.0).

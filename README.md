@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.26.1).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.27.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -33,7 +33,8 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - The ROM's status screen (0.24.6-0.24.8), in the plugin's ROM page and on the console. Each channel has a row:
   - left: its number, the MIDI channel that holds it, and a stripe joining the rows of one chord;
   - its sound's name, and under it a ribbon of hits scrolling left over about two seconds (a bar per Note On,
-    a dim line while held);
+    a dim line while held). Since 0.27.0 the bars take the colour of the MIDI channel holding the row, as its
+    number does; a voice lent to a chord draws in the chord channel's colour;
   - FM: a level bar, an estimate from velocity, CC 7 and the carrier's envelope. PSG 1-3: the square wave the
     chip plays, wider teeth for lower notes, taller for louder. Noise: a texture, brighter when louder.
     Channel 3 in Ch3 Special: four squares, one per operator, filled by its envelope;

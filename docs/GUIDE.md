@@ -133,7 +133,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   before its first look shows its velocity; the peak tick is off (`UI_LEVEL_PEAK` 0, its code kept, a peak
   holds only a rise). The ribbon's strike cell, while its key is down, takes the second set of 256 patterns
   (`UI_T_RIBBON_HOLD`, VRAM 649-904): the hold line starts at the strike. Notes of octave -1 are named
-  `C--` in the window and on the screen, every name 3 characters. Curves
+  `C--` in the window and on the screen, every name 3 characters. Stage 31 (rom-screen.md 13): a strike
+  cell takes the owner's hue as the owner number does, k = MIDI channel & 3 (`ribbon_hue`; 0 for the DAC
+  and Ch3 Special): k = 1-3 draw from `UI_TILES_HUE`, a set of 102 tiles each at 905, 1092, 1336 (92
+  patterns of 1-3 strikes, 8 of one strike + the hold, 2 combs for 4 or more strikes, every other column
+  from the first strike's), chosen by `UI_HUE_CELL[held][bits]`; the line stays grey and the hold the
+  chip's dim. A lent voice's new cells take the chord channel's hue; written cells stay. Curves
   (1020 + 12k) and PSG bars (1237 + 12k) are tiles written while
   music plays, one address and 16 words each. A rebuild starts only in a frame with fewer than 53 lines so far
   and goes a raster column or a tile at a time until 64 lines (N is `ui_stat_curve_lag_max`). The VInt queue writes runs: a

@@ -220,6 +220,50 @@ def ribbon_hold():
     return t
 
 
+# Stage 31 (rom-screen.md 13, art-director): the ribbon's strikes in the owner's hue k = 1-3, in VRAM left
+# free (10.3), a set of HUE_TILES each: the strike patterns with 1-3 strikes, then one strike + the hold
+# line after it (bit 0-7), then the two combs. A cell of 4 or more strikes draws a comb of 4, every other
+# column from its first strike's; a held cell with 2 or more strikes shows its strikes alone. The line
+# stays grey and the hold the chip's dim (index 3): the empty and hold tiles are the chip's. k = 0, the
+# DAC and Ch3 Special keep the chip's sets.
+HUE_BASES = (905, 1092, 1336)
+HUE_STRIKES = [n for n in range(1, 256) if bin(n).count("1") <= 3]
+HUE_COMBS = (0x55, 0xAA)
+HUE_TILES = len(HUE_STRIKES) + 8 + len(HUE_COMBS)
+
+
+def hue_tile(n, ink, hold_ink=None):
+    """The line in dark grey, strikes of ink hanging from it; with hold_ink the line after the last strike
+    (all of it when there is none) in hold_ink."""
+    t = blank()
+    last = n.bit_length() - 1
+    for x in range(8):
+        t[LINE_Y][x] = hold_ink if hold_ink is not None and x > last else I_GREY
+    for x in range(8):
+        if n >> x & 1:
+            for y in range(LINE_Y, LINE_Y + BAR_ROWS):
+                t[y][x] = ink
+    return t
+
+
+def hue_set(k):
+    ink = OWNER_INKS[k]
+    tiles = [hue_tile(n, ink) for n in HUE_STRIKES]
+    tiles += [hue_tile(1 << b, ink, I_DIM) for b in range(8)]
+    tiles += [hue_tile(n, ink) for n in HUE_COMBS]
+    return tiles
+
+
+def hue_cell(held, bits):
+    """A cell's tile within a hue set, by whether its striking key is down and its strike columns."""
+    if bin(bits).count("1") > 3:
+        first = (bits & -bits).bit_length() - 1
+        return len(HUE_STRIKES) + 8 + (first & 1)
+    if held and bin(bits).count("1") == 1:
+        return len(HUE_STRIKES) + bits.bit_length() - 1
+    return HUE_STRIKES.index(bits)
+
+
 def ribbon_pattern_held(n):
     """Stage 30: pattern n while the key that struck in this cell is still down: the hold line from the
     last hit's column on, so it joins the strike (pattern 0 is the hold tile itself)."""
@@ -435,6 +479,11 @@ def main():
         cells += [0] * (6 * ALGO_ROWS - len(cells))
         algo_map.append(cells)
     C.mark("UI_T_C_END")
+    # Stage 31's hue sets in the free ranges (rom-screen.md 10.3): after the ribbon's, before the FM curves
+    # (1020); between the curves' 1092 and the PSG dot (1236); after the algorithm pictures, before the font (1440).
+    assert RIBBON_BASE + len(B.tiles) <= HUE_BASES[0] and HUE_BASES[0] + HUE_TILES <= 1020
+    assert HUE_BASES[1] >= 1092 and HUE_BASES[1] + HUE_TILES <= 1236
+    assert HUE_BASES[2] >= ALGO_BASE + len(C.tiles) and HUE_BASES[2] + HUE_TILES <= 1440
 
     # Wave classes by the tone period the ROM wrote: class c holds keys 45+3c to 47+3c (A2 up).
     thresholds = [int(round(tone_period(45 + 3 * c - 0.5))) for c in range(1, len(WAVE_PERIODS))]
@@ -466,6 +515,9 @@ def main():
     for name, offset in C.marks:
         h.append(f"#define {name} (UI_TILE_C_BASE + {offset})")
     h.append(f"#define UI_TILE_C_COUNT {len(C.tiles)}")
+    h.append(f"#define UI_HUE_TILES {HUE_TILES}")
+    for k, base in enumerate(HUE_BASES, 1):
+        h.append(f"#define UI_T_HUE_{k} {base}")
     h.append(f"#define UI_ALGO_COLS 6")
     h.append(f"#define UI_ALGO_ROWS {ALGO_ROWS}")
     h.append(f"#define UI_FLASH_FRAMES {FLASH_FRAMES}")
@@ -494,6 +546,11 @@ def main():
     h.append("extern const u8 UI_WAVE[UI_WAVE_CLASSES][3][4];")
     h.append("extern const u32 UI_TILES_B[UI_TILE_B_COUNT * 8];")
     h.append("extern const u32 UI_TILES_C[UI_TILE_C_COUNT * 8];")
+    h.append("// Stage 31: the ribbon's sets in the owner's hue k = 1-3, each at UI_HUE_BASE[k - 1].")
+    h.append("extern const u32 UI_TILES_HUE[3][UI_HUE_TILES * 8];")
+    h.append("extern const u16 UI_HUE_BASE[3];")
+    h.append("// A strike cell's tile in a hue set: [its striking key is down][strike columns], 0 unused.")
+    h.append("extern const u8 UI_HUE_CELL[2][256];")
     h.append("// The YM2612's envelope for the screen's estimate (24a3): an attack's frames and its step, a")
     h.append("// decay's frames over 0..1023 and its step by effective rate (D1R, D2R 2n; RR 4n + 2); steps")
     h.append("// are attenuation a frame in 10.6 fixed point. 65536 / n for fractions.")
@@ -588,6 +645,19 @@ def main():
     c.append("const u32 UI_TILES_B[UI_TILE_B_COUNT * 8] = {")
     for tile in B.tiles:
         c.append("    " + ", ".join(f"0x{w:08X}" for w in pack(tile)) + ",")
+    c.append("};")
+    c.append("")
+    c.append("const u32 UI_TILES_HUE[3][UI_HUE_TILES * 8] = {")
+    for k in (1, 2, 3):
+        c.append("    {")
+        for tile in hue_set(k):
+            c.append("        " + ", ".join(f"0x{w:08X}" for w in pack(tile)) + ",")
+        c.append("    },")
+    c.append("};")
+    c.append("const u16 UI_HUE_BASE[3] = { " + ", ".join(str(b) for b in HUE_BASES) + " };")
+    c.append("const u8 UI_HUE_CELL[2][256] = {")
+    for held in (0, 1):
+        c.append("    { 0, " + ", ".join(str(hue_cell(held, n)) for n in range(1, 256)) + " },")
     c.append("};")
     c.append("")
 
