@@ -1794,11 +1794,19 @@ static void dac_play(mdmi_patch *patch, int key)
 		return;
 	}
 	const int v = dac_pick(patch, key);
+	// A voice that played out on its own keeps its key: it must not take this key's Note Off (stage 27).
+	for (int other = 0; other < PATCH_DAC_VOICES; other++) {
+		if (other != v && patch->dac[other].key == key) {
+			patch->dac[other].key = 0;
+		}
+	}
 	patch_dac_voice *voice = &patch->dac[v];
 	const uint8_t flags = DAC_NOTE_FLAGS(note);
-	const bool marks = flags & ROM_SAMPLE_MARKS, loops = flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS);
+	const bool loops = flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS);
 	*voice = (patch_dac_voice){(uint8_t)key, DAC_VOICE_PLAYING, true, ++patch->dac_starts, patch->now, 0, note};
-	voice->rom_state = marks && DAC_NOTE_LOOP_START(note) ? DAC_VOICE_WAIT_COPY : loops ? DAC_VOICE_LOOPING : DAC_VOICE_PLAYING;
+	// Every looping start waits for the driver's copy (stage 27); the copy has no tick, the two states
+	// sound and release alike here.
+	voice->rom_state = loops ? DAC_VOICE_WAIT_COPY : DAC_VOICE_PLAYING;
 	voice->end = loops ? UINT64_MAX : patch->now + dac_blocks_time(patch, DAC_NOTE_BLOCKS(note));
 	dac_publish(patch);
 }

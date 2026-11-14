@@ -1026,9 +1026,11 @@ static void test_loop_marks(void)
 			mark_letters(peaks, tail, loudest, after);
 			// Held: quiet until it sounds, the intro, then the loop only.
 			const char *sound = held + strspn(held, "Q");
-			const char *first_loop = strchr(sound, 'L');
-			// A window where the level steps reads in between: one at the onset and at the seam.
-			const char *body = sound + (*sound == 'R' || *sound == '?');
+			// A window where the level steps reads in between: one at the onset and at the seam. The onset's
+			// may hold a mere fraction of a ms of sound and read as low as L; the intro's full length must
+			// follow it, so a start playing the intro twice or skipping it still fails (stage 27).
+			const char *body = sound + (*sound == 'R' || *sound == '?' || (*sound == 'L' && sound[1] == 'I'));
+			const char *first_loop = strchr(body, 'L');
 			const char *loop_at = first_loop && first_loop > body && (first_loop[-1] == 'R' || first_loop[-1] == '?') ? first_loop - 1 : first_loop;
 			const bool seam = first_loop && (int)strspn(body, "I") == loop_at - body && strspn(first_loop, "L") == strlen(first_loop)
 				&& first_loop - sound <= block_ms * intro + 3;
@@ -1224,6 +1226,115 @@ static double wav_seconds(const char *path)
 		at += 8 + length + (length & 1);
 	}
 	return rate && block ? (double)data / block / rate : 0;
+}
+
+// Stage 27: a held LOOP sample sounds to its Note Off wherever the Note On falls in PCM4's pass. The
+// Note On at SWEEP_PLACES places 0.4 ms apart (19 ms, more than a pass of about 16.5 ms in BlastEm),
+// for a plain loop of 4 blocks, one of a single block (its first pass ends a few ms after the copy,
+// architect) and one with marks and a release, on voice 0 and on voice 3 (three silent
+// one-shots hold voices 0-2); each held 250 ms. A loop counts as silent if a 1 ms window goes quiet
+// once it sounded; a release counts as lost if it doesn't play out to silence after Note Off.
+#define SWEEP_PLACES 48
+static void test_loop_sweep(void)
+{
+	dac_set set = {0};
+	dac_put(&set, 50, square_sample(256 * 4, 100));
+	set.notes[50]->sample.flags = ROM_SAMPLE_LOOP;
+	dac_put(&set, 52, marked_sample(1, 1, 2, 2));
+	dac_put(&set, 54, square_sample(256, 100));
+	set.notes[54]->sample.flags = ROM_SAMPLE_LOOP;
+	for (int k = 0; k < 3; k++) {
+		dac_put(&set, 60 + k, square_sample(256 * 400, 0));
+		set.notes[60 + k]->sample.flags = ROM_SAMPLE_ONE_SHOT;
+	}
+	boot_set(&set);
+	const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ;
+	// The pass in samples at 48 kHz: 256 driver samples.
+	const uint64_t pass = (uint64_t)(256 * RATE / ROM_PCM4_HZ + 0.5);
+	enum { HOLD = 250, TAIL = 200 };
+	static float peaks[HOLD + TAIL];
+	int silent[2][3] = {{0, 0, 0}, {0, 0, 0}}, lost = 0, played = 0;
+	for (int voice = 0; voice < 4; voice += 3) {
+		// 0 plain, 1 marked, 2 a loop of one block.
+		for (int kind = 0; kind < 3; kind++) {
+			const uint8_t key = (uint8_t)(50 + 2 * kind);
+			for (int place = 0; place < SWEEP_PLACES; place++) {
+				const uint64_t want = (uint64_t)place * RATE * 4 / 10000;
+				uint64_t wait = (want + pass - clock_samples % pass) % pass + pass;
+				while (wait) {
+					const int step = wait > BLOCK ? BLOCK : (int)wait;
+					tick(step);
+					wait -= (uint64_t)step;
+				}
+				// The one-shots last 6.8 s: struck again on their own voices before each place.
+				for (int k = 0; k < voice; k++) {
+					midi(0x95, (uint8_t)(60 + k), 127);
+				}
+				midi(0x95, key, 127);
+				// The driver's bits of the voice each ms (Z80 RAM): when it took the start, and whether
+				// its loop bit was still set then and at the end of the hold.
+				int copied = -1, loop_at_copy = -1, playing_end = 0, loop_end = 0;
+				for (int w = 0; w < HOLD; w++) {
+					mark_windows(peaks + w, 1);
+					const int status = mdmi_engine_test_z80(engine, 0x102) >> voice & 1, loop = mdmi_engine_test_z80(engine, 0x103) >> voice & 1;
+					if (copied < 0 && status && !(mdmi_engine_test_z80(engine, 0x100) >> voice & 1)) {
+						copied = w;
+						loop_at_copy = loop;
+					}
+					playing_end = status;
+					loop_end = loop;
+				}
+				midi(0x85, key, 0);
+				mark_windows(peaks + HOLD, TAIL);
+				float loudest = 0;
+				for (int w = 0; w < HOLD; w++) {
+					loudest = peaks[w] > loudest ? peaks[w] : loudest;
+				}
+				int first = 0;
+				while (first < HOLD && peaks[first] < loudest * 0.1f) {
+					first++;
+				}
+				int quiet = 0;
+				for (int w = first; w < HOLD; w++) {
+					quiet += peaks[w] < loudest * 0.1f;
+				}
+				played += first < HOLD;
+				silent[voice > 0][kind] += first == HOLD || quiet > 0;
+				// After Note Off: a plain loop stops; a marked one plays its release (level 80 of the
+				// intro's 120), then silence for the last 20 windows.
+				int release = 0, last_loud = 0;
+				for (int w = HOLD; w < HOLD + TAIL; w++) {
+					const float r = peaks[w] / loudest;
+					release += r > 0.45f && r <= 0.83f;
+					last_loud = r >= 0.05f ? w : last_loud;
+				}
+				const bool ends = last_loud < HOLD + TAIL - 20 && (kind != 1 || release >= block_ms * 2 - 3);
+				lost += !ends;
+				if (first == HOLD || quiet > 0 || !ends) {
+					printf("    voice %d %s, place %d: sounds from %d ms, %d quiet windows after; %d release windows, loud until %d ms; driver: copied at %d ms with loop bit %d, at the end playing %d loop bit %d\n",
+						voice, kind == 1 ? "marked" : kind ? "one block" : "plain", place, first, quiet, release, last_loud - HOLD,
+						copied, loop_at_copy, playing_end, loop_end);
+				}
+			}
+		}
+		midi(0xB5, 123, 0);
+		render(RATE / 10 / BLOCK);
+	}
+	printf("    LOOP held at %d places across a PCM4 pass: silent loops voice 0 plain %d, marked %d, one block %d; voice 3 plain %d, marked %d, one block %d; %d releases lost; %d of %d sounded\n",
+		SWEEP_PLACES, silent[0][0], silent[0][1], silent[0][2], silent[1][0], silent[1][1], silent[1][2], lost, played, 6 * SWEEP_PLACES);
+	// A loop of one block is known to fall silent now and then (ROADMAP parking, D68): its first pass ends
+	// before the ROM's frame can set a lost loop bit again; the fix is the driver's, the owner's decision.
+	if (silent[0][2] + silent[1][2]) {
+		printf("    one block: %d silent, known and parked (D68), not judged\n", silent[0][2] + silent[1][2]);
+	}
+	check(silent[0][0] + silent[0][1] + silent[1][0] + silent[1][1] == 0, "a held LOOP sample of 2 blocks or more never falls silent, wherever the Note On falls in PCM4's pass (27)");
+	check(lost == 0, "after Note Off a loop stops, or plays its release to silence, at every place (27)");
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	dac_clear(&set);
+	size_t rom_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	boot_image(rom, rom_size);
 }
 
 // Stage 19: PCM4's four voices. A kick keeps its level while a hat plays over it; four notes all
@@ -5942,6 +6053,18 @@ int main(int argc, char **argv)
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
 	}
+	if (argc >= 3 && !strcmp(argv[2], "--sweep")) {
+		// Stage 27: the DAC loop's sweep alone, with the screen's switch set if one is given.
+		full_velocity();
+		if (argc == 4) {
+			mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, (uint16_t)atoi(argv[3]));
+		}
+		render(SETTLE_BLOCKS);
+		test_loop_sweep();
+		test_loop_pan();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
+	}
 	if (argc == 4 && !strcmp(argv[2], "--adjacent")) {
 		// D66: Retrigger Cut and its neighbours with the screen's test switch set (0 as is,
 		// 5 without 24a2's elements, 1 the screen off), to tell what moves its key-on.
@@ -5976,6 +6099,7 @@ int main(int argc, char **argv)
 	test_live();
 	test_loop_pan();
 	test_loop_marks();
+	test_loop_sweep();
 	test_four_voices();
 	test_ch3_off();
 	test_ch3_on();
