@@ -1802,11 +1802,9 @@ static void dac_play(mdmi_patch *patch, int key)
 	}
 	patch_dac_voice *voice = &patch->dac[v];
 	const uint8_t flags = DAC_NOTE_FLAGS(note);
-	const bool loops = flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS);
+	const bool marks = flags & ROM_SAMPLE_MARKS, loops = flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS);
 	*voice = (patch_dac_voice){(uint8_t)key, DAC_VOICE_PLAYING, true, ++patch->dac_starts, patch->now, 0, note};
-	// Every looping start waits for the driver's copy (stage 27); the copy has no tick, the two states
-	// sound and release alike here.
-	voice->rom_state = loops ? DAC_VOICE_WAIT_COPY : DAC_VOICE_PLAYING;
+	voice->rom_state = marks && DAC_NOTE_LOOP_START(note) ? DAC_VOICE_WAIT_COPY : loops ? DAC_VOICE_LOOPING : DAC_VOICE_PLAYING;
 	voice->end = loops ? UINT64_MAX : patch->now + dac_blocks_time(patch, DAC_NOTE_BLOCKS(note));
 	dac_publish(patch);
 }

@@ -250,10 +250,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   project reads so). The image's records are 14 bytes apart; with marks the flag 0x04 and two u16 blocks
   follow at +10 and +12. Our ROM plays such a sample by writing the driver's params itself
   (`pcm_driver.c`, `midi_dac.c`): start to loop end with the loop flag, then in `midi_tick` once
-  STATUS.0 says the driver copied them, the loop alone. Every looping start, plain LOOP too, waits for that
-  copy and then sets the loop flag again (stage 27): the driver's stop of the pass before clears it if it
-  lands just after the start set it (a loop of one block may still play once: its first pass ends before the
-  frame comes). Note Off clears the
+  STATUS.0 says the driver copied them, the loop alone. The loop flags are the ROM's alone (stage 27, D70):
+  after loading PCM4, `pcm_driver_keep_loop_bits` turns each `RES v,(STATUS+1)` of the driver's stop into a
+  read of the same length and time, because an idle voice's stop ran every pass and could write back a flag
+  the 68000 had just set or cleared. Note Off clears the
   loop flag and moves IWAVLEN to
   the release's end, checks it 600 us later and puts it right once. Without a release Note Off cuts. A
   press on the loop's body or a tab, here and in the PSG editor, changes nothing until it moves 3 px (the

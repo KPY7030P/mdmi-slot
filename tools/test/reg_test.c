@@ -1248,6 +1248,16 @@ static void test_loop_sweep(void)
 		set.notes[60 + k]->sample.flags = ROM_SAMPLE_ONE_SHOT;
 	}
 	boot_set(&set);
+	// D70: the ROM patched the driver's stop, so it no longer clears a loop bit (pcm_driver_keep_loop_bits).
+	int kept = 0, left_bits = 0;
+	for (uint16_t at = 0; at + 5 <= 0x1000; at++) {
+		const bool loop_byte = mdmi_engine_test_z80(engine, at + 1) == 0x03 && mdmi_engine_test_z80(engine, at + 2) == 0x01 && mdmi_engine_test_z80(engine, at + 3) == 0xCB;
+		const uint8_t op = mdmi_engine_test_z80(engine, at), bits = mdmi_engine_test_z80(engine, at + 4) & 0xC7;
+		kept += loop_byte && op == 0x3A && bits == 0x46;
+		left_bits += loop_byte && op == 0x21 && bits == 0x86;
+	}
+	printf("    the driver's stop: %d places keep the loop bit, %d still clear it\n", kept, left_bits);
+	check(kept >= 4 && left_bits == 0, "the ROM patched PCM4's stop: no place in the driver clears a loop bit (D70)");
 	const double block_ms = ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ;
 	// The pass in samples at 48 kHz: 256 driver samples.
 	const uint64_t pass = (uint64_t)(256 * RATE / ROM_PCM4_HZ + 0.5);
@@ -1322,12 +1332,9 @@ static void test_loop_sweep(void)
 	}
 	printf("    LOOP held at %d places across a PCM4 pass: silent loops voice 0 plain %d, marked %d, one block %d; voice 3 plain %d, marked %d, one block %d; %d releases lost; %d of %d sounded\n",
 		SWEEP_PLACES, silent[0][0], silent[0][1], silent[0][2], silent[1][0], silent[1][1], silent[1][2], lost, played, 6 * SWEEP_PLACES);
-	// A loop of one block is known to fall silent now and then (ROADMAP parking, D68): its first pass ends
-	// before the ROM's frame can set a lost loop bit again; the fix is the driver's, the owner's decision.
-	if (silent[0][2] + silent[1][2]) {
-		printf("    one block: %d silent, known and parked (D68), not judged\n", silent[0][2] + silent[1][2]);
-	}
-	check(silent[0][0] + silent[0][1] + silent[1][0] + silent[1][1] == 0, "a held LOOP sample of 2 blocks or more never falls silent, wherever the Note On falls in PCM4's pass (27)");
+	check(silent[0][0] + silent[0][1] + silent[0][2] + silent[1][0] + silent[1][1] + silent[1][2] == 0,
+		"a held LOOP sample never falls silent, one block long too, wherever the Note On falls in PCM4's pass (27, D70)");
+	check(played == 6 * SWEEP_PLACES, "every start of the sweep sounds: no start lost to the driver's COMMAND or STATUS (27)");
 	check(lost == 0, "after Note Off a loop stops, or plays its release to silence, at every place (27)");
 	set_global(GLOBAL_DAC, 0);
 	sync_and_settle();
