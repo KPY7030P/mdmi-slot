@@ -16,6 +16,7 @@
 #include "dac.h"
 #include "files.h"
 #include "engine.h"
+#include "gui.h"
 #include "instrument.h"
 #include "patch.h"
 #include "ch3_off_clip.h"
@@ -5457,12 +5458,40 @@ static int level_peak(int y)
 	return top ? top : lit;
 }
 
-// A held FM note's peak stripes (the curve's top: velocity x CC 7 alone, rom-screen.md 11).
+// Stage 30: a level row's stripes lit and the peak's stripe (0 for none), as drawn.
+static void level_state(int y, int *lit_out, int *top_out)
+{
+	static const int8_t PATTERN[5][5] = {{0, 5, 6, 7, 8}, {1, -1, 9, 10, 11}, {2, -1, -1, 12, 13}, {3, -1, -1, -1, 14}, {4, -1, -1, -1, -1}};
+	int lit = 0, top = 0;
+	for (int t = 0; t < 4; t++) {
+		const int colour = t < 2 ? 0 : t - 1;
+		const int p = screen_tile(SCREEN_X_LEVEL + t, y) - (UI_T_LEVEL + colour * UI_LEVEL_PATTERNS);
+		for (int n = 0; n < 5; n++) {
+			for (int k = 0; k < 5; k++) {
+				if (PATTERN[n][k] == p) {
+					lit += n;
+					top = k ? t * 4 + k : top;
+				}
+			}
+		}
+	}
+	*lit_out = lit;
+	*top_out = top;
+}
+
+static void rom_frames(unsigned n);
+
+// A held FM note's top stripes (the curve's top: velocity x CC 7 alone, rom-screen.md 11).
 static int stripes_of_note(uint8_t velocity)
 {
+	// Stage 30: no peak tick; the curve's top is the highest the level shows in its first frames.
 	midi(0x90, 60, velocity);
-	render(40);
-	const int stripes = level_peak(SCREEN_ROW(0));
+	int stripes = 0;
+	for (int f = 0; f < 10; f++) {
+		rom_frames(1);
+		const int shown = level_peak(SCREEN_ROW(0));
+		stripes = shown > stripes ? shown : stripes;
+	}
 	midi(0x80, 60, 0);
 	render(300);
 	return stripes;
@@ -5549,6 +5578,37 @@ static void test_screen_cells(void)
 	render(20);
 	printf("      level cells lit: velocity 30 %d, 127 %d, 127 with CC 7 64 %d\n", quiet, loud, half);
 	check(quiet == 2 && loud == 4 && half == 3, "screen: FM's level follows velocity and CC 7 (2, 4 and 3 cells)");
+	// Stage 30 (rom-screen.md 12): every note has a name of 3 glyphs; octave -1 has '-' for its digit.
+	// Glyphs 0-9 A-G # - ?: C is 12, '-' 18, '?' 19.
+	int glyphs[2][3];
+	for (int i = 0; i < 2; i++) {
+		const uint8_t key = i ? 13 : 0;
+		midi(0x90, key, 100);
+		rom_frames(4);
+		for (int c = 0; c < 3; c++) {
+			glyphs[i][c] = screen_tile(SCREEN_X_NOTE + c, row) - UI_T_NOTE;
+		}
+		midi(0x80, key, 0);
+		render(100);
+	}
+	printf("      note 0 shows glyphs %d %d %d, note 13 %d %d %d\n", glyphs[0][0], glyphs[0][1], glyphs[0][2], glyphs[1][0], glyphs[1][1], glyphs[1][2]);
+	check(glyphs[0][0] == 12 && glyphs[0][1] == 18 && glyphs[0][2] == 18 && glyphs[1][0] == 12 && glyphs[1][1] == 17 && glyphs[1][2] == 0,
+		"screen: notes of octave -1 are named in 3 glyphs, C-- (30), and C#0 as before");
+	// The window's names by the same rule (gui.c).
+	bool window_names = true;
+	for (int key = 0; key < 128; key++) {
+		char name[16];
+		gui_note_name(key, name, sizeof(name));
+		window_names = window_names && strlen(name) == 3;
+	}
+	char name0[16], name13[16], name61[16], name127[16];
+	gui_note_name(0, name0, sizeof(name0));
+	gui_note_name(13, name13, sizeof(name13));
+	gui_note_name(61, name61, sizeof(name61));
+	gui_note_name(127, name127, sizeof(name127));
+	printf("      the window names 0, 13, 61, 127: %s %s %s %s\n", name0, name13, name61, name127);
+	check(window_names && !strcmp(name0, "C--") && !strcmp(name13, "C#0") && !strcmp(name61, "C#4") && !strcmp(name127, "G-9"),
+		"window: every note's name is 3 characters, octave -1 is C-- (30)");
 	// Stage 29: the level in dB as the chip attenuates (rom-screen.md 11): stripes at the curve's top.
 	const int s127 = stripes_of_note(127), s100 = stripes_of_note(100), s64 = stripes_of_note(64), s30 = stripes_of_note(30);
 	midi(0xB0, 7, 100);
@@ -5566,8 +5626,13 @@ static void test_screen_cells(void)
 	for (int i = 0; i < 2; i++) {
 		midi(0x90, 60, i ? 100 : 127);
 		midi(0x80, 60, 0);
-		rom_frames(4);
-		at_once[i] = level_peak(SCREEN_ROW(0));
+		// Stage 30: no peak tick; the level shows the velocity on its first look, then falls.
+		at_once[i] = 0;
+		for (int f = 0; f < 4; f++) {
+			rom_frames(1);
+			const int shown = level_peak(SCREEN_ROW(0));
+			at_once[i] = shown > at_once[i] ? shown : at_once[i];
+		}
 		render(300);
 	}
 	printf("      a note let go at once: velocity 127 %d stripes, 100 %d\n", at_once[0], at_once[1]);
@@ -5832,6 +5897,80 @@ static void rom_frames(unsigned n)
 	}
 }
 
+// Stage 30's measurement: the level bar of channel 1, frame by frame, for a program's note held
+// `held` frames and let go. Prints lit:peak per frame and how often the drawn bar changed.
+typedef struct {
+	int changes, peak_alone, peak_trailing, peak_held, max_drop;
+} meter_counts;
+
+// Counts: changes of the drawn bar; frames with the peak alone over a dark bar; frames with a peak over
+// the level more than 32 frames (the hold and a frame's phase) after the level last rose; frames 2-20
+// after the last rise with the peak over the level (the hold after a hit).
+static meter_counts meter_trace(int program, int held, int frames)
+{
+	midi(0xC0, (uint8_t)program, 0);
+	render(300);
+	midi(0x90, 60, 127);
+	int changes = 0, drawn_frames = 0, peak_alone = 0, peak_trailing = 0, peak_held = 0, max_drop = 0, last = -1, last_lit = 0, rise_at = 0;
+	printf("    program %d, held %d frames:", program, held);
+	for (int f = 0; f < frames; f++) {
+		if (f == held) {
+			midi(0x80, 60, 0);
+		}
+		rom_frames(1);
+		int lit, top;
+		level_state(SCREEN_ROW(0), &lit, &top);
+		const int state = lit | top << 5;
+		if (state != last) {
+			changes++;
+			last = state;
+		}
+		if (lit > last_lit) {
+			rise_at = f;
+		}
+		max_drop = last_lit - lit > max_drop ? last_lit - lit : max_drop;
+		last_lit = lit;
+		drawn_frames += lit || top;
+		peak_alone += !lit && top;
+		peak_trailing += f > rise_at + 32 && top > lit;
+		peak_held += f >= rise_at + 2 && f <= rise_at + 20 && top > lit;
+		if (!(f % 20)) {
+			printf("\n      %3d ", f);
+		}
+		printf(" %d:%d", lit, top);
+	}
+	printf("\n      %d frames lit, %d changes of the drawn bar, %d frames the peak alone, %d frames a peak above the level over 0.5 s after the last rise, %d frames held after a rise, a fall of %d stripes at most a frame\n",
+		drawn_frames, changes, peak_alone, peak_trailing, peak_held, max_drop);
+	render(300);
+	return (meter_counts){changes, peak_alone, peak_trailing, peak_held, max_drop};
+}
+
+// Stage 30 (D72): on a decay the level and the peak reach 0 together; the peak never trails a fall.
+static void test_screen_meter(void)
+{
+	printf("    the FM level bar frame by frame (30)\n");
+	const meter_counts piano = meter_trace(0, 60, 200), epiano = meter_trace(4, 50, 160), strings = meter_trace(48, 90, 200);
+	// An organ's staccato: full at once, nothing a frame after Note Off; the bar drains (rom-screen.md 12).
+	const meter_counts organ = meter_trace(16, 6, 60);
+	midi(0xC0, 0, 0);
+	render(300);
+	checkf(piano.max_drop <= 2 && epiano.max_drop <= 2 && strings.max_drop <= 2 && organ.max_drop <= 2 && organ.changes >= 6,
+		"screen: the level falls at most 2 stripes a look, an organ's staccato drains over %d steps (30)", organ.changes);
+	check(!piano.peak_alone && !epiano.peak_alone && !strings.peak_alone, "screen: on a decay the level and its peak reach 0 together, no stripe left alone (30)");
+	check(!piano.peak_trailing && !epiano.peak_trailing && !strings.peak_trailing, "screen: the peak does not trail a falling level past its hold (30)");
+}
+
+static void meter_measure(void)
+{
+	printf("meter (stage 30)\n");
+	full_velocity();
+	render(SETTLE_BLOCKS);
+	meter_trace(4, 50, 200);
+	meter_trace(4, 4, 120);
+	meter_trace(48, 90, 200);
+	meter_trace(0, 60, 200);
+}
+
 // The columns of a ribbon row holding a pattern with hits, and the hold tile.
 static int ribbon_count(int ch, int first, int end)
 {
@@ -5843,9 +5982,16 @@ static int ribbon_count(int ch, int first, int end)
 	return n;
 }
 
+// A cell with hits: a pattern of the plain set, or of the set whose hold line starts at the strike
+// (stage 30), while the key that struck there is down.
+static bool hit_tile(int tile)
+{
+	return (tile > UI_T_RIBBON && tile < UI_T_RIBBON + 256) || (tile > UI_T_RIBBON_HOLD && tile < UI_T_RIBBON_HOLD + 256);
+}
+
 static int ribbon_hits(int ch)
 {
-	return ribbon_count(ch, UI_T_RIBBON + 1, UI_T_RIBBON + 256);
+	return ribbon_count(ch, UI_T_RIBBON + 1, UI_T_RIBBON + 256) + ribbon_count(ch, UI_T_RIBBON_HOLD + 1, UI_T_RIBBON_HOLD + 256);
 }
 
 static void test_screen_ribbon(void)
@@ -5886,7 +6032,7 @@ static void test_screen_ribbon(void)
 	int bar_col = -1;
 	for (int col = 0; col < 64; col++) {
 		const int tile = ribbon_cell(0, col) & 0x7FF;
-		if (tile > UI_T_RIBBON && tile < UI_T_RIBBON + 256) {
+		if (hit_tile(tile)) {
 			bar_col = col;
 		}
 	}
@@ -5894,6 +6040,14 @@ static void test_screen_ribbon(void)
 	rom_frames(30);
 	const uint16_t held = cram(6);
 	const int holds = ribbon_count(0, UI_T_HOLD, UI_T_HOLD + 1);
+	// Stage 30: the strike's cell carries the hold line from the strike on, and the next cell is the
+	// hold tile, so the line joins the strike with no gap.
+	const int strike = bar_col < 0 ? 0 : ribbon_cell(0, bar_col) & 0x7FF;
+	const int after_strike = bar_col < 0 ? 0 : ribbon_cell(0, (bar_col + 1) & 63) & 0x7FF;
+	const bool joined = strike > UI_T_RIBBON_HOLD && strike < UI_T_RIBBON_HOLD + 256 && after_strike == UI_T_HOLD;
+	printf("      held: the strike's cell is pattern %d of the %s set, the next cell %s\n", strike - (strike >= UI_T_RIBBON_HOLD ? UI_T_RIBBON_HOLD : UI_T_RIBBON),
+		strike >= UI_T_RIBBON_HOLD ? "held" : "plain", after_strike == UI_T_HOLD ? "the hold tile" : "no hold");
+	check(joined, "screen: the hold line starts at the strike, in the strike's own cell (30)");
 	midi(0x80, 60, 0);
 	rom_frames(30);
 	const uint16_t dim = cram(6);
@@ -5910,9 +6064,10 @@ static void test_screen_ribbon(void)
 		midi(0x80, 62, 0);
 		rom_frames(12);
 	}
-	const int short_hits = ribbon_hits(0);
-	printf("      two notes shorter than a frame: %d bars on the ribbon\n", short_hits);
+	const int short_hits = ribbon_hits(0), short_plain = ribbon_count(0, UI_T_RIBBON + 1, UI_T_RIBBON + 256);
+	printf("      two notes shorter than a frame: %d bars on the ribbon, %d without a hold line\n", short_hits, short_plain);
 	check(short_hits == 3, "screen: a note shorter than a frame and its repeat each put a bar on the ribbon");
+	check(short_plain == 2, "screen: a note let go in its cell draws no hold line after its strike (30)");
 
 	// 64 columns later the leading cell writes over what it left: the bars are gone.
 	rom_frames(520);
@@ -6065,7 +6220,7 @@ static void test_screen_ribbon(void)
 	int pink = 0;
 	for (int col = 0; col < 64; col++) {
 		const uint16_t c = ribbon_cell(2, col);
-		pink += (c & 0x7FF) > UI_T_RIBBON && (c & 0x7FF) < UI_T_RIBBON + 256 && (c >> 13 & 3) == 3;
+		pink += hit_tile(c & 0x7FF) && (c >> 13 & 3) == 3;
 	}
 	midi(0x82, 60, 0);
 	for (int op = 0; op < 3; op++) {
@@ -6281,6 +6436,7 @@ static void test_screen(void)
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 0);
 	test_screen_cells();
 	test_screen_ribbon();
+	test_screen_meter();
 	// The same clip without the screen: which frames the MIDI handling loses by itself.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 1);
 	screen_on_in_clip = false;
@@ -6368,6 +6524,11 @@ int main(int argc, char **argv)
 		test_adjacent();
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
+	}
+	if (argc == 3 && !strcmp(argv[2], "--meter")) {
+		// Stage 30: the FM level bar frame by frame, for measuring.
+		meter_measure();
+		return 0;
 	}
 	if (argc == 3 && !strcmp(argv[2], "--screen")) {
 		// Stage 24a: the screen's test alone, while its timing is worked on.

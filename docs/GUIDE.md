@@ -128,7 +128,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   run for FM 1-6 and channel 3's operator channels. They feed the Ch3 squares (filled 4 to 0 at 6, 12, 24,
   48 dB down), the FM dots (a segment at a time, a step a frame) and W1. W1 is in dB since stage 29
   (rom-screen.md 11): the chip's own attenuation for volume x velocity (`synth_volume_attenuation`, TL units)
-  plus the dot's height as attenuation, through `LEVEL_LIT` (16 stripes, fine steps at the top). Curves
+  plus the dot's height as attenuation, through `LEVEL_LIT` (16 stripes, fine steps at the top). Stage 30
+  (rom-screen.md 12, D72): it rises at once and falls at most `LEVEL_FALL` 2 stripes a look; a note over
+  before its first look shows its velocity; the peak tick is off (`UI_LEVEL_PEAK` 0, its code kept, a peak
+  holds only a rise). The ribbon's strike cell, while its key is down, takes the second set of 256 patterns
+  (`UI_T_RIBBON_HOLD`, VRAM 649-904): the hold line starts at the strike. Notes of octave -1 are named
+  `C--` in the window and on the screen, every name 3 characters. Curves
   (1020 + 12k) and PSG bars (1237 + 12k) are tiles written while
   music plays, one address and 16 words each. A rebuild starts only in a frame with fewer than 53 lines so far
   and goes a raster column or a tile at a time until 64 lines (N is `ui_stat_curve_lag_max`). The VInt queue writes runs: a
@@ -243,7 +248,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   CT by resampling (length changes with it), GAIN and NORMALIZE, RATE (AUTO or one of six), FADE (the
   last 4 ms), ONE-SHOT (Note Off doesn't cut it; a flag our ROM reads) and LOOP (stage 18: it repeats
   until Note Off, record flag 0x01 for the SGDK driver's own loop; the length is cut to whole 256-byte
-  blocks and FADE is off, so the repeat has no gap; under one block it plays once). LOOP and ONE-SHOT
+  blocks and FADE is off, so the repeat has no gap; under one block it plays once; since stage 30 the loop's
+  row is its only switch, D72). LOOP and ONE-SHOT
   exclude each other (stage 18; 22a's loop past Note Off, D53, is cancelled by D54). `dac_edit.stop`
   (stage 22b, D54): Note Off stops a loop that has a release; `dac_marks_of` then ends the bytes on the
   loop's last block (`tail` says a release exists, `release` that it plays, `frame_tail_end` where it

@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.25.2).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.25.3).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -120,13 +120,14 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   on a console), so the sound reaches about 7.6 kHz; several loud samples together clip. A note starts 16-32 ms
   after its Note On, and switching the DAC on takes about 0.3 s, some 75 ms longer than in 0.18, because the
   driver loads a volume table. Channel 6's Pan (CC 10) puts all four left, centre or right, also while they
-  play. A sample with LOOP repeats while the key is held. Its loop has its own tabs on the wave: the part
+  play. A sample with LOOP repeats while the key is held: a click on the loop's row over the wave turns LOOP on
+  or off (since 0.25.3 there is no separate LOOP switch). Its loop has its own tabs on the wave: the part
   before it plays once, the part after it (the release) plays when the key is let go. Drag the loop's body to
   move it whole. A click on the loop's end tab, or on the row after it, chooses how Note Off ends the note:
   RELEASE (the loop finishes its pass, then the release plays; a short note let go in the intro plays the loop
   once and the release) or STOP (silence at once; the release isn't written to the ROM, its marks stay). A
-  double click on the end tab moves the loop's end to the last whole block: no release. Switching LOOP or
-  ONE-SHOT brings the loop back with its release. LOOP and ONE-SHOT exclude each other again (0.22.2 let them go
+  double click on the end tab moves the loop's end to the last whole block: no release. Turning LOOP on or
+  switching ONE-SHOT brings the loop back with its release. LOOP and ONE-SHOT exclude each other again (0.22.2 let them go
   together, a loop past Note Off; such a project opens as LOOP with its release).
   A loop is at least one block of the driver (256 bytes, about 17 ms). Not checked on a real console yet.
 - A PSG envelope's loop ends a note the same way (0.22.3): with steps after the loop (a release), Note Off lets

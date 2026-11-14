@@ -88,5 +88,7 @@ bool gui_set_scale(mdmi_gui *gui, double scale);
 void gui_get_size(const mdmi_gui *gui, uint32_t *width, uint32_t *height);
 // An arrow key from the host; false when the window doesn't want it there.
 bool gui_key(mdmi_gui *gui, bool up);
+// A key's name as the window shows it, always 3 characters: C-4, C#4, C-- for octave -1 (stage 30).
+void gui_note_name(int key, char *out, size_t size);
 
 #endif

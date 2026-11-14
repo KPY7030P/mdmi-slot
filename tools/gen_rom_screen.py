@@ -37,7 +37,7 @@ OWNER_INKS = (I_CHIP, 12, 13, 14)
 
 NOTE_GLYPHS = "0123456789ABCDEFG#-?"
 NAMES = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"]
-LOWEST_NAMED = 21  # A0, as the old screen
+LOWEST_NAMED = 0  # every note since stage 30 (rom-screen.md 12); octave -1 shows '-' for its digit
 
 # The PSG wave (rom-screen.md 8, mockup final_psgwave): one period per 3 semitones from A2, the PSG's lowest note, up.
 WAVE_PERIODS = [32, 27, 23, 19, 16, 13, 11, 10, 8, 7, 6, 5, 4]
@@ -220,6 +220,18 @@ def ribbon_hold():
     return t
 
 
+def ribbon_pattern_held(n):
+    """Stage 30: pattern n while the key that struck in this cell is still down: the hold line from the
+    last hit's column on, so it joins the strike (pattern 0 is the hold tile itself)."""
+    t = ribbon_pattern(n)
+    last = n.bit_length() - 1
+    for x in range(last + 1, 8):
+        t[LINE_Y][x] = I_DIM
+    if n == 0:
+        t = ribbon_hold()
+    return t
+
+
 I_NOISE = (12, 13, 14, 15)
 
 
@@ -395,6 +407,9 @@ def main():
     for periodic in (True, False):
         for t in noise_tiles(periodic):
             B.add(t)
+    B.mark("UI_T_RIBBON_HOLD")
+    for n in range(256):
+        B.add(ribbon_pattern_held(n))
     B.mark("UI_T_B_END")
     noise_periodic, noise_white, noise_silent = noise_colours()
 
@@ -429,7 +444,7 @@ def main():
         if p < LOWEST_NAMED:
             s = "???"
         else:
-            s = NAMES[p % 12] + str(p // 12 - 1)
+            s = NAMES[p % 12] + (str(p // 12 - 1) if p >= 12 else "-")
         note_table.append([NOTE_GLYPHS.index(c) for c in s])
 
     h = []
@@ -468,7 +483,7 @@ def main():
     h.append('#include "genesis.h"')
     h.append("extern const u32 UI_TILES[UI_TILE_COUNT * 8];")
     h.append("extern const u16 UI_PALETTE[64];")
-    h.append("// A key's name as 3 note glyphs: C-4, C#4, ??? below A0.")
+    h.append("// A key's name as 3 note glyphs: C-4, C#4, C-- for octave -1 (stage 30).")
     h.append("extern const u8 UI_NOTE[128][3];")
     h.append("// A tile of a 16-stripe bar: its pattern by how many of its 4 stripes are lit and where")
     h.append("// the peak is, +1 (0 none).")

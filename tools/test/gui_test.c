@@ -832,9 +832,15 @@ int main(int argc, char **argv)
 		capture(window);
 		int bracket = count_color_in(28, 54, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING);
 		CHECK(bracket > 40, "a chord's borrowed voices are joined by a bracket (%d pixels)", bracket);
-		// Stage 24d: each borrowed row's arrowhead is a solid 5 x 10 at the name's height, tip at x 51.
-		const int heads = count_color_in(47, 52, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING);
-		CHECK(heads >= 2 * 30, "the chord's arrowheads are solid (%d px for two)", heads);
+		// Stage 30: each borrowed row's arrowhead is a solid 4 x 7 at the name's height, tip at x 51;
+		// the chord's own row a square of 9 x 9 on a spine of 1 px.
+		const int heads = count_color_in(48, 52, HEADER_H, RAIL_CH4_Y + 200, COLOR_PLAYING);
+		int square = 0;
+		for (int y = RAIL_CH4_Y - 40; y < RAIL_CH4_Y + 40; y++) {
+			int first;
+			square += longest_run(y, 28, 50, COLOR_PLAYING, &first) >= 9;
+		}
+		CHECK(heads >= 2 * 16 && square == 9, "the chord's arrowheads are solid (%d px for two), its own row a square of 9 rows (%d)", heads, square);
 		// Stage 24d: the source says ROM N, grey for the factory sound.
 		CHECK(count_color_in(600, 708, 30, 48, COLOR_LABEL) > 20, "the source of a factory sound is grey");
 		save_bmp(argv[2], "voices");
@@ -2274,25 +2280,35 @@ int main(int argc, char **argv)
 		const int wave_cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
 		CHECK(tfi_effect == DROPEFFECT_NONE, "an FM file over the wave is refused");
 		CHECK(wav_effect == DROPEFFECT_COPY && wave_ms >= 0 && rom_cell < 300 && wave_cell > 300, "a WAV dropped on the wave replaces the open note's sound (cell %d px, was %d)", wave_cell, rom_cell);
-		click(window, 660, DAC_ROW_A_Y + 10);
+		// Stage 30: LOOP has no switch of its own; the loop's row turns it on and off.
+		{
+			int sx;
+			capture(window);
+			const int button = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_CELL);
+			click(window, 660, DAC_ROW_A_Y + 10);
+			run_ms(200);
+			capture(window);
+			CHECK(button == 0 && longest_run(DAC_LOOP_Y + 1, 242, 712, COLOR_DAC_DARK, &sx) < 20, "no LOOP switch over ONE-SHOT: its place takes no click (%d px of a cell)", button);
+		}
+		click(window, 400, DAC_LOOP_Y + 6);
 		const long loop_ms = wait_applied(window);
 		capture(window);
 		save_bmp(argv[2], "dac-loop");
-		const int loop_on = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
+		int loop_x;
+		const int loop_on = longest_run(DAC_LOOP_Y + 1, 242, 712, COLOR_DAC_DARK, &loop_x);
 		const int shot_off = count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
-		CHECK(loop_ms >= 0 && loop_on > 1000 && shot_off == 0, "LOOP lights (%d px), ONE-SHOT stays off", loop_on);
+		CHECK(loop_ms >= 0 && loop_on > 300 && shot_off == 0, "a click on the loop's shadow turns LOOP on (%d px), ONE-SHOT stays off", loop_on);
 		click(window, 660, DAC_ROW_B_Y + 10);
 		wait_applied(window);
 		capture(window);
-		const int loop_off = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
+		const int loop_off = longest_run(DAC_LOOP_Y + 1, 242, 712, COLOR_DAC_DARK, &loop_x);
 		const int shot_on = count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK);
 		save_bmp(argv[2], "dac-loop-one-shot");
-		CHECK(shot_on > 1000 && loop_off == 0, "ONE-SHOT lights and LOOP goes off (%d px, LOOP %d px)", shot_on, loop_off);
-		click(window, 660, DAC_ROW_A_Y + 10);
+		CHECK(shot_on > 1000 && loop_off < 20, "ONE-SHOT lights and LOOP goes off (%d px, loop %d px)", shot_on, loop_off);
+		click(window, 400, DAC_LOOP_Y + 6);
 		wait_applied(window);
 		capture(window);
-		CHECK(count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0
-				&& count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000,
+		CHECK(count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0 && longest_run(DAC_LOOP_Y + 1, 242, 712, COLOR_DAC_DARK, &loop_x) > 300,
 			"and LOOP on again takes ONE-SHOT off");
 		// Stage 18b: the loop's row. Its body (dark) runs from START to the last whole block; the end
 		// tab dragged left leaves a release, the body dragged moves the loop with its length and stops
@@ -2335,14 +2351,13 @@ int main(int argc, char **argv)
 			wait_applied(window);
 			capture(window);
 			save_bmp(argv[2], "dac-loop-shadow");
-			const int off = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK);
 			const int shadow = longest_run(row, 242, 712, COLOR_DAC_DARK, &s4);
-			CHECK(off == 0 && shadow < 20, "a click within 3 px on the body turns LOOP off, the row shows its shadow");
+			CHECK(shadow < 20, "a click within 3 px on the body turns LOOP off, the row shows its shadow");
 			click(window, s3 + l3 / 2, DAC_LOOP_Y + 6);
 			wait_applied(window);
 			capture(window);
 			const int l4 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s4);
-			CHECK(count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) > 1000 && abs(l4 - l3) <= 3 && abs(s4 - s3) <= 2,
+			CHECK(abs(l4 - l3) <= 3 && abs(s4 - s3) <= 2,
 				"a click on the shadow turns LOOP on where it was (%d px at %d)", l4, s4);
 			// Stage 22b (D54): release or stop by a click on the loop's end tab or the row after it.
 			// The wave after the loop's end is lit while the release plays, dim with stop.
@@ -2384,8 +2399,9 @@ int main(int argc, char **argv)
 				click(window, 660, DAC_ROW_B_Y + 10);
 				wait_applied(window);
 				capture(window);
-				const bool shot_only = count_color_in(620, 700, DAC_ROW_A_Y, DAC_ROW_A_Y + 20, COLOR_DAC_DARK) == 0 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000;
-				click(window, 660, DAC_ROW_A_Y + 10);
+				int s_off;
+				const bool shot_only = longest_run(row, 242, 712, COLOR_DAC_DARK, &s_off) < 20 && count_color_in(620, 700, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) > 1000;
+				click(window, s6 + l6 / 2, DAC_LOOP_Y + 6);
 				wait_applied(window);
 				capture(window);
 				const int lit_again = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
@@ -2405,6 +2421,27 @@ int main(int argc, char **argv)
 				const int lit_undone = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
 				CHECK(l8 > l6 + 50 && l9 == l6 && s9 == s6 && abs(lit_undone - lit_release) < 20,
 					"a double click on the end tab: the loop to the last whole block (%d px, was %d); one UNDO gives back the loop with its release (%d px)", l8, l6, l9);
+			}
+			// Stage 30: under one block the row alone turns LOOP off, as the switch did (END dragged
+			// next to START with LOOP on: the row frames TOO SHORT in amber, a click in it ends the loop).
+			{
+				const int trim_row = DAC_TRIM_Y + 6;
+				int last = -1;
+				for (int x = 242; x < WIDTH; x++) {
+					last = (pixels[trim_row * WIDTH + x] & 0xFFFFFF) == COLOR_DAC ? x : last;
+				}
+				drag_x(window, last - 3, trim_row, 252);
+				wait_applied(window);
+				capture(window);
+				save_bmp(argv[2], "dac-loop-too-short");
+				const int amber = count_color_in(242, 712, DAC_LOOP_Y, DAC_LOOP_Y + 12, COLOR_AMBER);
+				click(window, 246, DAC_LOOP_Y + 6);
+				wait_applied(window);
+				capture(window);
+				const int amber_after = count_color_in(242, 712, DAC_LOOP_Y, DAC_LOOP_Y + 12, COLOR_AMBER);
+				const int hint = count_color_in(242, 400, DAC_LOOP_Y, DAC_LOOP_Y + 12, COLOR_HINT);
+				CHECK(last > 600 && amber >= 4 && amber_after == 0 && hint > 20,
+					"under one block: TOO SHORT in amber (%d px), a click on it turns LOOP off and the row says why (%d px of hint)", amber, hint);
 			}
 		}
 		DeleteFileA(wav_path);

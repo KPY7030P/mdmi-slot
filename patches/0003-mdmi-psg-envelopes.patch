@@ -2694,10 +2694,10 @@ index 222a443..55119ec 100644
  void synth_direct_write_ym2612(u8 part, u8 reg, u8 data);
  void synth_enable_dac(bool enable);
 diff --git a/src/ui.c b/src/ui.c
-index 66cd230..7844a00 100644
+index 66cd230..20f2d9f 100644
 --- a/src/ui.c
 +++ b/src/ui.c
-@@ -2,552 +2,2587 @@
+@@ -2,552 +2,2609 @@
  #include "comm/comm.h"
  #include "comm/comm_everdrive.h"
  #include "comm/comm_everdrive_pro.h"
@@ -3792,14 +3792,20 @@ index 66cd230..7844a00 100644
 +
 +static u8 level[FM_CHANS];
 +static u8 peak[FM_CHANS];
-+static u8 peakHold[FM_CHANS];
 +static u16 levelDrawn[FM_CHANS];
-+// The FM channels hit since their level last looked (24a4, stage 29 review): each hit's velocity is the
-+// peak at once, whatever the dot does (a note shorter than a frame hides its dot; a fast decay leaves
-+// the curve's top before the level looks).
++// The FM channels hit since their level last looked (24a4, stage 29 review): a note over before its
++// first look shows its velocity (stage 30; with the peak on, each hit's velocity is the peak at once),
++// whatever the dot does (a note shorter than a frame hides its dot).
 +static u8 levelHits;
 +
 +#define PEAK_FRAMES 30
++// Stage 30 (rom-screen.md 12, W2): the FM level's peak tick is off; its code stays for a build with 1.
++// The level rises at once and falls at most LEVEL_FALL stripes a look (a look every other frame).
++#define UI_LEVEL_PEAK 0
++#define LEVEL_FALL 2
++#if UI_LEVEL_PEAK
++static u8 peakHold[FM_CHANS];
++#endif
 +
 +// Stage 29 (rom-screen.md 11, art-director): the stripes lit for an attenuation in TL units (0.75 dB),
 +// fine steps at the top: 16 up to 1, 15 up to 3, ..., 1 up to 127.
@@ -3832,12 +3838,20 @@ index 66cd230..7844a00 100644
 +    // after Note Off. In Ch3 Special's OPS channel 3 skips synth_volume: it shows squares, not a level.
 +    const u8 velAtt = synth_volume_attenuation(ch);
 +    const u16 s = velAtt + dot_attenuation(ch);
-+    level[ch] = s >= 128 ? 0 : LEVEL_LIT[s];
++    u8 target = s >= 128 ? 0 : LEVEL_LIT[s];
++    if (hit && !(envDown & 1 << ch) && LEVEL_LIT[velAtt] > target) {
++        // A note over before its first look (stage 30): its velocity shows, then falls as any.
++        target = LEVEL_LIT[velAtt];
++    }
++    level[ch] = target >= level[ch] ? target : level[ch] - target > LEVEL_FALL ? level[ch] - LEVEL_FALL : target;
++#if UI_LEVEL_PEAK
 +    if (hit && LEVEL_LIT[velAtt] >= peak[ch]) {
 +        // The hit's own level, the curve's top.
 +        peak[ch] = LEVEL_LIT[velAtt];
 +        peakHold[ch] = PEAK_FRAMES >> 1;
-+    } else if (level[ch] >= peak[ch]) {
++    } else if (level[ch] > peak[ch]) {
++        // Only a rise holds the peak (stage 30, D72): a level equal to it on the way down is no new
++        // peak, else the tick trailed the decay by the hold and hung over 0 at its end.
 +        peak[ch] = level[ch];
 +        peakHold[ch] = PEAK_FRAMES >> 1;
 +    } else if (peakHold[ch]) {
@@ -3845,6 +3859,7 @@ index 66cd230..7844a00 100644
 +    } else {
 +        peak[ch] = level[ch];
 +    }
++#endif
 +}
  
 -    for (u8 devChan = 0; devChan < 10; devChan++) {
@@ -3864,8 +3879,7 @@ index 66cd230..7844a00 100644
 +        u8 peakAt = 0;
 +        if (top > lit && top - 1 >= from && top - 1 < from + 4) {
 +            peakAt = top - from;
-         }
--        draw_text(text, 3, MIDI_Y + (devChan * 2));
++        }
 +        const u16 colour = coloured ? (t < 2 ? 0 : t - 1) * UI_LEVEL_PATTERNS : 0;
 +        all &= cell(x + t, y, ATTR(pal, base + colour + UI_LEVEL_PATTERN[n][peakAt]));
 +    }
@@ -3896,19 +3910,14 @@ index 66cd230..7844a00 100644
 +    for (u8 op = 0; op < 4; op++) {
 +        const u8 fill = key >> (op * 3) & 7;
 +        all &= cell(X_LEVEL + op, ROW(CH3_CHAN), ATTR(PAL3, UI_T_SQUARE + (fill > 4 ? 5 : fill)));
-     }
++    }
 +    return all;
- }
- 
--static void print_chan_activity(u8* pitches)
++}
++
 +static u8 levelTurn;
 +
 +static void draw_levels(void)
- {
--    bool setPalette = false;
--    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
--        u8 pitch = pitches[i];
--        if (pitch == lastPitches[i]) {
++{
 +    // Three channels a frame, round the six: each is followed and drawn every other frame.
 +    for (u8 i = 0; i < 3 && !full(); i++) {
 +        const u8 ch = levelTurn;
@@ -3916,14 +3925,8 @@ index 66cd230..7844a00 100644
 +        follow_level(ch);
 +        if (ch == DAC_CHAN && dac_on()) {
 +            levelDrawn[ch] = NOT_DRAWN;
-             continue;
-         }
--        if (pitch == 0) {
--            VDP_clearTextArea(PITCH_X + MARGIN_X, MIDI_Y + (i * 2) + MARGIN_Y, 3, 1);
--        } else {
--            if (!setPalette) {
--                VDP_setTextPalette(PAL2);
--                setPalette = true;
++            continue;
++        }
 +        const bool squares = ch == CH3_CHAN && special_on();
 +        const u16 want = squares ? squares_key() : level[ch] | peak[ch] << 5;
 +        if (want == levelDrawn[ch]) {
@@ -3931,10 +3934,12 @@ index 66cd230..7844a00 100644
 +        }
 +        if (squares ? draw_squares(want) : bar_cells(X_LEVEL, ROW(ch), PAL2, UI_T_LEVEL, TRUE, level[ch], peak[ch])) {
 +            levelDrawn[ch] = want;
-+        }
-+    }
-+}
-+
+         }
+-        draw_text(text, 3, MIDI_Y + (devChan * 2));
+     }
+ }
+ 
+-static void print_chan_activity(u8* pitches)
 +// The PSG's tone channels: a square wave whose crests follow the period the chip plays ---------
 +
 +static u16 waveDrawn[3];
@@ -3944,15 +3949,25 @@ index 66cd230..7844a00 100644
 +
 +// Two of the three channels a frame: each is looked at in the frame of its tone write or the next.
 +static void draw_waves(void)
-+{
+ {
+-    bool setPalette = false;
+-    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
+-        u8 pitch = pitches[i];
+-        if (pitch == lastPitches[i]) {
 +    for (u8 n = 0; n < 2 && !full(); n++) {
 +        const u8 i = waveTurn;
 +        waveTurn = waveTurn == 2 ? 0 : waveTurn + 1;
 +        const u8 loud = 15 - (midi_psg_attenuation(i) & 15);
 +        const u16 tone = midi_psg_tone(i);
 +        if (tone == waveTone[i] && loud == waveLoud[i] && waveDrawn[i] != NOT_DRAWN) {
-+            continue;
-+        }
+             continue;
+         }
+-        if (pitch == 0) {
+-            VDP_clearTextArea(PITCH_X + MARGIN_X, MIDI_Y + (i * 2) + MARGIN_Y, 3, 1);
+-        } else {
+-            if (!setPalette) {
+-                VDP_setTextPalette(PAL2);
+-                setPalette = true;
 +        waveTone[i] = tone;
 +        waveLoud[i] = loud;
 +        u16 want = 0xFF;
@@ -4118,14 +4133,14 @@ index 66cd230..7844a00 100644
 +            *(volatile u16*)VDP_DATA_PORT = queueValue[Q_DOT_X(dot)];
 +            n += 4;
 +        }
-+    }
+     }
 +    // Parked inside the unused 0xF680-0xFFFF (after the sprite table): the rest of a tile that a VInt
 +    // interrupted (16 words, 32 bytes) lands there, not past 0xFFFF in tile 0 (reviewer, 24a3).
 +    *(volatile u32*)VDP_CTRL_PORT = VRAM_WRITE(PARK);
 +    // Still VBlank at the end: a VInt long enough to reach the picture would show here.
 +    if (!(*(volatile u16*)VDP_CTRL_PORT & 8)) {
 +        ui_stat_vdp_outside += n;
-     }
++    }
 +    // The NTSC counter goes back from 0xEA to 0xE5 once in VBlank: a VInt across it gains 6.
 +    const u8 to = *(volatile u8*)0xC00008;
 +    const u8 lines = to >= from ? to - from : to + 6 - from;
@@ -4137,21 +4152,21 @@ index 66cd230..7844a00 100644
 +    }
 +    ui_stat_vint_lines_count[lines > 11 ? 11 : lines]++;
 +}
-+
-+// Live note cells (W2): white on the hit, over ~1/3 s to the chip's colour, dim after the release ---
  
 -    VDP_clearTextArea(9, MAX_EFFECTIVE_Y + 1, 7, 1);
 -    VDP_drawImageEx(BG_A, MODES_IMAGES[index],
 -        TILE_ATTR_FULL(PAL0, 0, FALSE, FALSE, TILE_IMAGES_INDEX), 9, MAX_EFFECTIVE_Y + 1, FALSE,
 -        FALSE);
++// Live note cells (W2): white on the hit, over ~1/3 s to the chip's colour, dim after the release ---
+ 
+-    if (commInited) {
+-        VDP_clearTextArea(COMM_EXTRA_X, MAX_EFFECTIVE_Y + 1, 5, 1);
 +// A channel's live cell: its queue slot is its place in NOTE_PAL and NOTE_COPY order. The masks are
 +// walked channel by channel: __builtin_ctz is a slow libgcc call on the 68000.
 +static u8 sinceHit[CHANS], sinceRelease[CHANS];
 +static u16 liveShown[CHANS];
 +#define LIVE_UNKNOWN 0xFFFF
- 
--    if (commInited) {
--        VDP_clearTextArea(COMM_EXTRA_X, MAX_EFFECTIVE_Y + 1, 5, 1);
++
 +static u8 live_chip(u8 ch)
 +{
 +    return ch >= FM_CHANS ? 1 : ch == CH3_CHAN && specialOn ? 2 : 0;
@@ -4162,10 +4177,10 @@ index 66cd230..7844a00 100644
 +    const u8 chip = live_chip(ch);
 +    if (sinceHit[ch] < UI_FLASH_FRAMES) {
 +        return UI_FLASH[chip][on ? 0 : 1][sinceHit[ch]];
-     }
++    }
 +    if (on) {
 +        return UI_LIVE_HELD[chip];
-+    }
+     }
 +    return sinceRelease[ch] < UI_RELEASE_FRAMES ? UI_RELEASE[chip][sinceRelease[ch]] : UI_LIVE_DIM[chip];
  }
  
@@ -4231,12 +4246,7 @@ index 66cd230..7844a00 100644
 +        live_work(delta);
 +    }
 +}
- 
--    s16 led_level = percent == 0 ? 0 : (percent / (100 / LED_TILE_COUNT)) + 1;
--    for (u16 i = 0; i < LED_TILE_COUNT; i++) {
--        u16 tile_index = TILE_LED_INDEX + i + LED_TILE_OFF_OFFSET;
--        if (i < led_level) {
--            tile_index -= LED_TILE_OFF_OFFSET;
++
 +// The noise's texture (W19): 4 cells of PAL3 cycle, brightness by the loudness -------------------
 +
 +static u16 noiseKey = NOT_DRAWN;
@@ -4244,7 +4254,12 @@ index 66cd230..7844a00 100644
 +
 +// Silent and no key on channel 10: the chip is looked at every 8th frame only.
 +static bool noiseResting;
-+
+ 
+-    s16 led_level = percent == 0 ? 0 : (percent / (100 / LED_TILE_COUNT)) + 1;
+-    for (u16 i = 0; i < LED_TILE_COUNT; i++) {
+-        u16 tile_index = TILE_LED_INDEX + i + LED_TILE_OFF_OFFSET;
+-        if (i < led_level) {
+-            tile_index -= LED_TILE_OFF_OFFSET;
 +static void __attribute__((noinline)) noise_colours(void)
 +{
 +    const u8 loud = 15 - (midi_psg_attenuation(NOISE_CHAN - FM_CHANS) & 15);
@@ -4271,8 +4286,7 @@ index 66cd230..7844a00 100644
 -        print_load_text(percent);
 +    if (key == noiseKey) {
 +        return;
-     }
--    comm_reset_counts();
++    }
 +    noiseKey = key;
 +    for (u8 k = 0; k < 4; k++) {
 +        queue(Q_NOISE + k, colours[k]);
@@ -4304,9 +4318,11 @@ index 66cd230..7844a00 100644
 +{
 +    if (!noiseResting || noiseDrawn == NOT_DRAWN) {
 +        noise_texture();
-+    }
-+}
-+
+     }
+-    comm_reset_counts();
+ }
+ 
+-static void init_routing_mode_tiles(void)
 +// The ribbon (W4) on plane B ------------------------------------------------------------------------
 +
 +// Plane B scrolls left a point a frame (the VInt writes the word). The point that enters the ribbon
@@ -4321,13 +4337,20 @@ index 66cd230..7844a00 100644
 +static u8 ribbonCol;
 +static u8 ribbonBits[CHANS];
 +static u16 ribbonHeld, ribbonDirty;
++// Rows whose key struck in the leading cell and is still down (stage 30): their cell draws the hold
++// line from the strike on, so the line joins the strike instead of starting at the next cell.
++static u16 ribbonTail;
 +// A leading cell the ceiling held back when the ribbon moved to the next column: written first.
 +static u16 ribbonOwed;
 +static u8 owedCol[CHANS];
 +static u16 owedAttr[CHANS];
 +
 +static u8 ribbon_pal(u8 ch)
-+{
+ {
+-    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
+-    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
 +    if (ch >= FM_CHANS) {
 +        return PAL1;
 +    }
@@ -4337,19 +4360,16 @@ index 66cd230..7844a00 100644
 +static u16 ribbon_attr(u8 ch)
 +{
 +    if (ribbonBits[ch]) {
-+        return ATTR(ribbon_pal(ch), UI_T_RIBBON + ribbonBits[ch]);
++        return ATTR(ribbon_pal(ch), (ribbonTail & 1 << ch ? UI_T_RIBBON_HOLD : UI_T_RIBBON) + ribbonBits[ch]);
 +    }
 +    // The line alone is the same in every palette.
 +    return ribbonHeld & 1 << ch ? ATTR(ribbon_pal(ch), UI_T_HOLD) : ATTR(PAL0, UI_T_RIBBON);
  }
  
--static void init_routing_mode_tiles(void)
+-static void print_routing_mode(bool enabled)
 +static bool ribbon_cell(u8 ch, u8 col, u16 attr)
  {
--    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
--    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
--    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
--    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
+-    VDP_loadTileSet(enabled ? &ts_dynamic : &ts_static, TILE_ROUTING_INDEX, DMA);
 +    if (ribbonShadow[ch][col] == attr) {
 +        return TRUE;
 +    }
@@ -4364,11 +4384,15 @@ index 66cd230..7844a00 100644
 +    return TRUE;
  }
  
--static void print_routing_mode(bool enabled)
+-static void print_routing_mode_if_needed(void)
 +// The keys a ribbon row holds: a channel's, the DAC's voices, channel 3's operators in Ch3 Special.
 +static u16 ribbon_held(void)
  {
--    VDP_loadTileSet(enabled ? &ts_dynamic : &ts_static, TILE_ROUTING_INDEX, DMA);
+-    static bool lastDynamicModeStatus = false;
+-    bool enabled = midi_dynamic_mode();
+-    if (lastDynamicModeStatus != enabled) {
+-        print_routing_mode(enabled);
+-        lastDynamicModeStatus = enabled;
 +    u16 held = heldMask;
 +    if (dacOn) {
 +        held = dacHeld ? held | 1 << DAC_CHAN : held & ~(1 << DAC_CHAN);
@@ -4378,18 +4402,12 @@ index 66cd230..7844a00 100644
 +        if (ops[0].noteOn || ops[1].noteOn || ops[2].noteOn) {
 +            held |= 1 << CH3_CHAN;
 +        }
-+    }
+     }
 +    return held;
- }
- 
--static void print_routing_mode_if_needed(void)
++}
++
 +static void __attribute__((noinline)) ribbon_work(u16 point, u8 col)
- {
--    static bool lastDynamicModeStatus = false;
--    bool enabled = midi_dynamic_mode();
--    if (lastDynamicModeStatus != enabled) {
--        print_routing_mode(enabled);
--        lastDynamicModeStatus = enabled;
++{
 +    if (col != ribbonCol) {
 +        for (u16 bits = ribbonDirty, ch = 0; bits >> ch; ch++) {
 +            if (!(bits & 1 << ch)) {
@@ -4400,6 +4418,7 @@ index 66cd230..7844a00 100644
 +            ribbonOwed |= 1 << ch;
 +        }
 +        ribbonCol = col;
++        ribbonTail = 0;
 +        // A cell is the hold tile only while its key has been down on every frame of it (the
 +        // mockup's rule): a staccato hit leaves a bar, not a held tail.
 +        ribbonHeld = ribbon_held();
@@ -4414,16 +4433,19 @@ index 66cd230..7844a00 100644
 +            }
 +        }
 +        ribbonDirty = dirty | ribbonHeld;
-     }
++    }
 +    for (u16 bits = ribbonHitMask, ch = 0; bits >> ch; ch++) {
 +        if (!(bits & 1 << ch)) {
 +            continue;
 +        }
 +        ribbonBits[ch] |= 1 << (point & 7);
 +    }
-+    ribbonDirty |= ribbonHitMask;
++    const u16 now = ribbon_held();
++    const u16 tail = (ribbonTail | ribbonHitMask) & now;
++    ribbonDirty |= ribbonHitMask | (tail ^ ribbonTail);
++    ribbonTail = tail;
 +    ribbonHitMask = 0;
-+    const u16 dropped = ribbonHeld & ~ribbon_held();
++    const u16 dropped = ribbonHeld & ~now;
 +    ribbonHeld &= ~dropped;
 +    ribbonDirty |= dropped;
 +    for (u16 bits = ribbonOwed, ch = 0; bits >> ch && !full(); ch++) {
@@ -4451,7 +4473,7 @@ index 66cd230..7844a00 100644
 +    ribbonPos += delta;
 +    const u16 point = RIBBON_RIGHT + ribbonPos;
 +    const u8 col = (point >> 3) & 63;
-+    if (col != ribbonCol || ribbonHitMask | ribbonOwed | ribbonDirty | (ribbonHeld & ~heldMask) || dacOn || specialOn) {
++    if (col != ribbonCol || ribbonHitMask | ribbonOwed | ribbonDirty | ((ribbonHeld | ribbonTail) & ~heldMask) || dacOn || specialOn) {
 +        ribbon_work(point, col);
 +    }
 +    if (!viewOn) {
@@ -5917,10 +5939,10 @@ index 30787c8..6e0b1cc 100644
  }
 diff --git a/src/ui_tiles.c b/src/ui_tiles.c
 new file mode 100644
-index 0000000..0016cdc
+index 0000000..0dbf81e
 --- /dev/null
 +++ b/src/ui_tiles.c
-@@ -0,0 +1,768 @@
+@@ -0,0 +1,1024 @@
 +// Generated by tools/gen_rom_screen.py (MDMI plugin, stage 24a). Do not edit.
 +#include "ui_tiles.h"
 +
@@ -6278,9 +6300,9 @@ index 0000000..0016cdc
 +};
 +
 +const u8 UI_NOTE[128][3] = {
-+    { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 },
-+    { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 },
-+    { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 19, 19, 19 }, { 10, 18, 0 }, { 10, 17, 0 }, { 11, 18, 0 },
++    { 12, 18, 18 }, { 12, 17, 18 }, { 13, 18, 18 }, { 13, 17, 18 }, { 14, 18, 18 }, { 15, 18, 18 }, { 15, 17, 18 }, { 16, 18, 18 },
++    { 16, 17, 18 }, { 10, 18, 18 }, { 10, 17, 18 }, { 11, 18, 18 }, { 12, 18, 0 }, { 12, 17, 0 }, { 13, 18, 0 }, { 13, 17, 0 },
++    { 14, 18, 0 }, { 15, 18, 0 }, { 15, 17, 0 }, { 16, 18, 0 }, { 16, 17, 0 }, { 10, 18, 0 }, { 10, 17, 0 }, { 11, 18, 0 },
 +    { 12, 18, 1 }, { 12, 17, 1 }, { 13, 18, 1 }, { 13, 17, 1 }, { 14, 18, 1 }, { 15, 18, 1 }, { 15, 17, 1 }, { 16, 18, 1 },
 +    { 16, 17, 1 }, { 10, 18, 1 }, { 10, 17, 1 }, { 11, 18, 1 }, { 12, 18, 2 }, { 12, 17, 2 }, { 13, 18, 2 }, { 13, 17, 2 },
 +    { 14, 18, 2 }, { 15, 18, 2 }, { 15, 17, 2 }, { 16, 18, 2 }, { 16, 17, 2 }, { 10, 18, 2 }, { 10, 17, 2 }, { 11, 18, 2 },
@@ -6661,6 +6683,262 @@ index 0000000..0016cdc
 +    0x000D00FC, 0xFDECE00C, 0xE00000E0, 0x0D0CDC0C, 0xFC00D00F, 0xDDFDCFDF, 0x00E0F0FF, 0xD0E0E00F,
 +    0x0C0FE0D0, 0xF0F0DE00, 0x0000CCCF, 0x0F0C0ED0, 0xFFCDCF00, 0xC0CFFC0E, 0xF0C000E0, 0xCE0EE0FD,
 +    0x0C0DFFF0, 0xF00DF0C0, 0x00DE0FC0, 0x0FD0FFFF, 0xD0ECCC0F, 0x0D00C0E0, 0xFC0EFEE0, 0xCE000CCD,
++    0x00000000, 0x33333333, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x23333333, 0x20000000, 0x20000000, 0x20000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42333333, 0x02000000, 0x02000000, 0x02000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22333333, 0x22000000, 0x22000000, 0x22000000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44233333, 0x00200000, 0x00200000, 0x00200000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24233333, 0x20200000, 0x20200000, 0x20200000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42233333, 0x02200000, 0x02200000, 0x02200000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22233333, 0x22200000, 0x22200000, 0x22200000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44423333, 0x00020000, 0x00020000, 0x00020000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24423333, 0x20020000, 0x20020000, 0x20020000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42423333, 0x02020000, 0x02020000, 0x02020000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22423333, 0x22020000, 0x22020000, 0x22020000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44223333, 0x00220000, 0x00220000, 0x00220000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24223333, 0x20220000, 0x20220000, 0x20220000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42223333, 0x02220000, 0x02220000, 0x02220000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22223333, 0x22220000, 0x22220000, 0x22220000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442333, 0x00002000, 0x00002000, 0x00002000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442333, 0x20002000, 0x20002000, 0x20002000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442333, 0x02002000, 0x02002000, 0x02002000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442333, 0x22002000, 0x22002000, 0x22002000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242333, 0x00202000, 0x00202000, 0x00202000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242333, 0x20202000, 0x20202000, 0x20202000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242333, 0x02202000, 0x02202000, 0x02202000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242333, 0x22202000, 0x22202000, 0x22202000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422333, 0x00022000, 0x00022000, 0x00022000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422333, 0x20022000, 0x20022000, 0x20022000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422333, 0x02022000, 0x02022000, 0x02022000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422333, 0x22022000, 0x22022000, 0x22022000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222333, 0x00222000, 0x00222000, 0x00222000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222333, 0x20222000, 0x20222000, 0x20222000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222333, 0x02222000, 0x02222000, 0x02222000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222333, 0x22222000, 0x22222000, 0x22222000, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444233, 0x00000200, 0x00000200, 0x00000200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444233, 0x20000200, 0x20000200, 0x20000200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444233, 0x02000200, 0x02000200, 0x02000200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444233, 0x22000200, 0x22000200, 0x22000200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244233, 0x00200200, 0x00200200, 0x00200200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244233, 0x20200200, 0x20200200, 0x20200200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244233, 0x02200200, 0x02200200, 0x02200200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244233, 0x22200200, 0x22200200, 0x22200200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424233, 0x00020200, 0x00020200, 0x00020200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424233, 0x20020200, 0x20020200, 0x20020200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424233, 0x02020200, 0x02020200, 0x02020200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424233, 0x22020200, 0x22020200, 0x22020200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224233, 0x00220200, 0x00220200, 0x00220200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224233, 0x20220200, 0x20220200, 0x20220200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224233, 0x02220200, 0x02220200, 0x02220200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224233, 0x22220200, 0x22220200, 0x22220200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442233, 0x00002200, 0x00002200, 0x00002200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442233, 0x20002200, 0x20002200, 0x20002200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442233, 0x02002200, 0x02002200, 0x02002200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442233, 0x22002200, 0x22002200, 0x22002200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242233, 0x00202200, 0x00202200, 0x00202200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242233, 0x20202200, 0x20202200, 0x20202200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242233, 0x02202200, 0x02202200, 0x02202200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242233, 0x22202200, 0x22202200, 0x22202200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422233, 0x00022200, 0x00022200, 0x00022200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422233, 0x20022200, 0x20022200, 0x20022200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422233, 0x02022200, 0x02022200, 0x02022200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422233, 0x22022200, 0x22022200, 0x22022200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222233, 0x00222200, 0x00222200, 0x00222200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222233, 0x20222200, 0x20222200, 0x20222200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222233, 0x02222200, 0x02222200, 0x02222200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222233, 0x22222200, 0x22222200, 0x22222200, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444423, 0x00000020, 0x00000020, 0x00000020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444423, 0x20000020, 0x20000020, 0x20000020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444423, 0x02000020, 0x02000020, 0x02000020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444423, 0x22000020, 0x22000020, 0x22000020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244423, 0x00200020, 0x00200020, 0x00200020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244423, 0x20200020, 0x20200020, 0x20200020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244423, 0x02200020, 0x02200020, 0x02200020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244423, 0x22200020, 0x22200020, 0x22200020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424423, 0x00020020, 0x00020020, 0x00020020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424423, 0x20020020, 0x20020020, 0x20020020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424423, 0x02020020, 0x02020020, 0x02020020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424423, 0x22020020, 0x22020020, 0x22020020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224423, 0x00220020, 0x00220020, 0x00220020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224423, 0x20220020, 0x20220020, 0x20220020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224423, 0x02220020, 0x02220020, 0x02220020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224423, 0x22220020, 0x22220020, 0x22220020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442423, 0x00002020, 0x00002020, 0x00002020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442423, 0x20002020, 0x20002020, 0x20002020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442423, 0x02002020, 0x02002020, 0x02002020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442423, 0x22002020, 0x22002020, 0x22002020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242423, 0x00202020, 0x00202020, 0x00202020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242423, 0x20202020, 0x20202020, 0x20202020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242423, 0x02202020, 0x02202020, 0x02202020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242423, 0x22202020, 0x22202020, 0x22202020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422423, 0x00022020, 0x00022020, 0x00022020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422423, 0x20022020, 0x20022020, 0x20022020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422423, 0x02022020, 0x02022020, 0x02022020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422423, 0x22022020, 0x22022020, 0x22022020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222423, 0x00222020, 0x00222020, 0x00222020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222423, 0x20222020, 0x20222020, 0x20222020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222423, 0x02222020, 0x02222020, 0x02222020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222423, 0x22222020, 0x22222020, 0x22222020, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444223, 0x00000220, 0x00000220, 0x00000220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444223, 0x20000220, 0x20000220, 0x20000220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444223, 0x02000220, 0x02000220, 0x02000220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444223, 0x22000220, 0x22000220, 0x22000220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244223, 0x00200220, 0x00200220, 0x00200220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244223, 0x20200220, 0x20200220, 0x20200220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244223, 0x02200220, 0x02200220, 0x02200220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244223, 0x22200220, 0x22200220, 0x22200220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424223, 0x00020220, 0x00020220, 0x00020220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424223, 0x20020220, 0x20020220, 0x20020220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424223, 0x02020220, 0x02020220, 0x02020220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424223, 0x22020220, 0x22020220, 0x22020220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224223, 0x00220220, 0x00220220, 0x00220220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224223, 0x20220220, 0x20220220, 0x20220220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224223, 0x02220220, 0x02220220, 0x02220220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224223, 0x22220220, 0x22220220, 0x22220220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442223, 0x00002220, 0x00002220, 0x00002220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442223, 0x20002220, 0x20002220, 0x20002220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442223, 0x02002220, 0x02002220, 0x02002220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442223, 0x22002220, 0x22002220, 0x22002220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242223, 0x00202220, 0x00202220, 0x00202220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242223, 0x20202220, 0x20202220, 0x20202220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242223, 0x02202220, 0x02202220, 0x02202220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242223, 0x22202220, 0x22202220, 0x22202220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422223, 0x00022220, 0x00022220, 0x00022220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422223, 0x20022220, 0x20022220, 0x20022220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422223, 0x02022220, 0x02022220, 0x02022220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422223, 0x22022220, 0x22022220, 0x22022220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222223, 0x00222220, 0x00222220, 0x00222220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222223, 0x20222220, 0x20222220, 0x20222220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222223, 0x02222220, 0x02222220, 0x02222220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222223, 0x22222220, 0x22222220, 0x22222220, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444442, 0x00000002, 0x00000002, 0x00000002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444442, 0x20000002, 0x20000002, 0x20000002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444442, 0x02000002, 0x02000002, 0x02000002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444442, 0x22000002, 0x22000002, 0x22000002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244442, 0x00200002, 0x00200002, 0x00200002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244442, 0x20200002, 0x20200002, 0x20200002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244442, 0x02200002, 0x02200002, 0x02200002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244442, 0x22200002, 0x22200002, 0x22200002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424442, 0x00020002, 0x00020002, 0x00020002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424442, 0x20020002, 0x20020002, 0x20020002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424442, 0x02020002, 0x02020002, 0x02020002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424442, 0x22020002, 0x22020002, 0x22020002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224442, 0x00220002, 0x00220002, 0x00220002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224442, 0x20220002, 0x20220002, 0x20220002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224442, 0x02220002, 0x02220002, 0x02220002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224442, 0x22220002, 0x22220002, 0x22220002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442442, 0x00002002, 0x00002002, 0x00002002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442442, 0x20002002, 0x20002002, 0x20002002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442442, 0x02002002, 0x02002002, 0x02002002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442442, 0x22002002, 0x22002002, 0x22002002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242442, 0x00202002, 0x00202002, 0x00202002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242442, 0x20202002, 0x20202002, 0x20202002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242442, 0x02202002, 0x02202002, 0x02202002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242442, 0x22202002, 0x22202002, 0x22202002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422442, 0x00022002, 0x00022002, 0x00022002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422442, 0x20022002, 0x20022002, 0x20022002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422442, 0x02022002, 0x02022002, 0x02022002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422442, 0x22022002, 0x22022002, 0x22022002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222442, 0x00222002, 0x00222002, 0x00222002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222442, 0x20222002, 0x20222002, 0x20222002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222442, 0x02222002, 0x02222002, 0x02222002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222442, 0x22222002, 0x22222002, 0x22222002, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444242, 0x00000202, 0x00000202, 0x00000202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444242, 0x20000202, 0x20000202, 0x20000202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444242, 0x02000202, 0x02000202, 0x02000202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444242, 0x22000202, 0x22000202, 0x22000202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244242, 0x00200202, 0x00200202, 0x00200202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244242, 0x20200202, 0x20200202, 0x20200202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244242, 0x02200202, 0x02200202, 0x02200202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244242, 0x22200202, 0x22200202, 0x22200202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424242, 0x00020202, 0x00020202, 0x00020202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424242, 0x20020202, 0x20020202, 0x20020202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424242, 0x02020202, 0x02020202, 0x02020202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424242, 0x22020202, 0x22020202, 0x22020202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224242, 0x00220202, 0x00220202, 0x00220202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224242, 0x20220202, 0x20220202, 0x20220202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224242, 0x02220202, 0x02220202, 0x02220202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224242, 0x22220202, 0x22220202, 0x22220202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442242, 0x00002202, 0x00002202, 0x00002202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442242, 0x20002202, 0x20002202, 0x20002202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442242, 0x02002202, 0x02002202, 0x02002202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442242, 0x22002202, 0x22002202, 0x22002202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242242, 0x00202202, 0x00202202, 0x00202202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242242, 0x20202202, 0x20202202, 0x20202202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242242, 0x02202202, 0x02202202, 0x02202202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242242, 0x22202202, 0x22202202, 0x22202202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422242, 0x00022202, 0x00022202, 0x00022202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422242, 0x20022202, 0x20022202, 0x20022202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422242, 0x02022202, 0x02022202, 0x02022202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422242, 0x22022202, 0x22022202, 0x22022202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222242, 0x00222202, 0x00222202, 0x00222202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222242, 0x20222202, 0x20222202, 0x20222202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222242, 0x02222202, 0x02222202, 0x02222202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222242, 0x22222202, 0x22222202, 0x22222202, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444422, 0x00000022, 0x00000022, 0x00000022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444422, 0x20000022, 0x20000022, 0x20000022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444422, 0x02000022, 0x02000022, 0x02000022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444422, 0x22000022, 0x22000022, 0x22000022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244422, 0x00200022, 0x00200022, 0x00200022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244422, 0x20200022, 0x20200022, 0x20200022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244422, 0x02200022, 0x02200022, 0x02200022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244422, 0x22200022, 0x22200022, 0x22200022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424422, 0x00020022, 0x00020022, 0x00020022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424422, 0x20020022, 0x20020022, 0x20020022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424422, 0x02020022, 0x02020022, 0x02020022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424422, 0x22020022, 0x22020022, 0x22020022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224422, 0x00220022, 0x00220022, 0x00220022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224422, 0x20220022, 0x20220022, 0x20220022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224422, 0x02220022, 0x02220022, 0x02220022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224422, 0x22220022, 0x22220022, 0x22220022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442422, 0x00002022, 0x00002022, 0x00002022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442422, 0x20002022, 0x20002022, 0x20002022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442422, 0x02002022, 0x02002022, 0x02002022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442422, 0x22002022, 0x22002022, 0x22002022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242422, 0x00202022, 0x00202022, 0x00202022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242422, 0x20202022, 0x20202022, 0x20202022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242422, 0x02202022, 0x02202022, 0x02202022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242422, 0x22202022, 0x22202022, 0x22202022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422422, 0x00022022, 0x00022022, 0x00022022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422422, 0x20022022, 0x20022022, 0x20022022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422422, 0x02022022, 0x02022022, 0x02022022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422422, 0x22022022, 0x22022022, 0x22022022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222422, 0x00222022, 0x00222022, 0x00222022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222422, 0x20222022, 0x20222022, 0x20222022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222422, 0x02222022, 0x02222022, 0x02222022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222422, 0x22222022, 0x22222022, 0x22222022, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44444222, 0x00000222, 0x00000222, 0x00000222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24444222, 0x20000222, 0x20000222, 0x20000222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42444222, 0x02000222, 0x02000222, 0x02000222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22444222, 0x22000222, 0x22000222, 0x22000222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44244222, 0x00200222, 0x00200222, 0x00200222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24244222, 0x20200222, 0x20200222, 0x20200222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42244222, 0x02200222, 0x02200222, 0x02200222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22244222, 0x22200222, 0x22200222, 0x22200222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44424222, 0x00020222, 0x00020222, 0x00020222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24424222, 0x20020222, 0x20020222, 0x20020222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42424222, 0x02020222, 0x02020222, 0x02020222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22424222, 0x22020222, 0x22020222, 0x22020222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44224222, 0x00220222, 0x00220222, 0x00220222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24224222, 0x20220222, 0x20220222, 0x20220222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42224222, 0x02220222, 0x02220222, 0x02220222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22224222, 0x22220222, 0x22220222, 0x22220222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44442222, 0x00002222, 0x00002222, 0x00002222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24442222, 0x20002222, 0x20002222, 0x20002222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42442222, 0x02002222, 0x02002222, 0x02002222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22442222, 0x22002222, 0x22002222, 0x22002222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44242222, 0x00202222, 0x00202222, 0x00202222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24242222, 0x20202222, 0x20202222, 0x20202222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42242222, 0x02202222, 0x02202222, 0x02202222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22242222, 0x22202222, 0x22202222, 0x22202222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44422222, 0x00022222, 0x00022222, 0x00022222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24422222, 0x20022222, 0x20022222, 0x20022222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42422222, 0x02022222, 0x02022222, 0x02022222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22422222, 0x22022222, 0x22022222, 0x22022222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x44222222, 0x00222222, 0x00222222, 0x00222222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x24222222, 0x20222222, 0x20222222, 0x20222222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x42222222, 0x02222222, 0x02222222, 0x02222222, 0x00000000, 0x00000000, 0x00000000,
++    0x00000000, 0x22222222, 0x22222222, 0x22222222, 0x22222222, 0x00000000, 0x00000000, 0x00000000,
 +};
 +
 +const u16 UI_FLASH[3][2][UI_FLASH_FRAMES] = {
@@ -6691,10 +6969,10 @@ index 0000000..0016cdc
 +const u16 UI_NOISE_SILENT[2][4] = { { 0x220, 0x000, 0x000, 0x000 }, { 0x222, 0x000, 0x000, 0x000 } };
 diff --git a/src/ui_tiles.h b/src/ui_tiles.h
 new file mode 100644
-index 0000000..00ac7dc
+index 0000000..3794575
 --- /dev/null
 +++ b/src/ui_tiles.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,85 @@
 +// Generated by tools/gen_rom_screen.py (MDMI plugin, stage 24a). Do not edit.
 +#pragma once
 +
@@ -6720,8 +6998,9 @@ index 0000000..00ac7dc
 +#define UI_T_RIBBON (UI_TILE_B_BASE + 0)
 +#define UI_T_HOLD (UI_TILE_B_BASE + 256)
 +#define UI_T_NOISE (UI_TILE_B_BASE + 257)
-+#define UI_T_B_END (UI_TILE_B_BASE + 265)
-+#define UI_TILE_B_COUNT 265
++#define UI_T_RIBBON_HOLD (UI_TILE_B_BASE + 265)
++#define UI_T_B_END (UI_TILE_B_BASE + 521)
++#define UI_TILE_B_COUNT 521
 +// Stage 24a3: the CC 83 view's algorithm pictures from 1285 (rom-screen.md 10.3).
 +#define UI_TILE_C_BASE 1285
 +#define UI_T_ALGO (UI_TILE_C_BASE + 0)
@@ -6744,7 +7023,7 @@ index 0000000..00ac7dc
 +#include "genesis.h"
 +extern const u32 UI_TILES[UI_TILE_COUNT * 8];
 +extern const u16 UI_PALETTE[64];
-+// A key's name as 3 note glyphs: C-4, C#4, ??? below A0.
++// A key's name as 3 note glyphs: C-4, C#4, C-- for octave -1 (stage 30).
 +extern const u8 UI_NOTE[128][3];
 +// A tile of a 16-stripe bar: its pattern by how many of its 4 stripes are lit and where
 +// the peak is, +1 (0 none).

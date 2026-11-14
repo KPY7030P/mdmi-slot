@@ -549,10 +549,20 @@ static int row_y(int channel)
 	return channel_is_fm(channel) ? RAIL_FM_Y + channel * ROW_H : RAIL_PSG_Y + (channel - PATCH_NUM_FM_CHANNELS) * ROW_H;
 }
 
-static void note_name(int key, char *out, size_t size)
+void gui_note_name(int key, char *out, size_t size)
 {
 	static const char *const names[12] = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"};
-	snprintf(out, size, "%s%d", names[key % 12], key / 12 - 1);
+	// Always 3 characters (stage 30, rom-screen.md 12): octave -1 has '-' for its digit, C--.
+	if (key < 12) {
+		snprintf(out, size, "%s-", names[key % 12]);
+	} else {
+		snprintf(out, size, "%s%d", names[key % 12], key / 12 - 1);
+	}
+}
+
+static void note_name(int key, char *out, size_t size)
+{
+	gui_note_name(key, out, size);
 }
 
 static bool is_dac(const patch_values *values, int channel)
@@ -664,7 +674,7 @@ static bool noise_without_pitch(const patch_values *values, int channel)
 #define BAR_SEGMENTS 16
 // Stage 24c (art-director): the column of notes where one channel sounds several without borrowing,
 // Ch3 OPS's operators and the DAC's voices, in the note's place at the rail's right: 4 lines of 9 px,
-// 4 characters wide, so C--1 fits. The name gives up two letters to keep clear of it.
+// 4 characters wide (a name is 3 since stage 30). The name gives up two letters to keep clear of it.
 #define NOTE_RIGHT 226
 #define NOTE_ROOM 24
 #define SPECIAL_NOTE_Y 2
@@ -838,7 +848,9 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 // rows sits nearest the names, so nested ones don't cross.
 #define LEND_LANE_X 44
 #define LEND_LANE_STEP 7
-#define LEND_TIP_X 47
+#define LEND_TIP_X 48
+// Stage 30 (ui-pass-2.md, its stage 30 section): a head on each branch; 0 is the variant without, for the owner's pick.
+#define LEND_HEADS 1
 static void draw_lends(mdmi_gui *g)
 {
 	int top[PATCH_NUM_FM_CHANNELS], bottom[PATCH_NUM_FM_CHANNELS];
@@ -865,23 +877,28 @@ static void draw_lends(mdmi_gui *g)
 			lane += other != c && lends[other] && (other_span < span || (other_span == span && other < c));
 		}
 		const int x = LEND_LANE_X - lane * LEND_LANE_STEP;
-		// Stage 24d (art-director): at the names' height, clear of the bars, so the head reads.
-		fill(g, x, row_y(top[c]) + 11, 2, row_y(bottom[c]) - row_y(top[c]) + 2, C_PLAYING);
+		// Stage 24d (art-director): at the names' height, clear of the bars, so the head reads. Stage
+		// 30: lines of 1 px, so the owner's square leads.
+		fill(g, x, row_y(top[c]) + 12, 1, row_y(bottom[c]) - row_y(top[c]) + 1, C_PLAYING);
 		for (int row = top[c]; row <= bottom[c]; row++) {
 			if (row != c && player[row] != c) {
 				continue;
 			}
 			const int y = row_y(row);
 			if (row == c) {
-				// Where the chord comes from: a square on the spine, no arrow.
-				fill(g, x - 2, y + 9, 6, 6, C_PLAYING);
+				// Where the chord comes from: a square 9 x 9 on the spine, no arrow.
+				fill(g, x - 4, y + 8, 9, 9, C_PLAYING);
 				continue;
 			}
-			// Where it goes: a branch 2 px thick with a solid head 5 x 10, its tip at x 51.
-			fill(g, x, y + 11, LEND_TIP_X - x, 2, C_PLAYING);
-			for (int i = 0; i < 5; i++) {
-				fill(g, LEND_TIP_X + i, y + 7 + i, 1, 10 - 2 * i, C_PLAYING);
+			// Where it goes: a branch of 1 px with a solid head 4 x 7, its tip at x 51.
+#if LEND_HEADS
+			fill(g, x, y + 12, LEND_TIP_X - x, 1, C_PLAYING);
+			for (int i = 0; i < 4; i++) {
+				fill(g, LEND_TIP_X + i, y + 9 + i, 1, 7 - 2 * i, C_PLAYING);
 			}
+#else
+			fill(g, x, y + 12, LEND_TIP_X + 4 - x, 1, C_PLAYING);
+#endif
 		}
 	}
 }
@@ -2651,11 +2668,14 @@ static void dac_button(mdmi_gui *g, int x, const char *label, bool enabled)
 // mouse going up prepares the sample once and restarts the core.
 enum {
 	DACC_NONE = -1, DACC_START, DACC_END, DACC_PITCH, DACC_CENTS, DACC_GAIN, DACC_NORMALIZE, DACC_FADE, DACC_ONE_SHOT,
-	DACC_LOOP, DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
+	DACC_RATE_AUTO, DACC_RATE_END = DACC_RATE_AUTO + ROM_SAMPLE_RATES + 1, DACC_MARK_START = DACC_RATE_END, DACC_MARK_END,
 	// The loop row's tabs and its body, or the shadow while LOOP is off (stage 18b).
 	DACC_LOOP_START, DACC_LOOP_END, DACC_LOOP_BODY,
 	// The loop row after the loop's end, where a click chooses release or stop (stage 22b).
 	DACC_LOOP_TAIL,
+	// The loop row of a sample under one block with LOOP off: the footer says why, a click does nothing
+	// (stage 30: what the dim LOOP switch said).
+	DACC_LOOP_SHORT,
 };
 #define DAC_ROW_A_Y 398
 // The rate's words in RATE's row (stage 19).
@@ -2671,8 +2691,6 @@ static const struct {
 	// START and END are the trim strip's tabs, no cells.
 	{0, 0, 0, "START"}, {0, 0, 0, "END"}, {242, DAC_ROW_B_Y, 84, "PITCH"}, {328, DAC_ROW_B_Y, 62, "CT"},
 	{396, DAC_ROW_B_Y, 100, "GAIN"}, {498, DAC_ROW_B_Y, 62, "NORMALIZE"}, {566, DAC_ROW_B_Y, 52, "FADE"}, {620, DAC_ROW_B_Y, 80, "ONE-SHOT"},
-	// LOOP over ONE-SHOT: one column for how the note ends (stage 18, docs/design/dac-page.md).
-	{620, DAC_ROW_A_Y, 80, "LOOP"},
 	{274, DAC_ROW_A_Y, 32, "AUTO"}, {308, DAC_ROW_A_Y, 22, "32"}, {332, DAC_ROW_A_Y, 22, "22"}, {356, DAC_ROW_A_Y, 22, "16"},
 	{380, DAC_ROW_A_Y, 28, "13.4"}, {410, DAC_ROW_A_Y, 22, "11"}, {434, DAC_ROW_A_Y, 22, "8"},
 };
@@ -2763,7 +2781,10 @@ static int dac_control_at(const mdmi_gui *g, int x, int y)
 		dac_marks m;
 		shown_marks(own, edit, &m);
 		if (m.too_short) {
-			return edit->loop && x >= wave_x_of(own, edit->start) && x < wave_x_of(own, edit->end) ? DACC_LOOP_BODY : DACC_NONE;
+			if (edit->loop && x >= wave_x_of(own, edit->start) && x < wave_x_of(own, edit->end)) {
+				return DACC_LOOP_BODY;
+			}
+			return edit->loop || x < WAVE_X || x >= WAVE_X + WAVE_W ? DACC_NONE : DACC_LOOP_SHORT;
 		}
 		const int ls = wave_x_of(own, m.frame_loop_start), le = wave_x_of(own, m.frame_loop_end);
 		if (edit->loop && x >= ls - TRIM_TAB_W && x < ls) {
@@ -2882,11 +2903,8 @@ static void draw_settings(mdmi_gui *g, const dac_sample *own, const dac_edit *ed
 		// (stage 18); with a release FADE is the release's end (18b).
 		text(g, x + (w - (int)strlen(word) * 6) / 2, y + 7, word, unused ? C_CELL : !booted ? C_LINE : over ? C_TEXT : edit->fade ? C_LINE : C_AMBER, 1);
 	}
+	// LOOP is the loop row's own click (stage 30): no switch of its own.
 	switch_cell(g, DACC_ONE_SHOT, edit->one_shot, booted);
-	dac_marks marks;
-	shown_marks(own, edit, &marks);
-	// Under one block there is nothing to repeat: LOOP is dim and takes no click (18b).
-	switch_cell(g, DACC_LOOP, edit->loop, booted && (edit->loop || !marks.too_short));
 	// RATE: words, not cells, since PCM4 has one rate for all voices (stage 19, dac-page.md).
 	snprintf(buffer, sizeof(buffer), "%.1f KHZ FOR ALL VOICES", ROM_PCM4_HZ / 1000);
 	text(g, DAC_RATE_TEXT_X, DAC_ROW_A_Y + 7, buffer, C_HINT, 1);
@@ -3199,12 +3217,10 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 		return c != DACC_NONE;
 	}
 	dac_edit edit = own->edit;
-	dac_marks marks;
-	shown_marks(own, &edit, &marks);
-	if ((c == DACC_FADE && fade_unused(own, &edit)) || (c == DACC_LOOP && !edit.loop && marks.too_short) || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
+	if ((c == DACC_FADE && fade_unused(own, &edit)) || c == DACC_LOOP_SHORT || (c >= DACC_RATE_AUTO && c < DACC_RATE_END)) {
 		return true;
 	}
-	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_LOOP || c == DACC_NORMALIZE) {
+	if (c == DACC_FADE || c == DACC_ONE_SHOT || c == DACC_NORMALIZE) {
 		if (c == DACC_FADE) {
 			edit.fade = !edit.fade;
 		} else if (c == DACC_ONE_SHOT) {
@@ -3212,10 +3228,6 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 			// D53). A loop always comes back with its release: either switch drops stop (22b).
 			edit.one_shot = !edit.one_shot;
 			edit.loop = edit.loop && !edit.one_shot;
-			edit.stop = false;
-		} else if (c == DACC_LOOP) {
-			edit.loop = !edit.loop;
-			edit.one_shot = edit.one_shot && !edit.loop;
 			edit.stop = false;
 		} else {
 			edit.gain = (int16_t)dac_normalize_gain(own);
@@ -3278,6 +3290,7 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 		break;
 	case DACC_LOOP_BODY:
 	case DACC_LOOP_TAIL:
+	case DACC_LOOP_SHORT:
 		// Its first click switched the loop, or the release and stop, already: one undo step (stage 24d).
 		return true;
 	case DACC_PITCH:
@@ -3396,34 +3409,13 @@ static bool dac_panel_hint(mdmi_gui *g, char *out, size_t size)
 	case DACC_LOOP_END:
 	case DACC_LOOP_BODY:
 	case DACC_LOOP_TAIL:
+	case DACC_LOOP_SHORT:
 		// A tab pressed for a click says what the click does until it moves (stage 22b).
 		loop_hint(own, edit, c, held && g->dac_moved, out, size);
 		break;
 	case DACC_ONE_SHOT:
 		snprintf(out, size, edit->loop ? "ONE-SHOT: PLAYS TO THE END, LOOP GOES OFF" : edit->one_shot ? "ONE-SHOT: NOTE OFF DOES NOT CUT IT" : "ONE-SHOT OFF: NOTE OFF CUTS THE SAMPLE");
 		break;
-	case DACC_LOOP: {
-		dac_marks m;
-		shown_marks(own, edit, &m);
-		ms_text(ms_of(own, edit->end - edit->start), a, sizeof(a));
-		ms_text(ROM_SAMPLE_BLOCK * 1000.0 / ROM_PCM4_HZ, b, sizeof(b));
-		if (m.too_short) {
-			snprintf(out, size, edit->loop ? "TOO SHORT: %s MS KEPT, LOOP NEEDS %s" : "LOOP OFF: %s MS KEPT, NEEDS %s", a, b);
-		} else if (!edit->loop) {
-			snprintf(out, size, edit->one_shot ? "LOOP: REPEAT WHILE HELD, ONE-SHOT GOES OFF" : "LOOP OFF. CLICK: REPEAT WHILE HELD");
-		} else {
-			ms_text(ms_of(own, m.frame_loop_end - m.frame_loop_start), a, sizeof(a));
-			ms_text(ms_of(own, m.frame_end - m.frame_loop_end), b, sizeof(b));
-			if (m.tail && !m.release) {
-				snprintf(out, size, "LOOP %s MS, STOP AT NOTE OFF. CLICK: OFF", a);
-			} else if (m.release) {
-				snprintf(out, size, "LOOP %s MS, RELEASE %s MS. CLICK: OFF", a, b);
-			} else {
-				snprintf(out, size, "LOOP %s MS. CLICK: OFF", a);
-			}
-		}
-		break;
-	}
 	default:
 		// The rate's words (stage 19): PCM4 plays all four voices at one rate.
 		snprintf(out, size, "RATE IS FIXED: 4 VOICES SHARE %.1f KHZ", ROM_PCM4_HZ / 1000);
