@@ -56,8 +56,28 @@ static void owner(void *context, int voice, int channel, bool at_once)
 	mdmi_engine_voice_owner(engine, 0, voice, channel, at_once);
 }
 
+// Stage 23 (D73): the track's audio given to the DAC before each block, while in_on: a sine of in_hz
+// at in_amp, and from in_pulse_at a pulse of in_pulse_len frames at 1.0. in_pos counts the frames
+// given, so a block's input and output share their positions.
+static bool in_on;
+static double in_hz, in_amp, in_dc;
+static uint64_t in_pos, in_pulse_at = UINT64_MAX, in_pulse_len;
+
 static void render_block(int frames)
 {
+	if (in_on) {
+		static float in_left[BLOCK];
+		for (int i = 0; i < frames; i++) {
+			const uint64_t n = in_pos + (uint64_t)i;
+			float x = (float)(in_dc + in_amp * sin(2 * 3.14159265358979 * in_hz * (double)n / RATE));
+			if (n >= in_pulse_at && n < in_pulse_at + in_pulse_len) {
+				x = 1.0f;
+			}
+			in_left[i] = x;
+		}
+		mdmi_engine_input(engine, in_left, in_left, (uint32_t)frames);
+	}
+	in_pos += (uint64_t)frames;
 	float *channels[MDMI_RENDER_CHANNELS] = {left, right};
 	for (int ch = 0; ch < 2 * MDMI_OUTPUTS; ch++) {
 		channels[2 + ch] = outputs[ch];
@@ -1198,6 +1218,145 @@ static double magnitude_at(int n, double hz)
 		s1 = s0;
 	}
 	return sqrt(s1 * s1 + s2 * s2 - k * s1 * s2) / n;
+}
+
+// Stage 23 (D73): a track's audio through the DAC. The input is mixed where the driver writes the DAC
+// (BlastEm's 0x2A), a fifth step of PCM4's saturating sum: heard on channel 6's output with the samples,
+// in the DAC's 8-bit steps, timed to the reported latency, silent with the DAC off.
+// Main, as capture_ms takes channel 6's output.
+static int capture_main_ms(int ms)
+{
+	int n = 0;
+	for (int w = 0; w < ms; w++) {
+		tick(RATE / 1000);
+		for (int i = 0; i < RATE / 1000; i++) {
+			captured[n++] = left[i];
+		}
+	}
+	return n;
+}
+
+static void sine_in(double hz, double steps)
+{
+	in_on = true;
+	in_hz = hz;
+	in_amp = steps / 127.0;
+	render(RATE / 10 / BLOCK);
+}
+
+static void test_dac_input(void)
+{
+	static const int PERIOD = 128;
+	dac_set set = {0};
+	dac_put(&set, 70, tone_sample(PERIOD, 30, 120));
+	boot_set(&set);
+	const double kick_hz = ROM_PCM4_HZ / PERIOD, in_hz_1 = 1000;
+	const uint32_t misses_before = mdmi_engine_get_stats(engine).input_misses;
+	// The DAC's steps: 0.3 of a step rounds to nothing (the same as no input at all), 3 steps sound.
+	sine_in(in_hz_1, 0);
+	int n = capture_ms(100);
+	const double none = magnitude_at(n, in_hz_1);
+	sine_in(in_hz_1, 0.3);
+	n = capture_ms(100);
+	const double under = magnitude_at(n, in_hz_1);
+	sine_in(in_hz_1, 3);
+	n = capture_ms(100);
+	const double three = magnitude_at(n, in_hz_1);
+	printf("    at 1 kHz: no input %.7f, input of 0.3 steps %.7f, of 3 steps %.5f\n", none, under, three);
+	check(fabs(under - none) < 0.01 * three && three > 4e-4, "stage 23: the input goes through the DAC's 8-bit steps (0.3 of a step is no input)");
+	// The input alone, at 30 steps like the sample.
+	sine_in(in_hz_1, 30);
+	n = capture_ms(100);
+	const double in_alone = magnitude_at(n, in_hz_1);
+	// The sample alone, then both.
+	sine_in(in_hz_1, 0);
+	midi(0x95, 70, 127);
+	render(RATE / 10 / BLOCK);
+	n = capture_ms(100);
+	const double kick_alone = magnitude_at(n, kick_hz);
+	sine_in(in_hz_1, 30);
+	n = capture_ms(100);
+	const double kick_with = magnitude_at(n, kick_hz), in_with = magnitude_at(n, in_hz_1);
+	midi(0x85, 70, 0);
+	render(RATE / 10 / BLOCK);
+	printf("    input 1 kHz alone %.5f, with the sample %.5f (%+.2f dB); the sample alone %.5f, with the input %.5f (%+.2f dB)\n",
+		in_alone, in_with, 20 * log10(in_with / in_alone), kick_alone, kick_with, 20 * log10(kick_with / kick_alone));
+	check(in_alone > 0.005, "stage 23: a track's audio on the input is heard on channel 6's output through the DAC");
+	check(kick_alone > 0.005 && fabs(20 * log10(in_with / in_alone)) < 1 && fabs(20 * log10(kick_with / kick_alone)) < 1,
+		"stage 23: the input mixes with a playing sample, each within 1 dB of its own level");
+	midi(0x95, 70, 127);
+	sine_in(in_hz_1, 30);
+	n = capture_main_ms(100);
+	const double in_main = magnitude_at(n, in_hz_1), kick_main = magnitude_at(n, kick_hz);
+	printf("    in Main: input %.5f, the sample %.5f\n", in_main, kick_main);
+	check(in_main > 0.5 * in_with && kick_main > 0.5 * kick_with, "stage 23: the input and the sample are both in the main mix");
+	// The sum saturates as PCM4's does: a full-scale input holds the DAC at its top, so the sample's
+	// upper half is cut and its swing halves (about -6 dB); an overflow would leave it whole.
+	sine_in(in_hz_1, 0);
+	in_dc = 1.0;
+	render(RATE / 20 / BLOCK);
+	n = capture_ms(100);
+	const double kick_clipped = magnitude_at(n, kick_hz);
+	in_dc = 0;
+	midi(0x85, 70, 0);
+	// The DC blocker lets the input's full-scale step go.
+	render(RATE / BLOCK);
+	const double clip_db = 20 * log10(kick_clipped / kick_with);
+	printf("    the sample under a full-scale input: %.5f (%+.1f dB)\n", kick_clipped, clip_db);
+	check(clip_db < -4 && clip_db > -8, "stage 23: input and samples saturate at the DAC's top instead of overflowing");
+	// When it comes out: a pulse of 1 ms, its onset on channel 6 against the reported latency.
+	sine_in(in_hz_1, 0);
+	in_pulse_at = in_pos + RATE / 100;
+	in_pulse_len = RATE / 1000;
+	const uint64_t pulse = in_pulse_at;
+	int64_t onset = -1;
+	for (int b = 0; b < RATE / 5 / BLOCK && onset < 0; b++) {
+		const uint64_t at = in_pos;
+		render(1);
+		for (int i = 0; i < BLOCK && onset < 0; i++) {
+			if (fabsf(outputs[10][i]) > 0.05f) {
+				onset = (int64_t)(at + (uint64_t)i);
+			}
+		}
+	}
+	in_pulse_at = UINT64_MAX;
+	const double lag_ms = onset < 0 ? -1 : (double)(onset - (int64_t)pulse) * 1000.0 / RATE;
+	const double latency_ms = mdmi_engine_latency(engine) * 1000.0 / RATE;
+	printf("    a pulse comes out after %.2f ms, the reported latency is %.2f ms\n", lag_ms, latency_ms);
+	check(onset >= 0 && fabs(lag_ms - latency_ms) < 2, "stage 23: the input comes out of the DAC at the reported latency, within 2 ms");
+	render(RATE / 10 / BLOCK);
+	// The DAC off: channel 6 is FM again and the input has no way out.
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	sine_in(in_hz_1, 60);
+	n = capture_ms(100);
+	const double off = magnitude_at(n, in_hz_1);
+	printf("    with the DAC off: input %.7f\n", off);
+	check(off < 1e-5, "stage 23: with the DAC off the input is silent");
+	const uint32_t misses = mdmi_engine_get_stats(engine).input_misses - misses_before;
+	printf("    DAC writes without their input: %u\n", misses);
+	check(misses == 0, "stage 23: every DAC write found its input");
+	// The cost, watched (rough measures are not limits): 4 s with the input and without, DAC on.
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	double ms[2];
+	for (int with = 0; with < 2; with++) {
+		in_on = with;
+		in_amp = with ? 0.3 : 0;
+		LARGE_INTEGER f, t0, t1;
+		QueryPerformanceFrequency(&f);
+		QueryPerformanceCounter(&t0);
+		render(4 * RATE / BLOCK);
+		QueryPerformanceCounter(&t1);
+		ms[with] = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+	}
+	printf("    4 s offline with the DAC on: %.0f ms without the input, %.0f ms with it (%+.1f%%)\n", ms[0], ms[1], (ms[1] / ms[0] - 1) * 100);
+	in_on = false;
+	set_global(GLOBAL_DAC, 0);
+	sync_and_settle();
+	render(DAC_BLOCKS);
 }
 
 static const char *files_dir;
@@ -6525,6 +6684,13 @@ int main(int argc, char **argv)
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
 	}
+	if (argc == 3 && !strcmp(argv[2], "--input")) {
+		// Stage 23: the track's audio through the DAC, alone.
+		full_velocity();
+		test_dac_input();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
+	}
 	if (argc == 3 && !strcmp(argv[2], "--meter")) {
 		// Stage 30: the FM level bar frame by frame, for measuring.
 		meter_measure();
@@ -6555,6 +6721,7 @@ int main(int argc, char **argv)
 	test_loop_marks();
 	test_loop_sweep();
 	test_four_voices();
+	test_dac_input();
 	test_ch3_off();
 	test_ch3_on();
 	test_load();

@@ -199,8 +199,14 @@ int main(int argc, char **argv)
 		component->activateBus(kAudio, kOutput, bus, true);
 	}
 	component->activateBus(kEvent, kInput, 0, true);
+	// Stage 23: the DAC's input bus (Live's Sidechain) gets a silent buffer, as Live gives one.
+	const int32 in_buses = component->getBusCount(kAudio, kInput);
+	for (int32 bus = 0; bus < in_buses; bus++) {
+		component->activateBus(kAudio, kInput, bus, true);
+	}
 	std::vector<SpeakerArrangement> stereo(out_buses, SpeakerArr::kStereo);
-	if (processor->setBusArrangements(nullptr, 0, stereo.data(), out_buses) != kResultOk) {
+	std::vector<SpeakerArrangement> stereo_in(in_buses > 0 ? in_buses : 1, SpeakerArr::kStereo);
+	if (processor->setBusArrangements(in_buses ? stereo_in.data() : nullptr, in_buses, stereo.data(), out_buses) != kResultOk) {
 		fprintf(stderr, "setBusArrangements refused %d stereo outputs\n", out_buses);
 		return 1;
 	}
@@ -265,6 +271,7 @@ int main(int argc, char **argv)
 	const uint32_t total = rate * SECONDS;
 	std::vector<float> left(total + block), right(total + block);
 	std::vector<float> spare_buffer(2 * block);
+	std::vector<float> silence(block);
 
 	LARGE_INTEGER freq, start, now;
 	QueryPerformanceFrequency(&freq);
@@ -312,10 +319,20 @@ int main(int argc, char **argv)
 				outs[bus].channelBuffers32 = &spare[2 * bus];
 			}
 		}
+		std::vector<AudioBusBuffers> ins(in_buses > 0 ? in_buses : 1);
+		std::vector<float *> in_channels(2 * (in_buses > 0 ? in_buses : 1));
+		for (int32 bus = 0; bus < in_buses; bus++) {
+			in_channels[2 * bus] = silence.data();
+			in_channels[2 * bus + 1] = silence.data();
+			ins[bus].numChannels = 2;
+			ins[bus].channelBuffers32 = &in_channels[2 * bus];
+		}
 		ProcessData data;
 		data.processMode = setup.processMode;
 		data.symbolicSampleSize = kSample32;
 		data.numSamples = block;
+		data.numInputs = in_buses;
+		data.inputs = in_buses ? ins.data() : nullptr;
 		data.numOutputs = out_buses;
 		data.outputs = outs.data();
 		data.inputEvents = &events;

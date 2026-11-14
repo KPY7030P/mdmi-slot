@@ -83,6 +83,8 @@ typedef void (*write_ram_fn)(size_t, const uint8_t *, size_t);
 typedef void (*set_lowpass_fn)(double);
 typedef void (*voice_batch_fn)(const float *, const uint16_t *, size_t);
 typedef void (*set_voice_batch_fn)(voice_batch_fn);
+typedef int8_t (*dac_input_fn)(uint64_t);
+typedef void (*set_dac_input_fn)(dac_input_fn);
 typedef uint8_t (*test_ym_read_fn)(uint8_t, uint8_t);
 typedef uint8_t (*test_psg_volume_fn)(uint8_t);
 typedef uint16_t (*test_psg_tone_fn)(uint8_t);
@@ -138,6 +140,19 @@ struct mdmi_engine {
 	uint32_t voice_batch_misses;
 	float voice_mix_error;
 	float mix_diff_in[2], mix_diff_out[2];
+	// Stage 23 (D73): a track's audio for the DAC. The host's thread writes it mono at the host's rate,
+	// by ring position, before each block; the worker reads it where a DAC write lands. A core frame
+	// maps to a ring position by an anchor taken at the first batch heard after a boot or an
+	// activation: the chip's output samples and the core's frames since its start are the same count.
+	float *in_ring;
+	uint32_t in_mask;
+	uint64_t in_write;
+	uint64_t boot_frames;
+	bool in_anchored;
+	uint64_t in_anchor_core;
+	uint64_t in_anchor_ring;
+	double in_ratio;
+	uint32_t in_misses;
 	// Tests only (stage 18a): the energy of the core's own mix and of the outputs' sum, both after a DC
 	// blocker, while a test measures.
 	bool measuring, measure_primed;
@@ -360,6 +375,31 @@ static void voice_batch_cb(const float *voices, const uint16_t *keyon, size_t fr
 	e->voice_frames = (uint32_t)frames;
 }
 
+// Stage 23 (D73): the input's value, as a DAC step, for a DAC write landing in the chip's output
+// sample n. Timed to the reported latency, as a Note On is: the input at ring position p comes out of
+// the DAC at p + latency, so after the host's delay compensation it lines up with its source.
+static int8_t dac_input_cb(uint64_t n)
+{
+	mdmi_engine *e = current_engine();
+	if (!e->in_anchored || !e->in_ring) {
+		return 0;
+	}
+	const double at = (double)e->in_anchor_ring + ((double)n - (double)e->in_anchor_core) * e->in_ratio - e->latency;
+	const uint64_t written = __atomic_load_n(&e->in_write, __ATOMIC_ACQUIRE);
+	if (at < 0 || !written) {
+		return 0;
+	}
+	const uint64_t i = (uint64_t)at;
+	if (i + 1 >= written || written - i > e->in_mask) {
+		e->in_misses++;
+		return 0;
+	}
+	const float frac = (float)(at - (double)i);
+	const float x = e->in_ring[i & e->in_mask] * (1 - frac) + e->in_ring[(i + 1) & e->in_mask] * frac;
+	const long step = lrintf(x * 127.0f);
+	return (int8_t)(step > 127 ? 127 : step < -128 ? -128 : step);
+}
+
 static void reset_owners(mdmi_engine *e)
 {
 	for (int voice = 0; voice < MDMI_VOICES; voice++) {
@@ -377,8 +417,15 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 	mdmi_engine *e = current_engine();
 	const bool have_voices = e->voice_frames == frames;
 	e->voice_frames = 0;
+	const uint64_t first_frame = e->boot_frames;
+	e->boot_frames += frames;
 	if (e->discard_audio) {
 		return frames;
+	}
+	if (!e->in_anchored && have_voices) {
+		e->in_anchor_core = first_frame;
+		e->in_anchor_ring = e->ring_write;
+		e->in_anchored = true;
 	}
 	if (!have_voices) {
 		// Both sides make batches of 128 frames; a batch without its voices would play silence.
@@ -673,6 +720,7 @@ static bool load_core(mdmi_engine *e)
 	LOAD(deinit, void_fn, "retro_deinit")
 	LOAD(set_lowpass, set_lowpass_fn, "mdmi_set_lowpass")
 	LOAD(set_voice_batch, set_voice_batch_fn, "mdmi_set_voice_batch")
+	LOAD(set_dac_input, set_dac_input_fn, "mdmi_set_dac_input")
 	e->retro_run = run;
 	e->midi_write = midi_write;
 	e->has_failed = has_failed;
@@ -695,6 +743,10 @@ static bool load_core(mdmi_engine *e)
 	set_sample(audio_cb);
 	set_batch(audio_batch_cb);
 	set_voice_batch(voice_batch_cb);
+	// A new core counts its frames from 0 again; the anchor follows at its first batch heard.
+	e->boot_frames = 0;
+	e->in_anchored = false;
+	set_dac_input(dac_input_cb);
 	reset_owners(e);
 	set_poll(input_poll_cb);
 	set_state(input_state_cb);
@@ -888,7 +940,7 @@ static void journal_open(mdmi_engine *e)
 		find_slow_cpus();
 		fprintf(e->journal, "# slow_cpus=%llx\n", (unsigned long long)slow_cpus);
 		fprintf(e->journal, "t,play,blocks,blk_min,blk_max,burst_max,gap_max_ms,avail_min,rwaits,rwait_ms,rwait_max_ms,short_blk,short_smp,burst_short_max,notes,"
-			"runs,samples,run_ms,run_max_ms,wwait_ms,mcycles,cpu_moves,slow_runs,slow_run_ms,fill,underruns\n");
+			"runs,samples,run_ms,run_max_ms,wwait_ms,mcycles,cpu_moves,slow_runs,slow_run_ms,fill,underruns,in_misses\n");
 	}
 }
 
@@ -928,7 +980,7 @@ static void journal_tick(mdmi_engine *e, uint64_t write)
 	const uint32_t block_min = j_take(&e->j_block_min, UINT32_MAX);
 	const uint32_t avail_min = j_take(&e->j_avail_min, UINT32_MAX);
 	const uint64_t read = __atomic_load_n(&e->ring_read, __ATOMIC_ACQUIRE);
-	fprintf(e->journal, "%.1f,%u,%u,%u,%u,%u,%.2f,%d,%u,%.2f,%.2f,%u,%u,%u,%u,%u,%llu,%.1f,%.2f,%.1f,%.1f,%u,%u,%.1f,%lld,%u\n",
+	fprintf(e->journal, "%.1f,%u,%u,%u,%u,%u,%.2f,%d,%u,%.2f,%.2f,%u,%u,%u,%u,%u,%llu,%.1f,%.2f,%.1f,%.1f,%u,%u,%.1f,%lld,%u,%u\n",
 		(now - e->journal_start_ms) / 1000.0,
 		__atomic_load_n(&e->j_playing, __ATOMIC_RELAXED),
 		j_take(&e->j_blocks, 0), block_min == UINT32_MAX ? 0 : block_min, j_take(&e->j_block_max, 0), j_take(&e->j_burst_max, 0),
@@ -937,7 +989,7 @@ static void journal_tick(mdmi_engine *e, uint64_t write)
 		j_take(&e->j_short_blocks, 0), j_take(&e->j_short_samples, 0), j_take(&e->j_burst_short_max, 0), j_take(&e->j_notes, 0),
 		e->j_runs, (unsigned long long)(write - e->j_samples_base), e->j_run_ms, e->j_run_max_ms, e->j_worker_wait_ms,
 		(cycles - e->j_cycles_base) / 1e6, e->j_cpu_moves, e->j_slow_runs, e->j_slow_run_ms, (long long)(write - read),
-		__atomic_load_n(&e->underruns, __ATOMIC_RELAXED));
+		__atomic_load_n(&e->underruns, __ATOMIC_RELAXED), e->in_misses);
 	fflush(e->journal);
 	e->j_runs = 0;
 	e->j_run_ms = e->j_run_max_ms = e->j_worker_wait_ms = 0;
@@ -1155,6 +1207,7 @@ void mdmi_engine_destroy(mdmi_engine *e)
 		for (int ch = 0; ch < RING_CHANNELS; ch++) {
 			free(e->ring[ch]);
 		}
+		free(e->in_ring);
 		free(e->midi_queue);
 		free(e->frames);
 		free(e->waves);
@@ -1202,6 +1255,25 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 		}
 		e->ring_mask = ring_frames - 1;
 	}
+
+	// Stage 23: the input's ring holds the latency and two blocks more.
+	uint32_t in_frames = RING_MIN_FRAMES;
+	while (in_frames < 2 * (e->latency + max_block)) {
+		in_frames *= 2;
+	}
+	if (in_frames != e->in_mask + 1 || !e->in_ring) {
+		free(e->in_ring);
+		e->in_ring = calloc(in_frames, sizeof(float));
+		if (!e->in_ring) {
+			return false;
+		}
+		e->in_mask = in_frames - 1;
+	} else {
+		memset(e->in_ring, 0, in_frames * sizeof(float));
+	}
+	e->in_write = 0;
+	e->in_ratio = sample_rate / core_rate;
+	e->in_anchored = false;
 
 	e->ring_read = e->ring_write = 0;
 	e->lockstep_target = 0;
@@ -1413,6 +1485,7 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.owner_wait_ms = e->owner_wait_ms,
 		.voice_batch_misses = __atomic_load_n(&e->voice_batch_misses, __ATOMIC_RELAXED),
 		.voice_mix_error = e->voice_mix_error,
+		.input_misses = __atomic_load_n(&e->in_misses, __ATOMIC_RELAXED),
 	};
 	return stats;
 }
@@ -1497,6 +1570,22 @@ void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset)
 		const uint8_t message[3] = {(uint8_t)(0xB0 | channel), 123, 0};
 		mdmi_engine_midi(e, sample_offset, message, sizeof(message));
 	}
+}
+
+void mdmi_engine_input(mdmi_engine *e, const float *left, const float *right, uint32_t frames)
+{
+	if (!e->in_ring || !left) {
+		return;
+	}
+	const uint64_t at = e->ring_read;
+	// Blocks the host gave no input for are silence, not what the ring held a lap ago.
+	for (uint64_t gap = e->in_write + e->in_mask < at ? at - e->in_mask : e->in_write; gap < at; gap++) {
+		e->in_ring[gap & e->in_mask] = 0;
+	}
+	for (uint32_t i = 0; i < frames; i++) {
+		e->in_ring[(at + i) & e->in_mask] = right ? (left[i] + right[i]) * 0.5f : left[i];
+	}
+	__atomic_store_n(&e->in_write, at + frames, __ATOMIC_RELEASE);
 }
 
 void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t frames)

@@ -48,6 +48,8 @@ typedef struct {
 	float owner_wait_ms;
 	uint32_t voice_batch_misses;
 	float voice_mix_error;
+	// Stage 23: DAC writes whose input the host had not given yet (or no longer held).
+	uint32_t input_misses;
 } mdmi_engine_stats;
 
 // The ROM's screen. A frame stays valid until the next call to mdmi_engine_latest_frame.
@@ -143,6 +145,9 @@ void mdmi_engine_all_notes_off(mdmi_engine *e, uint32_t sample_offset);
 // when the queue gets there.
 void mdmi_engine_voice_owner(mdmi_engine *e, uint32_t sample_offset, int voice, int channel, bool at_once);
 // Main only.
+// Stage 23 (D73): a track's audio for the DAC, the block about to be rendered; right may be NULL.
+// Call before mdmi_engine_render or mdmi_engine_render_outputs of the same block.
+void mdmi_engine_input(mdmi_engine *e, const float *left, const float *right, uint32_t frames);
 void mdmi_engine_render(mdmi_engine *e, float *left, float *right, uint32_t frames);
 // MDMI_RENDER_CHANNELS buffers, any of them NULL.
 void mdmi_engine_render_outputs(mdmi_engine *e, float *const *channels, uint32_t frames);

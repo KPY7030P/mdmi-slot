@@ -25,7 +25,7 @@ index 5fc1254..9e83783 100644
  #else
  	static uint8_t freeze_choice;
 diff --git a/libblastem.c b/libblastem.c
-index 3472c7f..4058e37 100644
+index 3472c7f..0dd8344 100644
 --- a/libblastem.c
 +++ b/libblastem.c
 @@ -8,6 +8,7 @@
@@ -47,13 +47,20 @@ index 3472c7f..4058e37 100644
  }
  
  RETRO_API unsigned retro_api_version(void)
-@@ -533,18 +538,48 @@ void render_audio_created(audio_source *src)
+@@ -533,18 +538,55 @@ void render_audio_created(audio_source *src)
  {
  }
  
 +RETRO_API void mdmi_set_lowpass(double cutoff_hz)
 +{
 +	render_audio_set_lowpass(cutoff_hz);
++}
++
++//MDMI: the engine's track audio for the DAC (stage 23, D73), see ym2612.c
++extern int8_t (*mdmi_dac_input)(uint64_t n);
++RETRO_API void mdmi_set_dac_input(int8_t (*fn)(uint64_t n))
++{
++	mdmi_dac_input = fn;
 +}
 +
 +//When set, retro_run returns after every audio batch instead of once per video frame
@@ -96,7 +103,7 @@ index 3472c7f..4058e37 100644
  	}
  }
  
-@@ -588,3 +623,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
+@@ -588,3 +630,18 @@ char *read_bundled_file(char *name, uint32_t *sizeret)
  	}
  	return NULL;
  }
@@ -705,18 +712,25 @@ index 09efac7..7daabbc 100644
  }
  
 diff --git a/ym2612.c b/ym2612.c
-index 585c283..416533d 100644
+index 585c283..d8a642b 100644
 --- a/ym2612.c
 +++ b/ym2612.c
-@@ -144,6 +144,7 @@ void ym_init(ym2612_context * context, uint32_t master_clock, uint32_t clock_div
+@@ -144,6 +144,8 @@ void ym_init(ym2612_context * context, uint32_t master_clock, uint32_t clock_div
  	context->clock_inc = clock_div * 6;
  	context->busy_cycles = BUSY_CYCLES * context->clock_inc;
  	context->audio = render_audio_source("YM2612", master_clock, context->clock_inc * OPN2_NUM_OPERATORS, 2);
 +	render_audio_source_voices(context->audio, 0, OPN2_NUM_CHANNELS);
++	context->mdmi_samples = 0;
  	//TODO: pick a randomish high initial value and lower it over time
  	context->invalid_status_decay = 225000 * context->clock_inc;
  	context->status_address_mask = (options & YM_OPT_3834) ? 0 : 3;
-@@ -461,7 +462,9 @@ void ym_run_phase(ym2612_context *context, uint32_t channel, uint32_t op)
+@@ -458,10 +460,15 @@ void ym_run_phase(ym2612_context *context, uint32_t channel, uint32_t op)
+ 	}
+ }
+ 
++//MDMI: the input's value for a DAC write landing in output sample n since the chip's start (stage 23)
++int8_t (*mdmi_dac_input)(uint64_t n);
++
  void ym_output_sample(ym2612_context *context)
  {
  	int16_t left = 0, right = 0;
@@ -726,7 +740,7 @@ index 585c283..416533d 100644
  		int16_t value = context->channels[i].output;
  		if (value >= 0) {
  			value += context->zero_offset;
-@@ -496,8 +499,11 @@ void ym_output_sample(ym2612_context *context)
+@@ -496,8 +503,12 @@ void ym_output_sample(ym2612_context *context)
  			}
  			right += (value * context->volume_mult) / (60 * context->volume_div);
  		}
@@ -736,10 +750,11 @@ index 585c283..416533d 100644
 -	render_put_stereo_sample(context->audio, left, right);
 +	render_put_voices_sample(context->audio, left, right, voice_left, voice_right, context->mdmi_keyon);
 +	context->mdmi_keyon = 0;
++	context->mdmi_samples++;
  }
  
  void ym_run(ym2612_context * context, uint32_t to_cycle)
-@@ -775,6 +781,7 @@ void ym_data_write(ym2612_context * context, uint8_t value)
+@@ -775,6 +786,7 @@ void ym_data_write(ym2612_context * context, uint8_t value)
  					if (changes & keyon_bits[bit]) {
  						if (value & keyon_bits[bit]) {
  							first_key_on = 1;
@@ -747,15 +762,31 @@ index 585c283..416533d 100644
  							//printf("Key On for operator %d in channel %d\n", op, channel);
  							keyon(context->operators + op, context->channels + channel);
  						} else {
+@@ -788,7 +800,13 @@ void ym_data_write(ym2612_context * context, uint8_t value)
+ 		}
+ 		case REG_DAC:
+ 			if (context->dac_enable) {
+-				context->channels[5].output = (((int16_t)value) - 0x80) << 6;
++				int16_t dac = ((int16_t)value) - 0x80;
++				//MDMI: a track's audio as a fifth step of PCM4's saturating sum, at the moment of the write (stage 23, D73)
++				if (mdmi_dac_input) {
++					dac += mdmi_dac_input(context->mdmi_samples);
++					dac = dac > 127 ? 127 : dac < -128 ? -128 : dac;
++				}
++				context->channels[5].output = dac << 6;
+ 				//printf("DAC Write %X(%d) @ %d\n", value, context->channels[5].output, context->current_cycle);
+ 			}
+ 			break;
 diff --git a/ym2612.h b/ym2612.h
-index a5768dc..cc9f9e5 100644
+index a5768dc..87072f0 100644
 --- a/ym2612.h
 +++ b/ym2612.h
-@@ -68,6 +68,7 @@ typedef struct {
+@@ -68,6 +68,8 @@ typedef struct {
  	uint8_t      lfo_am_step;
  	uint8_t      lfo_pm_step;
  	uint8_t      csm_keyon;
 +	uint8_t      mdmi_keyon; //MDMI: channels keyed on since the last sample
++	uint64_t     mdmi_samples; //MDMI: output samples since the chip's start (stage 23)
  	uint8_t      status;
  	uint8_t      last_status;
  	uint8_t      selected_reg;

@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.25.3).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.26.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -130,6 +130,12 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   switching ONE-SHOT brings the loop back with its release. LOOP and ONE-SHOT exclude each other again (0.22.2 let them go
   together, a loop past Note Off; such a project opens as LOOP with its release).
   A loop is at least one block of the driver (256 bytes, about 17 ms). Not checked on a real console yet.
+- Track audio through the DAC (0.26.0, emulator only): the plugin has a stereo input, DAC In, which Live shows as
+  Sidechain. Another track's audio sent there plays through the emulated DAC with the samples: 8 bits, at the
+  driver's 15.2 kHz, nothing above 7.6 kHz filtered (it folds back, as the console's DAC would make it), on
+  channel 6's output and in Main, at the plugin's reported latency like a note. Only while DAC Enable is on.
+  No knobs: the sidechain's gain sets the level; full scale fills the DAC, and the input and loud samples
+  together clip. Routing in Live, in Russian: `docs/dac-input-live.md`.
 - A PSG envelope's loop ends a note the same way (0.22.3): with steps after the loop (a release), Note Off lets
   the loop finish its pass and plays the release, also when the key is let go in the intro (the loop then plays
   once); without them, or without a loop, Note Off silences at once. Before 0.22.3 a loop without a release

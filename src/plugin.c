@@ -653,6 +653,11 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 		channels[port * 2] = out->data32[0];
 		channels[port * 2 + 1] = out->channel_count > 1 ? out->data32[1] : NULL;
 	}
+	// Stage 23 (D73): the sidechain goes into the DAC; without one the DAC hears silence.
+	if (process->audio_inputs_count && process->audio_inputs[0].data32 && process->audio_inputs[0].channel_count) {
+		const clap_audio_buffer_t *in = &process->audio_inputs[0];
+		mdmi_engine_input(engine, in->data32[0], in->channel_count > 1 ? in->data32[1] : NULL, process->frames_count);
+	}
 	mdmi_engine_render_outputs(engine, channels, process->frames_count);
 	apply_master(self, channels, process->frames_count);
 	__atomic_store_n(&self->psg_times.clock, self->psg_times.clock + process->frames_count, __ATOMIC_RELEASE);
@@ -660,17 +665,30 @@ static clap_process_status plugin_process(const clap_plugin_t *plugin, const cla
 }
 
 // Main and MIDI channels 1-10 (D46). Projects keep their routing by these ids and this order:
-// anything new goes after them.
+// anything new goes after them. One stereo input, not main, for the DAC (stage 23, D73): the VST3
+// wrapper makes it an aux bus, which Live shows as Sidechain (E6).
 static uint32_t audio_ports_count(const clap_plugin_t *plugin, bool is_input)
 {
 	(void)plugin;
-	return is_input ? 0 : 1 + MDMI_OUTPUTS;
+	return is_input ? 1 : 1 + MDMI_OUTPUTS;
 }
 
 static bool audio_ports_get(const clap_plugin_t *plugin, uint32_t index, bool is_input, clap_audio_port_info_t *info)
 {
 	(void)plugin;
-	if (is_input || index > MDMI_OUTPUTS) {
+	if (is_input) {
+		if (index != 0) {
+			return false;
+		}
+		memset(info, 0, sizeof(*info));
+		info->id = 0;
+		strncpy(info->name, "DAC In", sizeof(info->name) - 1);
+		info->channel_count = 2;
+		info->port_type = CLAP_PORT_STEREO;
+		info->in_place_pair = CLAP_INVALID_ID;
+		return true;
+	}
+	if (index > MDMI_OUTPUTS) {
 		return false;
 	}
 	memset(info, 0, sizeof(*info));

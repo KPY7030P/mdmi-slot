@@ -229,6 +229,21 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   samples are made by rescomp `PCM4 15500`, so they last as in 0.18. Channel 6's Pan (CC 10) pans them
   (stage 18): our ROM writes B6 at once for all four, the driver never writes it; switching the DAC on or
   off writes channel 6's pan again for the side now in charge.
+- Track audio through the DAC (stage 23, D73, emulator only). The plugin's one input port, `DAC In` (not
+  main; clap-wrapper makes it an aux bus, Live's Sidechain), goes mono, (L + R) / 2, to
+  `mdmi_engine_input` before each block: a ring at the host's rate by ring position. Patch 0001 counts the
+  YM2612's output samples (`mdmi_samples`) and, at each write of 0x2A while the DAC is on, adds
+  `mdmi_dac_input(n)` to `value - 0x80` and clamps to -128..127: a fifth step of PCM4's saturating sum, at
+  the driver's moments, so the 8-bit step, pan, filter and the FM 6 output all apply. The engine's
+  `dac_input_cb` maps the chip's sample n to a ring position by an anchor taken at the first batch heard after
+  a boot or an activation (the chip's samples and the core's frames since its start are one count), minus
+  the reported latency, so the input comes out where a Note On at the same moment would; linear
+  interpolation between the host's samples; no filter. A write whose input isn't there gives 0 and counts
+  `input_misses` (stats, journal column `in_misses`). With the DAC off writes to 0x2A are ignored: the input
+  is dropped. `reg_test --input`: in channel 6 and Main with a sample, saturation, 0.3 of a step silent,
+  out at the latency (15.6 ms against 15.3 at 48 kHz, 256), silent with the DAC off, no misses; it costs
+  about 2-5% of the engine's time offline, within run-to-run noise. `vst3_host` gives the input bus a silent
+  buffer, as Live does.
 - DAC pages (stage 12, D36, D37, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on is a
   grid of the 128 notes and the selected note's wave with REPLACE and CLEAR; BANK lists the same notes.
   Each note plays the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
