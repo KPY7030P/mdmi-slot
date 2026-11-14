@@ -290,6 +290,10 @@ typedef struct {
 	patch_voice voices[PATCH_NUM_FM_CHANNELS];
 	// Notes held on channels that play only on their own voice: Porta On, Ch3 Special, DAC.
 	uint8_t held[PATCH_NUM_FM_CHANNELS];
+	// The voices that lend none, one bit each, as the last patch_sync saw them (stage 28): a change frees
+	// or takes voices, and the notes cut for want of one try again.
+	uint8_t never_lend_mask;
+	bool revive_due;
 	// Keys held on each FM channel that don't sound: cut off, or no voice was free.
 	uint32_t muted[PATCH_NUM_FM_CHANNELS][4];
 	uint8_t muted_velocity[PATCH_NUM_FM_CHANNELS][128];
@@ -479,10 +483,13 @@ int patch_release_ms(int rr);
 void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // The ROM booted again (a new image, stage 12): notes are gone, and the receiver gets everything.
 void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context);
-// Why an FM channel plays only on its own voice and lends none (D20, stage 24b): channel 6 with the
-// DAC, channel 3 in Ch3 Special Mode, Porta On.
+// Why an FM channel plays only on its own voice (D20, stage 24b): channel 6 with the DAC, channel 3 in
+// Ch3 Special Mode, Porta On. None of them borrows a voice.
 enum { PATCH_ALONE_NO, PATCH_ALONE_PORTA, PATCH_ALONE_CH3, PATCH_ALONE_DAC };
 int patch_alone_reason(const patch_values *values, int channel);
+// Why an FM channel's voice is never lent to a chord (D69): the DAC's and Ch3 Special's, PATCH_ALONE_NO
+// for every other. A Porta channel's voice is lent while the channel is silent.
+int patch_lend_reason(const patch_values *values, int channel);
 // Main thread (D59): a note's sample as the image holds it (rom_image_sample), its length and loop
 // marks in blocks of 256 bytes and its record's flags; blocks 0 for none.
 void patch_set_dac_note(mdmi_patch *patch, int note, uint32_t blocks, uint16_t loop_start, uint16_t loop_end, uint8_t flags);

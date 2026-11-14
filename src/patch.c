@@ -1440,12 +1440,12 @@ static void sync_voice_owners(patch_receiver *receiver, patch_emit_fn emit, void
 	}
 }
 
-// The voice dealer (D20, D21). Every FM channel plays on its own voice; a note it plays while that
+// The voice dealer (D20, D21, D69). Every FM channel plays on its own voice; a note it plays while that
 // voice is busy borrows the free voice of another channel that costs least to turn into its sound.
-// A channel takes its own voice back for its next note and cuts the chord's note on it.
+// A channel takes its own voice back for its next note and moves the chord's note on it.
 
-// Channels that play only on their own voice, which is never lent: the ROM glides on one voice,
-// Ch3 Special gives voice 3 a pitch per operator, and the DAC takes voice 6.
+// Channels that play only on their own voice and borrow none: the ROM glides on one voice, Ch3
+// Special gives voice 3 a pitch per operator, and the DAC takes voice 6.
 int patch_alone_reason(const patch_values *values, int channel)
 {
 	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
@@ -1459,6 +1459,20 @@ int patch_alone_reason(const patch_values *values, int channel)
 static bool plays_alone(const mdmi_patch *patch, int channel)
 {
 	return patch_alone_reason(&patch->model, channel) != PATCH_ALONE_NO;
+}
+
+// Voices never lent (D69): the DAC's and Ch3 Special's are not FM voices of one pitch. A Porta channel's
+// voice is lent while the channel is silent; its own note takes it back (D22), and the ROM glides only
+// between the channel's own held notes, so a chord note on its voice leaves no glide behind.
+int patch_lend_reason(const patch_values *values, int channel)
+{
+	const int reason = patch_alone_reason(values, channel);
+	return reason == PATCH_ALONE_PORTA ? PATCH_ALONE_NO : reason;
+}
+
+static bool never_lends(const mdmi_patch *patch, int voice)
+{
+	return patch_lend_reason(&patch->model, voice) != PATCH_ALONE_NO;
 }
 
 static void emit_note(patch_emit_fn emit, void *context, int status, int channel, int key, int velocity)
@@ -1643,18 +1657,22 @@ static int retrigger(const mdmi_patch *patch)
 static int cheapest_voice(const mdmi_patch *patch, int channel, bool silent_first)
 {
 	int best = -1, best_cost = 0;
-	bool best_sounds = false;
+	bool best_sounds = false, best_porta = false;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		if (patch->voices[voice].channel >= 0 || plays_alone(patch, voice)) {
+		if (patch->voices[voice].channel >= 0 || never_lends(patch, voice)) {
 			continue;
 		}
 		int cost = lending_cost(patch, voice, channel);
 		bool sounds = silent_first && voice_sounds(patch, voice);
-		bool better = best < 0 || (best_sounds && !sounds) || (sounds == best_sounds && (sounds ? patch->released_at[voice] < patch->released_at[best] : cost < best_cost));
+		// A Porta channel's voice after the others (stage 28, architect): its own note takes it back.
+		const bool porta = plays_alone(patch, voice);
+		bool better = best < 0 || (best_sounds && !sounds)
+			|| (sounds == best_sounds && ((best_porta && !porta) || (porta == best_porta && (sounds ? patch->released_at[voice] < patch->released_at[best] : cost < best_cost))));
 		if (better) {
 			best = voice;
 			best_cost = cost;
 			best_sounds = sounds;
+			best_porta = porta;
 		}
 	}
 	return best;
@@ -1664,7 +1682,7 @@ static int cheapest_voice(const mdmi_patch *patch, int channel, bool silent_firs
 static bool other_silent_voice(const mdmi_patch *patch, int except)
 {
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		if (voice != except && patch->voices[voice].channel < 0 && !plays_alone(patch, voice) && !voice_sounds(patch, voice)) {
+		if (voice != except && patch->voices[voice].channel < 0 && !never_lends(patch, voice) && !voice_sounds(patch, voice)) {
 			return true;
 		}
 	}
@@ -1914,12 +1932,14 @@ static void note_on(mdmi_patch *patch, int channel, int key, int velocity, patch
 	patch->pending[patch->pending_count++] = (patch_note){(uint8_t)channel, (uint8_t)key, (uint8_t)velocity};
 }
 
+static void sync_receiver(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context);
+
 // A voice came free: held notes that found none start again on it, from their attack.
 static void revive(mdmi_patch *patch, patch_emit_fn emit, void *context)
 {
 	int free = 0;
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		free += patch->voices[voice].channel < 0 && !plays_alone(patch, voice);
+		free += patch->voices[voice].channel < 0 && !never_lends(patch, voice);
 	}
 	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS && free > 0; channel++) {
 		for (int key = 0; key < 128 && free > 0 && !plays_alone(patch, channel); key++) {
@@ -1939,7 +1959,7 @@ static void give_release_back(mdmi_patch *patch, patch_emit_fn emit, void *conte
 {
 	if (patch->resync) {
 		patch->resync = false;
-		patch_sync(patch, &patch->rom, emit, context);
+		sync_receiver(patch, &patch->rom, emit, context);
 	}
 }
 
@@ -2057,12 +2077,33 @@ static void start_note(mdmi_patch *patch, const patch_note *note, bool alone, bo
 // starts again (D20, D22). Then the moved notes and the other notes borrow free voices, in that
 // order, and what finds none is cut. The borrowed voices get their sound in one go, then the
 // notes start (D21).
+enum { DEALT_WAITS, DEALT_MOVED, DEALT_OWN, DEALT_ALONE, DEALT_MUTED, DEALT_FREED };
+
+// A note takes its own voice back from another channel's chord: the chord's note there stops and
+// waits in the moment to start again on a free voice, or is cut if the moment is full (D22).
+static void move_chord_note(mdmi_patch *patch, int voice, uint8_t *dealt, patch_emit_fn emit, void *context)
+{
+	const patch_voice *chord = &patch->voices[voice];
+	if (chord->channel < 0) {
+		return;
+	}
+	const patch_note moved = {(uint8_t)chord->channel, chord->key, chord->velocity};
+	emit_note(emit, context, 0x80, moved.channel, moved.key, 0);
+	free_voice(patch, voice, emit, context);
+	if (patch->pending_count < PATCH_PENDING_NOTES) {
+		dealt[patch->pending_count] = DEALT_MOVED;
+		patch->pending[patch->pending_count++] = moved;
+	} else {
+		mute(patch, moved.channel, moved.key, moved.velocity);
+	}
+}
+
 void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 {
 	if (patch->pending_count == 0) {
 		return;
 	}
-	enum { WAITS, MOVED, OWN, ALONE, MUTED, FREED };
+	enum { WAITS = DEALT_WAITS, MOVED = DEALT_MOVED, OWN = DEALT_OWN, ALONE = DEALT_ALONE, MUTED = DEALT_MUTED, FREED = DEALT_FREED };
 	uint8_t dealt[PATCH_PENDING_NOTES];
 	int8_t voice_of[PATCH_PENDING_NOTES];
 	// A note of a channel that plays alone while none of its keys is held: not played over, so no glide.
@@ -2086,7 +2127,13 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 		}
 		if (plays_alone(patch, note->channel)) {
 			if (patch->voices[note->channel].channel != note->channel) {
-				cut_voice(patch, note->channel, emit, context);
+				move_chord_note(patch, note->channel, dealt, emit, context);
+			} else if (patch->held[note->channel] == 0) {
+				// held[] counts the keys a channel holds while it plays alone. A note on its own voice from
+				// before it came to (Porta switched On over it) is one of them, never counted: count it, so the
+				// voice stays the channel's, unlent, while the ROM still holds a note (stage 28, architect).
+				// Its notes on borrowed voices free by key.
+				patch->held[note->channel] = 1;
 			}
 			take_voice(patch, note->channel, note, false, emit, context);
 			fresh[i] = patch->held[note->channel] == 0;
@@ -2095,18 +2142,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			}
 			dealt[i] = ALONE;
 		} else if (patch->voices[note->channel].channel != note->channel) {
-			const patch_voice *chord = &patch->voices[note->channel];
-			if (chord->channel >= 0) {
-				const patch_note moved = {(uint8_t)chord->channel, chord->key, chord->velocity};
-				emit_note(emit, context, 0x80, moved.channel, moved.key, 0);
-				free_voice(patch, note->channel, emit, context);
-				if (patch->pending_count < PATCH_PENDING_NOTES) {
-					dealt[patch->pending_count] = MOVED;
-					patch->pending[patch->pending_count++] = moved;
-				} else {
-					mute(patch, moved.channel, moved.key, moved.velocity);
-				}
-			}
+			move_chord_note(patch, note->channel, dealt, emit, context);
 			take_voice(patch, note->channel, note, true, emit, context);
 			dealt[i] = OWN;
 		}
@@ -2149,7 +2185,7 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 			patch->waiting[channel][patch->waiting_count[channel]++] = patch->pending[i];
 		}
 	}
-	patch_sync(patch, &patch->rom, emit, context);
+	sync_receiver(patch, &patch->rom, emit, context);
 	patch->resync = false;
 	for (uint32_t i = 0; i < patch->pending_count; i++) {
 		const patch_note *note = &patch->pending[i];
@@ -2161,6 +2197,11 @@ void patch_flush(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	}
 	patch->pending_count = 0;
 	publish_voices(patch);
+	// A switch seen by this moment's sync (stage 28): the notes it cut try the voices now free.
+	if (patch->revive_due) {
+		patch->revive_due = false;
+		revive(patch, emit, context);
+	}
 }
 
 void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context)
@@ -2178,7 +2219,7 @@ void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context)
 		return;
 	}
 	// The voices get their own release back, then the notes start.
-	patch_sync(patch, &patch->rom, emit, context);
+	sync_receiver(patch, &patch->rom, emit, context);
 	patch->resync = false;
 	for (int i = 0; i < count; i++) {
 		// Only notes that aren't played over wait, so none of them glides.
@@ -2187,7 +2228,7 @@ void patch_due(mdmi_patch *patch, patch_emit_fn emit, void *context)
 	publish_voices(patch);
 }
 
-void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context)
+static void sync_receiver(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context)
 {
 	const int16_t *model_globals = patch->model.globals;
 	int16_t *rom_globals = receiver->values.globals;
@@ -2207,11 +2248,19 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 		forget_voices(receiver);
 	}
 	sync_voice_owners(receiver, emit, context);
-	// A voice lent before its channel came to play alone comes back.
+	// A voice lent before it came to lend none (Ch3 Special or the DAC on) comes back; its chord note
+	// is cut. Any change of the voices that lend none lets cut notes try the voices free since
+	// (stage 28): at once, or after the moment being dealt.
+	uint8_t never = 0;
 	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
-		if (plays_alone(patch, channel) && patch->voices[channel].channel >= 0 && patch->voices[channel].channel != channel) {
+		never |= (uint8_t)(never_lends(patch, channel) << channel);
+		if (never_lends(patch, channel) && patch->voices[channel].channel >= 0 && patch->voices[channel].channel != channel) {
 			cut_voice(patch, channel, emit, context);
 		}
+	}
+	if (receiver == &patch->rom && never != patch->never_lend_mask) {
+		patch->never_lend_mask = never;
+		patch->revive_due = true;
 	}
 	if (model_globals[GLOBAL_LFO_ON] != rom_globals[GLOBAL_LFO_ON]) {
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_ON, model_globals[GLOBAL_LFO_ON] ? CC_ON : 0);
@@ -2276,6 +2325,18 @@ void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit,
 			sync_voice(patch, model, receiver, channel, emit, context);
 		}
 		sync_channel_params(patch, model, rom, channel, emit, context);
+	}
+}
+
+// From outside the dealer (stage 28, architect): a switch of the voices that lend none lets the cut
+// notes try the voices free since. The dealer's own syncs (a moment, notes due, a release given back)
+// don't: their notes are on the way; patch_flush does it at the moment's end.
+void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context)
+{
+	sync_receiver(patch, receiver, emit, context);
+	if (receiver == &patch->rom && patch->revive_due && patch->pending_count == 0) {
+		patch->revive_due = false;
+		revive(patch, emit, context);
 	}
 }
 
@@ -2350,7 +2411,7 @@ static void resend_everything(mdmi_patch *patch, bool reset, patch_emit_fn emit,
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		patch->voices[voice].sound = (int8_t)voice;
 	}
-	patch_sync(patch, &patch->rom, emit, context);
+	sync_receiver(patch, &patch->rom, emit, context);
 }
 
 void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context)

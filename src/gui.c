@@ -4548,8 +4548,9 @@ static bool master_hint(mdmi_gui *g)
 	return over >= 0 && g->cells[over].id == GLOBAL_MASTER;
 }
 
-// A rail row with cut notes under the mouse (stage 24b): why no voice was free. The voices that play
-// only alone are named by cause; the others play notes of their own.
+// A rail row with cut notes under the mouse (stage 24b): why no voice was free. The voices that never
+// lend are named by cause (D69: Ch3 Special, the DAC); the others play notes of their own, a Porta
+// channel's too while it plays.
 static bool cut_hint(mdmi_gui *g, char *hint, size_t size)
 {
 	if (g->file_over || g->dragging || *g->source.page == PAGE_ROM) {
@@ -4564,13 +4565,13 @@ static bool cut_hint(mdmi_gui *g, char *hint, size_t size)
 	static const char *const CAUSE[] = {"", "PORTA", "SP", "DAC"};
 	char causes[3][24] = {"", "", ""};
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		const int reason = patch_alone_reason(values, voice);
+		const int reason = patch_lend_reason(values, voice);
 		if (reason != PATCH_ALONE_NO) {
 			char *list = causes[reason - 1];
 			snprintf(list + strlen(list), sizeof(causes[0]) - strlen(list), " %d", voice + 1);
 		}
 	}
-	// Short enough for the footer beside a long build label: "1 CUT: PORTA 1 2 4, SP 3, DAC 6".
+	// Short enough for the footer beside a long build label: "1 CUT: SP 3, DAC 6".
 	int at = snprintf(hint, size, "%d CUT", muted);
 	bool first = true;
 	for (int reason = PATCH_ALONE_PORTA; reason <= PATCH_ALONE_DAC && at > 0 && (size_t)at < size; reason++) {

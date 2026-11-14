@@ -569,21 +569,51 @@ static void test_dealer(void)
 	moment(&patch, 3, 48, 6, false);
 	CHECK(free_voices(&patch) == 6, "and the chord ends with every voice free");
 
-	// Stage 24b, the owner's tst6: Porta On on channels 1, 3 and 4, Ch3 Special and the DAC. Only voices 2
-	// and 5 lend, so channel 5's chord of 3 cuts one note with no bug: the window names the causes.
+	// The owner's tst6: Porta On on channels 1, 3 and 4, Ch3 Special and the DAC. Since stage 28 (D69) a
+	// silent Porta channel lends its voice, after the other free ones; Ch3 Special's and the DAC's never.
 	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
 	set(&patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_ON), 1);
 	set(&patch, PATCH_CHANNEL_ID(3, PARAM_PORTA_ON), 1);
 	set(&patch, GLOBAL_CH3_MODE, 1);
 	set(&patch, GLOBAL_DAC, 1);
 	moment(&patch, 4, 60, 3, true);
+	const bool porta_lent = patch.voices[0].channel == 4 || patch.voices[3].channel == 4;
+	CHECK(patch_muted_notes(&patch, 4) == 0 && patch.voices[4].channel == 4 && patch.voices[1].channel == 4 && porta_lent
+			&& patch.voices[2].channel < 0 && patch.voices[5].channel < 0,
+		"tst6 (28): a chord of 3 on channel 5 has voices 5, 2 and a silent Porta channel's, none of Ch3 Special or the DAC");
 	moment(&patch, 3, 34, 1, true);
-	CHECK(patch_muted_notes(&patch, 4) == 1 && patch.voices[1].channel == 4 && patch.voices[4].channel == 4 && patch.voices[3].channel == 3,
-		"tst6: a chord of 3 on channel 5 has voices 5 and 2, channel 4 plays its own, one note is cut");
-	CHECK(patch_alone_reason(&patch.model, 0) == PATCH_ALONE_PORTA && patch_alone_reason(&patch.model, 1) == PATCH_ALONE_NO
-		&& patch_alone_reason(&patch.model, 2) == PATCH_ALONE_CH3 && patch_alone_reason(&patch.model, 3) == PATCH_ALONE_PORTA
-		&& patch_alone_reason(&patch.model, 4) == PATCH_ALONE_NO && patch_alone_reason(&patch.model, 5) == PATCH_ALONE_DAC,
-		"and the reasons: Porta 1 4, Ch3 Special 3, DAC 6");
+	CHECK(patch_muted_notes(&patch, 4) == 0 && patch.voices[3].channel == 3 && patch.voices[0].channel == 4,
+		"channel 4's own note takes its voice back, the chord's note moves to channel 1's");
+	moment(&patch, 0, 40, 1, true);
+	CHECK(patch_muted_notes(&patch, 4) == 1 && patch.voices[0].channel == 0, "channel 1's own note takes its voice too; with none free the chord's note is cut");
+	CHECK(patch_alone_reason(&patch.model, 0) == PATCH_ALONE_PORTA && patch_alone_reason(&patch.model, 2) == PATCH_ALONE_CH3
+			&& patch_alone_reason(&patch.model, 5) == PATCH_ALONE_DAC && patch_lend_reason(&patch.model, 0) == PATCH_ALONE_NO
+			&& patch_lend_reason(&patch.model, 1) == PATCH_ALONE_NO && patch_lend_reason(&patch.model, 2) == PATCH_ALONE_CH3
+			&& patch_lend_reason(&patch.model, 3) == PATCH_ALONE_NO && patch_lend_reason(&patch.model, 5) == PATCH_ALONE_DAC,
+		"and the reasons: Porta 1 4 play alone but lend, Ch3 Special 3 and the DAC 6 lend none");
+	moment(&patch, 0, 40, 1, false);
+	CHECK(patch_muted_notes(&patch, 4) == 0 && patch.voices[0].channel == 4, "channel 1 silent again: the cut note comes back on its voice");
+	// A switch frees or takes voices (stage 28, from 24b's parking): the DAC off frees voice 6, and the
+	// cut note comes back with no Note Off; the DAC on takes it again and cuts it.
+	moment(&patch, 0, 40, 1, true);
+	CHECK(patch_muted_notes(&patch, 4) == 1, "channel 1 again: the chord's note is cut");
+	clear();
+	set(&patch, GLOBAL_DAC, 0);
+	CHECK(patch_muted_notes(&patch, 4) == 0 && patch.voices[5].channel == 4 && count_status(0x84) == 0,
+		"DAC off: the cut note comes back on voice 6 at once, with no Note Off");
+	set(&patch, GLOBAL_DAC, 1);
+	CHECK(patch_muted_notes(&patch, 4) == 1 && patch.voices[5].channel < 0, "DAC on: voice 6 is the DAC's, the note is cut again");
+	clear();
+	set(&patch, GLOBAL_CH3_MODE, 0);
+	CHECK(patch_muted_notes(&patch, 4) == 0 && patch.voices[2].channel == 4 && count_status(0x84) == 0,
+		"Ch3 Special off: the cut note comes back on voice 3, with no Note Off");
+	set(&patch, GLOBAL_CH3_MODE, 1);
+	CHECK(patch_muted_notes(&patch, 4) == 1 && patch.voices[2].channel < 0, "Ch3 Special on: voice 3 is channel 3's alone, the note is cut again");
+	// Porta Off on a playing channel frees nothing: its note keeps its own voice, and nothing is lost.
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	CHECK(patch_muted_notes(&patch, 4) == 1 && patch.voices[0].channel == 0, "Porta Off over channel 1's note: its voice stays, the cut note waits");
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	moment(&patch, 0, 40, 1, false);
 	moment(&patch, 3, 34, 1, false);
 	moment(&patch, 4, 60, 3, false);
 	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
@@ -592,6 +622,57 @@ static void test_dealer(void)
 	set(&patch, GLOBAL_CH3_MODE, 0);
 	set(&patch, GLOBAL_DAC, 0);
 	CHECK(free_voices(&patch) == 6 && patch_muted_notes(&patch, 4) == 0, "and tst6's case ends with every voice free");
+
+	// held[] and the ROM's stack (architect, 28): Porta Off, key A, Porta On, key B, A off: the voice stays
+	// channel 1's and isn't lent to a chord; B off frees it. Then the reverse: Porta On, two keys held,
+	// Porta Off, both off: nothing stays taken.
+	moment(&patch, 0, 50, 1, true);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	moment(&patch, 0, 55, 1, true);
+	moment(&patch, 0, 50, 1, false);
+	moment(&patch, 4, 60, 6, true);
+	const bool stays = patch.voices[0].channel == 0 && patch_muted_notes(&patch, 4) == 1;
+	moment(&patch, 4, 60, 6, false);
+	moment(&patch, 0, 55, 1, false);
+	CHECK(stays && free_voices(&patch) == 6, "Porta On over a held note: the next key and the old one's Note Off keep the voice the channel's, unlent; its last Note Off frees it");
+	moment(&patch, 0, 50, 1, true);
+	moment(&patch, 0, 55, 1, true);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	moment(&patch, 0, 50, 1, false);
+	moment(&patch, 0, 55, 1, false);
+	CHECK(free_voices(&patch) == 6, "Porta Off over two held keys: both Note Offs free everything");
+
+	// The stage's own case (ROADMAP 28): Porta On on channels 1, 3 and 4, the others silent: a chord of 5 on
+	// channel 5 sounds whole, on its own voice, 2 and 6 first, then two of the Porta channels'.
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	set(&patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_ON), 1);
+	set(&patch, PATCH_CHANNEL_ID(3, PARAM_PORTA_ON), 1);
+	moment(&patch, 4, 60, 5, true);
+	int porta_voices = 0;
+	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
+		porta_voices += (voice == 0 || voice == 2 || voice == 3) && patch.voices[voice].channel == 4;
+	}
+	CHECK(patch_muted_notes(&patch, 4) == 0 && patch.voices[4].channel == 4 && patch.voices[1].channel == 4 && patch.voices[5].channel == 4 && porta_voices == 2,
+		"Porta On on 1, 3, 4: a chord of 5 on channel 5 sounds whole, the Porta voices last (28)");
+	moment(&patch, 4, 60, 5, false);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	set(&patch, PATCH_CHANNEL_ID(2, PARAM_PORTA_ON), 0);
+	set(&patch, PATCH_CHANNEL_ID(3, PARAM_PORTA_ON), 0);
+	CHECK(free_voices(&patch) == 6, "and every voice is free after it");
+
+	// Porta's held count against the ROM's note stack (architect, 28): the same key twice, then one
+	// Note Off, leaves the channel holding; its voice isn't lent while the ROM still holds a note.
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 1);
+	moment(&patch, 0, 50, 1, true);
+	moment(&patch, 0, 50, 1, true);
+	moment(&patch, 0, 50, 1, false);
+	moment(&patch, 4, 60, 6, true);
+	const bool kept = patch.voices[0].channel == 0;
+	moment(&patch, 4, 60, 6, false);
+	moment(&patch, 0, 50, 1, false);
+	set(&patch, PATCH_CHANNEL_ID(0, PARAM_PORTA_ON), 0);
+	CHECK(kept && free_voices(&patch) == 6 && patch_muted_notes(&patch, 4) == 0,
+		"a Porta key struck twice and let go once still holds its voice; nothing is left taken");
 
 	// A note and its note off at one moment.
 	const uint8_t on[3] = {0x90, 70, 100}, off[3] = {0x80, 70, 0};

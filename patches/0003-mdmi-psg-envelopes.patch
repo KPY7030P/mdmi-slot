@@ -193,7 +193,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..c450908 100644
+index 5145b6a..c19e598 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -71,7 +71,14 @@ static const u16 portaTimeToInterval[128]
@@ -407,15 +407,17 @@ index 5145b6a..c450908 100644
      devChan->cents = 0;
      devChan->pitch = pitch;
      set_downstream_note_on(devChan, velocity);
-@@ -519,6 +628,7 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
+@@ -519,6 +628,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
  {
      devChan->noteOn = false;
      devChan->pitch = 0;
-+
++    // MDMI plugin fork, stage 28: a voice let go mid-glide (both legato keys raised at once) kept its
++    // target; lent to another channel's chord and taken back, its next note glided to it, keyless.
++    devChan->glideTargetPitch = 0;
      devChan->ops->noteOff(devChan->num, pitch);
  }
  
-@@ -606,9 +716,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +718,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -428,7 +430,7 @@ index 5145b6a..c450908 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +762,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +764,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -507,7 +509,7 @@ index 5145b6a..c450908 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -675,7 +853,7 @@ static void store_program(const u8* data, u16 length)
+@@ -675,7 +855,7 @@ static void store_program(const u8* data, u16 length)
              fmPreset.operators[i].ssgEg = data[16 + i * 11];
          }
          midi_fm_store_preset(program, &fmPreset);
@@ -516,7 +518,7 @@ index 5145b6a..c450908 100644
          break;
      }
      default:
-@@ -692,7 +870,7 @@ static void clear_program(const u8* data, u16 length)
+@@ -692,7 +872,7 @@ static void clear_program(const u8* data, u16 length)
      switch (type) {
      case STORE_PROGRAM_TYPE_FM:
          midi_fm_clear_preset(program);
@@ -525,7 +527,7 @@ index 5145b6a..c450908 100644
          break;
      default:
          log_warn("Invalid clear program type: %d", type);
-@@ -811,9 +989,9 @@ static void dump_preset_request(const u8* data, u16 length)
+@@ -811,9 +991,9 @@ static void dump_preset_request(const u8* data, u16 length)
          const FmPreset* preset = midi_fm_get_stored_preset(program);
          if (preset != NULL) {
              send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
@@ -537,7 +539,7 @@ index 5145b6a..c450908 100644
          }
          break;
      }
-@@ -841,7 +1019,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1021,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -546,7 +548,7 @@ index 5145b6a..c450908 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1176,89 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1178,89 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -637,7 +639,7 @@ index 5145b6a..c450908 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1477,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1479,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -646,7 +648,7 @@ index 5145b6a..c450908 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1504,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1506,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -678,7 +680,7 @@ index 5145b6a..c450908 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1588,12 @@ void midi_reset(void)
+@@ -1311,11 +1590,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -693,7 +695,7 @@ index 5145b6a..c450908 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1617,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1619,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;

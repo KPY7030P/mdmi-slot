@@ -54,11 +54,17 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Voices (D20, D21): each FM channel plays on its own voice, and a chord borrows the voices of channels
   that are silent, nothing to set up. A channel always plays on its own voice: when a chord holds it,
   the chord's note there moves to a free voice and starts again, and is cut only if none is free (D22). A cut note that is still held starts again as soon as a voice comes free. Notes beyond the free
-  voices don't sound, and the window marks them as CUT; over such a row the footer names the voices that play alone and why (stage 24b, `patch_alone_reason`: Porta, SP, DAC). A green bracket in the window joins a chord's
+  voices don't sound, and the window marks them as CUT; over such a row the footer names the voices that never lend and why (stage 24b, D69, `patch_lend_reason`: SP, DAC). A green bracket in the window joins a chord's
   channel to the rows whose voices it plays. A borrowed voice
   first gets the channel's sound: notes of one moment wait until all their voices have it, a few ms, up to
   about 20 ms for a chord on voices that held other presets. Channels with Porta On, channel 3 in Ch3
-  Special Mode and channel 6 with the DAC play only on their own voice and lend none.
+  Special Mode and channel 6 with the DAC play only on their own voice and borrow none (`patch_alone_reason`).
+  Channel 3 in Ch3 Special and channel 6 with the DAC lend none either; a Porta channel lends its voice while it
+  is silent, after the other free voices, and its own note takes it back (D69, stage 28). The ROM glides only
+  between the channel's own held notes, so a chord's note on its voice leaves no glide behind; a voice let go
+  forgets its glide target (`dev_chan_note_off`, stage 28), else a legato raised at once left one for the
+  next note on that chip voice. Switching Ch3
+  Special or the DAC lets cut notes try the voices free since, with no Note Off (`never_lend_mask`).
 - Bank (D23): one bank of 128 places for the plugin, at first the ROM's GM presets. Place N is
   program N: Preset, CC 3 and a clip's Pgm choose from it on any FM channel. The BANK page lists it.
 - Files (D25): a TFI, VGI or TYI dropped from Explorer on an FM channel's row gives that channel its
