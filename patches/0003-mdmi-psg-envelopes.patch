@@ -147,6 +147,22 @@ index a263bad..5fda09c 100644
 +WAV pcm_Tambourine "samples/Tambourine.wav" PCM4 15500
 +WAV pcm_Triangle "samples/Triangle.wav" PCM4 15500
 +WAV pcm_VibraSlap "samples/VibraSlap.wav" PCM4 15500
+diff --git a/res/sprite.res b/res/sprite.res
+index 0fa4dca..5da2406 100644
+--- a/res/sprite.res
++++ b/res/sprite.res
+@@ -1,11 +1,3 @@
+-SPRITE algor_0 "sprite/algor_0.bmp" 6 1 FAST 0
+-SPRITE algor_1 "sprite/algor_1.bmp" 6 2 FAST 0
+-SPRITE algor_2 "sprite/algor_2.bmp" 6 2 FAST 0
+-SPRITE algor_3 "sprite/algor_3.bmp" 6 2 FAST 0
+-SPRITE algor_4 "sprite/algor_4.bmp" 6 2 FAST 0
+-SPRITE algor_5 "sprite/algor_5.bmp" 6 4 FAST 0
+-SPRITE algor_6 "sprite/algor_6.bmp" 6 4 FAST 0
+-SPRITE algor_7 "sprite/algor_7.bmp" 6 2 FAST 0
+ SPRITE activity "sprite/activity.bmp" 1 1 FAST 0
+ PALETTE pal_0 "sprite/pal_0.bmp"
+ PALETTE pal_1 "sprite/pal_1.bmp"
 diff --git a/src/arp_rows.c b/src/arp_rows.c
 new file mode 100644
 index 0000000..ae7170f
@@ -2365,7 +2381,7 @@ index b128177..34caeec 100644
      }
  
 diff --git a/src/synth.c b/src/synth.c
-index eec5dcc..c380e8e 100644
+index eec5dcc..c1c0ff3 100644
 --- a/src/synth.c
 +++ b/src/synth.c
 @@ -1,10 +1,26 @@
@@ -2544,7 +2560,21 @@ index eec5dcc..c380e8e 100644
  void synth_pitch(u8 channel, u8 octave, u16 freqNumber)
  {
      FmChannel* chan = &fmChannels[channel];
-@@ -355,7 +479,28 @@ static void write_operator_rate_scaling_and_attack_rate(u8 channel, u8 operator)
+@@ -116,6 +240,13 @@ void synth_pitch(u8 channel, u8 octave, u16 freqNumber)
+     write_octave_and_frequency(channel);
+ }
+ 
++// MDMI plugin fork, stage 29: the attenuation the chip gives a channel's carriers for its volume x
++// velocity, in TL units (0.75 dB), as volume_adjusted_total_level takes it.
++u8 synth_volume_attenuation(u8 channel)
++{
++    return VOLUME_TO_TOTAL_LEVELS[volumes[channel] & 0x7F];
++}
++
+ void synth_volume(u8 channel, u8 volume)
+ {
+     if (volumes[channel] == volume) {
+@@ -355,7 +486,28 @@ static void write_operator_rate_scaling_and_attack_rate(u8 channel, u8 operator)
  {
      Operator* op = get_operator(channel, operator);
      write_operator_reg(channel, operator, YM_BASE_ATTACK_RATE_SCALING_RATE,
@@ -2574,7 +2604,7 @@ index eec5dcc..c380e8e 100644
  }
  
  static void write_operator_amplitude_modulation_and_decay_rate(u8 channel, u8 operator)
-@@ -428,15 +573,15 @@ void synth_set_parameter_update_callback(ParameterUpdatedCallback* cb)
+@@ -428,15 +580,15 @@ void synth_set_parameter_update_callback(ParameterUpdatedCallback* cb)
      parameterUpdatedCallback = cb;
  }
  
@@ -2596,7 +2626,7 @@ index eec5dcc..c380e8e 100644
      other_parameter_updated(0, SpecialMode);
  }
  
-@@ -463,21 +608,35 @@ void synth_special_mode_volume(u8 operator, u8 volume)
+@@ -463,21 +615,35 @@ void synth_special_mode_volume(u8 operator, u8 volume)
          effective_total_level(CH3_SPECIAL_MODE, operator, newTotalLevel));
  }
  
@@ -2634,10 +2664,18 @@ index eec5dcc..c380e8e 100644
  
  static void write_reg_safe(u8 part, u8 reg, u8 data)
 diff --git a/src/synth.h b/src/synth.h
-index 222a443..caee9ff 100644
+index 222a443..55119ec 100644
 --- a/src/synth.h
 +++ b/src/synth.h
-@@ -86,5 +86,17 @@ void synth_set_parameter_update_callback(ParameterUpdatedCallback* cb);
+@@ -60,6 +60,7 @@ void synth_note_on(u8 channel);
+ void synth_note_off(u8 channel);
+ void synth_pitch(u8 channel, u8 octave, u16 freqNumber);
+ void synth_volume(u8 channel, u8 volume);
++u8 synth_volume_attenuation(u8 channel);
+ void synth_stereo(u8 channel, u8 mode);
+ void synth_algorithm(u8 channel, u8 algorithm);
+ void synth_feedback(u8 channel, u8 feedback);
+@@ -86,5 +87,17 @@ void synth_set_parameter_update_callback(ParameterUpdatedCallback* cb);
  void synth_set_special_mode(bool enable);
  void synth_special_mode_pitch(u8 op, u8 octave, u16 freqNumber);
  void synth_special_mode_volume(u8 op, u8 volume);
@@ -2656,10 +2694,10 @@ index 222a443..caee9ff 100644
  void synth_direct_write_ym2612(u8 part, u8 reg, u8 data);
  void synth_enable_dac(bool enable);
 diff --git a/src/ui.c b/src/ui.c
-index 66cd230..a827dff 100644
+index 66cd230..7844a00 100644
 --- a/src/ui.c
 +++ b/src/ui.c
-@@ -2,552 +2,2569 @@
+@@ -2,552 +2,2587 @@
  #include "comm/comm.h"
  #include "comm/comm_everdrive.h"
  #include "comm/comm_everdrive_pro.h"
@@ -3625,8 +3663,8 @@ index 66cd230..a827dff 100644
 +static void curve_shape(u8 ch);
 +static void dot_start(u8 ch, u8 seg);
 +static void dot_release(u8 ch);
-+static u8 dot_height(u8 ch);
 +static void follow_dots(u16 delta);
++static u16 dot_attenuation(u8 ch);
 +static void draw_dots(void);
  
 -    set_tile(TILE_BORDERS_LINE_START_INDEX, PAL3, DEVICE_X, PSG_DEVICE_Y + 1);
@@ -3746,39 +3784,60 @@ index 66cd230..a827dff 100644
 +                dotsRefresh |= 1 << v;
 +                rightMoving |= 1 << v;
 +            }
-         }
-     }
--    print_chan_activity(pitches);
- }
- 
--static void print_mappings_if_dirty(u8* midiChans)
++        }
++    }
++}
++
 +// Levels: FM by velocity x CC 7 and its carrier's envelope (an estimate) ------------------------
 +
 +static u8 level[FM_CHANS];
 +static u8 peak[FM_CHANS];
 +static u8 peakHold[FM_CHANS];
-+static u8 levelTarget[FM_CHANS];
-+static bool levelOn[FM_CHANS];
 +static u16 levelDrawn[FM_CHANS];
++// The FM channels hit since their level last looked (24a4, stage 29 review): each hit's velocity is the
++// peak at once, whatever the dot does (a note shorter than a frame hides its dot; a fast decay leaves
++// the curve's top before the level looks).
++static u8 levelHits;
 +
 +#define PEAK_FRAMES 30
 +
-+static void follow_level(u8 ch, const DeviceChannel* devChan)
++// Stage 29 (rom-screen.md 11, art-director): the stripes lit for an attenuation in TL units (0.75 dB),
++// fine steps at the top: 16 up to 1, 15 up to 3, ..., 1 up to 127.
++static const u8 LEVEL_BOUND[16] = { 1, 3, 5, 8, 12, 16, 21, 26, 33, 41, 50, 61, 73, 86, 104, 127 };
++static u8 LEVEL_LIT[128];
++
++static void level_table(void)
++{
++    u8 n = 0;
++    for (u8 s = 0; s < 128; s++) {
++        while (n < 16 && s > LEVEL_BOUND[n]) {
++            n++;
+         }
++        LEVEL_LIT[s] = 16 - n;
+     }
+-    print_chan_activity(pitches);
+ }
+ 
+-static void print_mappings_if_dirty(u8* midiChans)
++static void follow_level(u8 ch)
  {
 -    static u8 lastMidiChans[DEV_PHYSICAL_CHANS];
 -    if (memcmp(lastMidiChans, midiChans, sizeof(u8) * DEV_PHYSICAL_CHANS) == 0) {
-+    if (!(envMoving & 1 << ch) && !level[ch] && !peak[ch]) {
++    const bool hit = levelHits & 1 << ch;
++    if (!hit && !(envMoving & 1 << ch) && !level[ch] && !peak[ch]) {
          return;
      }
-+    if (devChan->noteOn && (!levelOn[ch] || !(uiFrame & 14))) {
-+        // At the Note On, and every 8 frames or so for CC 7.
-+        levelTarget[ch] = (mul16(midi_fm_velocity(ch), midi_fm_volume(ch) + 1) >> 10) + 1;
-+    }
-+    levelOn[ch] = devChan->noteOn;
-+    // The level from the dot's height on its curve (24a3, architect): one estimate for both.
-+    const u8 height = dot_height(ch);
-+    level[ch] = (mul16(levelTarget[ch], height) * 5) >> 6;
-+    if (level[ch] >= peak[ch]) {
++    levelHits &= ~(1 << ch);
++    // The chip's own attenuation for volume x velocity (stage 29): set at each Note On and CC 7 and kept
++    // after Note Off. In Ch3 Special's OPS channel 3 skips synth_volume: it shows squares, not a level.
++    const u8 velAtt = synth_volume_attenuation(ch);
++    const u16 s = velAtt + dot_attenuation(ch);
++    level[ch] = s >= 128 ? 0 : LEVEL_LIT[s];
++    if (hit && LEVEL_LIT[velAtt] >= peak[ch]) {
++        // The hit's own level, the curve's top.
++        peak[ch] = LEVEL_LIT[velAtt];
++        peakHold[ch] = PEAK_FRAMES >> 1;
++    } else if (level[ch] >= peak[ch]) {
 +        peak[ch] = level[ch];
 +        peakHold[ch] = PEAK_FRAMES >> 1;
 +    } else if (peakHold[ch]) {
@@ -3824,9 +3883,8 @@ index 66cd230..a827dff 100644
 +        const u8 voice = op == 3 || !ops ? CH3_CHAN : CHANS + op;
 +        const UiEnvelope* env = op == 3 ? &envelopes[CH3_CHAN] : &envelopes[FM_CHANS + op];
 +        const u16 attn = sinceOff[voice] == SATURATED && !(envDown & 1 << voice) ? 1023 : envelope_now(voice, env);
-+        // 0-4 by level; 5 is the free square, never a level (reviewer, 24a3).
-+        const u8 level = mul16(1024 - attn, 5) >> 10;
-+        const u8 fill = attn >= 1023 ? 5 : level > 4 ? 4 : level;
++        // 4 to 0 by 6, 12, 24, 48 dB down (stage 29, rom-screen.md 11); 5 is the free square.
++        const u8 fill = attn >= 1023 ? 5 : attn < 64 ? 4 : attn < 128 ? 3 : attn < 256 ? 2 : attn < 512 ? 1 : 0;
 +        key |= (u16)fill << (op * 3);
 +    }
 +    return key;
@@ -3851,12 +3909,11 @@ index 66cd230..a827dff 100644
 -    for (u8 i = 0; i < DEV_PHYSICAL_CHANS; i++) {
 -        u8 pitch = pitches[i];
 -        if (pitch == lastPitches[i]) {
-+    const DeviceChannel* chans = midi_channel_mappings();
 +    // Three channels a frame, round the six: each is followed and drawn every other frame.
 +    for (u8 i = 0; i < 3 && !full(); i++) {
 +        const u8 ch = levelTurn;
 +        levelTurn = levelTurn == FM_CHANS - 1 ? 0 : levelTurn + 1;
-+        follow_level(ch, &chans[ch]);
++        follow_level(ch);
 +        if (ch == DAC_CHAN && dac_on()) {
 +            levelDrawn[ch] = NOT_DRAWN;
              continue;
@@ -4068,13 +4125,13 @@ index 66cd230..a827dff 100644
 +    // Still VBlank at the end: a VInt long enough to reach the picture would show here.
 +    if (!(*(volatile u16*)VDP_CTRL_PORT & 8)) {
 +        ui_stat_vdp_outside += n;
-+    }
+     }
 +    // The NTSC counter goes back from 0xEA to 0xE5 once in VBlank: a VInt across it gains 6.
 +    const u8 to = *(volatile u8*)0xC00008;
 +    const u8 lines = to >= from ? to - from : to + 6 - from;
 +    if (n > ui_stat_vint_words_max) {
 +        ui_stat_vint_words_max = n;
-     }
++    }
 +    if (lines > ui_stat_vint_lines_max) {
 +        ui_stat_vint_lines_max = lines;
 +    }
@@ -4082,33 +4139,33 @@ index 66cd230..a827dff 100644
 +}
 +
 +// Live note cells (W2): white on the hit, over ~1/3 s to the chip's colour, dim after the release ---
-+
+ 
+-    VDP_clearTextArea(9, MAX_EFFECTIVE_Y + 1, 7, 1);
+-    VDP_drawImageEx(BG_A, MODES_IMAGES[index],
+-        TILE_ATTR_FULL(PAL0, 0, FALSE, FALSE, TILE_IMAGES_INDEX), 9, MAX_EFFECTIVE_Y + 1, FALSE,
+-        FALSE);
 +// A channel's live cell: its queue slot is its place in NOTE_PAL and NOTE_COPY order. The masks are
 +// walked channel by channel: __builtin_ctz is a slow libgcc call on the 68000.
 +static u8 sinceHit[CHANS], sinceRelease[CHANS];
 +static u16 liveShown[CHANS];
 +#define LIVE_UNKNOWN 0xFFFF
  
--    VDP_clearTextArea(9, MAX_EFFECTIVE_Y + 1, 7, 1);
--    VDP_drawImageEx(BG_A, MODES_IMAGES[index],
--        TILE_ATTR_FULL(PAL0, 0, FALSE, FALSE, TILE_IMAGES_INDEX), 9, MAX_EFFECTIVE_Y + 1, FALSE,
--        FALSE);
+-    if (commInited) {
+-        VDP_clearTextArea(COMM_EXTRA_X, MAX_EFFECTIVE_Y + 1, 5, 1);
 +static u8 live_chip(u8 ch)
 +{
 +    return ch >= FM_CHANS ? 1 : ch == CH3_CHAN && specialOn ? 2 : 0;
 +}
- 
--    if (commInited) {
--        VDP_clearTextArea(COMM_EXTRA_X, MAX_EFFECTIVE_Y + 1, 5, 1);
++
 +static u16 live_colour(u8 ch, bool on)
 +{
 +    const u8 chip = live_chip(ch);
 +    if (sinceHit[ch] < UI_FLASH_FRAMES) {
 +        return UI_FLASH[chip][on ? 0 : 1][sinceHit[ch]];
-+    }
+     }
 +    if (on) {
 +        return UI_LIVE_HELD[chip];
-     }
++    }
 +    return sinceRelease[ch] < UI_RELEASE_FRAMES ? UI_RELEASE[chip][sinceRelease[ch]] : UI_LIVE_DIM[chip];
  }
  
@@ -4174,14 +4231,14 @@ index 66cd230..a827dff 100644
 +        live_work(delta);
 +    }
 +}
-+
-+// The noise's texture (W19): 4 cells of PAL3 cycle, brightness by the loudness -------------------
  
 -    s16 led_level = percent == 0 ? 0 : (percent / (100 / LED_TILE_COUNT)) + 1;
 -    for (u16 i = 0; i < LED_TILE_COUNT; i++) {
 -        u16 tile_index = TILE_LED_INDEX + i + LED_TILE_OFF_OFFSET;
 -        if (i < led_level) {
 -            tile_index -= LED_TILE_OFF_OFFSET;
++// The noise's texture (W19): 4 cells of PAL3 cycle, brightness by the loudness -------------------
++
 +static u16 noiseKey = NOT_DRAWN;
 +static u16 noiseDrawn = NOT_DRAWN;
 +
@@ -4214,7 +4271,8 @@ index 66cd230..a827dff 100644
 -        print_load_text(percent);
 +    if (key == noiseKey) {
 +        return;
-+    }
+     }
+-    comm_reset_counts();
 +    noiseKey = key;
 +    for (u8 k = 0; k < 4; k++) {
 +        queue(Q_NOISE + k, colours[k]);
@@ -4226,17 +4284,11 @@ index 66cd230..a827dff 100644
 +    noiseResting = !(heldMask & 1 << NOISE_CHAN) && (noiseKey >> 8) == 1 && (uiFrame & 7);
 +    if (!noiseResting) {
 +        noise_colours();
-     }
--    comm_reset_counts();
- }
- 
--static void init_routing_mode_tiles(void)
++    }
++}
++
 +static void __attribute__((noinline)) noise_texture(void)
- {
--    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
--    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
--    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
--    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
++{
 +    const u16 want = midi_psg_noise_white();
 +    if (want == noiseDrawn) {
 +        return;
@@ -4289,10 +4341,15 @@ index 66cd230..a827dff 100644
 +    }
 +    // The line alone is the same in every palette.
 +    return ribbonHeld & 1 << ch ? ATTR(ribbon_pal(ch), UI_T_HOLD) : ATTR(PAL0, UI_T_RIBBON);
-+}
-+
+ }
+ 
+-static void init_routing_mode_tiles(void)
 +static bool ribbon_cell(u8 ch, u8 col, u16 attr)
-+{
+ {
+-    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
+-    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
 +    if (ribbonShadow[ch][col] == attr) {
 +        return TRUE;
 +    }
@@ -4357,13 +4414,13 @@ index 66cd230..a827dff 100644
 +            }
 +        }
 +        ribbonDirty = dirty | ribbonHeld;
-+    }
+     }
 +    for (u16 bits = ribbonHitMask, ch = 0; bits >> ch; ch++) {
 +        if (!(bits & 1 << ch)) {
 +            continue;
 +        }
 +        ribbonBits[ch] |= 1 << (point & 7);
-     }
++    }
 +    ribbonDirty |= ribbonHitMask;
 +    ribbonHitMask = 0;
 +    const u16 dropped = ribbonHeld & ~ribbon_held();
@@ -4406,24 +4463,22 @@ index 66cd230..a827dff 100644
 +
 +// Their tiles are written while music plays, 16 words a tile, under the same ceiling as the cells
 +// and after everything else; the map cells only point at them. rom-screen.md 10.3: FM channel k's
-+// curve at 1020 + 36k (cell * 3 + variant: not passed, left half passed, passed), PSG channel k's
-+// bars at 1237 + 12k.
++// curve at 1020 + 12k (a tile a cell; 1092-1235 free since stage 29), PSG channel k's bars at 1237 + 12k.
 +#define CURVE_BASE 1020
 +#define BARS_BASE 1237
 +#define CURVE_W 48
 +#define CURVE_TOP 1
 +#define CURVE_BOT 14
-+#define I_PASSED 11
-+#define I_NOT_PASSED 3
++#define I_CURVE 3
 +#define I_BAR_LEFT 9
 +#define I_BAR_RIGHT 10
 +
 +// A curve: its five points (x, y) and, by column, which of its 16 rows it crosses.
 +typedef struct Curve {
 +    u8 x[5], y[5];
-+    // The cells (6 x 2) it crosses, and the tiles already written by variant.
++    // The cells (6 x 2) it crosses, and the tiles already written.
 +    u16 crossed;
-+    u16 written[3];
++    u16 written;
 +} Curve;
 +static Curve curves[FM_CHANS];
 +// One curve's points by row (16) and tile column (6), bit 7 the left point: the channel whose
@@ -4478,7 +4533,7 @@ index 66cd230..a827dff 100644
 +    if (rasterCh == ch) {
 +        rasterCh = 0xFF;
 +    }
-+    c->written[0] = c->written[1] = c->written[2] = 0;
++    c->written = 0;
 +    curveDirty |= 1 << ch;
 +    rightMoving |= 1 << ch;
 +}
@@ -4488,7 +4543,6 @@ index 66cd230..a827dff 100644
 +
 +// One column of rastering channel ch's curve (D67: the rebuild goes by time, a unit at a time): true
 +// once all four segments are in curveRows.
-+#define RASTER_COLUMNS 1
 +static u8 rasterX;
 +static s16 rasterLast;
 +
@@ -4510,7 +4564,7 @@ index 66cd230..a827dff 100644
 +    if (rasterStage == 4) {
 +        return TRUE;
 +    }
-+    for (u8 budget = RASTER_COLUMNS; budget && rasterStage < 4;) {
++    for (u8 budget = 1; budget && rasterStage < 4;) {
 +        const u8 seg = rasterStage;
 +        const u8 x0 = c->x[seg], x1 = c->x[seg + 1], dx = x1 - x0;
 +        if (rasterX > x1) {
@@ -4586,17 +4640,16 @@ index 66cd230..a827dff 100644
 +    } while (frame != (u16)vtimer);
 +}
 +
-+static void curve_tile(u8 ch, u8 cell, u8 variant)
++static void curve_tile(u8 ch, u8 cell)
 +{
 +    const u8 cx = cell % 6, cy = cell / 6;
 +    const u32 paper = (cy == 0 ? top_paper(ch) : 0) * 0x11111111u;
-+    const u32 ink = variant == 2 ? I_PASSED * 0x11111111u : variant == 1 ? I_PASSED * 0x11110000u | I_NOT_PASSED * 0x00001111u
-+                                                                        : I_NOT_PASSED * 0x11111111u;
++    const u32 ink = I_CURVE * 0x11111111u;
 +    u32 rows[8];
 +    for (u8 y = 0; y < 8; y++) {
 +        rows[y] = tile_row(curveRows[cy * 8 + y][cx], ink, paper);
 +    }
-+    write_tile(CURVE_BASE + 36 * ch + cell * 3 + variant, rows);
++    write_tile(CURVE_BASE + 12 * ch + cell, rows);
 +}
 +
 +// The envelope's step a bar shows: bar * steps / 12, by subtraction (no division, at most a few
@@ -4717,11 +4770,11 @@ index 66cd230..a827dff 100644
 +            raster_curve(ch);
 +            return TRUE;
 +        }
-+        const u16 todo = c->crossed & ~c->written[0];
++        const u16 todo = c->crossed & ~c->written;
 +        for (u8 n = 0; todo >> n; n++) {
 +            if (todo & 1 << n) {
-+                curve_tile(ch, n, 0);
-+                c->written[0] |= 1 << n;
++                curve_tile(ch, n);
++                c->written |= 1 << n;
 +                return TRUE;
 +            }
 +        }
@@ -4853,10 +4906,11 @@ index 66cd230..a827dff 100644
 +    dotDY[ch] = dot_step(CURVE_BOT - y, frames);
 +}
 +
-+// How high the dot stands, 0 to 13: the level's estimate too.
-+static u8 dot_height(u8 ch)
++// The envelope's part of the level (stage 29) from the dot's 8.8 height on its curve (24a3): its 13 rows
++// to about 128 TL units, the fraction kept so the bar doesn't jump 4 stripes a row; hidden, nothing lit.
++static u16 dot_attenuation(u8 ch)
 +{
-+    return dotSeg[ch] == DOT_HIDDEN ? 0 : CURVE_BOT - (dotY[ch] >> 8);
++    return dotSeg[ch] == DOT_HIDDEN ? 128 : mul16(dotY[ch] - (CURVE_TOP << 8), 10) >> 8;
 +}
 +
 +// Each frame for the FM voices that move: the next place, or the next segment.
@@ -4909,7 +4963,7 @@ index 66cd230..a827dff 100644
 +}
 +
 +// One FM row's 12 cells: the curve's tiles by how far the dot has gone, empty where it doesn't pass.
-+static bool curve_cells(u8 ch, u16 want, u16 drawn)
++static bool curve_cells(u8 ch, u16 want)
 +{
 +    const Curve* c = &curves[ch];
 +    const u8 y = ROW(ch) - 1;
@@ -4921,7 +4975,7 @@ index 66cd230..a827dff 100644
 +            all &= cell(x, cy, empty(x, cy));
 +        } else {
 +            // The owner's option B (2026-11-13): a still curve, no passed part; the dot moves.
-+            all &= cell(x, cy, ATTR(pal, CURVE_BASE + 36 * ch + n * 3));
++            all &= cell(x, cy, ATTR(pal, CURVE_BASE + 12 * ch + n));
 +        }
 +    }
 +    return all;
@@ -4994,7 +5048,7 @@ index 66cd230..a827dff 100644
 +            continue;
 +        }
 +        const bool all = want == 0x8000 ? blank_cells(X_ENVELOPE, ROW(ch) - 1, ENVELOPE_CELLS)
-+            : ch < FM_CHANS ? curve_cells(ch, want, rightDrawn[ch]) : bars_cells(ch, want, rightDrawn[ch]);
++            : ch < FM_CHANS ? curve_cells(ch, want) : bars_cells(ch, want, rightDrawn[ch]);
 +        if (all) {
 +            rightDrawn[ch] = want;
 +        } else {
@@ -5402,6 +5456,7 @@ index 66cd230..a827dff 100644
 +    follow_channels();
 +    // 24a3: the envelopes' counters and one operator's five numbers a frame.
 +    follow_voices(delta, voiceHits, heldMask | operatorsDown);
++    levelHits |= voiceHits & ((1 << FM_CHANS) - 1);
 +    follow_dots(delta);
 +    // A PSG note may bring another envelope: its 12 bars are looked at again.
 +    for (u16 bits = voiceHits, k = 0; k < 4 && bits >> (FM_CHANS + k); k++) {
@@ -5518,6 +5573,7 @@ index 66cd230..a827dff 100644
 +void ui_init(void)
 +{
 +    scheduler_addFrameHandler(update);
++    level_table();
 +
 +    // Stage 24a3 (D64): no SGDK sprite engine; the status screen owns the sprite table.
 +    load_font();

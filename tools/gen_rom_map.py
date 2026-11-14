@@ -27,6 +27,10 @@ def main():
     # would overwrite the screen's dots.
     if "SPR_update" in symbols:
         raise SystemExit(f"{symbols_path}: SPR_update is in the ROM (D64)")
+    # Stage 29 (review of 24a3): the ROM's bss must end below 0xFFC300, where the RAM the screen counts
+    # on for SGDK starts; in 0.24.8 it ended at 0xFFC0D2, about 560 bytes short.
+    if "_bend" not in symbols or symbols["_bend"] & 0xFFFFFF >= 0xFFC300:
+        raise SystemExit(f"{symbols_path}: the ROM's bss ends at {symbols.get('_bend', 0) & 0xFFFFFF:#x}, at or past 0xFFC300")
     for name in ("_stext", "_etext", "_edata", "percussionPcmSample", "M_BANK_0", "ENVELOPES", "ARP_ROWS", "PROGRAM_NAMES"):
         if name not in symbols:
             raise SystemExit(f"{symbols_path}: no symbol {name}")

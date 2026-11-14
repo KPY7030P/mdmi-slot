@@ -2483,6 +2483,75 @@ int main(int argc, char **argv)
 		}
 		send_midi(0xB0, 80, 0);
 		run_ms(3000);
+		// Stage 29's frames for the owner (rom-screen.md 11, art-director): FM 1-6 at velocities 127, 112,
+		// 100, 80, 64, 30; velocity 64 at CC 7 127, 100, 64; 30 then 127 back to back; a decay at 0, 0.5,
+		// 1, 2 s; Ch3 Special's squares over the same times.
+		static const uint8_t VELOCITIES[6] = {127, 112, 100, 80, 64, 30};
+		for (int ch = 0; ch < 6; ch++) {
+			send_midi((uint8_t)(0x90 | ch), 60, VELOCITIES[ch]);
+		}
+		run_ms(120);
+		capture(window);
+		save_bmp(argv[2], "rom-29-velocity");
+		for (int ch = 0; ch < 6; ch++) {
+			send_midi((uint8_t)(0x80 | ch), 60, 0);
+		}
+		run_ms(1500);
+		static const uint8_t VOLUMES[3] = {127, 100, 64};
+		for (int ch = 0; ch < 3; ch++) {
+			send_midi((uint8_t)(0xB0 | ch), 7, VOLUMES[ch]);
+			send_midi((uint8_t)(0x90 | ch), 60, 64);
+		}
+		run_ms(120);
+		capture(window);
+		save_bmp(argv[2], "rom-29-cc7");
+		for (int ch = 0; ch < 3; ch++) {
+			send_midi((uint8_t)(0x80 | ch), 60, 0);
+			send_midi((uint8_t)(0xB0 | ch), 7, 127);
+		}
+		run_ms(1500);
+		send_midi(0x90, 60, 30);
+		run_ms(300);
+		send_midi(0x80, 60, 0);
+		send_midi(0x90, 62, 127);
+		run_ms(100);
+		capture(window);
+		save_bmp(argv[2], "rom-29-adjacent");
+		static const int DECAY_MS[4] = {0, 500, 1000, 2000};
+		for (int i = 0; i < 4; i++) {
+			run_ms(i ? DECAY_MS[i] - DECAY_MS[i - 1] : 30);
+			capture(window);
+			char name[32];
+			snprintf(name, sizeof(name), "rom-29-decay-%d", i);
+			save_bmp(argv[2], name);
+		}
+		send_midi(0x80, 62, 0);
+		run_ms(1500);
+		send_midi(0xB0, 80, 127);
+		run_ms(300);
+		send_midi(0x92, 60, 110);
+		for (int op = 0; op < 3; op++) {
+			send_midi((uint8_t)(0x9A + op), (uint8_t)(64 + op * 3), 100);
+		}
+		// The first frame 100 ms in: OPS keys on later than a plain channel (the plugin's latency, the
+		// moment's dealing and the ROM's frame), at 30 ms nothing sounds yet.
+		for (int i = 0; i < 4; i++) {
+			run_ms(i ? DECAY_MS[i] - DECAY_MS[i - 1] : 100);
+			if (i == 3) {
+				send_midi(0x8C, 70, 0);
+				run_ms(300);
+			}
+			capture(window);
+			char name[32];
+			snprintf(name, sizeof(name), "rom-29-squares-%d", i);
+			save_bmp(argv[2], name);
+		}
+		send_midi(0x82, 60, 0);
+		for (int op = 0; op < 3; op++) {
+			send_midi((uint8_t)(0x8A + op), (uint8_t)(64 + op * 3), 0);
+		}
+		send_midi(0xB0, 80, 0);
+		run_ms(3000);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		send_midi(0xB0, 78, 0);
 		run_ms(800);

@@ -125,8 +125,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - 24a3 (D64, D67, the owner's option B). The SGDK sprite engine is gone: the ROM owns the sprite table, and CC 83's
   algorithm picture is plane A tiles (1285-1335). `UiEnvelope` (`ui.h`) is an operator's envelope estimate, built by
   tables from AR, D1R, SL, D2R, RR (`gen_rom_screen.py`, BlastEm's YM timing). Frame counters since Note On / Off
-  run for FM 1-6 and channel 3's operator channels. They feed the Ch3 squares, the FM dots (a segment at a time, a
-  step a frame) and W1 (the dot's height). Curves (1020 + 36k) and PSG bars (1237 + 12k) are tiles written while
+  run for FM 1-6 and channel 3's operator channels. They feed the Ch3 squares (filled 4 to 0 at 6, 12, 24,
+  48 dB down), the FM dots (a segment at a time, a step a frame) and W1. W1 is in dB since stage 29
+  (rom-screen.md 11): the chip's own attenuation for volume x velocity (`synth_volume_attenuation`, TL units)
+  plus the dot's height as attenuation, through `LEVEL_LIT` (16 stripes, fine steps at the top). Curves
+  (1020 + 12k) and PSG bars (1237 + 12k) are tiles written while
   music plays, one address and 16 words each. A rebuild starts only in a frame with fewer than 53 lines so far
   and goes a raster column or a tile at a time until 64 lines (N is `ui_stat_curve_lag_max`). The VInt queue writes runs: a
   palette's live colours, the noise's 4, each dot's whole sprite entry. Hard limits found:

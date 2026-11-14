@@ -3539,7 +3539,9 @@ static void test_adjacent(void)
 	printf("  adjacent: played over, first note on voice %d, the next on voice %d\n", first_voice + 1, over_voice + 1);
 	check(alone < steady / 4, "a note alone starts from silence");
 	check(first_voice >= 0 && over_voice >= 0 && first_voice != over_voice, "a note played over gets another voice");
-	check(right_after[0] > steady / 2 && right_after[6] <= 2 * alone, "a note right after on the same voice starts its attack from the level the last one left, after a pause from silence (the chip)");
+	// After the pause the last note's rest is at least 20 dB under steady (D71): measured against steady,
+	// not against twice the floor (0.006 against 2 x 0.003 flipped with the ROM's timing).
+	check(right_after[0] > steady / 2 && right_after[6] <= steady / 10, "a note right after on the same voice starts its attack from the level the last one left, after a pause from 20 dB down at least (the chip)");
 
 	test_retrigger(ch, alone);
 
@@ -5433,6 +5435,39 @@ static int level_cells_lit(int y)
 	return n;
 }
 
+// Stage 29: a level row's stripes as drawn, from its four cells' patterns (ui_tiles.c UI_LEVEL_PATTERN:
+// a pattern by stripes lit 0-4 and the peak's stripe in the cell, 0 for none). The peak if one shows,
+// else the stripes lit.
+static int level_peak(int y)
+{
+	static const int8_t PATTERN[5][5] = {{0, 5, 6, 7, 8}, {1, -1, 9, 10, 11}, {2, -1, -1, 12, 13}, {3, -1, -1, -1, 14}, {4, -1, -1, -1, -1}};
+	int lit = 0, top = 0;
+	for (int t = 0; t < 4; t++) {
+		const int colour = t < 2 ? 0 : t - 1;
+		const int p = screen_tile(SCREEN_X_LEVEL + t, y) - (UI_T_LEVEL + colour * UI_LEVEL_PATTERNS);
+		for (int n = 0; n < 5; n++) {
+			for (int k = 0; k < 5; k++) {
+				if (PATTERN[n][k] == p) {
+					lit += n;
+					top = k ? t * 4 + k : top;
+				}
+			}
+		}
+	}
+	return top ? top : lit;
+}
+
+// A held FM note's peak stripes (the curve's top: velocity x CC 7 alone, rom-screen.md 11).
+static int stripes_of_note(uint8_t velocity)
+{
+	midi(0x90, 60, velocity);
+	render(40);
+	const int stripes = level_peak(SCREEN_ROW(0));
+	midi(0x80, 60, 0);
+	render(300);
+	return stripes;
+}
+
 // A held FM note's level once its peak has settled on it.
 static int level_of_note(uint8_t velocity)
 {
@@ -5513,7 +5548,54 @@ static void test_screen_cells(void)
 	midi(0xB0, 7, 127);
 	render(20);
 	printf("      level cells lit: velocity 30 %d, 127 %d, 127 with CC 7 64 %d\n", quiet, loud, half);
-	check(quiet == 1 && loud == 4 && half == 3, "screen: FM's level follows velocity and CC 7 (1, 4 and 3 cells)");
+	check(quiet == 2 && loud == 4 && half == 3, "screen: FM's level follows velocity and CC 7 (2, 4 and 3 cells)");
+	// Stage 29: the level in dB as the chip attenuates (rom-screen.md 11): stripes at the curve's top.
+	const int s127 = stripes_of_note(127), s100 = stripes_of_note(100), s64 = stripes_of_note(64), s30 = stripes_of_note(30);
+	midi(0xB0, 7, 100);
+	const int c100 = stripes_of_note(127);
+	midi(0xB0, 7, 64);
+	const int c64 = stripes_of_note(127);
+	midi(0xB0, 7, 127);
+	render(20);
+	printf("      stripes at the top: velocity 127 %d, 100 %d, 64 %d, 30 %d; 127 with CC 7 100 %d, 64 %d\n", s127, s100, s64, s30, c100, c64);
+	check(s127 == 16 && s100 == 15 && s64 == 12 && s30 == 7, "screen: FM's level in dB, velocity 127, 100, 64, 30 give 16, 15, 12, 7 stripes; 100 and 127 differ (29)");
+	check(c100 == 15 && c64 == 12, "screen: CC 7 100 and 64 give 15 and 12 stripes, as the chip attenuates (29)");
+	// Review of 29: a note let go in the moment it starts hides its dot at once; its velocity is the peak
+	// all the same, so 127 and 100 differ whatever the curve and the frame's phase.
+	int at_once[2];
+	for (int i = 0; i < 2; i++) {
+		midi(0x90, 60, i ? 100 : 127);
+		midi(0x80, 60, 0);
+		rom_frames(4);
+		at_once[i] = level_peak(SCREEN_ROW(0));
+		render(300);
+	}
+	printf("      a note let go at once: velocity 127 %d stripes, 100 %d\n", at_once[0], at_once[1]);
+	check(at_once[0] == 16 && at_once[1] == 15, "screen: a note shorter than a frame shows its velocity as the peak, 16 and 15 stripes (29)");
+	// 24a4 (the owner's remark): each note brings its velocity, also back to back, with no frame of
+	// silence between, and a note let go before the screen looked at it.
+	midi(0x90, 60, 30);
+	rom_frames(20);
+	midi(0x80, 60, 0);
+	midi(0x90, 62, 127);
+	rom_frames(6);
+	const int adjacent = level_cells_lit(SCREEN_ROW(0));
+	midi(0x80, 62, 0);
+	midi(0x90, 60, 30);
+	rom_frames(20);
+	midi(0x80, 60, 0);
+	midi(0x90, 62, 127);
+	rom_frames(1);
+	midi(0x80, 62, 0);
+	int brief = 0;
+	for (int f = 0; f < 6; f++) {
+		rom_frames(1);
+		const int lit = level_cells_lit(SCREEN_ROW(0));
+		brief = lit > brief ? lit : brief;
+	}
+	render(300);
+	printf("      velocity 30 then 127 back to back: %d cells after 6 frames, %d at most after a 127 of one frame\n", adjacent, brief);
+	check(adjacent == 4 && brief >= 3, "screen: a note's velocity reaches FM's level also back to back and when let go at once (24a4, 29)");
 
 	// The DAC: its label as the name, four voices' notes in channel 6's row.
 	set_global(GLOBAL_DAC, 1);
@@ -5869,8 +5951,8 @@ static void test_screen_ribbon(void)
 	const int dot_x1 = mdmi_engine_test_vdp(engine, 0, 0xF406) & 0x1FF;
 	int curve_cells = 0;
 	for (int y = SCREEN_ROW(0) - 1; y <= SCREEN_ROW(0); y++) {
-		curve_cells += tiles_within(33, y, 1, 1020, 1020 + 36) + tiles_within(34, y, 1, 1020, 1020 + 36) + tiles_within(35, y, 1, 1020, 1020 + 36)
-			+ tiles_within(36, y, 1, 1020, 1020 + 36) + tiles_within(37, y, 1, 1020, 1020 + 36) + tiles_within(38, y, 1, 1020, 1020 + 36);
+		curve_cells += tiles_within(33, y, 1, 1020, 1020 + 12) + tiles_within(34, y, 1, 1020, 1020 + 12) + tiles_within(35, y, 1, 1020, 1020 + 12)
+			+ tiles_within(36, y, 1, 1020, 1020 + 12) + tiles_within(37, y, 1, 1020, 1020 + 12) + tiles_within(38, y, 1, 1020, 1020 + 12);
 	}
 	midi(0x80, 60, 0);
 	render(900);
@@ -5910,7 +5992,7 @@ static void test_screen_ribbon(void)
 	{
 		uint16_t before[12 * 16], after[12 * 16];
 		for (int i = 0; i < 12 * 16; i++) {
-			before[i] = mdmi_engine_test_vdp(engine, 0, (uint32_t)(1020 + (i >> 4) * 3) * 32u + (uint32_t)(i & 15) * 2u);
+			before[i] = mdmi_engine_test_vdp(engine, 0, (uint32_t)(1020 + (i >> 4)) * 32u + (uint32_t)(i & 15) * 2u);
 		}
 		mdmi_engine_test_ram_write(engine, ROM_UI_STAT_CURVE_LAG_MAX, 0);
 		rom_cc(0, 46, 8);
@@ -5918,7 +6000,7 @@ static void test_screen_ribbon(void)
 		const unsigned one = rom_stat(ROM_UI_STAT_CURVE_LAG_MAX);
 		int changed_words = 0;
 		for (int i = 0; i < 12 * 16; i++) {
-			after[i] = mdmi_engine_test_vdp(engine, 0, (uint32_t)(1020 + (i >> 4) * 3) * 32u + (uint32_t)(i & 15) * 2u);
+			after[i] = mdmi_engine_test_vdp(engine, 0, (uint32_t)(1020 + (i >> 4)) * 32u + (uint32_t)(i & 15) * 2u);
 			changed_words += after[i] != before[i];
 		}
 		rom_cc(0, 46, 124);

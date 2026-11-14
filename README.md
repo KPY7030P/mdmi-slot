@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.18.1).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.25.2).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -162,7 +162,7 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 
 ## Installing
 
-1. Download `MDMI-Slot-0.15.1-win64.zip` from the
+1. Download the newest `MDMI-Slot-<version>-win64.zip` from the
    [Releases page](https://github.com/KPY7030P/mdmi-slot/releases) and unpack it.
 2. Close your host. Copy `MDMI Slot.vst3` to `C:\Program Files\Common Files\VST3`.
    For a CLAP host, copy `MDMI Slot.clap` to `C:\Program Files\Common Files\CLAP`.
