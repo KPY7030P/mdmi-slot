@@ -153,6 +153,9 @@ struct mdmi_engine {
 	uint64_t in_anchor_ring;
 	double in_ratio;
 	uint32_t in_misses;
+	// The window's AUDIO IN lamp (stage 23 follow-up): the ring position of the last block whose input
+	// reached half a DAC step, 0 for none since activation.
+	uint64_t in_signal_at;
 	// Tests only (stage 18a): the energy of the core's own mix and of the outputs' sum, both after a DC
 	// blocker, while a test measures.
 	bool measuring, measure_primed;
@@ -1272,6 +1275,7 @@ bool mdmi_engine_activate(mdmi_engine *e, double sample_rate, uint32_t max_block
 		memset(e->in_ring, 0, in_frames * sizeof(float));
 	}
 	e->in_write = 0;
+	e->in_signal_at = 0;
 	e->in_ratio = sample_rate / core_rate;
 	e->in_anchored = false;
 
@@ -1487,6 +1491,10 @@ mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)
 		.voice_mix_error = e->voice_mix_error,
 		.input_misses = __atomic_load_n(&e->in_misses, __ATOMIC_RELAXED),
 	};
+	{
+		const uint64_t signal_at = __atomic_load_n(&e->in_signal_at, __ATOMIC_ACQUIRE);
+		stats.input_signal = signal_at && __atomic_load_n(&e->ring_read, __ATOMIC_ACQUIRE) - signal_at < (uint64_t)(e->sample_rate * 0.3);
+	}
 	return stats;
 }
 
@@ -1582,8 +1590,14 @@ void mdmi_engine_input(mdmi_engine *e, const float *left, const float *right, ui
 	for (uint64_t gap = e->in_write + e->in_mask < at ? at - e->in_mask : e->in_write; gap < at; gap++) {
 		e->in_ring[gap & e->in_mask] = 0;
 	}
+	float peak = 0;
 	for (uint32_t i = 0; i < frames; i++) {
-		e->in_ring[(at + i) & e->in_mask] = right ? (left[i] + right[i]) * 0.5f : left[i];
+		const float x = right ? (left[i] + right[i]) * 0.5f : left[i];
+		e->in_ring[(at + i) & e->in_mask] = x;
+		peak = fabsf(x) > peak ? fabsf(x) : peak;
+	}
+	if (peak * 127.0f >= 0.5f) {
+		__atomic_store_n(&e->in_signal_at, at + frames, __ATOMIC_RELEASE);
 	}
 	__atomic_store_n(&e->in_write, at + frames, __ATOMIC_RELEASE);
 }

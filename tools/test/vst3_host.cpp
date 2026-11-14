@@ -18,6 +18,7 @@
 #undef INIT_CLASS_IID
 
 #include <windows.h>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -205,7 +206,11 @@ int main(int argc, char **argv)
 		component->activateBus(kAudio, kInput, bus, true);
 	}
 	std::vector<SpeakerArrangement> stereo(out_buses, SpeakerArr::kStereo);
-	std::vector<SpeakerArrangement> stereo_in(in_buses > 0 ? in_buses : 1, SpeakerArr::kStereo);
+	// MDMI_TEST_INPUT (stage 23 follow-up): stereo or mono, a 1 kHz sine at half scale on the input bus
+	// and DAC Enable on from the first block, as a Live sidechain would feed it.
+	const char *test_input = getenv("MDMI_TEST_INPUT");
+	const bool input_mono = test_input && !strcmp(test_input, "mono");
+	std::vector<SpeakerArrangement> stereo_in(in_buses > 0 ? in_buses : 1, input_mono ? SpeakerArr::kMono : SpeakerArr::kStereo);
 	if (processor->setBusArrangements(in_buses ? stereo_in.data() : nullptr, in_buses, stereo.data(), out_buses) != kResultOk) {
 		fprintf(stderr, "setBusArrangements refused %d stereo outputs\n", out_buses);
 		return 1;
@@ -272,6 +277,8 @@ int main(int argc, char **argv)
 	std::vector<float> left(total + block), right(total + block);
 	std::vector<float> spare_buffer(2 * block);
 	std::vector<float> silence(block);
+	std::vector<float> sine(block);
+	bool dac_sent = false;
 
 	LARGE_INTEGER freq, start, now;
 	QueryPerformanceFrequency(&freq);
@@ -299,7 +306,14 @@ int main(int argc, char **argv)
 			next++;
 		}
 		ParamChanges changes;
-		if (!cc_sent && cc7_param != kNoParamId && (uint32_t)(cc_seconds * rate) < pos + block) {
+		if (test_input && !dac_sent) {
+			// DAC Enable is global id 5 (src/patch.h).
+			changes.used = true;
+			changes.queue.id = 5;
+			changes.queue.offset = 0;
+			changes.queue.value = 1.0;
+			dac_sent = true;
+		} else if (!cc_sent && cc7_param != kNoParamId && (uint32_t)(cc_seconds * rate) < pos + block) {
 			changes.used = true;
 			changes.queue.id = cc7_param;
 			changes.queue.offset = (uint32_t)(cc_seconds * rate) - pos;
@@ -321,10 +335,13 @@ int main(int argc, char **argv)
 		}
 		std::vector<AudioBusBuffers> ins(in_buses > 0 ? in_buses : 1);
 		std::vector<float *> in_channels(2 * (in_buses > 0 ? in_buses : 1));
+		for (uint32_t i = 0; i < block; i++) {
+			sine[i] = test_input ? 0.5f * (float)sin(2 * 3.14159265358979 * 1000.0 * (pos + i) / rate) : 0.0f;
+		}
 		for (int32 bus = 0; bus < in_buses; bus++) {
-			in_channels[2 * bus] = silence.data();
-			in_channels[2 * bus + 1] = silence.data();
-			ins[bus].numChannels = 2;
+			in_channels[2 * bus] = test_input ? sine.data() : silence.data();
+			in_channels[2 * bus + 1] = test_input ? sine.data() : silence.data();
+			ins[bus].numChannels = input_mono ? 1 : 2;
 			ins[bus].channelBuffers32 = &in_channels[2 * bus];
 		}
 		ProcessData data;

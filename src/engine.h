@@ -50,6 +50,8 @@ typedef struct {
 	float voice_mix_error;
 	// Stage 23: DAC writes whose input the host had not given yet (or no longer held).
 	uint32_t input_misses;
+	// Stage 23 follow-up: the input reached half a DAC step within the last 0.3 s.
+	bool input_signal;
 } mdmi_engine_stats;
 
 // The ROM's screen. A frame stays valid until the next call to mdmi_engine_latest_frame.

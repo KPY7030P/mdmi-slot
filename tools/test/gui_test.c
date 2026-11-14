@@ -2279,6 +2279,17 @@ int main(int argc, char **argv)
 		save_bmp(argv[2], "dac-wave-drop");
 		const int wave_cell = count_color_in(GRID_NOTE40_X, GRID_NOTE40_X + 34, GRID_NOTE40_Y, GRID_NOTE40_Y + 16, COLOR_DAC);
 		CHECK(tfi_effect == DROPEFFECT_NONE, "an FM file over the wave is refused");
+		// Stage 23 (D74): no NOTES cell; AUDIO IN is a lamp, dark without a track on the input.
+		{
+			capture(window);
+			const int before = count_color_in(242, 712, 56, 400, COLOR_DAC_DARK);
+			click(window, 650, 66);
+			run_ms(200);
+			capture(window);
+			CHECK(count_color_in(524, 596, 56, 76, COLOR_DAC_DARK) == 0 && count_color_in(600, 708, 56, 76, COLOR_DAC_DARK) == 0
+					&& count_color_in(242, 712, 56, 400, COLOR_DAC_DARK) == before,
+				"the DAC page has no NOTES switch, its AUDIO IN lamp is dark without input and takes no click");
+		}
 		CHECK(wav_effect == DROPEFFECT_COPY && wave_ms >= 0 && rom_cell < 300 && wave_cell > 300, "a WAV dropped on the wave replaces the open note's sound (cell %d px, was %d)", wave_cell, rom_cell);
 		// Stage 30: LOOP has no switch of its own; the loop's row turns it on and off.
 		{

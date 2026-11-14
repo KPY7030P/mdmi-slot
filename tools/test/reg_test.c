@@ -1256,12 +1256,18 @@ static void test_dac_input(void)
 	sine_in(in_hz_1, 0);
 	int n = capture_ms(100);
 	const double none = magnitude_at(n, in_hz_1);
+	const bool lamp_silent = mdmi_engine_get_stats(engine).input_signal;
 	sine_in(in_hz_1, 0.3);
 	n = capture_ms(100);
 	const double under = magnitude_at(n, in_hz_1);
+	render(RATE / 2 / BLOCK);
+	const bool lamp_under = mdmi_engine_get_stats(engine).input_signal;
 	sine_in(in_hz_1, 3);
 	n = capture_ms(100);
 	const double three = magnitude_at(n, in_hz_1);
+	const bool lamp_three = mdmi_engine_get_stats(engine).input_signal;
+	printf("    the AUDIO IN lamp: silent %d, 0.3 steps %d, 3 steps %d\n", lamp_silent, lamp_under, lamp_three);
+	check(!lamp_silent && !lamp_under && lamp_three, "stage 23: the window's AUDIO IN lamp is lit only while the input reaches half a DAC step (D74)");
 	printf("    at 1 kHz: no input %.7f, input of 0.3 steps %.7f, of 3 steps %.5f\n", none, under, three);
 	check(fabs(under - none) < 0.01 * three && three > 4e-4, "stage 23: the input goes through the DAC's 8-bit steps (0.3 of a step is no input)");
 	// The input alone, at 30 steps like the sample.
@@ -6056,6 +6062,109 @@ static void rom_frames(unsigned n)
 	}
 }
 
+// After the check of 0.26.0: which FM rows show their curve: a row's 12 envelope cells hold at least one of its own
+// curve tiles (1020 + 12k).
+static int curve_rows(void)
+{
+	int rows = 0;
+	for (int ch = 0; ch < 6; ch++) {
+		bool any = false;
+		for (int n = 0; n < 12; n++) {
+			const int tile = screen_tile(33 + n % 6, SCREEN_ROW(ch) - 1 + n / 6);
+			any = any || (tile >= 1020 + 12 * ch && tile < 1032 + 12 * ch);
+		}
+		rows |= any << ch;
+	}
+	return rows;
+}
+
+// The owner's remark after 0.26.0: chords lend voices, then other channels play; every FM
+// row must show a curve again once the screen has rebuilt it.
+static void curves_after_lending(void)
+{
+	static const uint8_t PROGRAMS[6] = {33, 12, 0, 0, 33, 0};
+	for (int ch = 0; ch < 6; ch++) {
+		midi((uint8_t)(0xC0 | ch), PROGRAMS[ch], 0);
+	}
+	render(300);
+	printf("    curves before: %02X\n", curve_rows());
+	for (int round = 0; round < 6; round++) {
+		const int chord = round % 3 == 0 ? 0 : round % 3 == 1 ? 4 : 2;
+		for (int i = 0; i < 5; i++) {
+			midi((uint8_t)(0x90 | chord), (uint8_t)(48 + i * 4), 110);
+		}
+		render(60);
+		for (int i = 0; i < 5; i++) {
+			midi((uint8_t)(0x80 | chord), (uint8_t)(48 + i * 4), 0);
+		}
+		render(20);
+		const int other = round % 2 ? 1 : 3;
+		midi((uint8_t)(0x90 | other), 60, 100);
+		render(60);
+		midi((uint8_t)(0x80 | other), 60, 0);
+		render(20);
+		printf("    after chord on %d and a note on %d: curves %02X\n", chord + 1, other + 1, curve_rows());
+	}
+	int rows = 0;
+	for (int wait = 0; wait < 20; wait++) {
+		render(100);
+		rows = curve_rows();
+		printf("    %d ms later: curves %02X, dirty lag %u\n", (wait + 1) * 530, rows, rom_stat(ROM_UI_STAT_LAG));
+		if ((rows & 0x1F) == 0x1F) {
+			break;
+		}
+	}
+	check((rows & 0x1F) == 0x1F, "screen: after chords lend voices, every FM row shows its curve again (D67, check of 0.26.0)");
+	// The experiment's random part (MDMI_CURVE_ROUNDS): chords, notes and program changes at random on
+	// channels 1-5, then a second of silence: a row without its curve then is the fault.
+	const char *rounds_env = getenv("MDMI_CURVE_ROUNDS");
+	const int rounds = rounds_env ? atoi(rounds_env) : 0;
+	static const uint8_t PICK[4] = {0, 12, 33, 4};
+	unsigned seed = 12345;
+	int faults = 0;
+	for (int r = 0; r < rounds; r++) {
+		for (int step = 0; step < 8; step++) {
+			seed = seed * 1103515245u + 12345u;
+			const int ch = (int)(seed >> 16) % 5, kind = (int)(seed >> 8) % 4;
+			if (kind == 0) {
+				midi((uint8_t)(0xC0 | ch), PICK[(seed >> 20) % 4], 0);
+			} else {
+				const int notes = kind == 1 ? 1 : 2 + (int)(seed >> 24) % 4;
+				for (int i = 0; i < notes; i++) {
+					midi((uint8_t)(0x90 | ch), (uint8_t)(48 + i * 3), 100);
+				}
+				render(1 + (int)(seed >> 12) % 30);
+				for (int i = 0; i < notes; i++) {
+					midi((uint8_t)(0x80 | ch), (uint8_t)(48 + i * 3), 0);
+				}
+			}
+			render((int)(seed >> 4) % 8);
+		}
+		render(200);
+		const int got = curve_rows() & 0x1F;
+		if (got != 0x1F) {
+			faults++;
+			int later = got;
+			for (int w = 0; w < 10 && later != 0x1F; w++) {
+				render(100);
+				later = curve_rows() & 0x1F;
+			}
+			printf("    round %d: curves %02X after 1 s, %02X 5 s later; programs", r, got, later);
+			for (int c = 0; c < 6; c++) {
+				printf(" %d", model_value(c, PARAM_ALGORITHM));
+			}
+			printf("\n");
+		}
+	}
+	if (rounds) {
+		printf("    %d of %d random rounds left a row without its curve after 1 s\n", faults, rounds);
+	}
+	for (int ch = 0; ch < 6; ch++) {
+		midi((uint8_t)(0xC0 | ch), 0, 0);
+	}
+	render(300);
+}
+
 // Stage 30's measurement: the level bar of channel 1, frame by frame, for a program's note held
 // `held` frames and let go. Prints lit:peak per frame and how often the drawn bar changed.
 typedef struct {
@@ -6596,6 +6705,8 @@ static void test_screen(void)
 	test_screen_cells();
 	test_screen_ribbon();
 	test_screen_meter();
+	// The owner's remark after 0.26.0: a curve rebuilt after a chord's lending comes back (D67).
+	curves_after_lending();
 	// The same clip without the screen: which frames the MIDI handling loses by itself.
 	mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 1);
 	screen_on_in_clip = false;
@@ -6688,6 +6799,15 @@ int main(int argc, char **argv)
 		// Stage 23: the track's audio through the DAC, alone.
 		full_velocity();
 		test_dac_input();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
+	}
+	if (argc == 3 && !strcmp(argv[2], "--curves")) {
+		// Curves after chord lending, alone (check of 0.26.0).
+		full_velocity();
+		test_reset();
+		render(SETTLE_BLOCKS);
+		curves_after_lending();
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
 	}

@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.26.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.26.1).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -135,7 +135,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   driver's 15.2 kHz, nothing above 7.6 kHz filtered (it folds back, as the console's DAC would make it), on
   channel 6's output and in Main, at the plugin's reported latency like a note. Only while DAC Enable is on.
   No knobs: the sidechain's gain sets the level; full scale fills the DAC, and the input and loud samples
-  together clip. Routing in Live, in Russian: `docs/dac-input-live.md`.
+  together clip. The DAC page's AUDIO IN lamp lights while the input reaches the DAC (0.26.1). The Filter
+  knob's default, the console's 3392 Hz, softens the DAC's grit; open it fully to hear it. Routing in Live, in
+  Russian: `docs/dac-input-live.md`.
 - A PSG envelope's loop ends a note the same way (0.22.3): with steps after the loop (a release), Note Off lets
   the loop finish its pass and plays the release, also when the key is let go in the intro (the loop then plays
   once); without them, or without a loop, Note Off silences at once. Before 0.22.3 a loop without a release

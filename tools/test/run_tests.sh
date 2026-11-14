@@ -96,6 +96,10 @@ grep -q "automatable=377 " "$log" || fail "vst3: expected 377 automatable contro
 grep -q "view=720x528 attached=1" "$log" || fail "vst3: window did not attach"
 grep -q "clean_shutdown=1" "$log" || fail "vst3: no clean shutdown"
 python -I "$WIN_ROOT/tools/test/check_wav.py" "$WIN_OUT/vst3.log" "$WIN_OUT/vst3-0.wav" || fail "vst3: audio"
+# Stage 23 (D74): a sine on the VST3's input bus with DAC Enable on comes out through the DAC.
+echo "=== vst3 input"
+MDMI_TEST_INPUT=stereo timeout 60 ./vst3_host.exe "out/VST3/MDMI Slot.vst3" "$WIN_OUT/vst3-input" 48000 512 offline > "$OUT/vst3-input.log" 2>&1 || fail "vst3 input: host exit $?"
+python -I "$WIN_ROOT/tools/test/check_input.py" "$WIN_OUT/vst3-input-0.wav" || fail "vst3 input: the input bus doesn't reach the DAC"
 
 echo "=== model"
 log="$OUT/patch_test.log"

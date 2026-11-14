@@ -2592,8 +2592,6 @@ static void dac_short(const char *name, char *out, size_t size)
 #define DAC_DEFAULT_NOTE 36
 #define DAC_MODE_Y 56
 #define DAC_MODE_H 20
-#define DAC_NOTES_X 524
-#define DAC_NOTES_W 72
 #define DAC_AUDIO_X 600
 #define DAC_AUDIO_W 108
 #define DAC_PANEL_TEXT_X 320
@@ -2623,11 +2621,14 @@ static void draw_dac_top(mdmi_gui *g)
 	text(g, DAC_FREE_X + 4, 38, "FREE", C_LABEL, 1);
 	snprintf(buffer, sizeof(buffer), "%.1f MB", (room - used) / 1048576.0);
 	text_right(g, DAC_FREE_X + DAC_FREE_W - 4, 34, buffer, (room - used) * 10 < room ? C_AMBER : C_TEXT, 2, 84);
-	// What channel 6 plays: the notes' samples, or one day a track's audio (stage 15, after E5).
-	fill(g, DAC_NOTES_X, DAC_MODE_Y, DAC_NOTES_W, DAC_MODE_H, C_DAC_DARK);
-	text(g, DAC_NOTES_X + (DAC_NOTES_W - 5 * 12) / 2, DAC_MODE_Y + 3, "NOTES", C_TEXT, 2);
-	frame(g, DAC_AUDIO_X, DAC_MODE_Y, DAC_AUDIO_W, DAC_MODE_H, C_CELL);
-	text(g, DAC_AUDIO_X + (DAC_AUDIO_W - 8 * 12) / 2, DAC_MODE_Y + 3, "AUDIO IN", C_LINE, 2);
+	// A lamp, not a switch (stage 23, D74): lit while a track's audio reaches the DAC through DAC In,
+	// which plays together with the samples. This page shows only while the DAC is on.
+	const bool heard = mdmi_engine_get_stats(g->source.engine).input_signal;
+	if (heard) {
+		fill(g, DAC_AUDIO_X, DAC_MODE_Y, DAC_AUDIO_W, DAC_MODE_H, C_DAC_DARK);
+	}
+	frame(g, DAC_AUDIO_X, DAC_MODE_Y, DAC_AUDIO_W, DAC_MODE_H, heard ? C_DAC : C_CELL);
+	text(g, DAC_AUDIO_X + (DAC_AUDIO_W - 8 * 12) / 2, DAC_MODE_Y + 3, "AUDIO IN", heard ? C_TEXT : C_LINE, 2);
 	fill(g, RAIL_W + 1, 79, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
 }
 
@@ -3701,12 +3702,9 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 	const bool replace = grid && in_box(x, y, DAC_REPLACE_X, DAC_BUTTON_Y, DAC_BUTTON_W, DAC_BUTTON_H);
 	const bool clear = grid && in_box(x, y, DAC_CLEAR_X, DAC_BUTTON_Y, DAC_BUTTON_W, DAC_BUTTON_H);
 	const bool wave = grid && in_box(x, y, WAVE_X, WAVE_Y, WAVE_W, WAVE_H);
-	if (in_box(x, y, DAC_NOTES_X, DAC_MODE_Y, DAC_NOTES_W, DAC_MODE_H)) {
-		snprintf(out, size, "NOTES: CH6 PLAYS THE SAMPLES BELOW");
-		return true;
-	}
 	if (in_box(x, y, DAC_AUDIO_X, DAC_MODE_Y, DAC_AUDIO_W, DAC_MODE_H)) {
-		snprintf(out, size, "AUDIO IN: CH6 PLAYS TRACK AUDIO. NOT YET");
+		snprintf(out, size, mdmi_engine_get_stats(g->source.engine).input_signal ? "AUDIO IN: A TRACK IN THE DAC. FILTER UP FOR ITS GRIT"
+			: "AUDIO IN: NO SIGNAL. LIVE: TRACK'S AUDIO TO DAC IN-MDMI");
 		return true;
 	}
 	if (note < 0 && !replace && !clear && !wave) {

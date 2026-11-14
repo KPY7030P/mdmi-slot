@@ -243,7 +243,9 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   is dropped. `reg_test --input`: in channel 6 and Main with a sample, saturation, 0.3 of a step silent,
   out at the latency (15.6 ms against 15.3 at 48 kHz, 256), silent with the DAC off, no misses; it costs
   about 2-5% of the engine's time offline, within run-to-run noise. `vst3_host` gives the input bus a silent
-  buffer, as Live does.
+  buffer, as Live does; with `MDMI_TEST_INPUT=stereo` a 1 kHz sine and DAC Enable on (run_tests' «vst3 input»,
+  `check_input.py`). The DAC page's AUDIO IN is a lamp, not a switch (D74): lit while `input_signal` (the
+  input reached half a DAC step within 0.3 s, `in_signal_at`); the page shows only with the DAC on.
 - DAC pages (stage 12, D36, D37, `docs/design/dac-page.md`): EDITOR of channel 6 while the DAC is on is a
   grid of the 128 notes and the selected note's wave with REPLACE and CLEAR; BANK lists the same notes.
   Each note plays the ROM's sample (notes 26-86, one note below GM, kept as the ROM has
