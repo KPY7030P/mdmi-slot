@@ -447,8 +447,14 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   and 0 and Off in the pitch editor.
 
 Toggling the DAC resets the YM2612 and the PSG, because the ROM swaps the Z80 driver: SGDK resets both chips,
-and the Z80's reset line also clears the YM2612. Sounding notes stop, `src/patch.c` reloads every FM
-channel's sound afterwards, and our ROM writes its PSG tones and volumes again (D35).
+and the Z80's reset line also clears the YM2612. Since stage 35 (D80) our ROM puts the chip back itself:
+`synth_restore_chip` writes its shadow of channels 1-6 (every operator register, algorithm, feedback,
+pan, AMS/FMS, the frequency) and the LFO under one take of the Z80's bus (~5 ms with the DAC on), and
+`enable_dac` keys again the FM voices 1, 2, 4, 5 that still hold a note: they strike again at once,
+from silence, with no new note (D39 left them mute until the next one). Channel 3's keys go off with any
+switch, as before; channel 6 is not keyed (the DAC's, or after it its note was a sample's). The plugin
+sends nothing but CC 78: its copy of the ROM stays true. The ROM also writes its PSG tones and volumes
+again (D35).
 
 ### From a MIDI track
 

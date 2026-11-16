@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.27.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.30.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -120,7 +120,8 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   (the lowest is about -24 dB, not silence). All four play at one rate, 15.2 kHz in the emulator (about 16 kHz
   on a console), so the sound reaches about 7.6 kHz; several loud samples together clip. A note starts 16-32 ms
   after its Note On, and switching the DAC on takes about 0.3 s, some 75 ms longer than in 0.18, because the
-  driver loads a volume table. Channel 6's Pan (CC 10) puts all four left, centre or right, also while they
+  driver loads a volume table. Since 0.30.0 FM notes held through a DAC switch (on or off) strike again on
+  their own when it is done, on channels 1, 2, 4 and 5; channel 3's are released, as before. Channel 6's Pan (CC 10) puts all four left, centre or right, also while they
   play. A sample with LOOP repeats while the key is held: a click on the loop's row over the wave turns LOOP on
   or off (since 0.25.3 there is no separate LOOP switch). Its loop has its own tabs on the wave: the part
   before it plays once, the part after it (the release) plays when the key is let go. Drag the loop's body to

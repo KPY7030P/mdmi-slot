@@ -419,6 +419,69 @@ static void test_dac_psg(void)
 	check_psg_after_dac("DAC off: the same PSG notes sound as before", 0, tone, volume);
 }
 
+// Stage 35 (D80): the plugin sends nothing but the switch itself; the ROM puts the FM registers back
+// and keys the held notes again.
+static int switch_messages;
+
+static void emit_counted(void *context, const uint8_t *bytes, size_t length)
+{
+	switch_messages++;
+	emit(context, bytes, length);
+}
+
+static void reset_energy(void);
+
+static void test_dac_held(void)
+{
+	static const int HELD[] = {0, 1, 3, 4};
+	for (int i = 0; i < 4; i++) {
+		midi((uint8_t)(0x90 | HELD[i]), (uint8_t)(60 + 4 * i), 127);
+	}
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS - 1; i++) {
+		midi((uint8_t)(0x90 | (PATCH_NUM_FM_CHANNELS + i)), (uint8_t)(64 + i * 3), 127);
+	}
+	render(SETTLE_BLOCKS);
+	reset_energy();
+	render(SETTLE_BLOCKS);
+	double before[MDMI_OUTPUTS];
+	memcpy(before, out_energy, sizeof(before));
+	for (int dac = 1; dac >= 0; dac--) {
+		set_global(GLOBAL_DAC, dac);
+		switch_messages = 0;
+		patch_sync(patch, &patch->rom, emit_counted, NULL);
+		const int sent = switch_messages;
+		render(DAC_BLOCKS);
+		int wrong = 0, silent = 0;
+		for (int i = 0; i < 4; i++) {
+			wrong += compare(HELD[i], HELD[i], dac ? "DAC on, held" : "DAC off, held") != 0;
+		}
+		reset_energy();
+		render(SETTLE_BLOCKS);
+		for (int i = 0; i < 4; i++) {
+			silent += out_energy[HELD[i]] < before[HELD[i]] / 100;
+		}
+		for (int i = 0; i < PATCH_NUM_PSG_CHANNELS - 1; i++) {
+			if (mdmi_engine_test_psg_volume(engine, (uint8_t)i) == 15) {
+				printf("    PSG channel %d is silent\n", PATCH_NUM_FM_CHANNELS + i + 1);
+				silent++;
+			}
+		}
+		printf("    DAC %s: %d messages from the plugin; held FM outputs 1, 2, 4, 5 at %.3g %.3g %.3g %.3g of before\n", dac ? "on" : "off", sent,
+			out_energy[0] / before[0], out_energy[1] / before[1], out_energy[3] / before[3], out_energy[4] / before[4]);
+		check(sent == 1, dac ? "DAC on: the plugin sends the switch alone, no voice, LFO or Ch3 mode" : "DAC off: the plugin sends the switch alone");
+		check(wrong == 0 && silent == 0, dac ? "DAC on: the held FM notes on 1, 2, 4, 5 sound on with their registers, and the PSG's, with no new note"
+											 : "DAC off: the held FM notes and the PSG's sound on with no new note");
+	}
+	check_globals("after the switches the LFO and Ch3 mode are the ROM's own");
+	for (int i = 0; i < 4; i++) {
+		midi((uint8_t)(0x80 | HELD[i]), (uint8_t)(60 + 4 * i), 0);
+	}
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS - 1; i++) {
+		midi((uint8_t)(0x80 | (PATCH_NUM_FM_CHANNELS + i)), (uint8_t)(64 + i * 3), 0);
+	}
+	render(SETTLE_BLOCKS);
+}
+
 // Rising crossings of the left channel over half a second while a note of the channel sounds. The
 // threshold is the middle of the swing, so a narrow pulse (periodic noise: 1 of 16 steps) counts too.
 #define NOTE_SAMPLES (RATE / 2 / BLOCK * BLOCK)
@@ -561,7 +624,10 @@ static void test_restart(void)
 	sync_and_settle();
 	uint16_t tone[PATCH_NUM_PSG_CHANNELS], now_tone[PATCH_NUM_PSG_CHANNELS];
 	uint8_t volume[PATCH_NUM_PSG_CHANNELS], now_volume[PATCH_NUM_PSG_CHANNELS];
+	// Stage 35: on the envelope's flat part, not its first frames, so a DAC switch still loading
+	// after a boot doesn't move the moment measured.
 	psg_notes(true);
+	render(2 * SETTLE_BLOCKS);
 	psg_state(tone, volume);
 	psg_notes(false);
 	size_t rom_size;
@@ -588,9 +654,13 @@ static void test_restart(void)
 		slowest = stats.last_boot_ms > slowest ? stats.last_boot_ms : slowest;
 		total += stats.last_boot_ms;
 		psg_notes(true);
+		render(2 * SETTLE_BLOCKS);
 		psg_state(now_tone, now_volume);
 		psg_notes(false);
 		int wrong = memcmp(tone, now_tone, sizeof(tone)) || memcmp(volume, now_volume, sizeof(volume));
+		for (int k = 0; k < PATCH_NUM_PSG_CHANNELS && wrong; k++) {
+			printf("    restart %d, PSG channel %d: tone %d, before %d; attenuation %d, before %d\n", i, PATCH_NUM_FM_CHANNELS + k + 1, now_tone[k], tone[k], now_volume[k], volume[k]);
+		}
 		// The DAC takes voice 6.
 		for (int voice = 0; voice < FM_CHANNELS - 1; voice++) {
 			wrong += compare(voice, voice, i ? NULL : "after a restart") != 0;
@@ -606,6 +676,19 @@ static void test_restart(void)
 		((double)memory_after - (double)memory_before) / 1048576.0, RESTARTS - 2);
 	check(bad == 0, "with the DAC on, after every restart the FM voices and PSG notes, one with its own envelope, are as before");
 	check_globals("and the LFO, Ch3 mode and DAC");
+	// Stage 35: the channel with its own envelope (a loop start without its end, so no release) is
+	// silent after its Note Off too; before 22b's D54 it held at volume 3 for good. The bank's envelope
+	// finishes its loop and plays 15 frames of release first: up to 0.4 s.
+	render(5 * SETTLE_BLOCKS);
+	int sounding = 0;
+	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
+		const int attenuation = mdmi_engine_test_psg_volume(engine, (uint8_t)i);
+		if (attenuation != 15) {
+			printf("    PSG channel %d sounds at attenuation %d\n", PATCH_NUM_FM_CHANNELS + i + 1, attenuation);
+			sounding++;
+		}
+	}
+	check(sounding == 0, "after the restarts and Note Off every PSG channel is silent");
 	set_global(GLOBAL_DAC, 0);
 	sync_and_settle();
 	render(DAC_BLOCKS);
@@ -2827,6 +2910,7 @@ static void test_dealer(void)
 	play_each_channel();
 	set_global(GLOBAL_DAC, 1);
 	wait_for_voices(FM_CHANNELS - 2);
+	render(SETTLE_BLOCKS); // Stage 35: the chord comes settled after the switch, as every dealer moment
 	snapshot(5, before[5]);
 	moment(3, 48, 6, true);
 	render(SETTLE_BLOCKS);
@@ -2836,6 +2920,7 @@ static void test_dealer(void)
 	play_each_channel();
 	set_global(GLOBAL_DAC, 0);
 	wait_for_voices(FM_CHANNELS - 1);
+	render(SETTLE_BLOCKS); // Stage 35: the chord comes settled after the switch, as every dealer moment
 }
 
 // Stage 5: instrument files. What each file means for the chip is worked out here straight from its
@@ -3810,11 +3895,6 @@ static void quiet(void)
 // whose note it last started.
 static void test_outputs(void)
 {
-	// test_restart leaves PSG 2 sounding with its envelope of no release (ROADMAP); a note with the
-	// bank's envelope ends it.
-	midi(0xC7, 0, 0);
-	midi(0x97, 60, 127);
-	midi(0x87, 60, 0);
 	quiet();
 	play_chord(3, true);
 	int lent = 0;
@@ -5407,7 +5487,9 @@ static uint16_t rom_stat(uint32_t address)
 
 static void rom_stats_zero(void)
 {
-	static const uint32_t STATS[] = {ROM_UI_STAT_LINES_MAX, ROM_UI_STAT_AMBIG, ROM_UI_STAT_WORDS_MAX, ROM_UI_STAT_LAG_MAX, ROM_UI_STAT_LATE_NOTES, ROM_UI_STAT_FRAMES, ROM_UI_STAT_MISSED};
+	static const uint32_t STATS[] = {ROM_UI_STAT_LINES_MAX, ROM_UI_STAT_AMBIG, ROM_UI_STAT_WORDS_MAX, ROM_UI_STAT_LAG_MAX, ROM_UI_STAT_LATE_NOTES, ROM_UI_STAT_FRAMES, ROM_UI_STAT_MISSED,
+		// Stage 35: the N judge after the busy clip reads the clip's own curve lag, not one kept since boot.
+		ROM_UI_STAT_CURVE_LAG_MAX};
 	for (size_t i = 0; i < sizeof(STATS) / sizeof(STATS[0]); i++) {
 		mdmi_engine_test_ram_write(engine, STATS[i], 0);
 	}
@@ -5452,6 +5534,30 @@ static unsigned clip_moment(const char *what)
 	return clip_moment_limited(what, 0, 0);
 }
 
+// Stage 35 (architect): a moment of the clip comes in whole while the screen is held (switch 1:
+// update returns before it looks at anything), and the screen then takes all of it in one frame, its
+// worst case on purpose. Without that the judge measured luck: whether the ROM had read every byte
+// before the next VInt, which any change of the code's cycles flips (two stable sets of numbers).
+static void clip_hold(void)
+{
+	if (screen_on_in_clip) {
+		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 1);
+	}
+}
+
+static void clip_release_after(int blocks)
+{
+	render(blocks);
+	if (screen_on_in_clip) {
+		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, getenv("MDMI_CLIP_PARTS") ? 3 : 0);
+	}
+}
+
+static void clip_release(void)
+{
+	clip_release_after(6);
+}
+
 static void busy_clip(void)
 {
 	// MDMI_CLIP_PARTS: the clip by part (switch 3), each moment's worst frame broken down.
@@ -5459,69 +5565,105 @@ static void busy_clip(void)
 		mdmi_engine_test_ram_write(engine, ROM_UI_TEST_OFF, 3);
 	}
 	clip_moment("before the clip");
+	clip_hold();
 	for (int i = 0; i < 6; i++) {
 		midi(0x90, (uint8_t)(48 + i * 4), 110);
 	}
+	clip_release();
 	render(40);
 	clip_moment_limited("chord of 6", 217, 3);
+	clip_hold();
 	for (int i = 0; i < 6; i++) {
 		midi(0x80, (uint8_t)(48 + i * 4), 0);
 	}
 	for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
 		midi((uint8_t)(0x90 | ch), (uint8_t)(60 + ch), 100);
 	}
+	clip_release();
 	render(40);
-	clip_moment_limited("all ten", 266, 3);
+	clip_moment_limited("all ten", 345, 3);
+	clip_hold();
 	for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
 		midi((uint8_t)(0xC0 | ch), (uint8_t)((ch * 7 + 3) & 0x7F), 0);
 	}
+	clip_release();
 	render(40);
 	clip_moment_limited("program change on all", 266, 3);
+	clip_hold();
 	for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
 		midi((uint8_t)(0xB0 | ch), 123, 0);
 	}
+	clip_release();
 	render(20);
 	clip_moment_limited("all notes off", 190, 3);
+	clip_hold();
 	set_global(GLOBAL_DAC, 1);
-	sync_and_settle();
-	clip_moment_limited("DAC on", 95, 3);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	// The driver loads for about 0.3 s first.
+	clip_release_after(DAC_BLOCKS / 4);
+	render(SETTLE_BLOCKS);
+	clip_moment_limited("DAC on", 139, 3);
+	clip_hold();
 	for (int i = 0; i < 4; i++) {
 		midi(0x95, (uint8_t)(36 + i * 2), 127);
 	}
+	clip_release();
 	render(40);
+	clip_hold();
 	for (int i = 0; i < 4; i++) {
 		midi(0x85, (uint8_t)(36 + i * 2), 0);
 	}
+	clip_release();
 	clip_moment_limited("4 DAC voices", 252, 3);
+	clip_hold();
 	set_global(GLOBAL_DAC, 0);
-	sync_and_settle();
-	clip_moment_limited("DAC off", 95, 3);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	// The driver loads for about 0.3 s first.
+	clip_release_after(DAC_BLOCKS / 4);
+	render(SETTLE_BLOCKS);
+	clip_moment_limited("DAC off", 117, 3);
+	clip_hold();
 	set_global(GLOBAL_CH3_MODE, 1);
 	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
-	sync_and_settle();
+	patch_sync(patch, &patch->rom, emit, NULL);
+	clip_release();
+	render(SETTLE_BLOCKS);
 	clip_moment_limited("Ch3 Special on", 253, 3);
+	clip_hold();
 	midi(0x92, 60, 100);
 	midi(0x9A, 64, 100);
 	midi(0x9B, 67, 100);
 	midi(0x9C, 72, 100);
+	clip_release();
 	render(40);
+	clip_hold();
 	midi(0x82, 60, 0);
 	midi(0x8A, 64, 0);
 	midi(0x8B, 67, 0);
 	midi(0x8C, 72, 0);
+	clip_release();
 	clip_moment_limited("Ch3 OPS notes", 95, 3);
+	clip_hold();
 	set_global(GLOBAL_CH3_MODE, 0);
-	sync_and_settle();
-	clip_moment_limited("Ch3 Special off", 95, 3);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	clip_release();
+	render(SETTLE_BLOCKS);
+	clip_moment_limited("Ch3 Special off", 106, 3);
 	set_on(6, PARAM_PORTA_ON, 1);
 	set_on(6, PARAM_PORTA_TIME, 64);
 	clip_moment_limited("PSG porta on", 95, 3);
+	clip_hold();
 	midi(0x96, 48, 100);
+	clip_release();
 	render(10);
+	clip_hold();
 	midi(0x96, 84, 100);
 	midi(0x86, 48, 0);
+	clip_release();
 	render(80);
+	clip_hold();
 	midi(0x86, 84, 0);
+	clip_release();
 	clip_moment_limited("PSG portamento C3-C6", 271, 3);
 	set_on(6, PARAM_PORTA_ON, 0);
 	clip_moment_limited("PSG porta off", 95, 3);
@@ -6992,6 +7134,7 @@ int main(int argc, char **argv)
 	test_dac_psg();
 	test_noise();
 	test_restart();
+	test_dac_held();
 	test_samples();
 	test_shaping();
 	test_live();

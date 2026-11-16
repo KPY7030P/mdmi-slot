@@ -121,7 +121,6 @@ static const op_param OP_PARAMS[PATCH_OP_PARAMS] = {
 	{"AM", 70, 2, 1, 5},
 	{"SSG", 90, 16, 15, 10},
 };
-
 static const char *const GM_NAMES[128] = {
 	"Grand Piano", "Bright Piano", "Electric Grand", "Honky-tonk", "Rhodes", "Chorus Piano", "Harpsichord", "Clavinet",
 	"Celesta", "Glockenspiel", "Music Box", "Vibraphone", "Marimba", "Xylophone", "Tubular Bells", "Dulcimer",
@@ -1109,16 +1108,6 @@ static void emit_cc(patch_emit_fn emit, void *context, int channel, int cc, int 
 {
 	const uint8_t message[3] = {(uint8_t)(0xB0 | channel), (uint8_t)cc, (uint8_t)value};
 	emit(context, message, sizeof(message));
-}
-
-// A reset of the chip the ROM doesn't know about: the voices lose their sound, not their numbers.
-static void forget_voices(patch_receiver *receiver)
-{
-	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
-		for (int param = PARAM_ALGORITHM; param < PATCH_NUM_CHANNEL_PARAMS; param++) {
-			receiver->voices[voice][param] = PATCH_UNKNOWN;
-		}
-	}
 }
 
 // What the ROM holds under the PSG service numbers after its reset: its own envelopes.
@@ -2234,7 +2223,8 @@ static void sync_receiver(mdmi_patch *patch, patch_receiver *receiver, patch_emi
 	int16_t *rom_globals = receiver->values.globals;
 	if (model_globals[GLOBAL_DAC] != rom_globals[GLOBAL_DAC]) {
 		// The ROM swaps the Z80 driver for this, and the Z80's reset line also clears the YM2612.
-		// The ROM doesn't know, so FM stays silent until its registers are written again.
+		// Since stage 35 (D80) our ROM writes its shadow back (voices, LFO, 0x27) and keys the held
+		// FM notes again, so what this copy says the ROM holds stays true and nothing is resent.
 		// The switch resets the YM2612, so no tail sounds on: the DAC's voice is channel 6's at once.
 		if (patch->owner && model_globals[GLOBAL_DAC] && receiver == &patch->rom) {
 			patch->owner(context, PATCH_NUM_FM_CHANNELS - 1, PATCH_NUM_FM_CHANNELS - 1, true);
@@ -2244,8 +2234,6 @@ static void sync_receiver(mdmi_patch *patch, patch_receiver *receiver, patch_emi
 		}
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_DAC, model_globals[GLOBAL_DAC] ? CC_ON : 0);
 		rom_globals[GLOBAL_DAC] = model_globals[GLOBAL_DAC];
-		rom_globals[GLOBAL_LFO_ON] = rom_globals[GLOBAL_LFO_RATE] = rom_globals[GLOBAL_CH3_MODE] = PATCH_UNKNOWN;
-		forget_voices(receiver);
 	}
 	sync_voice_owners(receiver, emit, context);
 	// A voice lent before it came to lend none (Ch3 Special or the DAC on) comes back; its chord note

@@ -232,10 +232,11 @@ static void test_modes(void)
 	patch_init(&patch);
 	clear();
 	set(&patch, GLOBAL_DAC, 1);
-	CHECK(count_voices() == 6 && sent[0] == 0xB6 && sent[1] == 78, "the DAC comes first, on channel 7 where it applies once, then all six voices");
+	// Stage 35 (D80): the ROM puts the chip back after the driver's load; the plugin sends the switch alone.
+	CHECK(count_voices() == 0 && sent_bytes == 3 && sent[0] == 0xB6 && sent[1] == 78, "the DAC goes on channel 7, where it applies once, and nothing else: the ROM restores the voices");
 	clear();
 	midi(&patch, 0xB0, 78, 0);
-	CHECK(count_voices() == 6 && patch.model.globals[GLOBAL_DAC] == 0, "the same from a clip's CC78");
+	CHECK(count_voices() == 0 && sent_bytes == 3 && patch.model.globals[GLOBAL_DAC] == 0, "the same from a clip's CC78");
 	clear();
 	midi(&patch, 0xB3, 74, 0);
 	CHECK(sent_bytes == 3 && sent[0] == 0xB6 && sent[1] == 74 && patch.model.globals[GLOBAL_LFO_ON] == 0, "LFO from any channel goes to channel 7");

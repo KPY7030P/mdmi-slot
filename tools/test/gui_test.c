@@ -1019,7 +1019,11 @@ int main(int argc, char **argv)
 			int want = 243 + (int)(sqrt(s / 2) * 280);
 			const int at_half = count_color_in(want - 1, want + 2, 83, 205, COLOR_PLAYING);
 			save_bmp(argv[2], "fm-cursor");
-			run_ms(900);
+			// Stage 35: past 1 s of the plugin's own clock, not of the wall's: under load a wall second
+			// renders less, and the note wasn't held 1 s yet (parking of stage 27).
+			for (DWORD start = GetTickCount(); frames_run - on < RATE * 14 / 10 && GetTickCount() - start < 5000;) {
+				run_block(NULL);
+			}
 			capture(window);
 			const int parked = count_color_in(439, 442, 83, 205, COLOR_PLAYING), off_lit = count_color_in(421, 438, 104, 114, COLOR_PLAYING);
 			const uint64_t off = frames_run;
@@ -1029,7 +1033,9 @@ int main(int argc, char **argv)
 			s = 1.0 + (double)(frames_run - off) / RATE;
 			const int want_release = 243 + (int)(sqrt(s / 2) * 280);
 			const int in_release = count_color_in(want_release - 1, want_release + 2, 83, 205, COLOR_PLAYING);
-			run_ms(1200);
+			for (DWORD start = GetTickCount(); frames_run - off < RATE * 15 / 10 && GetTickCount() - start < 5000;) {
+				run_block(NULL);
+			}
 			capture(window);
 			const int gone = count_color_in(243, 523, 83, 205, COLOR_PLAYING);
 			CHECK(at_half >= 100 && parked >= 100 && off_lit > 0 && in_release >= 100 && gone == 0,
@@ -1452,13 +1458,36 @@ int main(int argc, char **argv)
 			for (int y = RAIL_CH8_Y - 30; y < RAIL_CH8_Y + 30 && top < 0; y++) {
 				top = count_color_in(537, 615, y, y + 1, COLOR_PSG) > 0 ? y : -1;
 			}
-			const int crests = top >= 0 ? runs_of(top, 537, 615, COLOR_PSG) : 0;
-			const int first = top >= 0 ? first_of(top, 537, 615, COLOR_PSG) : -1;
 			save_bmp(argv[2], "all-out");
-			run_ms(150);
-			capture(window);
-			const int later = top >= 0 ? first_of(top, 537, 615, COLOR_PSG) : -1;
-			CHECK(crests == 2 && first >= 0 && abs(later - first) < 1, "channel 8's OUT box draws 2 periods of its note (%d crests), its first crest at x %d, 150 ms later at %d", crests, first, later);
+			// Stage 35 (D80, architect): 7 frames over about 1 s, each 2 crests (runs of 4 px or more;
+			// slivers at the right edge don't count) starting on the rising edge; the first crest moves by
+			// 1 px at most, the edge's fraction of a sample (2.4 samples a pixel).
+			int crests_low = 99, crests_high = 0, first_low = 9999, first_high = -1;
+			for (int k = 0; k < 7; k++) {
+				if (k) {
+					run_ms(150);
+					capture(window);
+				}
+				int crests = 0, first = -1;
+				for (int x = 537; top >= 0 && x < 615; x++) {
+					if ((pixels[top * WIDTH + x] & 0xFFFFFF) == COLOR_PSG && (pixels[top * WIDTH + x - 1] & 0xFFFFFF) != COLOR_PSG) {
+						int end = x;
+						while (end < 615 && (pixels[top * WIDTH + end] & 0xFFFFFF) == COLOR_PSG) {
+							end++;
+						}
+						if (end - x >= 4) {
+							first = first < 0 ? x : first;
+							crests++;
+						}
+					}
+				}
+				crests_low = crests < crests_low ? crests : crests_low;
+				crests_high = crests > crests_high ? crests : crests_high;
+				first_low = first >= 0 && first < first_low ? first : first_low;
+				first_high = first > first_high ? first : first_high;
+			}
+			CHECK(crests_low == 2 && crests_high == 2 && first_high >= 0 && first_high - 537 <= 1 && first_high - first_low <= 1,
+				"channel 8's OUT box draws 2 periods from a rising edge in 7 frames over 1 s (crests %d..%d, first crest x %d..%d)", crests_low, crests_high, first_low, first_high);
 		}
 		// A chord: the picture holds by its lowest note, C3 under C4. Each column's top in two frames 120 ms
 		// apart; the shift that matches them best is under 2 px (the sound decays, so tops move a little).

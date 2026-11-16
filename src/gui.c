@@ -493,7 +493,7 @@ static void frame(mdmi_gui *g, int x, int y, int w, int h, uint32_t color)
 	fill(g, x + w - 1, y, 1, h, color);
 }
 
-// UTF-8 names (¡‡Ò.tfi) draw transliterated, never as gaps (stage 24): the font is ASCII only.
+// UTF-8 names (–ë–∞—Å.tfi) draw transliterated, never as gaps (stage 24): the font is ASCII only.
 static int text(mdmi_gui *g, int x, int y, const char *utf8, uint32_t color, int scale)
 {
 	char string[256];
@@ -5551,9 +5551,10 @@ static int lowest_key(mdmi_gui *g, const patch_values *values, int channel)
 }
 
 // Where the picture of a channel's output starts and how long it is, in samples back from the end of
-// `count`: 2 periods of the lowest key, from the last rising zero crossing that leaves room for them,
-// so a held note stands still (art-director's frame, build/stage24e). The noise has a fixed 5 ms.
-static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, unsigned rate, int *start, int *span, int *key)
+// `count`: 2 periods of the lowest key, from the last rising crossing of its fundamental that leaves
+// room for them, so a held note stands still (art-director's frame, build/stage24e). The noise has a
+// fixed 5 ms.
+static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, unsigned rate, double *start, int *span, int *key)
 {
 	*key = lowest_key(g, values, channel);
 	if (*key < 0 || !waves || waves->count < 64 || rate == 0) {
@@ -5574,21 +5575,36 @@ static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const
 	if (*span < 2 || *span + period + 1 > count) {
 		return false;
 	}
-	// An anchor on a grid of whole periods of the outputs' own clock, so it moves only as far as the
-	// chip's pitch is off the key's; then the rising zero crossing nearest to it, the same crest from
-	// frame to frame even when a chord crosses zero several times a period.
+	// Stage 35 (D80): the start is a rising zero crossing of the lowest key's fundamental, its phase
+	// measured each frame: one bin at the key's frequency over whole periods of the last ~4096 samples,
+	// with a Hann window, on the outputs' own sample count. The waveform's own crossings won't do: a
+	// decaying chord's move, merge and vanish (C3 + C4 of a piano jumped up to 15 px). Over whole periods
+	// of the lowest key, its harmonics (a chord's octave too) add nothing to the bin, and decay changes
+	// its size, not its phase. No state, so nothing wanders from frame to frame.
 	const uint64_t first = waves->end - (uint64_t)count;
-	const double latest = (double)(waves->end - (uint64_t)*span) - period / 2;
-	const double anchor = floor(latest / period) * period - (double)first;
-	*start = (int)anchor;
-	int best = -1;
-	for (int i = (int)(anchor - period / 2); i <= (int)(anchor + period / 2); i++) {
-		if (i > 0 && i + *span <= count && s[i - 1] < 0 && s[i] >= 0 && (best < 0 || fabs(i - anchor) < fabs(best - anchor))) {
-			best = i;
-		}
+	int periods = (int)(4096 / period);
+	periods = periods < 2 ? 2 : periods;
+	const int n = (int)(periods * period);
+	if (n > count) {
+		return false;
 	}
-	*start = best >= 0 ? best : *start;
-	*start = *start < 0 ? 0 : *start + *span > count ? count - *span : *start;
+	const int i0 = count - n;
+	const double turn = 2 * 3.14159265358979323846;
+	double re = 0, im = 0;
+	for (int i = i0; i < count; i++) {
+		const double w = 0.5 - 0.5 * cos(turn * (i - i0) / n);
+		const double angle = turn * fmod((double)(first + (uint64_t)i), period) / period;
+		re += s[i] * w * cos(angle);
+		im -= s[i] * w * sin(angle);
+	}
+	// The fundamental is about cos(2 pi t / period + theta): it rises through zero where that angle is
+	// -pi / 2, at t = period * (-1/4 - theta / 2 pi), every period.
+	const double theta = atan2(im, re);
+	double rise = fmod(period * (-0.25 - theta / turn) - fmod((double)first, period), period);
+	rise = rise < 0 ? rise + period : rise;
+	const double limit = count - *span - 1;
+	*start = rise + floor((limit - rise) / period) * period;
+	*start = *start < 0 ? 0 : *start;
 	return true;
 }
 
@@ -5602,7 +5618,8 @@ static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y
 	fill(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_BG);
 	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
 	fill(g, x0, mid, w, 1, C_CELL);
-	int start, span, key;
+	double start;
+	int span, key;
 	if (!out_span(g, values, channel, waves, rate, &start, &span, &key)) {
 		return;
 	}
