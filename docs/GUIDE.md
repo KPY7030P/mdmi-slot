@@ -225,6 +225,16 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   with FMS 7 start their vibrato within 0.2 cents of each other, without the reset up to 160 cents apart.
   The chip has one LFO: the reset moves every channel's vibrato and AM. On a console the prescaler isn't
   reset (the start wanders by up to 1/128 of a cycle) and AM jumps to its step 0; README.
+- TV look (stage 36, D81, `docs/design/tv-look.md`): the ROM page's switch `TV: OFF | RGB | COMP` over the
+  picture's right edge draws the ROM's frame as the console looks on a TV, in the window only. `src/tv.c`
+  (`tv_draw`) reads the 320-wide frame and writes the window's 640x448: RGB is the TV's gamma (2.5 against
+  2.2) and scanlines (a bright and a dark window row per line, the dark one filling in on bright colours),
+  COMP first a cheap composite TV (16 subsamples a pixel, the subcarrier every 30, the same phase on every
+  line; luma the mean over a cycle, chroma demodulated through two 45-subsample means). A line unchanged
+  since the last frame is taken from the kept result. Another width draws as OFF. `rom->pixels`, the ROM and
+  the sound are untouched; test snapshots are OFF unless a test chooses. The view block's fourth byte keeps
+  the choice. `gui_test` checks OFF is the frame at x2 and the frame unchanged after the looks;
+  `tools/test/check_tv.py` checks RGB and COMP against the numpy model within 2 levels.
 - DAC Enable: MIDI channel 6 plays drum samples, chosen by note, with no FM voice of its own. Since stage
   19 (D49, `docs/research/pcm4.md`) the driver is SGDK's PCM4: four voices mixed on the Z80 at one rate,
   `ROM_PCM4_HZ` 15236 Hz as BlastEm plays it (3579545 / 223 = 16052 on a console). Our ROM writes the

@@ -14,6 +14,7 @@
 #include "rom_map.h"
 #include "font5x7.h"
 #include "names.h"
+#include "tv.h"
 
 #define TIMER_ID 1
 #define TIMER_MS 33
@@ -274,6 +275,8 @@ struct mdmi_gui {
 	uint32_t *pixels;
 	// Stage 24d (D62): while channel 3 in Ch3 Special is drawn, FM's colours are its pink.
 	bool sp;
+	// Stage 36 (D81): the TV look's lines kept from the last frame, made on first use.
+	tv_cache *tv;
 
 	cell cells[MAX_CELLS];
 	int cell_count;
@@ -4441,6 +4444,8 @@ static int action_at(const mdmi_gui *g, int x, int y)
 }
 
 // What a press of the button under the mouse would do, for the footer.
+static bool tv_hint(mdmi_gui *g, char *hint, size_t size);
+
 static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 {
 	const int action = g->file_over ? -1 : action_at(g, g->mouse_x, g->mouse_y);
@@ -4693,6 +4698,8 @@ static void draw_footer(mdmi_gui *g)
 	} else if (g->file_over) {
 		footer_text(g, g->drop_hint, g->drop_hint_color);
 	} else if (action_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
+	} else if (tv_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->row_moved && bank_hint(g, buffer, sizeof(buffer), &color)) {
 		footer_text(g, buffer, color);
@@ -5898,6 +5905,18 @@ static void draw_rom(mdmi_gui *g)
 	}
 	const int left = (GUI_WIDTH - width) / 2;
 	const int top = HEADER_H + (GUI_HEIGHT - HEADER_H - height) / 2;
+	// Stage 36 (D81): the TV look reads the frame and writes the window's pixels, nothing else. Its
+	// model is H40's pixel clock: another width draws as OFF.
+	const int look = *g->source.tv_look;
+	if (look != TV_OFF && rom->width == 320 && width == 320 * ROM_SCALE && height == (int)rom->height * ROM_SCALE) {
+		if (!g->tv) {
+			g->tv = tv_cache_new();
+		}
+		if (g->tv) {
+			tv_draw(g->tv, look, rom->pixels, MDMI_FRAME_MAX_WIDTH, (int)rom->height, g->pixels + top * GUI_WIDTH + left, GUI_WIDTH);
+			return;
+		}
+	}
 	for (int y = 0; y < height; y++) {
 		const uint32_t *source = rom->pixels + (y / ROM_SCALE) * MDMI_FRAME_MAX_WIDTH;
 		uint32_t *line = g->pixels + (top + y) * GUI_WIDTH + left;
@@ -5946,6 +5965,50 @@ static void send_screen_names(mdmi_gui *g)
 	free(names);
 }
 
+// Stage 36 (D81, docs/design/tv-look.md 1): the ROM page's TV switch between the header and the
+// picture: the label TV, then OFF, RGB and COMP.
+#define TV_SW_Y 32
+#define TV_SW_H 18
+static const int TV_CELL_X[4] = {542, 568, 604, 640}, TV_CELL_W[4] = {24, 34, 34, 40};
+static const char *const TV_CELL_TEXT[4] = {"TV", "OFF", "RGB", "COMP"};
+
+// The cell of the TV switch at x, y: 0 the label, 1-3 a look, -1 none.
+static int tv_cell_at(int x, int y)
+{
+	for (int i = 0; i < 4 && y >= TV_SW_Y && y < TV_SW_Y + TV_SW_H; i++) {
+		if (x >= TV_CELL_X[i] && x < TV_CELL_X[i] + TV_CELL_W[i]) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void draw_tv_switch(mdmi_gui *g)
+{
+	const int over = g->file_over ? -1 : tv_cell_at(g->mouse_x, g->mouse_y);
+	for (int i = 0; i < 4; i++) {
+		const bool chosen = i > 0 && i - 1 == *g->source.tv_look;
+		const uint32_t back = chosen ? C_TEXT : i > 0 && i == over ? C_LINE : C_CELL;
+		const uint32_t ink = chosen ? C_BG : i > 0 && i == over ? C_TEXT : C_LABEL;
+		fill(g, TV_CELL_X[i], TV_SW_Y, TV_CELL_W[i], TV_SW_H, back);
+		text(g, TV_CELL_X[i] + (TV_CELL_W[i] - (int)strlen(TV_CELL_TEXT[i]) * 6 + 1) / 2, TV_SW_Y + 6, TV_CELL_TEXT[i], ink, 1);
+	}
+}
+
+static bool tv_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (g->file_over || *g->source.page != PAGE_ROM) {
+		return false;
+	}
+	static const char *const HINTS[4] = {"TV OFF: ROM PIXELS AS THEY ARE", "TV OFF: ROM PIXELS AS THEY ARE", "RGB: CONSOLE ON A CRT BY SCART", "COMP: COMPOSITE TV, BLUR AND RAINBOW"};
+	const int cell = tv_cell_at(g->mouse_x, g->mouse_y);
+	if (cell < 0) {
+		return false;
+	}
+	snprintf(hint, size, "%s", HINTS[cell]);
+	return true;
+}
+
 static void render(mdmi_gui *g)
 {
 	fill(g, 0, 0, GUI_WIDTH, HEADER_H, C_BG);
@@ -5974,6 +6037,7 @@ static void render(mdmi_gui *g)
 		send_screen_names(g);
 		g->cell_count = 0;
 		draw_rom(g);
+		draw_tv_switch(g);
 	} else {
 		draw_editor(g);
 	}
@@ -6579,6 +6643,12 @@ static void on_down(mdmi_gui *g, int x, int y)
 		return;
 	}
 	if (*g->source.page == PAGE_ROM) {
+		// Stage 36: a look of the TV switch, a view like the page (no undo, no knob).
+		const int cell = g->file_over ? -1 : tv_cell_at(x, y);
+		if (cell > 0) {
+			*g->source.tv_look = (uint8_t)(cell - 1);
+			refresh(g);
+		}
 		return;
 	}
 	int channel = rail_channel_at(x, y);
@@ -7441,6 +7511,7 @@ void gui_destroy(mdmi_gui *g)
 	if (g->ole_ready) {
 		OleUninitialize();
 	}
+	tv_cache_free(g->tv);
 	free(g->pixels);
 	free(g);
 }

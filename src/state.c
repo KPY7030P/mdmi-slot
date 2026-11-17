@@ -62,7 +62,7 @@ static uint8_t *put_bank(uint8_t *out, const patch_bank *bank)
 uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 {
 	const size_t dac_bytes = view && view->dac ? dac_block_size(view->dac) : 0;
-	const size_t most = sizeof(uint32_t) + 11 * BLOCK_HEAD + patch_save_size() + 3 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + TAILS_BYTES + PATCH_BASES_BYTES + PLACES_BYTES + ENVELOPES_BYTES + ARPS_BYTES + dac_bytes;
+	const size_t most = sizeof(uint32_t) + 11 * BLOCK_HEAD + patch_save_size() + 4 + NAMES_BYTES + PSG_BYTES + LOOPS_BYTES + TAILS_BYTES + PATCH_BASES_BYTES + PLACES_BYTES + ENVELOPES_BYTES + ARPS_BYTES + dac_bytes;
 	uint8_t *buffer = malloc(most);
 	if (!buffer) {
 		return NULL;
@@ -74,12 +74,13 @@ uint8_t *state_build(mdmi_patch *patch, const state_view *view, size_t *size)
 		const patch_values *values = patch_view(patch);
 		out = put_block_head(out, BLOCK_VALUES, (uint32_t)patch_save_size());
 		patch_save(values, out);
-		// The third byte came with stage 11; older builds read the first two.
-		out = put_block_head(out + patch_save_size(), BLOCK_VIEW, 3);
+		// The third byte came with stage 11, the fourth with stage 36; older builds read the first ones.
+		out = put_block_head(out + patch_save_size(), BLOCK_VIEW, 4);
 		out[0] = (uint8_t)view->page;
 		out[1] = (uint8_t)view->channel;
 		out[2] = view->envelopes;
-		out = put_block_head(out + 3, BLOCK_NAMES, NAMES_BYTES);
+		out[3] = view->tv;
+		out = put_block_head(out + 4, BLOCK_NAMES, NAMES_BYTES);
 		patch_save_names(values, out);
 		out = put_block_head(out + NAMES_BYTES, BLOCK_PSG, PSG_BYTES);
 		memcpy(out, values->psg, PSG_BYTES);
@@ -283,6 +284,7 @@ bool state_read(mdmi_patch *patch, const uint8_t *bytes, size_t size, state_view
 		view->page = seen_view[0];
 		view->channel = seen_view[1] < PATCH_NUM_CHANNELS ? seen_view[1] : 0;
 		view->envelopes = view_length >= 3 ? seen_view[2] : 0;
+		view->tv = view_length >= 4 && seen_view[3] <= 2 ? seen_view[3] : 0;
 		// A state of an older build has no loops switched off.
 		memset(view->loops, 0, sizeof(view->loops));
 		for (int i = 0; loops && i < PATCH_NUM_PSG_CHANNELS; i++) {

@@ -743,6 +743,54 @@ int main(int argc, char **argv)
 		int rom_with_notes = count_not_black(HEADER_H, HEIGHT);
 		CHECK(rom_with_notes > 1000, "ROM screen is drawn (%d pixels)", rom_with_notes);
 		save_bmp(argv[2], "rom");
+		// Stage 36 (D81): the TV switch. With no process calls the engine fills its ring and stops, so
+		// the ROM's frame stands still: OFF, RGB, COMP and OFF again all draw the same frame.
+		// check_tv.py compares the looks with the model; here: OFF is the frame at x2 as before, the
+		// frame is the same after the looks (they only read it), and what a look costs.
+		{
+			Sleep(400);
+			capture(window);
+			static uint32_t off[WIDTH * HEIGHT];
+			memcpy(off, pixels, sizeof(pixels));
+			int blocks = 0;
+			for (int y = 54; y < 54 + 448; y += 2) {
+				for (int x = 40; x < 40 + 640; x += 2) {
+					const uint32_t p = pixels[y * WIDTH + x];
+					blocks += pixels[y * WIDTH + x + 1] != p || pixels[(y + 1) * WIDTH + x] != p || pixels[(y + 1) * WIDTH + x + 1] != p;
+				}
+			}
+			save_bmp(argv[2], "tv-off");
+			LARGE_INTEGER hz, t0, t1;
+			QueryPerformanceFrequency(&hz);
+			double ms[2] = {0, 0};
+			static const char *const NAMES[2] = {"tv-rgb", "tv-comp"};
+			int changed[2] = {0, 0};
+			for (int look = 0; look < 2; look++) {
+				// The click draws the window, the look worked out for every line of the frame.
+				QueryPerformanceCounter(&t0);
+				click(window, look ? 650 : 615, 40);
+				QueryPerformanceCounter(&t1);
+				capture(window);
+				ms[look] = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart;
+				save_bmp(argv[2], NAMES[look]);
+				for (int i = 54 * WIDTH; i < (54 + 448) * WIDTH; i++) {
+					changed[look] += pixels[i] != off[i];
+				}
+			}
+			QueryPerformanceCounter(&t0);
+			capture(window);
+			QueryPerformanceCounter(&t1);
+			const double cached = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart;
+			click(window, 585, 40);
+			QueryPerformanceCounter(&t0);
+			capture(window);
+			QueryPerformanceCounter(&t1);
+			const double plain = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart;
+			printf("    TV look: the window drawn with every line worked out, RGB %.1f ms, COMP %.1f ms; again from the kept lines %.1f ms; OFF %.1f ms\n", ms[0], ms[1], cached, plain);
+			const int same = !memcmp(off + 54 * WIDTH, pixels + 54 * WIDTH, 448 * WIDTH * sizeof(uint32_t));
+			CHECK(blocks == 0 && changed[0] > 1000 && changed[1] > 1000 && same,
+				"TV switch: OFF draws the frame at x2 (%d uneven blocks), RGB and COMP draw it otherwise (%d, %d px), OFF again is the same frame bit for bit", blocks, changed[0], changed[1]);
+		}
 		static uint32_t before[WIDTH * HEIGHT];
 		memcpy(before, pixels, sizeof(pixels));
 

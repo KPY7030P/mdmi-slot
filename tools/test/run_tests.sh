@@ -128,6 +128,8 @@ timeout 90 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "gui_test: exit $code"
+# Stage 36 (D81): the window's TV looks against the model of docs/design/tv-look.md.
+python -I "$WIN_ROOT/tools/test/check_tv.py" "$WIN_OUT/gui" || fail "TV looks"
 log="$OUT/gui-crash.log"
 export MDMI_TEST_CRASH=segv
 timeout 90 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1

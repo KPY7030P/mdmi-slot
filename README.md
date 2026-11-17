@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.30.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.31.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -30,6 +30,10 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   numbers, writes DAC on FM6 while the DAC plays, keeps only warnings in its journal, and shows BANK and a
   signature in its top line: the same signature in the plugin and on the console means the card holds this
   bank and these samples. Not checked on a real console yet.
+- The ROM page as on a TV (0.31.0): the switch `TV: OFF | RGB | COMP` over the picture's right edge draws the
+  ROM's screen as the console looks on a CRT by SCART (scanlines, the TV's gamma) or on a cheap composite TV
+  (blur, colour bleed, rainbow on thin grey lines and text). Only the window: the ROM, the sound and the console
+  don't change. The project keeps the choice. How strong the rainbow is on a real TV is not checked yet.
 - The ROM's status screen (0.24.6-0.24.8), in the plugin's ROM page and on the console. Each channel has a row:
   - left: its number, the MIDI channel that holds it, and a stripe joining the rows of one chord;
   - its sound's name, and under it a ribbon of hits scrolling left over about two seconds (a bar per Note On,

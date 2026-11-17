@@ -1253,6 +1253,17 @@ static void test_drawing(void)
 	CHECK(state && state_read(patch, state, size, &view, &knobs) && patch_take_incoming(patch) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)),
 		"after a project is opened the drawing is there");
 	free(state);
+	// Stage 36 (D81): the ROM page's TV look goes with the view, the block's fourth byte; a value
+	// no build writes reads as OFF.
+	for (int look = 0; look < 4; look++) {
+		state_view tv = files_view;
+		tv.tv = (uint8_t)(look == 3 ? 7 : look);
+		state = state_build(patch, &tv, &size);
+		state_view back = {0};
+		back.tv = 5;
+		CHECK(state && state_read(patch, state, size, &back, &knobs) && back.tv == (look == 3 ? 0 : look), "the TV look %d comes back as %d", tv.tv, back.tv);
+		free(state);
+	}
 	// The loops switched off in the editor go with it (D30); a state without them has none.
 	state_view kept = files_view;
 	kept.loops[2] = (state_loop){true, 5, -1, "Plain"};

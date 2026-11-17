@@ -66,6 +66,8 @@ typedef struct {
 	int *channel;
 	// A bit per FM channel whose row on ALL shows the envelopes, the view's too (stage 11).
 	uint8_t *all_envelopes;
+	// The ROM page's TV look (stage 36, tv.h), the view's too.
+	uint8_t *tv_look;
 	// The PSG loops switched off, PATCH_NUM_PSG_CHANNELS of them, the view's like page and channel.
 	state_loop *loop_shadows;
 	// The releases kept while a PSG loop stops at Note Off (stage 22b), the view's too.

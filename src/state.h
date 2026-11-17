@@ -44,6 +44,8 @@ typedef struct {
 	int page;
 	int channel;
 	uint8_t envelopes;
+	// Stage 36 (D81): the ROM page's TV look (tv.h: 0 off, 1 RGB, 2 composite), the fourth byte.
+	uint8_t tv;
 	state_loop loops[PATCH_NUM_PSG_CHANNELS];
 	state_tail tails[PATCH_NUM_PSG_CHANNELS];
 	// The plugin's DAC samples, NULL where a state has none to give them (tests). A whole state
