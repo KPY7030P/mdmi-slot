@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.32.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.33.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -30,6 +30,10 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   numbers, writes DAC on FM6 while the DAC plays, keeps only warnings in its journal, and shows BANK and a
   signature in its top line: the same signature in the plugin and on the console means the card holds this
   bank and these samples. Not checked on a real console yet.
+- MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts
+  its own attack, with no glide and no second voice; letting go of the top key strikes the one below again.
+  MONO and PORTA are a pair in the channel's row, one click picks either; PORTA wins if both are on (from a
+  lane or a clip). The knobs are Mono CH1-CH6; CC 105 on the channel's MIDI track moves them too.
 - The ROM page as on a TV (0.31.0): the switch `TV: OFF | RGB | COMP` over the picture's right edge draws the
   ROM's screen as the console looks on a CRT by SCART (scanlines, the TV's gamma) or on a cheap composite TV
   (blur, colour bleed, rainbow on thin grey lines and text). Only the window: the ROM, the sound and the console

@@ -245,6 +245,60 @@ static void test_modes(void)
 	CHECK(sent_bytes == 0, "CC84 stops here: it would let any note take any voice");
 }
 
+static bool sent_cc(uint8_t status, uint8_t cc, uint8_t value);
+
+// Stage 38 (D83): MONO of FM channels 1-6 is a global knob each, ids 24-29, CC 105 on the channel.
+static void test_mono(void)
+{
+	printf("MONO\n");
+	static mdmi_patch patch, other;
+	patch_init(&patch);
+	clear();
+	sync(&patch);
+	CHECK(sent_bytes == 0, "MONO off is what the ROM starts with");
+	char name[64];
+	snprintf(name, sizeof(name), "%s", patch_param(GLOBAL_MONO(0))->name);
+	CHECK(!strcmp(name, "Mono CH1") && !strcmp(patch_param(GLOBAL_MONO(5))->name, "Mono CH6") && patch_param(GLOBAL_MONO(5))->max == 1, "the knobs are Mono CH1 to Mono CH6: %s", name);
+	clear();
+	set(&patch, GLOBAL_MONO(3), 1);
+	CHECK(sent_bytes == 3 && sent[0] == 0xB3 && sent[1] == 105 && sent[2] == 127, "Mono CH4 on goes as CC 105 127 on MIDI 4");
+	CHECK(patch_alone_reason(&patch.model, 3) == PATCH_ALONE_MONO && patch_lend_reason(&patch.model, 3) == PATCH_ALONE_NO,
+		"a MONO channel plays alone and lends its silent voice, as Porta");
+	clear();
+	midi(&patch, 0xB1, 105, 100);
+	CHECK(patch.model.globals[GLOBAL_MONO(1)] == 1, "CC 105 from a clip on MIDI 2 turns Mono CH2 on");
+	midi(&patch, 0xB1, 105, 10);
+	CHECK(patch.model.globals[GLOBAL_MONO(1)] == 0, "and off");
+	const patch_values before = patch.model;
+	midi(&patch, 0xB7, 105, 127);
+	CHECK(!memcmp(patch.model.globals, before.globals, sizeof(before.globals)), "on MIDI 8 it moves nothing");
+	set(&patch, GLOBAL_CH3_MODE, 1);
+	set(&patch, GLOBAL_MONO(2), 1);
+	CHECK(patch_alone_reason(&patch.model, 2) == PATCH_ALONE_CH3, "Ch3 Special comes before MONO on channel 3");
+	set(&patch, GLOBAL_CH3_MODE, 0);
+	set(&patch, GLOBAL_MONO(2), 0);
+	// After a ROM reset the ROM gets the channel's MONO again.
+	clear();
+	patch_rom_booted(&patch, record, NULL);
+	CHECK(sent_cc(0xB3, 105, 127), "a booted ROM gets Mono CH4 again");
+	// A project from before stage 38 opens with MONO off.
+	static uint8_t state[PATCH_NUM_IDS * 6], old[PATCH_NUM_IDS * 6];
+	patch_publish(&patch);
+	patch_save(patch_view(&patch), state);
+	size_t old_size = 0;
+	for (size_t i = 0; i < patch_save_size() / 6; i++) {
+		uint32_t id;
+		memcpy(&id, state + i * 6, sizeof(id));
+		if (id < GLOBAL_MONO_BASE || id >= PATCH_NUM_GLOBALS) {
+			memcpy(old + old_size, state + i * 6, 6);
+			old_size += 6;
+		}
+	}
+	patch_init(&other);
+	CHECK(old_size == patch_save_size() - 6 * 6 && patch_load(&other, old, old_size, NULL, NULL, NULL, NULL) && patch_take_incoming(&other) && !other.model.globals[GLOBAL_MONO(3)],
+		"a project without ids 24-29 opens with MONO off");
+}
+
 // Stage 16 (D45): the noise's two knobs go as CC 12 and 13 on MIDI 10 and again after a reset.
 static bool sent_cc(uint8_t status, uint8_t cc, uint8_t value)
 {
@@ -2732,7 +2786,7 @@ static void test_ch3_ops(void)
 	static mdmi_patch patch, other;
 	patch_init(&patch);
 	char name[32], text[16];
-	bool ids = GLOBAL_CH3_NOTES == 10 && GLOBAL_LFO_RESET == 11 && GLOBAL_CH3_OP(0, PATCH_CH3_SEMI) == 12 && GLOBAL_CH3_OP(3, PATCH_CH3_FIXED) == 23 && PATCH_NUM_GLOBALS == 24;
+	bool ids = GLOBAL_CH3_NOTES == 10 && GLOBAL_LFO_RESET == 11 && GLOBAL_CH3_OP(0, PATCH_CH3_SEMI) == 12 && GLOBAL_CH3_OP(3, PATCH_CH3_FIXED) == 23 && GLOBAL_CH3_OP_END == 24 && GLOBAL_MONO(0) == 24 && PATCH_NUM_GLOBALS == 30;
 	patch_param_name(GLOBAL_CH3_NOTES, name, sizeof(name));
 	ids = ids && !strcmp(name, "Ch3 Notes") && patch_param(GLOBAL_CH3_NOTES)->max == 2 && patch_param(GLOBAL_CH3_NOTES)->default_value == PATCH_CH3_OPS;
 	patch_param_name(GLOBAL_LFO_RESET, name, sizeof(name));
@@ -2749,7 +2803,9 @@ static void test_ch3_ops(void)
 		}
 	}
 	CHECK(ids, "ids 10-23: Ch3 Notes (three positions since 0.22), LFO Reset, then Semi, Fine, Fixed of operators 1-4, with their ranges and defaults");
-	CHECK(patch_param_id_at(PATCH_NUM_IDS - 15) == GLOBAL_MASTER && patch_param_id_at(PATCH_NUM_IDS - 14) == 10 && patch_param_id_at(PATCH_NUM_IDS - 1) == 23 && PATCH_NUM_IDS == 377,
+	// Stage 38: the six MONO knobs come last, after the operators' (ids 24-29).
+	CHECK(patch_param_id_at(PATCH_NUM_IDS - 21) == GLOBAL_MASTER && patch_param_id_at(PATCH_NUM_IDS - 20) == 10 && patch_param_id_at(PATCH_NUM_IDS - 7) == 23
+			&& patch_param_id_at(PATCH_NUM_IDS - 6) == 24 && patch_param_id_at(PATCH_NUM_IDS - 1) == 29 && PATCH_NUM_IDS == 383,
 		"in the host's list after Master Volume, %d knobs", PATCH_NUM_IDS);
 	bool labels = true;
 	patch_format(&patch.bank, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE, text, sizeof(text));
@@ -2855,14 +2911,14 @@ static void test_ch3_ops(void)
 	for (int i = 0; i < PATCH_NUM_IDS; i++) {
 		uint32_t id;
 		memcpy(&id, state + i * 6, 4);
-		if (id < GLOBAL_CH3_NOTES || id >= PATCH_NUM_GLOBALS) {
+		if (id < GLOBAL_CH3_NOTES || id >= GLOBAL_CH3_OP_END) {
 			memcpy(old + old_size, state + i * 6, 6);
 			old_size += 6;
 		}
 	}
 	patch_init(&other);
 	bool defaults = old_size == sizeof(state) - 14 * 6 && patch_load(&other, old, old_size, NULL, NULL, NULL, NULL) && patch_take_incoming(&other);
-	for (int id = GLOBAL_CH3_NOTES; id < PATCH_NUM_GLOBALS; id++) {
+	for (int id = GLOBAL_CH3_NOTES; id < GLOBAL_CH3_OP_END; id++) {
 		defaults = defaults && other.model.globals[id] == patch_param((uint32_t)id)->default_value;
 	}
 	CHECK(defaults && other.model.globals[GLOBAL_LFO_RATE] == patch.model.globals[GLOBAL_LFO_RATE], "a project of 0.20, without ids 10-23, opens with their defaults");
@@ -3294,6 +3350,7 @@ int main(int argc, char **argv)
 	test_shadowed_presets();
 	test_sustain_rate();
 	test_modes();
+	test_mono();
 	test_noise();
 	test_incoming();
 	test_load();

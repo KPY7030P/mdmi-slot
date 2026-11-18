@@ -209,10 +209,19 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..79afbb6 100644
+index 5145b6a..d55e149 100644
 --- a/src/midi.c
 +++ b/src/midi.c
-@@ -71,7 +71,14 @@ static const u16 portaTimeToInterval[128]
+@@ -37,6 +37,8 @@ typedef struct MidiChannel {
+     NotePriorityStack notePriority;
+     DeviceSelect deviceSelect;
+     bool portamento;
++    // Stage 38 (D83), CC 105.
++    bool mono;
+     u16 portamentoInterval;
+     s8 fineTune;
+     u16 rpn;
+@@ -71,7 +73,14 @@ static const u16 portaTimeToInterval[128]
  
  static DeviceChannel deviceChannels[DEV_CHANS];
  static MidiChannel midiChannels[MIDI_CHANNELS];
@@ -227,9 +236,11 @@ index 5145b6a..79afbb6 100644
  static void (*changeCallback)(MidiChangeEvent);
  
  typedef struct MidiConfig {
-@@ -103,9 +110,13 @@ static bool valid_midi_channel(u8 midiChan);
+@@ -102,10 +111,15 @@ static void set_downstream_pitch(DeviceChannel* devChan);
+ static bool valid_midi_channel(u8 midiChan);
  static bool valid_device_channel(u8 devChan);
  static bool is_single_voice_channel(u8 midiChan, bool playing);
++static bool mono_voice(const DeviceChannel* devChan);
  
 -void midi_init(
 -    const FmPreset** presets, const PercussionPreset** percussionPresets, const u8** envelopes)
@@ -243,7 +254,7 @@ index 5145b6a..79afbb6 100644
      defaultEnvelopes = envelopes;
      defaultPresets = presets;
      defaultPercussionPresets = percussionPresets;
-@@ -120,7 +131,12 @@ static void reset(void)
+@@ -120,7 +134,12 @@ static void reset(void)
  {
      midi_psg_reset();
      midi_fm_reset();
@@ -256,7 +267,15 @@ index 5145b6a..79afbb6 100644
      config = (MidiConfig) {
          .mappingModePref = DEFAULT_MAPPING_MODE,
          .disableNonGeneralMidiCCs = false,
-@@ -179,6 +195,9 @@ static void init_device_channel(u8 devChan)
+@@ -155,6 +174,7 @@ static void init_midi_channel(u8 midiChan)
+     note_priority_init(&chan->notePriority);
+     chan->deviceSelect = Auto;
+     chan->portamento = false;
++    chan->mono = false;
+     chan->portamentoInterval = DEFAULT_PORTAMENTO_INTERVAL;
+     chan->fineTune = 0;
+     chan->rpn = NULL_RPN;
+@@ -179,6 +199,9 @@ static void init_device_channel(u8 devChan)
      chan->cents = 0;
      chan->pitchBend = DEFAULT_MIDI_PITCH_BEND;
      chan->glideTargetPitch = 0;
@@ -266,7 +285,7 @@ index 5145b6a..79afbb6 100644
      update_device_channel_from_associated_midi_channel(chan);
  }
  
-@@ -401,12 +420,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+@@ -401,12 +424,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
      return findFreeChannel(midiChan);
  }
  
@@ -318,7 +337,7 @@ index 5145b6a..79afbb6 100644
  }
  
  static void set_downstream_pitch(DeviceChannel* devChan)
-@@ -415,8 +472,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
+@@ -415,8 +476,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
      devChan->ops->pitch(devChan->num, pc.pitch, pc.cents);
  }
  
@@ -347,7 +366,7 @@ index 5145b6a..79afbb6 100644
      PitchCents pc = effectivePitchCents(devChan);
      devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
  }
-@@ -446,6 +523,19 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -446,7 +527,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -364,11 +383,22 @@ index 5145b6a..79afbb6 100644
 +        midi_dac_play(pitch, pc.pitch, velocity);
 +        return;
 +    }
++    // Stage 38 (D83): MONO strikes a note over the sounding one again, on the same voice.
++    bool restrike = false;
      if (is_single_voice_channel(midiChan, false)) {
++        restrike = midiChannel->mono && mono_voice(devChan);
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
-@@ -464,6 +554,8 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+             return;
+@@ -462,14 +559,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+     }
+ 
      reapply_program_if_channel_was_formerly_percussive(devChan, midiChan);
++    if (restrike) {
++        // Key-off first: a key-on over keys that are on starts no attack (the chip and BlastEm), and
++        // SGDK's busy wait between the two writes gives the key-off the chip's sample (18.8 us).
++        devChan->ops->noteOff(devChan->num, devChan->pitch);
++    }
      devChan->midiChannel = midiChan;
      devChan->noteOn = true;
 +    devChan->hits++;
@@ -376,7 +406,20 @@ index 5145b6a..79afbb6 100644
      devChan->cents = 0;
      devChan->pitch = pitch;
      update_device_channel_from_associated_midi_channel(devChan);
-@@ -483,19 +575,37 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+     set_downstream_note_on(devChan, velocity);
+ }
+ 
++// Stage 38 (D83): MONO acts on a sounding FM voice, not channel 3's in Ch3 Special nor the DAC's.
++static bool mono_voice(const DeviceChannel* devChan)
++{
++    return devChan->noteOn && devChan->ops == &FM_VTable
++        && !(devChan->num == CH3_SPECIAL_MODE && synth_global_parameters()->specialMode);
++}
++
+ static bool is_single_voice_channel(u8 midiChan, bool playing)
+ {
+     u8 count = 0;
+@@ -483,20 +594,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -415,9 +458,14 @@ index 5145b6a..79afbb6 100644
 +                    devChan->cents = 0;
 +                    set_downstream_pitch(devChan);
                  } else {
++                    if (midiChannel->mono && mono_voice(devChan)) {
++                        // Stage 38 (D83): the key below strikes again with its attack.
++                        devChan->ops->noteOff(devChan->num, pitch);
++                    }
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
-@@ -510,6 +620,8 @@ void midi_note_off(u8 chan, u8 pitch)
+                 handledRetrigger = true;
+@@ -510,6 +643,8 @@ void midi_note_off(u8 chan, u8 pitch)
  static void dev_chan_note_on(DeviceChannel* devChan, u8 pitch, u8 velocity)
  {
      devChan->noteOn = true;
@@ -426,7 +474,7 @@ index 5145b6a..79afbb6 100644
      devChan->cents = 0;
      devChan->pitch = pitch;
      set_downstream_note_on(devChan, velocity);
-@@ -519,6 +631,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
+@@ -519,6 +654,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
  {
      devChan->noteOn = false;
      devChan->pitch = 0;
@@ -436,7 +484,7 @@ index 5145b6a..79afbb6 100644
      devChan->ops->noteOff(devChan->num, pitch);
  }
  
-@@ -606,9 +721,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +744,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -449,7 +497,7 @@ index 5145b6a..79afbb6 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +767,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +790,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -528,7 +576,7 @@ index 5145b6a..79afbb6 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -675,7 +858,7 @@ static void store_program(const u8* data, u16 length)
+@@ -675,7 +881,7 @@ static void store_program(const u8* data, u16 length)
              fmPreset.operators[i].ssgEg = data[16 + i * 11];
          }
          midi_fm_store_preset(program, &fmPreset);
@@ -537,7 +585,7 @@ index 5145b6a..79afbb6 100644
          break;
      }
      default:
-@@ -692,7 +875,7 @@ static void clear_program(const u8* data, u16 length)
+@@ -692,7 +898,7 @@ static void clear_program(const u8* data, u16 length)
      switch (type) {
      case STORE_PROGRAM_TYPE_FM:
          midi_fm_clear_preset(program);
@@ -546,7 +594,7 @@ index 5145b6a..79afbb6 100644
          break;
      default:
          log_warn("Invalid clear program type: %d", type);
-@@ -811,9 +994,9 @@ static void dump_preset_request(const u8* data, u16 length)
+@@ -811,9 +1017,9 @@ static void dump_preset_request(const u8* data, u16 length)
          const FmPreset* preset = midi_fm_get_stored_preset(program);
          if (preset != NULL) {
              send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
@@ -558,7 +606,7 @@ index 5145b6a..79afbb6 100644
          }
          break;
      }
-@@ -841,7 +1024,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1047,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -567,7 +615,7 @@ index 5145b6a..79afbb6 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1181,103 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1204,103 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -672,7 +720,7 @@ index 5145b6a..79afbb6 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1496,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1519,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -681,7 +729,7 @@ index 5145b6a..79afbb6 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1523,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1546,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -713,7 +761,17 @@ index 5145b6a..79afbb6 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1607,12 @@ void midi_reset(void)
+@@ -1265,6 +1584,9 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+     case CC_PORTAMENTO_ENABLE:
+         set_portamento_mode(chan, RANGE(value, 2));
+         break;
++    case CC_MONO:
++        chan->mono = value >= 64;
++        break;
+     case CC_FINE_TUNE:
+         if (isIgnoringNonGeneralMidiCCs())
+             break;
+@@ -1311,11 +1633,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -728,14 +786,15 @@ index 5145b6a..79afbb6 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1636,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1662,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
 -    set_downstream_pitch(chan);
 +    return true;
-+}
-+
+ }
+ 
+-static void process_portamento(void)
 +// MDMI plugin fork, stage 20: one step of the row per frame while the key is held. True when the
 +// shift changed.
 +static bool process_channel_arp(DeviceChannel* chan)
@@ -754,9 +813,8 @@ index 5145b6a..79afbb6 100644
 +    s8 before = arp->steps[chan->arpStep];
 +    chan->arpStep = next;
 +    return arp->steps[next] != before;
- }
- 
--static void process_portamento(void)
++}
++
 +// Portamento and the arpeggio row write a voice's pitch at most once per frame between them.
 +static void process_pitch(void)
  {
@@ -790,7 +848,7 @@ index 5145b6a..79afbb6 100644
  
  void midi_register_change_callback(void (*callback)(MidiChangeEvent))
 diff --git a/src/midi.h b/src/midi.h
-index 731aa8c..30efc5e 100644
+index 731aa8c..98a60ce 100644
 --- a/src/midi.h
 +++ b/src/midi.h
 @@ -17,6 +17,8 @@
@@ -828,7 +886,7 @@ index 731aa8c..30efc5e 100644
  #define CC_GENMDM_POLYPHONIC_MODE 84
  #define CC_FINE_TUNE 85
  #define CC_DEVICE_SELECT 86
-@@ -103,6 +117,12 @@
+@@ -103,6 +117,16 @@
  #define CC_NRPN_MSB 99
  #define CC_RPN_LSB 100
  #define CC_RPN_MSB 101
@@ -838,10 +896,14 @@ index 731aa8c..30efc5e 100644
 +#define CC_CH3_OP_SEMI 102
 +#define CC_CH3_OP_FINE 103
 +#define CC_CH3_OP_FIXED 104
++// MDMI plugin fork, stage 38 (D83): 64-127 MONO on the channel, 0-63 off. A note over the sounding
++// one on an FM channel that plays alone, and the raised top key's return to the one below, strike
++// again with key-off then key-on; Porta On glides instead.
++#define CC_MONO 105
  #define CC_GENMDM_GLOBAL_LFO_FREQUENCY 1
  #define CC_RESET_ALL_CONTROLLERS 121
  #define CC_ALL_SOUND_OFF 120
-@@ -135,6 +155,25 @@
+@@ -135,6 +159,25 @@
  
  #define STORE_PROGRAM_TYPE_FM 0x00
  #define STORE_PROGRAM_TYPE_PSG 0x01
@@ -867,7 +929,7 @@ index 731aa8c..30efc5e 100644
  
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
-@@ -158,6 +197,15 @@ typedef struct DeviceChannel {
+@@ -158,6 +201,15 @@ typedef struct DeviceChannel {
      u16 pitchBend;
      s8 cents;
      u16 glideTargetPitch;
@@ -883,7 +945,7 @@ index 731aa8c..30efc5e 100644
  } DeviceChannel;
  
  typedef enum MidiChangeType {
-@@ -173,8 +221,9 @@ typedef struct MidiChangeEvent {
+@@ -173,8 +225,9 @@ typedef struct MidiChangeEvent {
      u8 value;
  } MidiChangeEvent;
  
@@ -8311,7 +8373,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..25d10f1 100644
+index d2449c4..604d8ee 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -8467,13 +8529,15 @@ index d2449c4..25d10f1 100644
          log_test(test_log_stores_multiple_logs_and_overwrites_older),
          log_test(
              test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
-@@ -440,6 +520,67 @@ int main(void)
+@@ -440,6 +520,69 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
 +        midi_portamento_test(test_midi_portamento_legato_chain_glides_on_every_note),
 +        midi_portamento_test(test_midi_portamento_raising_a_held_key_below_keeps_the_glide),
 +        midi_portamento_test(test_midi_note_stack_without_portamento_as_before),
++        midi_portamento_test(test_midi_mono_strikes_again_with_key_off),
++        midi_portamento_test(test_midi_mono_with_portamento_glides),
 +        midi_portamento_test(test_midi_note_stack_keeps_a_held_note_after_another_raised),
 +        midi_portamento_test(test_midi_portamento_keeps_a_held_note_after_another_raised),
 +
@@ -10973,7 +11037,7 @@ index e629bae..6c5fe60 100644
 +
 +void test_midi_fm_velocity_and_volume_read_back(UNUSED void** state);
 diff --git a/tests/unit/test_midi_portamento.c b/tests/unit/test_midi_portamento.c
-index 13ce5a1..c3d255d 100644
+index 13ce5a1..52b7253 100644
 --- a/tests/unit/test_midi_portamento.c
 +++ b/tests/unit/test_midi_portamento.c
 @@ -298,7 +298,7 @@ void test_midi_portamento_zeros_any_residual_cents(UNUSED void** state)
@@ -10985,7 +11049,7 @@ index 13ce5a1..c3d255d 100644
          debug_message("channel %d\n", chan);
          u8 psgChan = chan - MIN_PSG_CHAN;
          __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
-@@ -462,3 +462,149 @@ void test_midi_portamento_glides_with_fine_tune(UNUSED void** state)
+@@ -462,3 +462,199 @@ void test_midi_portamento_glides_with_fine_tune(UNUSED void** state)
      expect_synth_pitch(chan, 2, 0x468);
      midi_tick(1);
  }
@@ -11109,6 +11173,56 @@ index 13ce5a1..c3d255d 100644
 +    __real_midi_note_off(chan, MIDI_PITCH_C4);
 +}
 +
++// Stage 38 (D83): with MONO (CC 105) a note over the sounding one and the return to the key below
++// each write key-off before their key-on; without it, as before (legato, no key-off).
++void test_midi_mono_strikes_again_with_key_off(UNUSED void** state)
++{
++    const u8 chan = 0;
++    __real_midi_cc(chan, CC_MONO, 127);
++    expect_synth_pitch(chan, 4, 0x284);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++
++    expect_value(__wrap_synth_note_off, channel, chan);
++    expect_synth_pitch(chan, 4, 0x2a9);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_CS4, MAX_MIDI_VOLUME);
++
++    expect_value(__wrap_synth_note_off, channel, chan);
++    expect_synth_pitch(chan, 4, 0x284);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_off(chan, MIDI_PITCH_CS4);
++
++    expect_value(__wrap_synth_note_off, channel, chan);
++    __real_midi_note_off(chan, MIDI_PITCH_C4);
++
++    __real_midi_cc(chan, CC_MONO, 0);
++    expect_synth_pitch(chan, 4, 0x284);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_synth_pitch(chan, 4, 0x2a9);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_CS4, MAX_MIDI_VOLUME);
++}
++
++// Porta On wins over MONO: the note over glides, no key-off.
++void test_midi_mono_with_portamento_glides(UNUSED void** state)
++{
++    const u8 chan = 0;
++    __real_midi_cc(chan, CC_MONO, 127);
++    __real_midi_cc(chan, CC_PORTAMENTO_ENABLE, 127);
++    expect_synth_pitch(chan, 4, 0x284);
++    expect_synth_volume_any();
++    expect_synth_note_on(chan);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    __real_midi_note_on(chan, MIDI_PITCH_CS4, MAX_MIDI_VOLUME);
++}
++
 +void test_midi_note_stack_without_portamento_as_before(UNUSED void** state)
 +{
 +    const u8 chan = 0;
@@ -11136,16 +11250,18 @@ index 13ce5a1..c3d255d 100644
 +    __real_midi_note_off(chan, MIDI_PITCH_CS4);
 +}
 diff --git a/tests/unit/test_midi_portamento.h b/tests/unit/test_midi_portamento.h
-index 892e0c2..5fc2e81 100644
+index 892e0c2..d6704b4 100644
 --- a/tests/unit/test_midi_portamento.h
 +++ b/tests/unit/test_midi_portamento.h
-@@ -18,3 +18,8 @@ void test_midi_portamento_sets_portamento_time_to_minimum(UNUSED void** state);
+@@ -18,3 +18,10 @@ void test_midi_portamento_sets_portamento_time_to_minimum(UNUSED void** state);
  void test_midi_portamento_sets_portamento_time_to_maximum(UNUSED void** state);
  void test_midi_portamento_default_portamento_time_set(UNUSED void** state);
  void test_midi_portamento_glides_with_fine_tune(UNUSED void** state);
 +void test_midi_portamento_legato_chain_glides_on_every_note(UNUSED void** state);
 +void test_midi_portamento_raising_a_held_key_below_keeps_the_glide(UNUSED void** state);
 +void test_midi_note_stack_without_portamento_as_before(UNUSED void** state);
++void test_midi_mono_strikes_again_with_key_off(UNUSED void** state);
++void test_midi_mono_with_portamento_glides(UNUSED void** state);
 +void test_midi_note_stack_keeps_a_held_note_after_another_raised(UNUSED void** state);
 +void test_midi_portamento_keeps_a_held_note_after_another_raised(UNUSED void** state);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c

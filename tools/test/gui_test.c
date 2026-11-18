@@ -1042,6 +1042,27 @@ int main(int argc, char **argv)
 		const int past_edge = count_not_black_in(702, 712, HEADER_H + 1, 80);
 		const int at_edge = count_not_black_in(700, 702, HEADER_H + 1, 80);
 		CHECK(past_edge == 0 && at_edge > 0, "the header's cells end at x 702 (%d px up to it, %d past it)", at_edge, past_edge);
+		// Stage 38 (D83, art-director): MONO and PORTA of channel 3 are a pair, at most one the mode.
+		{
+			const clap_id mono3 = 26, porta3 = 1305;
+			const int mono_x = 566 + 15, porta_x = 598 + 18, cells_y = 56 + 10;
+			click(window, mono_x, cells_y);
+			run_ms(50);
+			const int mono_on = get_value(mono3), porta_then = get_value(porta3);
+			capture(window);
+			const int lit = count_color_in(566, 596, 56, 76, COLOR_FM);
+			save_bmp(argv[2], "mono");
+			click(window, porta_x, cells_y);
+			run_ms(50);
+			const int porta_on = get_value(porta3), mono_off = get_value(mono3);
+			click(window, mono_x, cells_y);
+			run_ms(50);
+			const int mono_back = get_value(mono3), porta_off = get_value(porta3);
+			click(window, mono_x, cells_y);
+			run_ms(50);
+			CHECK(mono_on == 1 && porta_then == 0 && lit > 100 && porta_on == 1 && mono_off == 0 && mono_back == 1 && porta_off == 0 && get_value(mono3) == 0,
+				"MONO and PORTA: MONO on (lit, %d px), PORTA takes over and turns MONO off, MONO back turns PORTA off, a click on the lit MONO turns it off", lit);
+		}
 
 		// Editing by mouse: the view is not a knob, a drag is one gesture on one channel's knob.
 		memset(pushed, 0, sizeof(pushed));

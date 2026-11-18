@@ -41,8 +41,13 @@ enum {
 	GLOBAL_LFO_RESET,
 	// Each of channel 3's operators: Semi, Fine, Fixed, operator 1 first (GLOBAL_CH3_OP).
 	GLOBAL_CH3_OP_BASE,
-	PATCH_NUM_GLOBALS = GLOBAL_CH3_OP_BASE + 4 * 3,
+	GLOBAL_CH3_OP_END = GLOBAL_CH3_OP_BASE + 4 * 3,
+	// Stage 38 (D83): MONO of FM channels 1-6, CC 105 on the channel (GLOBAL_MONO). The console's,
+	// as the operators' are: not part of a sound, the bank or files.
+	GLOBAL_MONO_BASE = GLOBAL_CH3_OP_END,
+	PATCH_NUM_GLOBALS = GLOBAL_MONO_BASE + 6,
 };
+#define GLOBAL_MONO(channel) (GLOBAL_MONO_BASE + (channel))
 enum { PATCH_CH3_SEMI, PATCH_CH3_FINE, PATCH_CH3_FIXED, PATCH_CH3_OP_FIELDS };
 #define GLOBAL_CH3_OP(op, field) (GLOBAL_CH3_OP_BASE + (op) * PATCH_CH3_OP_FIELDS + (field))
 // Stage 22 (D52): CSM, timer A keys all four operators at the rate of MIDI 3's note.
@@ -485,7 +490,7 @@ void patch_all_notes_off(mdmi_patch *patch, patch_emit_fn emit, void *context);
 void patch_rom_booted(mdmi_patch *patch, patch_emit_fn emit, void *context);
 // Why an FM channel plays only on its own voice (D20, stage 24b): channel 6 with the DAC, channel 3 in
 // Ch3 Special Mode, Porta On. None of them borrows a voice.
-enum { PATCH_ALONE_NO, PATCH_ALONE_PORTA, PATCH_ALONE_CH3, PATCH_ALONE_DAC };
+enum { PATCH_ALONE_NO, PATCH_ALONE_PORTA, PATCH_ALONE_CH3, PATCH_ALONE_DAC, PATCH_ALONE_MONO };
 int patch_alone_reason(const patch_values *values, int channel);
 // Why an FM channel's voice is never lent to a chord (D69): the DAC's and Ch3 Special's, PATCH_ALONE_NO
 // for every other. A Porta channel's voice is lent while the channel is silent.

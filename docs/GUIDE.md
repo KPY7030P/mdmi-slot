@@ -154,6 +154,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   after each test.
 - A voice that differs from what the ROM holds in more than 12 values goes as one SysEx `0A`, which
   takes as long as 12 controllers (D24).
+- MONO (stage 38, D83): globals 24-29 `Mono CH1`-`CH6` (after `GLOBAL_CH3_OP_END`), CC 105 on the channel
+  to our ROM, which keeps a `mono` flag per MIDI channel (a reset clears it, the plugin sends it again).
+  On an FM channel that plays alone, without Porta, a note over the sounding one and the raised top key's
+  return write key-off, then key-on (`mono_voice`, not channel 3 in Ch3 Special, not the DAC), so the
+  attack starts again. The dealer treats MONO as Porta (`PATCH_ALONE_MONO`, lent while silent). The window
+  pairs MONO and PORTA (art-director, ui-concept.md): a click makes one the mode, the other goes off.
 - PSG noise (stage 16, D45): Noise Type (Periodic, White) and Noise Rate (High, Mid, Low: the chip's clock
   / 512, 1024, 2048; Tone 3; Kit) are the console's, one noise register, and go as CC 12 and 13 on MIDI 10.
   The window shows the fixed rates low to high, L M H. Kit is a General MIDI drum kit in every octave: C

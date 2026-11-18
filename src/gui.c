@@ -81,6 +81,10 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define PAGE_X 242
 // Stage 37 (art-director, ui-concept.md): every page ends at 702, where grid column 4 does.
 #define PAGE_RIGHT 702
+// Stage 38 (D83, art-director): MONO before PORTA in the channel's row; its overruled label.
+#define MONO_X 566
+#define MONO_W 30
+#define C_MONO_OVERRULED 0x8888EE
 #define GLOBALS_Y 460
 #define MASTER_X 608
 #define MASTER_W 104
@@ -998,7 +1002,20 @@ static const struct {
 
 static bool is_ch3_op_global(uint32_t id)
 {
-	return id >= GLOBAL_CH3_OP_BASE && id < PATCH_NUM_GLOBALS;
+	return id >= GLOBAL_CH3_OP_BASE && id < GLOBAL_CH3_OP_END;
+}
+
+// Stage 38 (D83): the FM channel whose MONO knob id is, or -1.
+static int mono_channel_of(uint32_t id)
+{
+	return id >= GLOBAL_MONO_BASE && id < GLOBAL_MONO_BASE + PATCH_NUM_FM_CHANNELS ? (int)(id - GLOBAL_MONO_BASE) : -1;
+}
+
+// The channel of a PORTA ON knob of an FM channel, or -1.
+static int porta_channel_of(uint32_t id)
+{
+	int channel, param;
+	return patch_id_split(id, &channel, &param) && param == PARAM_PORTA_ON && channel >= 0 && channel < PATCH_NUM_FM_CHANNELS ? channel : -1;
 }
 
 static int ch3_field(int op, int field)
@@ -1093,8 +1110,9 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		const char *label;
 		int x, w;
 	} CHANNEL_CELLS[] = {
-		{PARAM_VOLUME, "VOL", 242, 112}, {PARAM_FINE_TUNE, "TUNE", 422, 96}, {PARAM_BEND_RANGE, "BEND", 522, 64},
-		{PARAM_PORTA_ON, "PORTA", 590, 44}, {PARAM_PORTA_TIME, "TIME", 638, 64},
+		// Stage 38 (art-director, ui-concept.md): TUNE and BEND give MONO its place before PORTA.
+		{PARAM_VOLUME, "VOL", 242, 112}, {PARAM_FINE_TUNE, "TUNE", 422, 74}, {PARAM_BEND_RANGE, "BEND", 500, 62},
+		{PARAM_PORTA_ON, "PORTA", 598, 36}, {PARAM_PORTA_TIME, "TIME", 638, 64},
 	};
 	static const char *const PANS[3] = {"L", "C", "R"};
 	static const char *const DIGITS[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
@@ -1162,6 +1180,11 @@ static void layout(mdmi_gui *g, const patch_values *values)
 			if (CHANNEL_CELLS[i].param == PARAM_PORTA_ON) {
 				g->cells[g->cell_count - 1].look = LOOK_SWITCH;
 			}
+		}
+		// Stage 38 (D83): MONO, a global per FM channel, paired with PORTA (MONO_X, mono_pair_click).
+		if (channel_is_fm(channel)) {
+			add_cell(g, MONO_X, GRID_ROW1_Y, MONO_W, CELL_H, (uint32_t)GLOBAL_MONO(channel), "MONO", CELL_ROW);
+			g->cells[g->cell_count - 1].look = LOOK_SWITCH;
 		}
 		if (patch_channel_has(channel, PARAM_PAN)) {
 			for (int pan = 0; pan < 3; pan++) {
@@ -1343,6 +1366,14 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		// AM and PORTA: lit in the channel's colour when on, a click flips it.
 		const uint32_t lit = channel >= 0 && !channel_is_fm(channel) ? C_PSG_DARK : C_FM;
 		const int width = (int)strlen(c->label) * 6 - 1;
+		// Stage 38: MONO on while PORTA is on is overruled (PORTA glides): a frame in FM's colour.
+		const int mono = mono_channel_of(c->id);
+		if (mono >= 0 && value && values->channels[mono][PARAM_PORTA_ON]) {
+			fill(g, c->x, c->y, c->w, c->h, C_BG);
+			frame(g, c->x, c->y, c->w, c->h, C_FM);
+			text(g, c->x + (c->w - width) / 2, c->y + (c->h - 7) / 2, c->label, C_MONO_OVERRULED, 1);
+			return;
+		}
 		fill(g, c->x, c->y, c->w, c->h, value ? lit : C_BG);
 		if (!value) {
 			frame(g, c->x, c->y, c->w, c->h, held ? C_TEXT : C_LINE);
@@ -4306,6 +4337,9 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		frame(g, GRID_X[1], GRID_ROW1_Y, 60, CELL_H, C_CELL);
 		text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LINE, 1);
 		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
+		// Nor MONO (stage 38): a PSG channel plays one note anyway; its place dim like PAN's.
+		frame(g, MONO_X, GRID_ROW1_Y, MONO_W, CELL_H, C_CELL);
+		text(g, MONO_X + (MONO_W - 23) / 2, GRID_ROW1_Y + 6, "MONO", C_LINE, 1);
 		// The row reaches the right edge (stage 24d): the chip's caveats moved, the noise's to the footer.
 		if (channel == PATCH_NUM_CHANNELS - 1) {
 			const bool kit = values->globals[GLOBAL_NOISE_RATE] == PATCH_NOISE_RATE_KIT;
@@ -4318,7 +4352,7 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 				static const struct {
 					const char *label;
 					int x, w;
-				} NO_PITCH[] = {{"TUNE", 422, 96}, {"BEND", 522, 64}, {"PORTA", 590, 44}, {"TIME", 638, 64}};
+				} NO_PITCH[] = {{"TUNE", 422, 74}, {"BEND", 500, 62}, {"PORTA", 598, 36}, {"TIME", 638, 64}};
 				for (size_t i = 0; i < sizeof(NO_PITCH) / sizeof(*NO_PITCH); i++) {
 					fill(g, NO_PITCH[i].x, GRID_ROW1_Y, NO_PITCH[i].w, CELL_H, C_BG);
 					frame(g, NO_PITCH[i].x, GRID_ROW1_Y, NO_PITCH[i].w, CELL_H, C_CELL);
@@ -4447,6 +4481,38 @@ static int action_at(const mdmi_gui *g, int x, int y)
 
 // What a press of the button under the mouse would do, for the footer.
 static bool tv_hint(mdmi_gui *g, char *hint, size_t size);
+
+// Stage 38 (art-director, ui-concept.md): over MONO and PORTA of the channel's row, what the pair does.
+static bool mono_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	if (g->file_over || g->dragging || *g->source.page == PAGE_ALL || *g->source.page == PAGE_ROM || *g->source.page == PAGE_BANK
+		|| g->mouse_y < GRID_ROW1_Y || g->mouse_y >= GRID_ROW1_Y + CELL_H) {
+		return false;
+	}
+	const patch_values *values = patch_view(g->source.patch);
+	const int channel = *g->source.channel;
+	const bool fm = channel_is_fm(channel);
+	const bool over_mono = g->mouse_x >= MONO_X && g->mouse_x < MONO_X + MONO_W;
+	const bool over_porta = g->mouse_x >= 598 && g->mouse_x < 634;
+	if (is_dac(values, channel) || (!over_mono && !over_porta)) {
+		return false;
+	}
+	const bool mono = fm && values->globals[GLOBAL_MONO(channel)], porta = values->channels[channel][PARAM_PORTA_ON];
+	const char *text = NULL;
+	if (over_mono && !fm) {
+		text = "MONO: FM ONLY. PSG PLAYS ONE NOTE ANYWAY";
+	} else if (over_mono && channel == 2 && is_special(values, 2)) {
+		text = "CH3 SPECIAL: MONO DOES NOTHING ON CH3";
+	} else if (over_mono) {
+		text = mono && porta ? "PORTA WINS: GLIDES. CLICK: MONO, NO GLIDE" : mono ? "MONO ON: EVERY NOTE ATTACKS. CLICK: OFF" : "MONO OFF. CLICK: ONE VOICE, NEW ATTACK";
+	} else if (fm) {
+		text = porta && mono ? "PORTA WINS OVER MONO. CLICK: MONO ONLY" : porta ? "PORTA ON: NOTES GLIDE. CLICK: OFF" : "PORTA OFF. CLICK: ONE VOICE, NOTES GLIDE";
+	} else {
+		return false;
+	}
+	snprintf(hint, size, "%s", text);
+	return true;
+}
 
 static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 {
@@ -4727,6 +4793,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (base_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_AMBER);
+	} else if (mono_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (envelope_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (arp_hint(g, buffer, sizeof(buffer))) {
@@ -5777,6 +5845,9 @@ static void draw_all_more(mdmi_gui *g, const patch_values *values, int channel, 
 	if (v[PARAM_PORTA_ON]) {
 		snprintf(buffer, sizeof(buffer), "PORTA %d", v[PARAM_PORTA_TIME]);
 		text(g, x, y, buffer, C_LABEL, 1);
+	} else if (channel_is_fm(channel) && values->globals[GLOBAL_MONO(channel)]) {
+		// Stage 38: what sounds; with PORTA on, PORTA (it wins).
+		text(g, x, y, "MONO", C_LABEL, 1);
 	}
 }
 
@@ -6906,11 +6977,22 @@ static void on_up(mdmi_gui *g)
 	}
 	// A click without moving steps a short range round, which flips a switch.
 	const int max = patch_param(g->drag_id)->max;
+	// Stage 38 (art-director): MONO and PORTA are a pair, at most one the mode. A click on an unlit one,
+	// or on an overruled MONO, makes it the mode and turns the other off; on the lit one, turns it off.
+	const int mono = mono_channel_of(g->drag_id), porta = porta_channel_of(g->drag_id);
+	const int pair = mono >= 0 ? mono : porta;
+	const uint32_t other = mono >= 0 ? PATCH_CHANNEL_ID(mono, PARAM_PORTA_ON) : porta >= 0 ? (uint32_t)GLOBAL_MONO(porta) : 0;
+	const bool other_on = pair >= 0 && patch_get(g->source.patch, other);
 	if (!g->drag_moved && max + 1 <= 8) {
-		g->drag_value = g->drag_start < max ? g->drag_start + 1 : 0;
+		const bool overruled = mono >= 0 && g->drag_start && other_on;
+		g->drag_value = overruled ? 1 : g->drag_start < max ? g->drag_start + 1 : 0;
 		edit(g, GUI_EDIT_SET, g->drag_id, g->drag_value);
 	}
 	edit(g, GUI_EDIT_END, g->drag_id, 0);
+	if (!g->drag_moved && pair >= 0 && g->drag_value && other_on && (mono >= 0 || porta >= 0)) {
+		// A lit PORTA clicked while MONO is set turns PORTA off only, so this is for turning one on.
+		edit_once(g, other, 0);
+	}
 	g->dragging = false;
 	if (GetCapture() == g->window) {
 		ReleaseCapture();
@@ -6994,6 +7076,10 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	int channel, param;
 	patch_id_split(id, &channel, &param);
 	if (channel >= 0 && param == PARAM_PRESET) {
+		return;
+	}
+	// Stage 38: the second press on MONO or PORTA does nothing; a second step could drop the mode.
+	if (mono_channel_of(id) >= 0 || porta_channel_of(id) >= 0) {
 		return;
 	}
 	// Where a click steps, a quick second click is one more step on EDITOR, as ever; elsewhere the

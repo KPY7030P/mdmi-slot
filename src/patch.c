@@ -35,6 +35,8 @@
 #define CC_CH3_OP_SEMI 102
 #define CC_CH3_OP_FINE 103
 #define CC_CH3_OP_FIXED 104
+// Stage 38 (D83): our ROM's MONO, 64-127 on, on the FM channel.
+#define CC_MONO 105
 // CC 81 is value * 3 / 128 in the ROM: 0 Ops, 1 One Note, 2 CSM (stage 22). CSM goes as 127, the
 // top of its range: 2 * 64 would not fit a data byte.
 #define CH3_NOTES_CC_RANGE 3
@@ -197,6 +199,11 @@ void patch_global_init(void)
 	define(&globals[GLOBAL_MASTER], "Master Volume", PATCH_MASTER_MAX, PATCH_MASTER_UNITY, false);
 	define(&globals[GLOBAL_CH3_NOTES], "Ch3 Notes", PATCH_CH3_CSM, PATCH_CH3_OPS, true);
 	define(&globals[GLOBAL_LFO_RESET], "LFO Reset", LFO_RESET_CHANNELS, 0, true);
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		static char names[PATCH_NUM_FM_CHANNELS][12];
+		snprintf(names[channel], sizeof(names[channel]), "Mono CH%d", channel + 1);
+		define(&globals[GLOBAL_MONO(channel)], names[channel], 1, 0, true);
+	}
 	for (int op = 0; op < PATCH_OPS; op++) {
 		char name[24];
 		snprintf(name, sizeof(name), "Ch3 Op%d Semi", op + 1);
@@ -903,7 +910,7 @@ double patch_master_gain(int value)
 
 static void format_global(int global, int value, char *text, size_t size)
 {
-	if (global >= GLOBAL_CH3_OP_BASE && global < PATCH_NUM_GLOBALS) {
+	if (global >= GLOBAL_CH3_OP_BASE && global < GLOBAL_CH3_OP_END) {
 		const int field = (global - GLOBAL_CH3_OP_BASE) % PATCH_CH3_OP_FIELDS;
 		if (field == PATCH_CH3_SEMI) {
 			snprintf(text, size, "%+d st", value - PATCH_CH3_SEMI_MAX);
@@ -1442,7 +1449,8 @@ int patch_alone_reason(const patch_values *values, int channel)
 	}
 	return channel == PATCH_NUM_FM_CHANNELS - 1 && values->globals[GLOBAL_DAC] ? PATCH_ALONE_DAC
 		: channel == 2 && values->globals[GLOBAL_CH3_MODE] ? PATCH_ALONE_CH3
-		: values->channels[channel][PARAM_PORTA_ON] ? PATCH_ALONE_PORTA : PATCH_ALONE_NO;
+		: values->channels[channel][PARAM_PORTA_ON] ? PATCH_ALONE_PORTA
+		: values->globals[GLOBAL_MONO(channel)] ? PATCH_ALONE_MONO : PATCH_ALONE_NO;
 }
 
 static bool plays_alone(const mdmi_patch *patch, int channel)
@@ -1456,7 +1464,8 @@ static bool plays_alone(const mdmi_patch *patch, int channel)
 int patch_lend_reason(const patch_values *values, int channel)
 {
 	const int reason = patch_alone_reason(values, channel);
-	return reason == PATCH_ALONE_PORTA ? PATCH_ALONE_NO : reason;
+	// Stage 38 (D83): a MONO channel lends its silent voice as a Porta one does.
+	return reason == PATCH_ALONE_PORTA || reason == PATCH_ALONE_MONO ? PATCH_ALONE_NO : reason;
 }
 
 static bool never_lends(const mdmi_patch *patch, int voice)
@@ -2281,6 +2290,14 @@ static void sync_receiver(mdmi_patch *patch, patch_receiver *receiver, patch_emi
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_RESET, (model_globals[GLOBAL_LFO_RESET] * 128 + LFO_RESET_CC_RANGE - 1) / LFO_RESET_CC_RANGE);
 		rom_globals[GLOBAL_LFO_RESET] = model_globals[GLOBAL_LFO_RESET];
 	}
+	// Stage 38 (D83): MONO on its channel; the ROM forgets it at a reset as it does Porta.
+	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
+		const int g = GLOBAL_MONO(channel);
+		if (model_globals[g] != rom_globals[g]) {
+			emit_cc(emit, context, channel, CC_MONO, model_globals[g] ? CC_ON : 0);
+			rom_globals[g] = model_globals[g];
+		}
+	}
 	for (int op = 0; op < PATCH_OPS; op++) {
 		const int channel = op < PATCH_OPS - 1 ? CH3_OP_MIDI_CHANNEL + op : 2;
 		static const uint8_t CCS[PATCH_CH3_OP_FIELDS] = {CC_CH3_OP_SEMI, CC_CH3_OP_FINE, CC_CH3_OP_FIXED};
@@ -2506,6 +2523,12 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		} else if (cc == CC_LFO_RESET) {
 			patch->model.globals[GLOBAL_LFO_RESET] = (int16_t)(value * LFO_RESET_CC_RANGE / 128);
 			changed = true;
+		} else if (cc == CC_MONO) {
+			// Stage 38: on an FM channel it moves that channel's MONO; elsewhere it means nothing.
+			if (channel < PATCH_NUM_FM_CHANNELS) {
+				patch->model.globals[GLOBAL_MONO(channel)] = (int16_t)(value >= 64);
+				changed = true;
+			}
 		} else if (cc == CC_CH3_OP_SEMI || cc == CC_CH3_OP_FINE || cc == CC_CH3_OP_FIXED) {
 			// Only on the operator's own channel; the ROM drops them elsewhere, and so do we.
 			const int op = channel == 2 ? PATCH_OPS - 1 : channel >= CH3_OP_MIDI_CHANNEL && channel < CH3_OP_MIDI_CHANNEL + PATCH_OPS - 1 ? channel - CH3_OP_MIDI_CHANNEL : -1;

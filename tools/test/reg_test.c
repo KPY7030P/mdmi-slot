@@ -419,6 +419,100 @@ static void test_dac_psg(void)
 	check_psg_after_dac("DAC off: the same PSG notes sound as before", 0, tone, volume);
 }
 
+// Stage 38 (D83): channel 1's energy on output 1 in the ms before a note over the held C4 and just
+// after it, the note over on the same voice or not, and the voices channel 1 plays.
+static void reset_energy(void);
+
+static void mono_overlap(bool mono, double *before, double *after, int *voices)
+{
+	set_global(GLOBAL_MONO(0), mono);
+	sync_and_settle();
+	midi(0x90, 60, 127);
+	render(150);
+	reset_energy();
+	render(4);
+	*before = out_energy[0] / 4;
+	midi(0x90, 64, 127);
+	render(2);
+	reset_energy();
+	render(4);
+	*after = out_energy[0] / 4;
+	*voices = 0;
+	for (int voice = 0; voice < FM_CHANNELS; voice++) {
+		*voices += patch->playing[voice] == 0;
+	}
+}
+
+static void test_mono(void)
+{
+	double before, after, before_mono, after_mono;
+	int voices, voices_mono;
+	// A decaying sound, whatever the tests before left: Grand Piano at full velocity.
+	set_on(0, PARAM_PRESET, 0);
+	full_velocity();
+	mono_overlap(false, &before, &after, &voices);
+	midi(0x80, 64, 0);
+	midi(0x80, 60, 0);
+	render(SETTLE_BLOCKS * 4);
+	mono_overlap(true, &before_mono, &after_mono, &voices_mono);
+	// Raising the top key strikes the one below again (MONO), from its attack, once E4 has decayed.
+	render(150);
+	reset_energy();
+	render(4);
+	const double held = out_energy[0] / 4;
+	midi(0x80, 64, 0);
+	render(2);
+	reset_energy();
+	render(4);
+	const double returned = out_energy[0] / 4;
+	midi(0x80, 60, 0);
+	render(SETTLE_BLOCKS * 4);
+	const double rise = after / (before > 1e-12 ? before : 1e-12), rise_mono = after_mono / (before_mono > 1e-12 ? before_mono : 1e-12);
+	const double back = returned / (held > 1e-12 ? held : 1e-12);
+	printf("    a note over a held C4 of a piano: without MONO %d voice(s), energy x%.2f after it; MONO %d voice(s), x%.2f; the raise back to C4 x%.2f\n",
+		voices, rise, voices_mono, rise_mono, back);
+	check(voices == 2 && voices_mono == 1, "without MONO a note over takes a second voice (a chord); with MONO it stays on channel 1's own (38)");
+	check(rise_mono > 2.0 && back > 2.0, "with MONO the note over and the return to the key below start their attack again, louder than the decayed note (38)");
+	// Porta On wins: the note over glides, no new attack.
+	set_on(0, PARAM_PORTA_ON, 1);
+	double before_porta, after_porta;
+	int voices_porta;
+	mono_overlap(true, &before_porta, &after_porta, &voices_porta);
+	midi(0x80, 64, 0);
+	midi(0x80, 60, 0);
+	render(SETTLE_BLOCKS * 4);
+	set_on(0, PARAM_PORTA_ON, 0);
+	set_global(GLOBAL_MONO(0), 0);
+	sync_and_settle();
+	const double rise_porta = after_porta / (before_porta > 1e-12 ? before_porta : 1e-12);
+	printf("    MONO with Porta On: %d voice(s), energy x%.2f\n", voices_porta, rise_porta);
+	check(voices_porta == 1 && rise_porta < 1.5, "MONO with Porta On: one voice, no new attack (38)");
+	// A chord of another channel takes the voice of a silent MONO channel, as of a Porta one (D69),
+	// and it sounds there: voice 1 plays channel 2's note, into output 2.
+	set_global(GLOBAL_MONO(0), 1);
+	sync_and_settle();
+	owner_wait_after("mono");
+	for (int i = 0; i < FM_CHANNELS; i++) {
+		midi(0x91, (uint8_t)(60 + i * 2), 127);
+	}
+	render(SETTLE_BLOCKS);
+	reset_energy();
+	render(SETTLE_BLOCKS);
+	// A chord of 6 moves sounds onto 5 other voices: its key-on may wait 46-50 ms, the dealer's known cost
+	// (ROADMAP, stage 28) that the 40 ms judge leaves out, as test_porta_lend's chord of 4 does.
+	printf("    the chord of 6's owners waited %.1f ms at most (not judged)\n", mdmi_engine_test_take_owner_wait(engine));
+	const bool lent = patch->playing[0] == 1;
+	const double chord = out_energy[1], own = out_energy[0];
+	for (int i = 0; i < FM_CHANNELS; i++) {
+		midi(0x81, (uint8_t)(60 + i * 2), 0);
+	}
+	render(SETTLE_BLOCKS * 4);
+	set_global(GLOBAL_MONO(0), 0);
+	sync_and_settle();
+	printf("    a chord of 6 on MIDI 2 with channel 1 MONO and silent: voice 1 %s; output 2 %.3g, output 1 %.3g\n", lent ? "played MIDI 2" : "was not lent", chord, own);
+	check(lent && chord > 0 && own < chord / 100, "a chord of another channel takes the silent MONO channel's voice and sounds in its own output (38)");
+}
+
 // Stage 35 (D80): the plugin sends nothing but the switch itself; the ROM puts the FM registers back
 // and keys the held notes again.
 static int switch_messages;
@@ -2181,6 +2275,11 @@ static bool stage21_cc(const uint8_t *bytes, size_t length)
 
 static void emit_ch3(void *context, const uint8_t *bytes, size_t length)
 {
+	// Stage 38 (D83): MONO's CC 105 on MIDI 1-6 came after 0.20, apart from stage 21's: it goes on, uncounted.
+	if (length == 3 && (bytes[0] & 0xF0) == 0xB0 && bytes[1] == 105 && (bytes[0] & 0x0F) < 6) {
+		emit(context, bytes, length);
+		return;
+	}
 	if (stage21_cc(bytes, length)) {
 		ch3_new_ccs++;
 		if (!ch3_keep_new_from_rom) {
@@ -7273,6 +7372,10 @@ int main(int argc, char **argv)
 	test_reset();
 	test_porta_lend(false);
 	owner_wait_after("porta_lend");
+	test_reset();
+	// Stage 38 last: what the tests before it measure keeps its history (D84).
+	test_mono();
+	owner_wait_after("mono");
 	test_reset();
 	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
 	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;
