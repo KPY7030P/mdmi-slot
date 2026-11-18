@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.34.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.35.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -30,6 +30,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   numbers, writes DAC on FM6 while the DAC plays, keeps only warnings in its journal, and shows BANK and a
   signature in its top line: the same signature in the plugin and on the console means the card holds this
   bank and these samples. Not checked on a real console yet.
+- CSM vowels (0.35.0): five snapshots in `presets/vowels` beside the plugin, the vowels А, О, У, И, Э as
+  channel 3 in CSM: play MIDI 3, the note is the voice's pitch, the formants stay. A snapshot replaces the whole
+  state, so open one in an empty instance. How to play and move the formants: [docs/csm-vowels.md](docs/csm-vowels.md) (Russian).
 - The DAC's row on ALL (0.34.0): a click on its picture shows channel 6's live output, the last 20 ms at the
   same scale as the other rows' OUT boxes; a second click brings the last sample with its voices back.
 - MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts

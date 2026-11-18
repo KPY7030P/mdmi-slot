@@ -31,6 +31,17 @@ install_one() {
 echo "Build $LABEL into $TARGET"
 install_one "VST3/MDMI Slot.vst3" "MDMI Slot.vst3"
 install_one "CLAP/MDMI Slot.clap" "MDMI Slot.clap"
+# Stage 40: the CSM vowels' snapshots beside the plugin, in presets/vowels (docs/csm-vowels.md).
+mkdir -p "$TARGET/presets/vowels" || failed=1
+for snapshot in "$ROOT"/presets/vowels/*.mdsnap; do
+	name="$(basename "$snapshot")"
+	if cp "$snapshot" "$TARGET/presets/vowels/$name" && [ "$(hash_of "$snapshot")" = "$(hash_of "$TARGET/presets/vowels/$name")" ]; then
+		echo "presets/vowels/$name: installed"
+	else
+		echo "presets/vowels/$name: NOT INSTALLED"
+		failed=1
+	fi
+done
 
 if [ "$failed" != 0 ]; then
 	echo "INSTALL FAILED: the folder may still hold an older build."

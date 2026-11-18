@@ -3348,6 +3348,108 @@ static void test_export(void)
 	files_free(&files);
 }
 
+// Stage 40: CSM vowels, channel 3's four operators as formants (hardware-specialist,
+// docs/research/stages-35-38-40.md): Semi and Fine as knob values (64 is 0), Fixed on, TL, RR 11, 11,
+// 12, 12; algorithm 7, FB 0, MUL 1, DT 0, AR 31, the rest 0; Ch3 Special on, Ch3 Notes CSM.
+typedef struct {
+	const char *letter;
+	int semi[4], fine[4], tl[4];
+	double formant[4];
+} vowel;
+static const vowel VOWELS[5] = {
+	{"A", {81, 90, 103, 109}, {70, 102, 73, 58}, {8, 11, 33, 44}, {700, 1200, 2500, 3500}},
+	{"O", {75, 84, 103, 108}, {86, 106, 73, 106}, {5, 14, 40, 48}, {500, 850, 2500, 3400}},
+	{"U", {66, 80, 102, 108}, {102, 42, 102, 54}, {3, 24, 46, 52}, {300, 650, 2400, 3300}},
+	{"I", {63, 101, 106, 109}, {86, 91, 89, 104}, {4, 28, 25, 33}, {250, 2250, 3000, 3600}},
+	{"E", {73, 97, 103, 109}, {104, 104, 107, 58}, {5, 22, 24, 34}, {450, 1800, 2550, 3500}},
+};
+static const int VOWEL_RR[4] = {11, 11, 12, 12};
+
+// The snapshot of a vowel into path, from a fresh model.
+static bool vowel_snapshot(const vowel *v, const char *path, char *message, size_t size)
+{
+	static mdmi_patch patch;
+	static dac_set set;
+	static state_view view;
+	patch_init(&patch);
+	memset(&set, 0, sizeof(set));
+	view = (state_view){.page = 0, .channel = 2, .dac = &set};
+	const files_host host = {&patch, &view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	patch_instrument voice = {0};
+	snprintf(voice.name, sizeof(voice.name), "Vowel %s", v->letter);
+	voice.voice[PARAM_ALGORITHM - PARAM_ALGORITHM] = 7;
+	for (int op = 0; op < PATCH_OPS; op++) {
+		int16_t *o = voice.voice + (PARAM_OP_BASE - PARAM_ALGORITHM) + op * PATCH_OP_PARAMS;
+		o[OP_TL] = (int16_t)v->tl[op];
+		o[1] = 1;   // MUL
+		o[4] = 31;  // AR
+		o[8] = (int16_t)VOWEL_RR[op];
+	}
+	patch_load_voice(&patch, 2, &voice, &voice);
+	patch_take_incoming(&patch);
+	patch_set(&patch, GLOBAL_CH3_MODE, 1);
+	patch_set(&patch, GLOBAL_CH3_NOTES, PATCH_CH3_CSM);
+	for (int op = 0; op < PATCH_OPS; op++) {
+		patch_set(&patch, (uint32_t)GLOBAL_CH3_OP(op, PATCH_CH3_SEMI), v->semi[op] - 64 + PATCH_CH3_SEMI_MAX);
+		patch_set(&patch, (uint32_t)GLOBAL_CH3_OP(op, PATCH_CH3_FINE), v->fine[op] - 64 + PATCH_CH3_FINE_MAX);
+		patch_set(&patch, (uint32_t)GLOBAL_CH3_OP(op, PATCH_CH3_FIXED), 1);
+	}
+	patch_publish(&patch);
+	const bool saved = files_save(&files, path, FILES_SNAPSHOT, -1, message, size);
+	files_free(&files);
+	return saved;
+}
+
+// The five snapshots in the repository (presets/vowels) are what the generator makes; with
+// MDMI_WRITE_VOWELS=<folder> it writes them there instead. Each opens with Ch3 Special in CSM and the
+// table's operators.
+static void test_vowels(void)
+{
+	printf("CSM vowels\n");
+	const char *write = getenv("MDMI_WRITE_VOWELS");
+	char dir[MAX_PATH], message[FILES_MESSAGE];
+	snprintf(dir, sizeof(dir), "%s\\..\\..\\..\\presets\\vowels", files_dir);
+	for (int i = 0; i < 5; i++) {
+		const vowel *v = &VOWELS[i];
+		char name[64], made[MAX_PATH], kept[MAX_PATH];
+		snprintf(name, sizeof(name), "CSM vowel %s.mdsnap", v->letter);
+		if (write) {
+			path_in(made, sizeof(made), write, name);
+			CHECK(vowel_snapshot(v, made, message, sizeof(message)), "vowel %s written: %s", v->letter, message);
+			continue;
+		}
+		GetTempPathA(sizeof(made), made);
+		strcat(made, name);
+		path_in(kept, sizeof(kept), dir, name);
+		size_t made_size = 0, kept_size = 0;
+		const bool built = vowel_snapshot(v, made, message, sizeof(message));
+		uint8_t *a = read_whole(made, &made_size), *b = read_whole(kept, &kept_size);
+		CHECK(built && a && b && made_size == kept_size && !memcmp(a, b, made_size), "presets/vowels/%s is the generator's (%zu bytes)", name, kept_size);
+		free(a);
+		free(b);
+		static mdmi_patch opened;
+		static dac_set set;
+		static state_view view;
+		patch_init(&opened);
+		memset(&set, 0, sizeof(set));
+		view = (state_view){.dac = &set};
+		const files_host host = {&opened, &view, take_now, NULL};
+		static mdmi_files files;
+		files_init(&files, &host);
+		bool same = files_open(&files, kept, 0, message, sizeof(message)) && patch_take_incoming(&opened);
+		const int16_t *g = opened.model.globals;
+		same = same && g[GLOBAL_CH3_MODE] == 1 && g[GLOBAL_CH3_NOTES] == PATCH_CH3_CSM && opened.model.channels[2][PARAM_ALGORITHM] == 7 && !strncmp(opened.model.names[2], "Vowel ", 6) && !strcmp(opened.model.names[2] + 6, v->letter);
+		for (int op = 0; op < PATCH_OPS && same; op++) {
+			same = g[GLOBAL_CH3_OP(op, PATCH_CH3_SEMI)] == v->semi[op] - 64 + PATCH_CH3_SEMI_MAX && g[GLOBAL_CH3_OP(op, PATCH_CH3_FINE)] == v->fine[op] - 64 + PATCH_CH3_FINE_MAX
+				&& g[GLOBAL_CH3_OP(op, PATCH_CH3_FIXED)] == 1 && opened.model.channels[2][op_param(op, OP_TL)] == v->tl[op];
+		}
+		CHECK(same, "vowel %s opens: Ch3 Special in CSM, algorithm 7, the table's Semi, Fine, Fixed and TL", v->letter);
+		files_free(&files);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -3361,6 +3463,7 @@ int main(int argc, char **argv)
 	test_sustain_rate();
 	test_modes();
 	test_mono();
+	test_vowels();
 	test_noise();
 	test_incoming();
 	test_load();

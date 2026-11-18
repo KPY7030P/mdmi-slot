@@ -7173,6 +7173,133 @@ static void test_screen(void)
 	render(60);
 }
 
+// Stage 40: the CSM vowels of presets/vowels (hardware-specialist's table, docs/research/stages-35-38-40.md).
+// Each snapshot opened, MIDI 3 notes 45 and 57: the chip is in CSM with timer A at the note's rate;
+// channel 3's four operator pitches are the vowel's formants within 3 cents (an F-num is 1.4-2.8 cents,
+// Fine chosen for it); and the vowel is heard: the spectrum of one burst of output 3 (from one key-on of
+// timer A to the next) has a peak within a semitone of F1 and of F2. The spectrum of the whole periodic
+// tone would not do: it has only harmonics of the note, which may miss a formant by more than a semitone.
+static double op_hz(int msb_reg, int lsb_reg)
+{
+	const int msb = mdmi_engine_test_ym(engine, 0, (uint8_t)msb_reg), lsb = mdmi_engine_test_ym(engine, 0, (uint8_t)lsb_reg);
+	const int fnum = (msb & 7) << 8 | lsb, block = msb >> 3 & 7;
+	return fnum * (double)(1 << block) * 53267.04 / 2097152.0;
+}
+
+// The burst spectrum's level at hz, over period samples of ch3_wave from start.
+static double burst_level(int start, int period, double hz)
+{
+	double re = 0, im = 0;
+	for (int i = 0; i < period; i++) {
+		const double x = ch3_wave[start + i], a = 2 * 3.14159265358979 * hz * i / RATE;
+		re += x * cos(a);
+		im -= x * sin(a);
+	}
+	return sqrt(re * re + im * im);
+}
+
+// Whether the burst's spectrum has a local peak within a semitone of hz (on a 5 Hz grid, a peak is
+// higher than the spectrum 30 Hz either side).
+static bool burst_peak_near(int start, int period, double hz, double *found)
+{
+	const double low = hz / 1.0595, high = hz * 1.0595;
+	double best = 0;
+	*found = 0;
+	for (double f = low; f <= high; f += 5) {
+		const double level = burst_level(start, period, f);
+		if (level > best && level > burst_level(start, period, f - 30) && level > burst_level(start, period, f + 30)) {
+			best = level;
+			*found = f;
+		}
+	}
+	return *found > 0;
+}
+
+static void test_vowels(void)
+{
+	static const struct {
+		const char *letter;
+		double formant[4];
+	} VOWELS[5] = {{"A", {700, 1200, 2500, 3500}}, {"O", {500, 850, 2500, 3400}}, {"U", {300, 650, 2400, 3300}},
+		{"I", {250, 2250, 3000, 3600}}, {"E", {450, 1800, 2550, 3500}}};
+	static const int NOTES[2] = {45, 57};
+	double f2[5] = {0};
+	int set_right = 0, mode_right = 0, heard[2] = {0, 0};
+	char missed[2][64] = {"", ""};
+	for (int i = 0; i < 5; i++) {
+		char path[MAX_PATH];
+		snprintf(path, sizeof(path), "%s/../../../presets/vowels/CSM vowel %s.mdsnap", files_dir, VOWELS[i].letter);
+		FILE *file = fopen(path, "rb");
+		static uint8_t bytes[1 << 20];
+		const size_t size = file ? fread(bytes, 1, sizeof(bytes), file) : 0;
+		if (file) {
+			fclose(file);
+		}
+		state_view view = {0};
+		bool knobs = false;
+		if (!size || !state_read(patch, bytes, size, &view, &knobs) || !patch_take_incoming(patch)) {
+			printf("    vowel %s: %s can't be read\n", VOWELS[i].letter, path);
+			continue;
+		}
+		sync_and_settle();
+		for (int n = 0; n < 2; n++) {
+			const int key = NOTES[n];
+			midi(0x92, (uint8_t)key, 127);
+			render(SETTLE_BLOCKS);
+			const bool csm = (ch3_mode_reg() & 0xC0) == 0x80 && abs(csm_na_reg() - csm_na(key)) <= 1;
+			// Operators 1-3 by the Ch3 Special registers (0xA9/AD, 0xAA/AE, 0xA8/AC), 4 by channel 3's own.
+			const double hz[4] = {op_hz(0xAD, 0xA9), op_hz(0xAE, 0xAA), op_hz(0xAC, 0xA8), op_hz(0xA6, 0xA2)};
+			double worst = 0;
+			for (int op = 0; op < 4; op++) {
+				const double cents = 1200 * log2(hz[op] / VOWELS[i].formant[op]);
+				worst = fabs(cents) > fabs(worst) ? cents : worst;
+			}
+			// One burst: a period of the note's CSM rate from the loudest start, where the operators key.
+			const int period = (int)lround(RATE / (CSM_CLOCK / (1024.0 - csm_na(key))));
+			capture_output(2, 3 * period);
+			int start = 0;
+			double loudest = -1;
+			for (int s = 0; s < period; s++) {
+				double sum = 0;
+				for (int k = 0; k < period / 8; k++) {
+					sum += fabs(ch3_wave[s + k]);
+				}
+				if (sum > loudest) {
+					loudest = sum;
+					start = s;
+				}
+			}
+			double at1, at2;
+			const bool p1 = burst_peak_near(start, period, VOWELS[i].formant[0], &at1), p2 = burst_peak_near(start, period, VOWELS[i].formant[1], &at2);
+			midi(0x82, (uint8_t)key, 0);
+			render(SETTLE_BLOCKS);
+			printf("    vowel %s note %d: CSM %s, NA %d; operators %.0f %.0f %.0f %.0f Hz (worst %+.1f cents); the burst's peaks F1 %s %.0f Hz, F2 %s %.0f Hz\n",
+				VOWELS[i].letter, key, csm ? "on" : "OFF", csm_na_reg(), hz[0], hz[1], hz[2], hz[3], worst, p1 ? "at" : "none, near", at1, p2 ? "at" : "none, near", at2);
+			set_right += fabs(worst) <= 3;
+			mode_right += csm;
+			if (p1 && p2) {
+				heard[n]++;
+			} else {
+				snprintf(missed[n] + strlen(missed[n]), sizeof(missed[n]) - strlen(missed[n]), " %s", VOWELS[i].letter);
+			}
+			if (n == 0) {
+				f2[i] = hz[1];
+			}
+		}
+	}
+	check(mode_right == 10, "each CSM vowel plays in CSM, timer A at the note's rate, on notes 45 and 57 (40)");
+	check(set_right == 10, "each CSM vowel puts its four formants on channel 3's operators within 3 cents (40)");
+	check(f2[3] > f2[4] && f2[4] > f2[0] && f2[0] > f2[1] && f2[1] > f2[2], "the vowels' F2 come in the order I > E > A > O > U (40)");
+	printf("    vowels heard (F1 and F2 peaks in one burst): note 45 %d of 5 (missed:%s), note 57 %d of 5 (missed:%s)\n", heard[0], missed[0], heard[1], missed[1]);
+	check(heard[0] == 5, "on note 45 one burst of each vowel peaks within a semitone of its F1 and F2 (40)");
+	// The stop rule of stage 40: the tolerance stays; where a vowel doesn't hold, the guide says so. On
+	// note 57 У's F1 and F2 (300 and 650 Hz) merge in a burst of 4.5 ms: docs/csm-vowels.md gives У up to ~55.
+	check(heard[1] == 4 && !strcmp(missed[1], " U"), "on note 57 А, О, И, Э still peak at F1 and F2; У does not, its limit in the guide (40)");
+	set_global(GLOBAL_CH3_MODE, 0);
+	set_global(GLOBAL_CH3_NOTES, PATCH_CH3_OPS);
+	sync_and_settle();
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -7376,6 +7503,9 @@ int main(int argc, char **argv)
 	// Stage 38 last: what the tests before it measure keeps its history (D84).
 	test_mono();
 	owner_wait_after("mono");
+	test_reset();
+	test_vowels();
+	owner_wait_after("vowels");
 	test_reset();
 	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
 	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;
