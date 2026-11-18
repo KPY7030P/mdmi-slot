@@ -70,8 +70,8 @@
 // on FM, PSG and DAC (ui-variants-v8-fm); what belongs to the chip starts under them.
 #define GRID_W 112
 #define GRID_ROW1_Y 56
-#define SOURCE_X 592
-#define SOURCE_W 116
+#define SOURCE_X 590
+#define SOURCE_W 112
 static const int GRID_X[4] = {242, 358, 474, 590};
 #define RAIL_W 232
 #define RAIL_FM_Y 44
@@ -79,7 +79,8 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define GROUP_H 16
 #define ROW_H 40
 #define PAGE_X 242
-#define PAGE_RIGHT 708
+// Stage 37 (art-director, ui-concept.md): every page ends at 702, where grid column 4 does.
+#define PAGE_RIGHT 702
 #define GLOBALS_Y 460
 #define MASTER_X 608
 #define MASTER_W 104
@@ -122,15 +123,15 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define BANK_ROW_H 20
 #define BANK_ROWS 18
 #define BANK_BOTTOM (BANK_Y + BANK_ROWS * BANK_ROW_H)
-#define BANK_RIGHT 698
+#define BANK_RIGHT 692
 #define LIST_A_RIGHT 504
 #define LIST_A_SCROLL 506
 #define LIST_A_BAR_RIGHT 512
 #define LIST_DIVIDER_X 515
 #define LIST_B_X 520
-#define LIST_B_BAR_RIGHT 708
+#define LIST_B_BAR_RIGHT 702
 #define LIST_EDGE 10
-#define SCROLL_X 702
+#define SCROLL_X 696
 #define SCROLL_H (BANK_ROWS * BANK_ROW_H)
 #define BANK_TOP_MAX (PATCH_BANK_SIZE - BANK_ROWS)
 #define WHEEL_ROWS 3
@@ -141,11 +142,11 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define DAC_SCROLL_H (DAC_ROWS * DAC_ROW_H)
 #define DAC_TOP_MAX (ROM_IMAGE_NOTES - DAC_ROWS)
 #define DAC_FIRST_ROM_NOTE 26
-#define DAC_RESET_X 636
+#define DAC_RESET_X 630
 #define DAC_RESET_W 60
-#define DAC_FREE_X 592
-#define DAC_FREE_W 116
-#define DAC_WAVE_COLUMNS 458
+#define DAC_FREE_X 590
+#define DAC_FREE_W 112
+#define DAC_WAVE_COLUMNS 460
 #define MESSAGE_TICKS (4 * TIMER_PER_SECOND)
 #define ERROR_TICKS (10 * TIMER_PER_SECOND)
 #define FLASH_TICKS 9
@@ -155,7 +156,7 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 // lane by the length (0.8.1), the loop's strip on top, a level lane, a pitch lane of 15 rows by value,
 // the time axis with the length cell at its end. Every height follows from the strip's.
 #define ENV_X 296
-#define ENV_LANE_W 404
+#define ENV_LANE_W 406
 #define ENV_LOOP_Y 106
 #define ENV_LOOP_H 14
 // Stage 20 gives 90 px to the arp row under it: a level 7 px, a pitch row 4 (arpeggio.md, 4).
@@ -168,7 +169,7 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define ENV_PITCH_BOTTOM (ENV_PITCH_Y + 15 * ENV_PITCH_ROW)
 #define ENV_CENTRE_Y (ENV_PITCH_Y + 7 * ENV_PITCH_ROW + 2)
 #define ENV_AXIS_Y (ENV_PITCH_BOTTOM + 4)
-#define ENV_LENGTH_X 648
+#define ENV_LENGTH_X 650
 #define ENV_LENGTH_Y (ENV_AXIS_Y + 3)
 #define ENV_LENGTH_W 52
 // The width of the switch drawn while there is no loop.
@@ -217,10 +218,10 @@ enum { OP_TL, OP_MUL, OP_DT, OP_RS, OP_AR, OP_DR, OP_SR, OP_SL, OP_RR, OP_AM, OP
 #define ALL_PAN_X 474
 #define ALL_PAN_W 17
 // Stage 24e: the channel's live output (D60) where the source began; the source moved right.
-#define ALL_OUT_X 536
+#define ALL_OUT_X 532
 #define ALL_OUT_W 80
 #define ALL_OUT_H 31
-#define ALL_SOURCE_X 620
+#define ALL_SOURCE_X 616
 enum { ACTION_LOAD, ACTION_SAVE, ACTION_UNDO, ACTION_ADD, ACTION_STORE, ACTION_EXPORT, ACTIONS };
 static const int ACTION_X[ACTIONS] = {ACTION_LOAD_X, ACTION_SAVE_X, ACTION_UNDO_X, ACTION_ADD_X, ACTION_STORE_X, ACTION_EXPORT_X};
 static const int ACTION_WIDTH[ACTIONS] = {ACTION_W, ACTION_W, ACTION_W, ACTION_W, ACTION_STORE_W, ACTION_EXPORT_W};
@@ -1093,7 +1094,7 @@ static void layout(mdmi_gui *g, const patch_values *values)
 		int x, w;
 	} CHANNEL_CELLS[] = {
 		{PARAM_VOLUME, "VOL", 242, 112}, {PARAM_FINE_TUNE, "TUNE", 422, 96}, {PARAM_BEND_RANGE, "BEND", 522, 64},
-		{PARAM_PORTA_ON, "PORTA", 590, 50}, {PARAM_PORTA_TIME, "TIME", 644, 64},
+		{PARAM_PORTA_ON, "PORTA", 590, 44}, {PARAM_PORTA_TIME, "TIME", 638, 64},
 	};
 	static const char *const PANS[3] = {"L", "C", "R"};
 	static const char *const DIGITS[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
@@ -2588,15 +2589,15 @@ static void dac_short(const char *name, char *out, size_t size)
 #define DAC_BUTTON_Y 358
 #define DAC_LINE1_Y 377
 #define DAC_LINE2_Y 387
-#define DAC_REPLACE_X 496
-#define DAC_CLEAR_X 600
+#define DAC_REPLACE_X 498
+#define DAC_CLEAR_X 602
 #define DAC_BUTTON_W 100
 #define DAC_BUTTON_H 24
 #define DAC_DEFAULT_NOTE 36
 #define DAC_MODE_Y 56
 #define DAC_MODE_H 20
-#define DAC_AUDIO_X 600
-#define DAC_AUDIO_W 108
+#define DAC_AUDIO_X 590
+#define DAC_AUDIO_W 112
 #define DAC_PANEL_TEXT_X 320
 
 static int grid_note_at(int x, int y)
@@ -2618,7 +2619,8 @@ static void draw_dac_top(mdmi_gui *g)
 {
 	char buffer[32];
 	text(g, NAME_X, 34, "DAC Samples", C_TEXT, 2);
-	const uint32_t room = rom_image_room(), used = dac_used(dac_of(g));
+	// Stage 37: a project read against the whole space can hold more than a change may fill.
+	const uint32_t room = rom_image_room(), used_all = dac_used(dac_of(g)), used = used_all < room ? used_all : room;
 	fill(g, DAC_FREE_X, 30, DAC_FREE_W, 22, C_CELL);
 	fill(g, DAC_FREE_X, 30, (int)((uint64_t)(room - used) * DAC_FREE_W / room), 22, C_DAC_DARK);
 	text(g, DAC_FREE_X + 4, 38, "FREE", C_LABEL, 1);
@@ -2641,7 +2643,7 @@ static void dac_warnings(mdmi_gui *g, const patch_values *values, int y)
 	const bool tuned = values->channels[PATCH_NUM_FM_CHANNELS - 1][PARAM_FINE_TUNE] != 64;
 	const int player = patch_voice_player(g->source.patch, PATCH_NUM_FM_CHANNELS - 1);
 	const bool lent = player >= 0 && player != PATCH_NUM_FM_CHANNELS - 1;
-	fill(g, BANK_X, y, BANK_RIGHT - BANK_X, 1, C_CELL);
+	fill(g, BANK_X, y, PAGE_RIGHT - BANK_X, 1, C_CELL);
 	text(g, BANK_X, y + 5, "4 VOICES: A 5TH NOTE CUTS THE OLDEST, LOUD ONES CLIP. VELOCITY IS VOLUME.", C_HINT, 1);
 	text(g, BANK_X, y + 15, "BEND OR TUNE OFF CENTRE PLAYS THE SAMPLE OF A NEIGHBOUR NOTE.", tuned ? C_AMBER : C_HINT, 1);
 	text(g, BANK_X, y + 25, "POLYPHONY: A CHORD THAT REACHES CH6 PLAYS SAMPLES, NOT FM.", lent ? C_AMBER : C_HINT, 1);
@@ -2694,7 +2696,7 @@ static const struct {
 } DAC_CONTROLS[] = {
 	// START and END are the trim strip's tabs, no cells.
 	{0, 0, 0, "START"}, {0, 0, 0, "END"}, {242, DAC_ROW_B_Y, 84, "PITCH"}, {328, DAC_ROW_B_Y, 62, "CT"},
-	{396, DAC_ROW_B_Y, 100, "GAIN"}, {498, DAC_ROW_B_Y, 62, "NORMALIZE"}, {566, DAC_ROW_B_Y, 52, "FADE"}, {620, DAC_ROW_B_Y, 80, "ONE-SHOT"},
+	{396, DAC_ROW_B_Y, 100, "GAIN"}, {498, DAC_ROW_B_Y, 62, "NORMALIZE"}, {566, DAC_ROW_B_Y, 52, "FADE"}, {620, DAC_ROW_B_Y, 82, "ONE-SHOT"},
 	{274, DAC_ROW_A_Y, 32, "AUTO"}, {308, DAC_ROW_A_Y, 22, "32"}, {332, DAC_ROW_A_Y, 22, "22"}, {356, DAC_ROW_A_Y, 22, "16"},
 	{380, DAC_ROW_A_Y, 28, "13.4"}, {410, DAC_ROW_A_Y, 22, "11"}, {434, DAC_ROW_A_Y, 22, "8"},
 };
@@ -3697,7 +3699,7 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 		return true;
 	}
 	if (in_box(x, y, DAC_FREE_X, 30, DAC_FREE_W, 22)) {
-		const double free = rom_image_room() - dac_used(dac_of(g));
+		const double left = (double)rom_image_room() - (double)dac_used(dac_of(g)), free = left > 0 ? left : 0;
 		snprintf(out, size, "FREE %.2f MB: %.0f S OF SAMPLES", free / 1048576.0, free / ROM_PCM4_HZ);
 		return true;
 	}
@@ -4316,7 +4318,7 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 				static const struct {
 					const char *label;
 					int x, w;
-				} NO_PITCH[] = {{"TUNE", 422, 96}, {"BEND", 522, 64}, {"PORTA", 590, 50}, {"TIME", 644, 64}};
+				} NO_PITCH[] = {{"TUNE", 422, 96}, {"BEND", 522, 64}, {"PORTA", 590, 44}, {"TIME", 638, 64}};
 				for (size_t i = 0; i < sizeof(NO_PITCH) / sizeof(*NO_PITCH); i++) {
 					fill(g, NO_PITCH[i].x, GRID_ROW1_Y, NO_PITCH[i].w, CELL_H, C_BG);
 					frame(g, NO_PITCH[i].x, GRID_ROW1_Y, NO_PITCH[i].w, CELL_H, C_CELL);
@@ -5148,7 +5150,9 @@ static void draw_library_list(mdmi_gui *g, const patch_values *values, int list,
 		const int y = text_wrap(g, x + 8, 124, "not an MDMI bank", C_LABEL, (right - x - 16) / 6);
 		text_wrap(g, x + 8, y + 2, "Nothing is written to this file", C_HINT, (right - x - 16) / 6);
 	} else if (shows_new(g, list)) {
-		text(g, x + 8, 100, l->kind == LIST_NO_FOLDER ? "NO FOLDER" : "NO LIBRARIES", C_LABEL, 2);
+		// Stage 37: the folder's only library open on the left is no "no libraries" (22c).
+		const bool one_left = l->kind == LIST_NO_LIBRARY && g->lib_list.count == 1 && g->lists[0].kind == LIST_LIBRARY;
+		text(g, x + 8, 100, l->kind == LIST_NO_FOLDER ? "NO FOLDER" : one_left ? "NO OTHER" : "NO LIBRARIES", C_LABEL, 2);
 		int y = text_wrap(g, x + 8, 124, g->lib_folder, C_HINT, 28 < (right - x - 16) / 6 ? 28 : (right - x - 16) / 6);
 		text_wrap(g, x + 8, y + 2, "Libraries are .mdbank files in this folder.", C_HINT, (right - x - 16) / 6);
 		const bool over = !g->file_over && g->chooser < 0 && over_new(g, list, g->mouse_x, g->mouse_y);
@@ -5317,7 +5321,10 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	g->bank_was_open = true;
 	g->bank_seen_channel = channel;
 
+	// Stage 37: channel 3 in Ch3 Special is pink here too, as on its other pages (24d).
+	g->sp = channel == 2 && is_special(values, 2);
 	draw_page_top(g, values);
+	g->sp = false;
 	if (is_dac(values, channel)) {
 		draw_dac_list(g, values);
 		return;
@@ -6252,6 +6259,9 @@ static void save_dialog(mdmi_gui *g)
 	dialog.nFilterIndex = sound ? 1 : 2;
 	dialog.lpstrFile = path;
 	dialog.nMaxFile = MAX_PATH;
+	// Stage 37: with a default extension the dialog adds the chosen type's own (it follows the type
+	// list) before it asks whether to replace a file; adding it after the dialog replaced one unasked.
+	dialog.lpstrDefExt = envelope ? L"eef" : L"vgi";
 	dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 	if (!GetSaveFileNameW(&dialog)) {
 		return;

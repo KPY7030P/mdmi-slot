@@ -925,7 +925,7 @@ static bool read_spot(mdmi_files *files, bool envelopes, const files_spot *spot,
 // place had. Nothing changes if the file can't be read as a bank or written.
 // *place < 0: the first empty place of the fresh file where the sound doesn't read as empty (a GM
 // sound on its own GM place would), set to where it went.
-static bool write_library_place(const char *path, bool envelopes, int *place, const place_sound *sound, place_sound *before, char *message, size_t size)
+static bool write_library_place(const char *path, bool envelopes, int *place, const place_sound *sound, place_sound *before, bool *was_empty, char *message, size_t size)
 {
 	char name[LIBRARY_NAME];
 	library_name(path, name, sizeof(name));
@@ -952,6 +952,7 @@ static bool write_library_place(const char *path, bool envelopes, int *place, co
 		return false;
 	}
 	get_place(bank, envelopes, *place, before);
+	*was_empty = files_place_empty(bank, envelopes, *place);
 	set_place(bank, envelopes, *place, sound);
 	const bool written = write_library(path, bank);
 	free(bank);
@@ -961,7 +962,7 @@ static bool write_library_place(const char *path, bool envelopes, int *place, co
 	return written;
 }
 
-static void remember_library(mdmi_files *files, bool envelopes, const char *path, int place, const place_sound *before)
+static void remember_library(mdmi_files *files, bool envelopes, const char *path, int place, const place_sound *before, bool was_empty)
 {
 	remember(files, UNDO_LIBRARY, place, envelopes ? NULL : &before->instrument, envelopes ? &before->envelope : NULL, NULL, 0);
 	files->undo_arp = before->arp;
@@ -969,7 +970,8 @@ static void remember_library(mdmi_files *files, bool envelopes, const char *path
 	snprintf(files->undo_library, sizeof(files->undo_library), "%s", path);
 	char name[LIBRARY_NAME];
 	library_name(path, name, sizeof(name));
-	snprintf(files->undo_text, sizeof(files->undo_text), "%.40s %d back to %s", name, place + 1, sound_name(before, envelopes));
+	// Stage 37: a place that was empty goes back to empty, not to the GM sound it holds then (22c).
+	snprintf(files->undo_text, sizeof(files->undo_text), "%.40s %d back to %s", name, place + 1, was_empty ? "empty" : sound_name(before, envelopes));
 }
 
 // A sound into a place of the ROM bank or of a library, with its undo step.
@@ -986,10 +988,11 @@ static bool put_spot(mdmi_files *files, bool envelopes, const files_spot *to, co
 		return true;
 	}
 	place_sound before;
-	if (!write_library_place(to->library, envelopes, landed, sound, &before, message, size)) {
+	bool was_empty;
+	if (!write_library_place(to->library, envelopes, landed, sound, &before, &was_empty, message, size)) {
 		return false;
 	}
-	remember_library(files, envelopes, to->library, *landed, &before);
+	remember_library(files, envelopes, to->library, *landed, &before, was_empty);
 	return true;
 }
 
@@ -1111,7 +1114,8 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 		snprintf(path, sizeof(path), "%s", files->undo_library);
 		char why[FILES_MESSAGE];
 		int place = target;
-		if (!write_library_place(path, envelopes, &place, &back, &now, why, sizeof(why))) {
+		bool now_empty;
+		if (!write_library_place(path, envelopes, &place, &back, &now, &now_empty, why, sizeof(why))) {
 			char name[LIBRARY_NAME];
 			library_name(path, name, sizeof(name));
 			wchar_t wide[LIBRARY_PATH];
@@ -1123,7 +1127,7 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 			}
 			return false;
 		}
-		remember_library(files, envelopes, path, target, &now);
+		remember_library(files, envelopes, path, target, &now, now_empty);
 	} else if (undo == UNDO_CHANNEL && is_psg(target)) {
 		patch_envelope back = files->undo_envelope, base = files->undo_base_envelope;
 		put_envelope_on_channel(files, target, &back, &base, &arp, &base_arp);

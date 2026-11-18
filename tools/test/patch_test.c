@@ -2252,6 +2252,29 @@ static void test_dac_marks(void)
 		free(one_block);
 		dac_clear(&one);
 		dac_clear(&back);
+		// Stage 37 (review): a project whose samples use the whole space, past what a change may fill
+		// now, still opens (samples saved up to 0.31 against the space without the envelopes' room).
+		dac_sample *big = dac_copy(stopped);
+		const uint32_t whole = rom_image_space() & ~(uint32_t)(ROM_SAMPLE_BLOCK - 1);
+		free(big->bytes);
+		big->bytes = calloc(whole, 1);
+		big->sample.bytes = big->bytes;
+		big->sample.length = whole;
+		big->sample.flags = 0;
+		big->edit.loop = big->edit.stop = false;
+		free(big->source);
+		big->source = NULL;
+		big->source_frames = 0;
+		big->source_hz = 0;
+		dac_put(&one, 41, big);
+		const size_t big_size = dac_block_size(&one);
+		uint8_t *big_block = malloc(big_size);
+		dac_block_write(&one, big_block);
+		CHECK(whole > rom_image_room() && dac_block_read(&back, big_block, big_size) && back.notes[41] && back.notes[41]->sample.length == whole,
+			"a project's samples over the room a change may fill, within the whole space, still open (%u > %u)", whole, rom_image_room());
+		free(big_block);
+		dac_clear(&one);
+		dac_clear(&back);
 	}
 	// Into the image and back.
 	size_t rom_size, built;
@@ -2986,7 +3009,8 @@ static void test_libraries(void)
 	snprintf(temporary, sizeof(temporary), "%s.tmp", a);
 	CHECK(GetFileAttributesA(temporary) == INVALID_FILE_ATTRIBUTES, "no .tmp is left after a write");
 	char expected[FILES_MESSAGE];
-	snprintf(expected, sizeof(expected), "A Bass 5 back to %s", rom.places[4].name);
+	// Stage 37: the place was empty, so its undo says so, not the GM name it held then (22c).
+	snprintf(expected, sizeof(expected), "A Bass 5 back to empty");
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), expected), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
 	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(a, &library) && files_place_empty(&library, false, 4), "undo empties it in the file: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(a, &library) && !strcmp(library.places[4].name, "Thunder Guitar 03"), "and again brings it back");
@@ -3166,6 +3190,27 @@ static void test_export(void)
 	uint8_t *same = rom_image_build(rom, rom_size, none, NULL, &gm, NULL, &built);
 	CHECK(same && built == rom_size && !memcmp(same, rom, rom_size), "the image of the GM bank without samples is the emulator's");
 	free(same);
+
+	// Stage 37: samples that fill the room the plugin gives them still leave EXPORT the place for 128
+	// envelopes of the user's at their longest, all different: no "over 4 MB" after the sample was taken.
+	{
+		static rom_bank full;
+		full = gm;
+		for (int place = 0; place < 128; place++) {
+			memset(full.envelopes[place], place & 0x0F, ROM_ENVELOPE_BYTES - 1);
+			full.envelopes[place][0] = (uint8_t)(place >> 4);
+			full.envelopes[place][ROM_ENVELOPE_BYTES - 1] = 0xFF;
+		}
+		const uint32_t room = rom_image_room() & ~(uint32_t)(ROM_SAMPLE_BLOCK - 1);
+		int8_t *bytes = calloc(room, 1);
+		const rom_sample big = {.rate = 0, .length = room, .bytes = bytes};
+		const rom_sample *one[ROM_IMAGE_NOTES] = {0};
+		one[60] = &big;
+		uint8_t *fits = rom_image_build(rom, rom_size, one, NULL, &full, NULL, &built);
+		CHECK(fits != NULL && built <= ROM_IMAGE_MAX, "samples filling their room and 128 longest envelopes still make an image (%zu bytes)", built);
+		free(fits);
+		free(bytes);
+	}
 
 	// A bank: a voice on 5 with its row, an envelope of the user's on 3, a row switched off on 7.
 	mdmi_patch *patch = &files_patch;

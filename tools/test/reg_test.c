@@ -1853,6 +1853,27 @@ static void test_dac_shown(void)
 		midi(0x85, note, 0);
 		dac_shown_follow(400);
 	}
+	// Stage 37 (architect): a steal stops the old sample and starts the new one through the driver's
+	// command bits, and its busy bit is clear for a millisecond or two; sampled once a millisecond, that
+	// window shows on some layouts only. The voice never goes free for the player, so a free stretch of
+	// the driver's trace shorter than a ROM frame between two busy ones counts as busy. The copy's trace
+	// stays as it is: a short gap there would be the copy's defect.
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		for (int t = 1; t < shown_ms; t++) {
+			if ((shown_rom[t - 1] >> v & 1) && !(shown_rom[t] >> v & 1)) {
+				int end = t;
+				while (end < shown_ms && !(shown_rom[end] >> v & 1)) {
+					end++;
+				}
+				if (end < shown_ms && end - t < DAC_BLOCK_MS) {
+					for (int u = t; u < end; u++) {
+						shown_rom[u] |= (uint8_t)(1 << v);
+					}
+				}
+				t = end;
+			}
+		}
+	}
 	// Every change of the copy, voice by voice, found again in the driver and how much later.
 	int delays[256], edges = 0, missing = 0;
 	for (int t = 1; t < shown_ms; t++) {
@@ -5901,6 +5922,56 @@ static void test_screen_cells(void)
 	printf("      note 0 shows glyphs %d %d %d, note 13 %d %d %d\n", glyphs[0][0], glyphs[0][1], glyphs[0][2], glyphs[1][0], glyphs[1][1], glyphs[1][2]);
 	check(glyphs[0][0] == 12 && glyphs[0][1] == 18 && glyphs[0][2] == 18 && glyphs[1][0] == 12 && glyphs[1][1] == 17 && glyphs[1][2] == 0,
 		"screen: notes of octave -1 are named in 3 glyphs, C-- (30), and C#0 as before");
+	// Stage 37 (D82): a note over before the screen looks names its cell (C-5), not the note before.
+	{
+		midi(0x90, 72, 127);
+		midi(0x80, 72, 0);
+		rom_frames(4);
+		int short_glyphs[3];
+		for (int c = 0; c < 3; c++) {
+			short_glyphs[c] = screen_tile(SCREEN_X_NOTE + c, row) - UI_T_NOTE;
+		}
+		render(100);
+		printf("      a note shorter than a frame shows glyphs %d %d %d\n", short_glyphs[0], short_glyphs[1], short_glyphs[2]);
+		check(short_glyphs[0] == 12 && short_glyphs[1] == 18 && short_glyphs[2] == 5, "screen: a note shorter than a frame names its cell, C-5 after C#0 (37, D82)");
+	}
+	// Stage 37: the DAC's notes leave FM6's level bar dark after DAC Off.
+	{
+		set_global(GLOBAL_DAC, 1);
+		sync_and_settle();
+		render(DAC_BLOCKS / 4);
+		// Struck while DAC Off is near (review of stage 37): the hits are fresh when the switch comes,
+		// and the bar is looked at every frame after it, not once it has faded by itself.
+		for (int i = 0; i < 4; i++) {
+			midi(0x95, (uint8_t)(36 + i * 2), 127);
+		}
+		render(6);
+		set_global(GLOBAL_DAC, 0);
+		patch_sync(patch, &patch->rom, emit, NULL);
+		// Stripes counted only while the four cells hold level patterns: right after DAC Off they still
+		// show the DAC's row until the screen draws FM6's again.
+		int fm6 = 0, frames_fm = 0;
+		for (int f = 0; f < 40; f++) {
+			rom_frames(1);
+			int levels = 0;
+			for (int t = 0; t < 4; t++) {
+				const int colour = t < 2 ? 0 : t - 1, p = screen_tile(SCREEN_X_LEVEL + t, SCREEN_ROW(5)) - (UI_T_LEVEL + colour * UI_LEVEL_PATTERNS);
+				levels += p >= 0 && p < UI_LEVEL_PATTERNS;
+			}
+			if (levels == 4) {
+				int lit, top;
+				level_state(SCREEN_ROW(5), &lit, &top);
+				fm6 = lit > fm6 ? lit : fm6;
+				frames_fm++;
+			}
+		}
+		for (int i = 0; i < 4; i++) {
+			midi(0x85, (uint8_t)(36 + i * 2), 0);
+		}
+		render(SETTLE_BLOCKS);
+		printf("      FM6's level in the 40 frames after DAC notes and DAC Off: at most %d stripes, in %d frames that show its bar\n", fm6, frames_fm);
+		check(fm6 == 0 && frames_fm > 10, "screen: FM6's level bar stays dark after the DAC's notes and DAC Off (37)");
+	}
 	// The window's names by the same rule (gui.c).
 	bool window_names = true;
 	for (int key = 0; key < 128; key++) {

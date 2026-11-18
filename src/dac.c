@@ -658,7 +658,7 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		sources += source_bytes;
 		const bool fine = note < ROM_IMAGE_NOTES && s->sample.rate < ROM_SAMPLE_RATES && bytes && bytes % ROM_SAMPLE_BLOCK == 0
 			&& s->edit.rate >= DAC_RATE_AUTO && s->edit.rate < ROM_SAMPLE_RATES && abs(s->edit.pitch) <= DAC_PITCH_MAX && abs(s->edit.gain) <= DAC_GAIN_MAX
-			&& source_bytes + bytes <= length - at && used <= rom_image_room() && sources <= DAC_SOURCE_MAX
+			&& source_bytes + bytes <= length - at && used <= rom_image_space() && sources <= DAC_SOURCE_MAX
 			&& (!frames || (s->source_hz && s->edit.start < s->edit.end && s->edit.end <= frames));
 		s->source = frames && fine ? malloc(source_bytes) : NULL;
 		s->bytes = fine ? malloc(bytes) : NULL;

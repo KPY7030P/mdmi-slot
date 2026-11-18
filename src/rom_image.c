@@ -154,7 +154,16 @@ void rom_image_zone(uint32_t *table, uint32_t *table_ram, uint32_t *records)
 	*records = RECORDS_AT;
 }
 
+// Stage 37: the room for new samples keeps the place EXPORT needs for the bank's envelopes the image
+// doesn't hold, all 128 at their longest (16 KB, under 0.4% of the room): else a sample was taken
+// and EXPORT then refused "over 4 MB" (ROADMAP, review of stage 24). A project's samples are read
+// against the whole space, as up to 0.31, so a project saved nearer the end still opens.
 uint32_t rom_image_room(void)
+{
+	return rom_image_space() - ROM_PROGRAMS * ROM_ENVELOPE_BYTES;
+}
+
+uint32_t rom_image_space(void)
 {
 	return ROM_IMAGE_MAX - DATA_AT;
 }

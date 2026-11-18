@@ -54,7 +54,10 @@ bool rom_image_sample(const uint8_t *rom, size_t size, int note, rom_sample *sam
 #define ROM_IMAGE_TABLE_BYTES (ROM_IMAGE_NOTES * 4)
 void rom_image_zone(uint32_t *table, uint32_t *table_ram, uint32_t *records);
 // The room for new samples and what one takes of it.
+// The room for samples a change may fill (rom_image_room), and the whole space after the records that
+// a project's samples are read against (stage 37).
 uint32_t rom_image_room(void);
+uint32_t rom_image_space(void);
 uint32_t rom_image_cost(uint32_t length);
 // Stage 24: the bank as the exported image holds it, in the fork's tables (tools/gen_rom_map.py).
 // A voice in the layout of PRESETS_GM: algorithm, feedback, AMS, FMS, then per operator multiple,

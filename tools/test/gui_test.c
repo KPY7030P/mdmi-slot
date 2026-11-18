@@ -55,7 +55,7 @@
 // (level 0), and UNDO.
 #define RAIL_CH8_Y 350
 #define ENV_X 296
-#define ENV_RIGHT 700
+#define ENV_RIGHT 702
 #define ENV_LEVEL_Y 122
 #define ENV_LEVEL_BOTTOM 234
 // In the bright top of a bar at level 0: below it the body is dark (4A).
@@ -93,7 +93,7 @@
 #define COLOR_AMBER 0xEECC66
 #define COLOR_DAC 0xEE8822
 #define COLOR_DAC_DARK 0x442200
-#define DAC_SCROLL_X 702
+#define DAC_SCROLL_X 696
 #define DAC_LIST_Y 96
 #define DAC_LIST_BOTTOM 396
 #define DAC_FILE_X 580
@@ -1026,6 +1026,22 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(memcmp(before + HEADER_H * WIDTH, pixels + HEADER_H * WIDTH, (TABLE_BOTTOM - HEADER_H) * WIDTH * sizeof(uint32_t)) == 0, "the table looks the same after the ROM page");
+		// Stage 37: BANK's page top of channel 3 in Ch3 Special is pink too, as its other pages (24d).
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		click(window, 10, RAIL_CH3_TOP + 10);
+		click(window, BUTTON_BANK_X, BUTTON_Y);
+		run_ms(100);
+		capture(window);
+		const int bank_pink = count_color_in(242, 702, HEADER_H, 80, COLOR_SP);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
+		run_ms(100);
+		CHECK(bank_pink > 20, "BANK of channel 3 in Ch3 Special shows its number and square pink (%d px)", bank_pink);
+		// Stage 37 (art-director, ui-concept.md): the channel's cells and the page end at x 702.
+		capture(window);
+		const int past_edge = count_not_black_in(702, 712, HEADER_H + 1, 80);
+		const int at_edge = count_not_black_in(700, 702, HEADER_H + 1, 80);
+		CHECK(past_edge == 0 && at_edge > 0, "the header's cells end at x 702 (%d px up to it, %d past it)", at_edge, past_edge);
 
 		// Editing by mouse: the view is not a knob, a drag is one gesture on one channel's knob.
 		memset(pushed, 0, sizeof(pushed));
@@ -1504,7 +1520,7 @@ int main(int argc, char **argv)
 		{
 			int top = -1;
 			for (int y = RAIL_CH8_Y - 30; y < RAIL_CH8_Y + 30 && top < 0; y++) {
-				top = count_color_in(537, 615, y, y + 1, COLOR_PSG) > 0 ? y : -1;
+				top = count_color_in(533, 611, y, y + 1, COLOR_PSG) > 0 ? y : -1;
 			}
 			save_bmp(argv[2], "all-out");
 			// Stage 35 (D80, architect): 7 frames over about 1 s, each 2 crests (runs of 4 px or more;
@@ -1517,10 +1533,10 @@ int main(int argc, char **argv)
 					capture(window);
 				}
 				int crests = 0, first = -1;
-				for (int x = 537; top >= 0 && x < 615; x++) {
+				for (int x = 533; top >= 0 && x < 611; x++) {
 					if ((pixels[top * WIDTH + x] & 0xFFFFFF) == COLOR_PSG && (pixels[top * WIDTH + x - 1] & 0xFFFFFF) != COLOR_PSG) {
 						int end = x;
-						while (end < 615 && (pixels[top * WIDTH + end] & 0xFFFFFF) == COLOR_PSG) {
+						while (end < 611 && (pixels[top * WIDTH + end] & 0xFFFFFF) == COLOR_PSG) {
 							end++;
 						}
 						if (end - x >= 4) {
@@ -1534,7 +1550,7 @@ int main(int argc, char **argv)
 				first_low = first >= 0 && first < first_low ? first : first_low;
 				first_high = first > first_high ? first : first_high;
 			}
-			CHECK(crests_low == 2 && crests_high == 2 && first_high >= 0 && first_high - 537 <= 1 && first_high - first_low <= 1,
+			CHECK(crests_low == 2 && crests_high == 2 && first_high >= 0 && first_high - 533 <= 1 && first_high - first_low <= 1,
 				"channel 8's OUT box draws 2 periods from a rising edge in 7 frames over 1 s (crests %d..%d, first crest x %d..%d)", crests_low, crests_high, first_low, first_high);
 		}
 		// A chord: the picture holds by its lowest note, C3 under C4. Each column's top in two frames 120 ms
@@ -1549,7 +1565,7 @@ int main(int argc, char **argv)
 				for (int x = 0; x < 78; x++) {
 					tops[k][x] = -1;
 					for (int y = RAIL_CH1_TOP + 5; y < RAIL_CH1_TOP + 34 && tops[k][x] < 0; y++) {
-						tops[k][x] = (pixels[y * WIDTH + 537 + x] & 0xFFFFFF) == COLOR_FM_LIGHT ? y : -1;
+						tops[k][x] = (pixels[y * WIDTH + 533 + x] & 0xFFFFFF) == COLOR_FM_LIGHT ? y : -1;
 					}
 				}
 				run_ms(120);
@@ -1581,7 +1597,7 @@ int main(int argc, char **argv)
 		send_midi(0x87, 72, 0);
 		run_ms(200);
 		capture(window);
-		CHECK(count_color_in(537, 615, RAIL_CH8_Y - 30, RAIL_CH8_Y + 30, COLOR_PSG) == 0, "without a held note the OUT box is empty");
+		CHECK(count_color_in(533, 611, RAIL_CH8_Y - 30, RAIL_CH8_Y + 30, COLOR_PSG) == 0, "without a held note the OUT box is empty");
 		send_midi(0x97, 72, 100);
 		run_ms(100);
 		click(window, ALL_SOUND_X, RAIL_CH8_Y);
@@ -1702,6 +1718,22 @@ int main(int argc, char **argv)
 			size = read_file(new_bank, now, sizeof(now));
 			CHECK(size == empty_size && !memcmp(now, empty, size) && count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_ERROR) > 50, "a read-only library is refused in the footer, unchanged");
 			SetFileAttributesA(new_bank, FILE_ATTRIBUTE_NORMAL);
+			// Stage 37: the folder's only library opened in list A leaves list B with none to show: it
+			// says NO OTHER (frame bank-no-other) and offers NEW, as with none at all.
+			click(window, 300, 66);
+			run_ms(50);
+			// A's choice lists the libraries first, then the ROM bank.
+			click(window, 300, 92 + 10);
+			run_ms(50);
+			capture(window);
+			save_bmp(argv[2], "bank-no-other");
+			const int a_library = count_color_in(242, 500, 92, 112, COLOR_TEXT) + count_color_in(242, 500, 92, 112, COLOR_LABEL);
+			CHECK(count_color_in(528, 592, 180, 204, COLOR_LINE) > 100 && count_color_in(528, 690, 100, 116, COLOR_LABEL) > 50 && a_library > 0,
+				"the only library open in list A: list B shows no other and offers NEW");
+			click(window, 300, 66);
+			run_ms(50);
+			click(window, 300, 92 + 20 + 10);
+			run_ms(50);
 			// The choice of list B: NEW, then the libraries by name; a broken file opens as CAN'T READ.
 			char broken[MAX_PATH];
 			snprintf(broken, sizeof(broken), "%s\\broken.mdbank", banks_dir);
@@ -1771,7 +1803,7 @@ int main(int argc, char **argv)
 		for (int x = ENV_X; x < ENV_RIGHT; x++) {
 			loud += (pixels[ENV_LOUD_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG && (pixels[ENV_LOUD_Y * WIDTH + x - 1] & 0xFFFFFF) != COLOR_PSG;
 		}
-		past = count_color_in(ENV_RIGHT, 708, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
+		past = count_color_in(ENV_RIGHT, 712, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
 		// A bar, then a gap, and the last frame at the lane's end, the same at every length.
 		const uint32_t gap = pixels[ENV_LOUD_Y * WIDTH + ENV_X + 2] & 0xFFFFFF;
 		const uint32_t last = pixels[ENV_LOUD_Y * WIDTH + ENV_RIGHT - 2] & 0xFFFFFF;
@@ -2274,7 +2306,7 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		save_bmp(argv[2], "dac-panel");
-		const int tabs = count_color_in(234, 250, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) + count_color_in(692, 708, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC);
+		const int tabs = count_color_in(234, 250, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC) + count_color_in(694, 710, DAC_TRIM_Y, DAC_TRIM_Y + 14, COLOR_DAC);
 		CHECK(tabs >= 2 * 8 * 14 && count_color_in(DAC_GAIN_X, DAC_GAIN_X + 100, DAC_ROW_B_Y, DAC_ROW_B_Y + 20, COLOR_DAC_DARK) == 0, "the trim's tabs stand at the wave's ends (%d px), no gain", tabs);
 		// The start's tab dragged in by a quarter, one restart.
 		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(238, DAC_TRIM_Y + 7));

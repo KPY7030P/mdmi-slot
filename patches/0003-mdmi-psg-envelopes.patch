@@ -209,7 +209,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..d6a601b 100644
+index 5145b6a..79afbb6 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -71,7 +71,14 @@ static const u16 portaTimeToInterval[128]
@@ -347,7 +347,7 @@ index 5145b6a..d6a601b 100644
      PitchCents pc = effectivePitchCents(devChan);
      devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
  }
-@@ -446,6 +523,18 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -446,6 +523,19 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -356,6 +356,7 @@ index 5145b6a..d6a601b 100644
 +        devChan->midiChannel = midiChan;
 +        devChan->noteOn = true;
 +        devChan->hits++;
++        devChan->lastPitch = pitch;
 +        devChan->cents = 0;
 +        devChan->pitch = pitch;
 +        update_device_channel_from_associated_midi_channel(devChan);
@@ -366,15 +367,16 @@ index 5145b6a..d6a601b 100644
      if (is_single_voice_channel(midiChan, false)) {
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
-@@ -464,6 +553,7 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -464,6 +554,8 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      reapply_program_if_channel_was_formerly_percussive(devChan, midiChan);
      devChan->midiChannel = midiChan;
      devChan->noteOn = true;
 +    devChan->hits++;
++    devChan->lastPitch = pitch;
      devChan->cents = 0;
      devChan->pitch = pitch;
      update_device_channel_from_associated_midi_channel(devChan);
-@@ -483,19 +573,37 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,19 +575,37 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -415,15 +417,16 @@ index 5145b6a..d6a601b 100644
                  } else {
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
-@@ -510,6 +618,7 @@ void midi_note_off(u8 chan, u8 pitch)
+@@ -510,6 +620,8 @@ void midi_note_off(u8 chan, u8 pitch)
  static void dev_chan_note_on(DeviceChannel* devChan, u8 pitch, u8 velocity)
  {
      devChan->noteOn = true;
 +    devChan->hits++;
++    devChan->lastPitch = pitch;
      devChan->cents = 0;
      devChan->pitch = pitch;
      set_downstream_note_on(devChan, velocity);
-@@ -519,6 +628,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
+@@ -519,6 +631,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
  {
      devChan->noteOn = false;
      devChan->pitch = 0;
@@ -433,7 +436,7 @@ index 5145b6a..d6a601b 100644
      devChan->ops->noteOff(devChan->num, pitch);
  }
  
-@@ -606,9 +718,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +721,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -446,7 +449,7 @@ index 5145b6a..d6a601b 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +764,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +767,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -525,7 +528,7 @@ index 5145b6a..d6a601b 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -675,7 +855,7 @@ static void store_program(const u8* data, u16 length)
+@@ -675,7 +858,7 @@ static void store_program(const u8* data, u16 length)
              fmPreset.operators[i].ssgEg = data[16 + i * 11];
          }
          midi_fm_store_preset(program, &fmPreset);
@@ -534,7 +537,7 @@ index 5145b6a..d6a601b 100644
          break;
      }
      default:
-@@ -692,7 +872,7 @@ static void clear_program(const u8* data, u16 length)
+@@ -692,7 +875,7 @@ static void clear_program(const u8* data, u16 length)
      switch (type) {
      case STORE_PROGRAM_TYPE_FM:
          midi_fm_clear_preset(program);
@@ -543,7 +546,7 @@ index 5145b6a..d6a601b 100644
          break;
      default:
          log_warn("Invalid clear program type: %d", type);
-@@ -811,9 +991,9 @@ static void dump_preset_request(const u8* data, u16 length)
+@@ -811,9 +994,9 @@ static void dump_preset_request(const u8* data, u16 length)
          const FmPreset* preset = midi_fm_get_stored_preset(program);
          if (preset != NULL) {
              send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
@@ -555,7 +558,7 @@ index 5145b6a..d6a601b 100644
          }
          break;
      }
-@@ -841,7 +1021,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1024,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -564,7 +567,7 @@ index 5145b6a..d6a601b 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1178,103 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1181,103 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -669,7 +672,7 @@ index 5145b6a..d6a601b 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1493,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1496,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -678,7 +681,7 @@ index 5145b6a..d6a601b 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1520,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1523,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -710,7 +713,7 @@ index 5145b6a..d6a601b 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1604,12 @@ void midi_reset(void)
+@@ -1311,11 +1607,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -725,7 +728,7 @@ index 5145b6a..d6a601b 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1633,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1636,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
@@ -787,7 +790,7 @@ index 5145b6a..d6a601b 100644
  
  void midi_register_change_callback(void (*callback)(MidiChangeEvent))
 diff --git a/src/midi.h b/src/midi.h
-index 731aa8c..0c645d1 100644
+index 731aa8c..30efc5e 100644
 --- a/src/midi.h
 +++ b/src/midi.h
 @@ -17,6 +17,8 @@
@@ -864,7 +867,7 @@ index 731aa8c..0c645d1 100644
  
  typedef struct VTable {
      void (*noteOn)(u8 chan, u8 pitch, s8 cents, u8 velocity);
-@@ -158,6 +197,12 @@ typedef struct DeviceChannel {
+@@ -158,6 +197,15 @@ typedef struct DeviceChannel {
      u16 pitchBend;
      s8 cents;
      u16 glideTargetPitch;
@@ -874,10 +877,13 @@ index 731aa8c..0c645d1 100644
 +    // MDMI plugin fork, stage 24a2: +1 on every Note On that takes the channel, for the screen's
 +    // ribbon and note flash; a note shorter than a frame or a repeat of the same note still counts.
 +    u8 hits;
++    // MDMI plugin fork, stage 37 (D82): the pitch of the last Note On here, which nothing clears: a
++    // note shorter than a frame is over before the screen looks, and its cell shows it from this.
++    u8 lastPitch;
  } DeviceChannel;
  
  typedef enum MidiChangeType {
-@@ -173,8 +218,9 @@ typedef struct MidiChangeEvent {
+@@ -173,8 +221,9 @@ typedef struct MidiChangeEvent {
      u8 value;
  } MidiChangeEvent;
  
@@ -2736,10 +2742,10 @@ index 222a443..28df429 100644
  void synth_enable_dac(bool enable);
 +void synth_restore_chip(void);
 diff --git a/src/ui.c b/src/ui.c
-index 66cd230..cf8bbfc 100644
+index 66cd230..07d00d3 100644
 --- a/src/ui.c
 +++ b/src/ui.c
-@@ -2,552 +2,2627 @@
+@@ -2,552 +2,2640 @@
  #include "comm/comm.h"
  #include "comm/comm_everdrive.h"
  #include "comm/comm_everdrive_pro.h"
@@ -3303,6 +3309,11 @@ index 66cd230..cf8bbfc 100644
 +            flashMask |= 1 << ch;
 +            voiceHits |= 1 << ch;
 +            ribbonHitMask |= 1 << ch;
++            // Stage 37 (D82): a note over before this look still names its cell, as hits counts it.
++            if (!devChan->noteOn && noteShown[ch] != devChan->lastPitch) {
++                noteShown[ch] = devChan->lastPitch;
++                noteMask |= 1 << ch;
++            }
 +        } else if (!moved) {
 +            continue;
 +        }
@@ -3536,12 +3547,12 @@ index 66cd230..cf8bbfc 100644
 +        dacOrder[v] = view.order;
 +        dacState[v] = view.state;
 +        dacKey[v] = view.key;
-+    }
+     }
 +    // The DAC's ribbon holds while a voice sounds by the estimate.
 +    dacHeld = FALSE;
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        dacHeld |= dacState[v] != MIDI_DAC_VOICE_FREE && dac_voice_sounds(v);
-     }
++    }
 +}
  
 -    ui_fm_update();
@@ -3871,6 +3882,12 @@ index 66cd230..cf8bbfc 100644
  {
 -    static u8 lastMidiChans[DEV_PHYSICAL_CHANS];
 -    if (memcmp(lastMidiChans, midiChans, sizeof(u8) * DEV_PHYSICAL_CHANS) == 0) {
++    // Stage 37: while the DAC has channel 6 its row shows the DAC; an FM level from before it is gone.
++    if (ch == DAC_CHAN && dac_on()) {
++        level[ch] = 0;
++        peak[ch] = 0;
++        return;
++    }
 +    const bool hit = levelHits & 1 << ch;
 +    if (!hit && !(envMoving & 1 << ch) && !level[ch] && !peak[ch]) {
          return;
@@ -3903,14 +3920,7 @@ index 66cd230..cf8bbfc 100644
 +    }
 +#endif
 +}
- 
--    for (u8 devChan = 0; devChan < 10; devChan++) {
--        u8 midiCh = midiChans[devChan];
--        const char* text;
--        if (midiCh == UNASSIGNED_MIDI_CHANNEL) {
--            text = MIDI_CH_UNASSIGNED_TEXT;
--        } else {
--            text = MIDI_CH_TEXT[midiChans[devChan]];
++
 +// A 16-stripe bar over 4 cells; coloured ones are green, green, yellow, red.
 +static bool bar_cells(u8 x, u8 y, u8 pal, u16 base, bool coloured, u8 lit, u8 top)
 +{
@@ -3927,7 +3937,14 @@ index 66cd230..cf8bbfc 100644
 +    }
 +    return all;
 +}
-+
+ 
+-    for (u8 devChan = 0; devChan < 10; devChan++) {
+-        u8 midiCh = midiChans[devChan];
+-        const char* text;
+-        if (midiCh == UNASSIGNED_MIDI_CHANNEL) {
+-            text = MIDI_CH_UNASSIGNED_TEXT;
+-        } else {
+-            text = MIDI_CH_TEXT[midiChans[devChan]];
 +// Channel 3's operators in Ch3 Special: a square each, filled 0-4 by its own operator's envelope
 +// (24a3, the owner's remark). In OPS operator 4 follows channel 3's counters and operators 1-3 their
 +// channels 10-12; otherwise all four follow channel 3's, each by its own envelope. Free once silent.
@@ -4175,7 +4192,7 @@ index 66cd230..cf8bbfc 100644
 +            *(volatile u16*)VDP_DATA_PORT = queueValue[Q_DOT_X(dot)];
 +            n += 4;
 +        }
-+    }
+     }
 +    // Parked inside the unused 0xF680-0xFFFF (after the sprite table): the rest of a tile that a VInt
 +    // interrupted (16 words, 32 bytes) lands there, not past 0xFFFF in tile 0 (reviewer, 24a3).
 +    *(volatile u32*)VDP_CTRL_PORT = VRAM_WRITE(PARK);
@@ -4191,16 +4208,16 @@ index 66cd230..cf8bbfc 100644
 +    }
 +    if (lines > ui_stat_vint_lines_max) {
 +        ui_stat_vint_lines_max = lines;
-     }
++    }
 +    ui_stat_vint_lines_count[lines > 11 ? 11 : lines]++;
 +}
-+
-+// Live note cells (W2): white on the hit, over ~1/3 s to the chip's colour, dim after the release ---
  
 -    VDP_clearTextArea(9, MAX_EFFECTIVE_Y + 1, 7, 1);
 -    VDP_drawImageEx(BG_A, MODES_IMAGES[index],
 -        TILE_ATTR_FULL(PAL0, 0, FALSE, FALSE, TILE_IMAGES_INDEX), 9, MAX_EFFECTIVE_Y + 1, FALSE,
 -        FALSE);
++// Live note cells (W2): white on the hit, over ~1/3 s to the chip's colour, dim after the release ---
++
 +// A channel's live cell: its queue slot is its place in NOTE_PAL and NOTE_COPY order. The masks are
 +// walked channel by channel: __builtin_ctz is a slow libgcc call on the 68000.
 +static u8 sinceHit[CHANS], sinceRelease[CHANS];
@@ -4219,10 +4236,10 @@ index 66cd230..cf8bbfc 100644
 +    const u8 chip = live_chip(ch);
 +    if (sinceHit[ch] < UI_FLASH_FRAMES) {
 +        return UI_FLASH[chip][on ? 0 : 1][sinceHit[ch]];
-     }
++    }
 +    if (on) {
 +        return UI_LIVE_HELD[chip];
-+    }
+     }
 +    return sinceRelease[ch] < UI_RELEASE_FRAMES ? UI_RELEASE[chip][sinceRelease[ch]] : UI_LIVE_DIM[chip];
  }
  
@@ -4293,15 +4310,15 @@ index 66cd230..cf8bbfc 100644
 +
 +static u16 noiseKey = NOT_DRAWN;
 +static u16 noiseDrawn = NOT_DRAWN;
++
++// Silent and no key on channel 10: the chip is looked at every 8th frame only.
++static bool noiseResting;
  
 -    s16 led_level = percent == 0 ? 0 : (percent / (100 / LED_TILE_COUNT)) + 1;
 -    for (u16 i = 0; i < LED_TILE_COUNT; i++) {
 -        u16 tile_index = TILE_LED_INDEX + i + LED_TILE_OFF_OFFSET;
 -        if (i < led_level) {
 -            tile_index -= LED_TILE_OFF_OFFSET;
-+// Silent and no key on channel 10: the chip is looked at every 8th frame only.
-+static bool noiseResting;
-+
 +static void __attribute__((noinline)) noise_colours(void)
 +{
 +    const u8 loud = 15 - (midi_psg_attenuation(NOISE_CHAN - FM_CHANS) & 15);
@@ -4328,14 +4345,15 @@ index 66cd230..cf8bbfc 100644
 -        print_load_text(percent);
 +    if (key == noiseKey) {
 +        return;
-     }
--    comm_reset_counts();
++    }
 +    noiseKey = key;
 +    for (u8 k = 0; k < 4; k++) {
 +        queue(Q_NOISE + k, colours[k]);
-+    }
-+}
-+
+     }
+-    comm_reset_counts();
+ }
+ 
+-static void init_routing_mode_tiles(void)
 +static inline __attribute__((always_inline)) void follow_noise(void)
 +{
 +    noiseResting = !(heldMask & 1 << NOISE_CHAN) && (noiseKey >> 8) == 1 && (uiFrame & 7);
@@ -4358,7 +4376,11 @@ index 66cd230..cf8bbfc 100644
 +}
 +
 +static inline __attribute__((always_inline)) void draw_noise(void)
-+{
+ {
+-    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
+-    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
+-    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
 +    if (!noiseResting || noiseDrawn == NOT_DRAWN) {
 +        noise_texture();
 +    }
@@ -4405,13 +4427,10 @@ index 66cd230..cf8bbfc 100644
 +    return midiChannel <= 15 ? midiChannel & 3 : 0;
  }
  
--static void init_routing_mode_tiles(void)
+-static void print_routing_mode(bool enabled)
 +static u16 ribbon_attr(u8 ch)
  {
--    set_tile(TILE_ROUTING_INDEX, PAL0, ROUTING_X, ROUTING_Y);
--    set_tile(TILE_ROUTING_INDEX + 1, PAL0, ROUTING_X + 1, ROUTING_Y);
--    set_tile(TILE_ROUTING_INDEX + 2, PAL0, ROUTING_X, ROUTING_Y + 1);
--    set_tile(TILE_ROUTING_INDEX + 3, PAL0, ROUTING_X + 1, ROUTING_Y + 1);
+-    VDP_loadTileSet(enabled ? &ts_dynamic : &ts_static, TILE_ROUTING_INDEX, DMA);
 +    if (ribbonBits[ch]) {
 +        const u8 hue = ribbon_hue(ch);
 +        if (hue) {
@@ -4423,13 +4442,17 @@ index 66cd230..cf8bbfc 100644
 +    return ribbonHeld & 1 << ch ? ATTR(ribbon_pal(ch), UI_T_HOLD) : ATTR(PAL0, UI_T_RIBBON);
  }
  
--static void print_routing_mode(bool enabled)
+-static void print_routing_mode_if_needed(void)
 +static bool ribbon_cell(u8 ch, u8 col, u16 attr)
  {
--    VDP_loadTileSet(enabled ? &ts_dynamic : &ts_static, TILE_ROUTING_INDEX, DMA);
+-    static bool lastDynamicModeStatus = false;
+-    bool enabled = midi_dynamic_mode();
+-    if (lastDynamicModeStatus != enabled) {
+-        print_routing_mode(enabled);
+-        lastDynamicModeStatus = enabled;
 +    if (ribbonShadow[ch][col] == attr) {
 +        return TRUE;
-+    }
+     }
 +    if (words >= WORD_CEILING && ceilingOn) {
 +        leftover = TRUE;
 +        return FALSE;
@@ -4439,17 +4462,11 @@ index 66cd230..cf8bbfc 100644
 +    ribbonShadow[ch][col] = attr;
 +    words++;
 +    return TRUE;
- }
- 
--static void print_routing_mode_if_needed(void)
++}
++
 +// The keys a ribbon row holds: a channel's, the DAC's voices, channel 3's operators in Ch3 Special.
 +static u16 ribbon_held(void)
- {
--    static bool lastDynamicModeStatus = false;
--    bool enabled = midi_dynamic_mode();
--    if (lastDynamicModeStatus != enabled) {
--        print_routing_mode(enabled);
--        lastDynamicModeStatus = enabled;
++{
 +    u16 held = heldMask;
 +    if (dacOn) {
 +        held = dacHeld ? held | 1 << DAC_CHAN : held & ~(1 << DAC_CHAN);
@@ -4459,7 +4476,7 @@ index 66cd230..cf8bbfc 100644
 +        if (ops[0].noteOn || ops[1].noteOn || ops[2].noteOn) {
 +            held |= 1 << CH3_CHAN;
 +        }
-     }
++    }
 +    return held;
 +}
 +
@@ -5535,7 +5552,9 @@ index 66cd230..cf8bbfc 100644
 +    follow_channels();
 +    // 24a3: the envelopes' counters and one operator's five numbers a frame.
 +    follow_voices(delta, voiceHits, heldMask | operatorsDown);
-+    levelHits |= voiceHits & ((1 << FM_CHANS) - 1);
++    // Stage 37: the samples' Note Ons on channel 6 are no FM level, as follow_voices takes no envelope
++    // for it while the DAC plays; else one was kept and lit FM6's bar after DAC Off (24a).
++    levelHits |= voiceHits & ((1 << FM_CHANS) - 1) & ~(dacOn ? 1 << DAC_CHAN : 0);
 +    follow_dots(delta);
 +    // A PSG note may bring another envelope: its 12 bars are looked at again.
 +    for (u16 bits = voiceHits, k = 0; k < 4 && bits >> (FM_CHANS + k); k++) {
