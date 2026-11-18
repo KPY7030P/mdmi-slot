@@ -394,6 +394,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   and `draw_all_dac` draws the last struck note's sample (`note_sample`) with its loop on grey and a line per
   voice from `patch_dac_voice_place` (D59's copy). Our ROM's `midi_dac_play` writes the voice's volume as
   velocity x (CC 7 + 1) >> 10 (`midi_dac_channel_volume`; `enable_dac` hands it channel 6's volume), not MDMI canon.
+- ALL's DAC live view (stage 39, art-director, ui-concept.md): bit 6 of the ALL mask (`DAC_LIVE_BIT`; bits
+  0-5 are FM rows' envelopes) swaps the DAC row's sample picture for channel 6's live output: the last
+  20 ms of the copied waves, no anchor, `OUT_FULL`, through the same `draw_trace` as the OUT boxes; under
+  1 px of peak only the frame and the middle line. A click on the picture toggles it; the project keeps it.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.

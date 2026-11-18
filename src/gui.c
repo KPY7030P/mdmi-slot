@@ -5694,32 +5694,25 @@ static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const
 // colour a pixel wider under the light one as a phosphor's glow; only its frame and middle line when
 // the channel holds no note. Channel 3 in Ch3 Special is pink through g->sp.
 #define OUT_FULL 0.25f
-static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y, const mdmi_waves *waves, unsigned rate)
+// A live trace in a box of the row (stage 24e, D60; stage 39 for the DAC): span samples of s from start
+// over the box's inner columns, min and max a column, at one scale (OUT_FULL), the dark colour a pixel
+// wider under the light one.
+#define TRACE_W_MAX 128
+static void draw_trace(mdmi_gui *g, int box_x, int box_w, int y, const float *s, int count, double start, int span, uint32_t light, uint32_t dark)
 {
-	const int x0 = ALL_OUT_X + 1, w = ALL_OUT_W - 2, mid = y + 19;
-	fill(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_BG);
-	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
-	fill(g, x0, mid, w, 1, C_CELL);
-	double start;
-	int span, key;
-	if (!out_span(g, values, channel, waves, rate, &start, &span, &key)) {
-		return;
-	}
-	const float *s = waves->samples[channel];
-	const bool fm = channel_is_fm(channel);
-	const uint32_t light = fm ? C_FM_LIGHT : C_PSG, dark = fm ? C_FM_DARK : C_PSG_DARK;
-	int tops[ALL_OUT_W], bottoms[ALL_OUT_W];
+	const int x0 = box_x + 1, w = box_w - 2 < TRACE_W_MAX ? box_w - 2 : TRACE_W_MAX, mid = y + 19;
+	int tops[TRACE_W_MAX], bottoms[TRACE_W_MAX];
 	for (int k = 0; k < w; k++) {
 		const double a = start + (double)k * span / w, b = start + (double)(k + 1) * span / w;
 		float lo, hi;
 		if (b - a < 1) {
 			const int i = (int)a;
 			const double f = a - i;
-			const float v = i + 1 < (int)waves->count ? (float)(s[i] + (s[i + 1] - s[i]) * f) : s[i];
+			const float v = i + 1 < count ? (float)(s[i] + (s[i + 1] - s[i]) * f) : s[i];
 			lo = hi = v;
 		} else {
 			lo = hi = s[(int)a];
-			for (int i = (int)a; i < (int)b && i < (int)waves->count; i++) {
+			for (int i = (int)a; i < (int)b && i < count; i++) {
 				lo = s[i] < lo ? s[i] : lo;
 				hi = s[i] > hi ? s[i] : hi;
 			}
@@ -5743,18 +5736,80 @@ static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y
 	}
 }
 
+static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y, const mdmi_waves *waves, unsigned rate)
+{
+	fill(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_BG);
+	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
+	fill(g, ALL_OUT_X + 1, y + 19, ALL_OUT_W - 2, 1, C_CELL);
+	double start;
+	int span, key;
+	if (!out_span(g, values, channel, waves, rate, &start, &span, &key)) {
+		return;
+	}
+	const bool fm = channel_is_fm(channel);
+	draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, waves->samples[channel], (int)waves->count, start, span, fm ? C_FM_LIGHT : C_PSG, fm ? C_FM_DARK : C_PSG_DARK);
+}
+
+// Stage 39 (art-director, ui-concept.md): the DAC row's live view, bit 6 of the ALL mask: the last
+// 20 ms of channel 6's output in the sample picture's place, no anchor (the DAC has no pitch), at
+// OUT_FULL as the other rows; silence is the frame and the middle line.
+#define DAC_LIVE_BIT 6
+#define DAC_LIVE_MS 20
+static bool dac_live(const mdmi_gui *g)
+{
+	return *g->source.all_envelopes >> DAC_LIVE_BIT & 1;
+}
+
+// Whether the DAC's live output reaches a pixel, over the window drawn; the window's start and span.
+static bool dac_live_span(const mdmi_waves *waves, unsigned rate, double *start, int *span)
+{
+	const int channel = PATCH_NUM_FM_CHANNELS - 1;
+	if (!waves || rate == 0 || waves->count < 64) {
+		return false;
+	}
+	*span = (int)(rate * DAC_LIVE_MS / 1000);
+	*span = *span < (int)waves->count ? *span : (int)waves->count;
+	*start = (double)((int)waves->count - *span);
+	float peak = 0;
+	for (int i = (int)*start; i < (int)waves->count; i++) {
+		const float v = fabsf(waves->samples[channel][i]);
+		peak = v > peak ? v : peak;
+	}
+	return peak >= OUT_FULL / 13;
+}
+
+static void draw_dac_live(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned rate)
+{
+	fill(g, ALL_SOUND_X, y + 4, ALL_SOUND_W, ALL_OUT_H, C_BG);
+	frame(g, ALL_SOUND_X, y + 4, ALL_SOUND_W, ALL_OUT_H, C_CELL);
+	fill(g, ALL_SOUND_X + 1, y + 19, ALL_SOUND_W - 2, 1, C_CELL);
+	double start;
+	int span;
+	if (dac_live_span(waves, rate, &start, &span)) {
+		draw_trace(g, ALL_SOUND_X, ALL_SOUND_W, y, waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)waves->count, start, span, C_DAC, C_DAC_DARK);
+	}
+}
+
 // The DAC's row on ALL (stage 24e): the last sample struck, from its start's tab to its end's, its loop
 // on a grey ground, and a line for each sounding voice (D59): green on this sample, grey on another.
-static void draw_all_dac(mdmi_gui *g, int y, unsigned rate)
+static void draw_all_dac(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned rate)
 {
 	const int x0 = ALL_SOUND_X, w = ALL_SOUND_W, mid = y + 19;
-	fill(g, x0, y + 36, w, 1, C_LINE);
 	const uint32_t note = __atomic_load_n(&g->source.notes[PATCH_NUM_FM_CHANNELS - 1], __ATOMIC_ACQUIRE);
 	rom_sample sample = {0};
 	const char *name = NULL;
 	bool file = false;
 	const int key = GUI_NOTE_SEEN(note) ? (int)GUI_NOTE_KEY(note) : -1;
 	const bool shown = key >= 0 && note_sample(g, key, &sample, &name, &file) && sample.length > 0;
+	if (dac_live(g)) {
+		// Stage 39: the live output instead of the sample; the sample's name stays.
+		draw_dac_live(g, y, waves, rate);
+		if (shown) {
+			text_right(g, PAGE_RIGHT - 2, y + 8, name ? name : "", C_DAC, 2, 170);
+		}
+		return;
+	}
+	fill(g, x0, y + 36, w, 1, C_LINE);
 	if (shown && sample.flags & (ROM_SAMPLE_LOOP | ROM_SAMPLE_MARKS)) {
 		const uint32_t blocks = sample.length / ROM_SAMPLE_BLOCK;
 		const uint32_t ls = sample.flags & ROM_SAMPLE_MARKS ? sample.loop_start : 0, le = sample.flags & ROM_SAMPLE_MARKS ? sample.loop_end : blocks;
@@ -5810,6 +5865,19 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 	}
 	if (is_dac(values, channel) && in_box(g->mouse_x, g->mouse_y, ALL_VOL_X, row_y(channel) + 4, GRID_W, CELL_H)) {
 		snprintf(hint, size, "DAC VOL: SCALES NEW NOTES, NOT MDMI CANON");
+		return true;
+	}
+	if (is_dac(values, channel) && in_box(g->mouse_x, g->mouse_y, ALL_SOUND_X, row_y(channel), ALL_SOUND_W, ROW_H)) {
+		// Stage 39 (art-director): what the picture shows and what a click does.
+		const uint32_t note = __atomic_load_n(&g->source.notes[PATCH_NUM_FM_CHANNELS - 1], __ATOMIC_ACQUIRE);
+		double start;
+		int span;
+		if (dac_live(g)) {
+			snprintf(hint, size, dac_live_span(mdmi_engine_latest_waves(g->source.engine), mdmi_engine_get_stats(g->source.engine).sample_rate, &start, &span)
+				? "CH6 DAC OUT: LAST 20 MS. CLICK: SAMPLE" : "CH6 DAC OUT: SILENT. CLICK: SAMPLE");
+		} else {
+			snprintf(hint, size, GUI_NOTE_SEEN(note) ? "CH6 DAC: LAST SAMPLE. CLICK: LIVE OUT" : "CH6 DAC: NO SAMPLE YET. CLICK: LIVE OUT");
+		}
 		return true;
 	}
 	if (is_dac(values, channel) || !in_box(g->mouse_x, g->mouse_y, ALL_OUT_X, row_y(channel) + 4, ALL_OUT_W, ALL_OUT_H)) {
@@ -5872,7 +5940,7 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 		g->sp = channel == 2 && is_special(values, 2);
 		fill(g, RAIL_W + 1, y + ROW_H - 1, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
 		if (is_dac(values, channel)) {
-			draw_all_dac(g, y, rate);
+			draw_all_dac(g, y, waves, rate);
 			continue;
 		}
 		draw_out(g, values, channel, y, waves, rate);
@@ -6810,7 +6878,10 @@ static void on_down(mdmi_gui *g, int x, int y)
 			*g->source.channel = row;
 			// The sound of a PSG row opens its page; of an FM row it switches that row between diagram
 			// and envelopes (stage 11).
-			if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && takes_fm(patch_view(g->source.patch), row)) {
+			if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && is_dac(patch_view(g->source.patch), row)) {
+				// Stage 39: the DAC's picture switches between the sample and the live output.
+				*g->source.all_envelopes ^= (uint8_t)(1 << DAC_LIVE_BIT);
+			} else if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W && takes_fm(patch_view(g->source.patch), row)) {
 				*g->source.all_envelopes ^= (uint8_t)(1 << row);
 			} else if (x >= ALL_SOUND_X && x < ALL_SOUND_X + ALL_SOUND_W) {
 				*g->source.page = PAGE_EDITOR;

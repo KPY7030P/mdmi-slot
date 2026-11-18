@@ -1307,6 +1307,16 @@ static void test_drawing(void)
 	CHECK(state && state_read(patch, state, size, &view, &knobs) && patch_take_incoming(patch) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)),
 		"after a project is opened the drawing is there");
 	free(state);
+	// Stage 39: the ALL mask goes with the view whole, the DAC's live view (bit 6) with the FM rows' (0-5).
+	for (int k = 0; k < 3; k++) {
+		static const uint8_t MASKS[3] = {0x40, 0x7F, 0x05};
+		state_view all = files_view;
+		all.envelopes = MASKS[k];
+		state = state_build(patch, &all, &size);
+		state_view back = {0};
+		CHECK(state && state_read(patch, state, size, &back, &knobs) && back.envelopes == MASKS[k], "the ALL mask 0x%02X comes back as 0x%02X", MASKS[k], back.envelopes);
+		free(state);
+	}
 	// Stage 36 (D81): the ROM page's TV look goes with the view, the block's fourth byte; a value
 	// no build writes reads as OFF.
 	for (int look = 0; look < 4; look++) {

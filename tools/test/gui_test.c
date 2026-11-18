@@ -2277,6 +2277,48 @@ int main(int argc, char **argv)
 		send_midi(0x85, 38, 0);
 		send_midi(0xB5, 10, 64);
 		run_ms(100);
+		// Stage 39 (art-director): a click on the DAC's picture shows channel 6's live output, 20 ms at
+		// OUT_FULL; silence is the frame and the middle line; about half the voice's volume (velocity 64
+		// against 127: volume 8 against 15, D61) draws about half as high; a second click brings the sample back.
+		{
+			const int mid = 244 + 19;
+			click(window, 290, 244 + 20);
+			run_ms(300);
+			capture(window);
+			const int silent = count_color_in(243, 345, 244 + 5, 244 + 34, COLOR_DAC);
+			int peaks[2] = {0, 0}, changed = 0;
+			static uint32_t last[WIDTH * HEIGHT];
+			for (int k = 0; k < 2; k++) {
+				send_midi(0x95, 38, k ? 64 : 127);
+				for (int t = 0; t < 60; t++) {
+					run_ms(5);
+					capture(window);
+					for (int y = 244 + 5; y <= 244 + 33; y++) {
+						if (count_color_in(243, 345, y, y + 1, COLOR_DAC) > 0) {
+							peaks[k] = abs(y - mid) > peaks[k] ? abs(y - mid) : peaks[k];
+						}
+					}
+					if (k == 0 && t > 0 && memcmp(last + (244 + 5) * WIDTH, pixels + (244 + 5) * WIDTH, 29 * WIDTH * sizeof(uint32_t))) {
+						changed++;
+					}
+					memcpy(last, pixels, sizeof(pixels));
+				}
+				send_midi(0x85, 38, 0);
+				run_ms(300);
+			}
+			save_bmp(argv[2], "all-dac-live");
+			// Only the sample view draws the rule at y + 36 (the live view is a box over the row).
+			const int rule_live = count_color_in(242, 346, 244 + 36, 244 + 37, COLOR_LINE);
+			click(window, 290, 244 + 20);
+			send_midi(0x95, 38, 100);
+			run_ms(60);
+			capture(window);
+			const int back = count_color_in(242, 346, 244 + 36, 244 + 37, COLOR_LINE);
+			send_midi(0x85, 38, 0);
+			run_ms(100);
+			CHECK(silent == 0 && changed > 3 && peaks[0] >= 6 && abs(peaks[1] * 15 - peaks[0] * 8) <= 15 && rule_live == 0 && back > 50,
+				"ALL's DAC live view: silent %d px, changes in %d frames, peaks %d and %d px for volume 15 and 8, no sample rule (%d px), the sample view back with its rule (%d px)", silent, changed, peaks[0], peaks[1], rule_live, back);
+		}
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		capture(window);
