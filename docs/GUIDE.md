@@ -531,6 +531,10 @@ sanitizer needs address randomization off. `fetch_deps.sh` clones `third_party/`
 `BUILD.txt` there. It fails if Ableton Live has the VST3 locked. Live does not show plugin versions, so `BUILD.txt`
 is how to tell what is installed.
 
+`python tools/make_live_check.py` writes the Live set for the owner's check, `build/live-check/MDMI check
+Project/`, from the owner's `ALS_tsts` set and `presets/vowels`: clips and automation on the arrangement, one
+part per checked item, and a Russian guide next to it. Stages add their parts to the script.
+
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
 is `git describe`, ending in `-dirty` for uncommitted code.
