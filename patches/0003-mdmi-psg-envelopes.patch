@@ -209,7 +209,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..d55e149 100644
+index 5145b6a..dc5f426 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -37,6 +37,8 @@ typedef struct MidiChannel {
@@ -615,7 +615,7 @@ index 5145b6a..d55e149 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1204,103 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1204,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -693,18 +693,22 @@ index 5145b6a..d55e149 100644
 +    // MDMI plugin fork, stage 35 (D80): the driver's load reset the YM2612 (DAC Off loads the null
 +    // driver each time). The ROM puts its shadow back and keys the FM voices that still hold a note,
 +    // so they sound on without a new one (D39 left them mute). Channel 6 is no FM voice under the
-+    // DAC, and after it its note was a sample's; channel 3's keys go off just below.
++    // DAC, and after it its note was a sample's. Channel 3 is keyed too unless in Ch3 Special: there
++    // its operator pitches are not in the shadow, so its keys go off just below.
++    const bool special = synth_global_parameters()->specialMode;
 +    if (switches || !enable) {
 +        synth_restore_chip();
 +        devChan->noteOn = false;
 +        for (u8 i = 0; i < DEV_CHAN_MAX_FM; i++) {
 +            DeviceChannel* fm = &deviceChannels[i];
-+            if (fm->noteOn && fm->ops == &FM_VTable && fm->num != CH3_SPECIAL_MODE) {
++            if (fm->noteOn && fm->ops == &FM_VTable && !(special && fm->num == CH3_SPECIAL_MODE)) {
 +                synth_note_on(fm->num);
 +            }
 +        }
 +    }
-+    ch3_keys_reset();
++    if (special) {
++        ch3_keys_reset();
++    }
 +    // Only a real switch starts the driver afresh; a repeated DAC On keeps the voices it knows.
 +    if (switches) {
 +        midi_dac_reset();
@@ -720,7 +724,7 @@ index 5145b6a..d55e149 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1519,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1523,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -729,7 +733,7 @@ index 5145b6a..d55e149 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1546,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1550,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -761,7 +765,7 @@ index 5145b6a..d55e149 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1265,6 +1584,9 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1265,6 +1588,9 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_PORTAMENTO_ENABLE:
          set_portamento_mode(chan, RANGE(value, 2));
          break;
@@ -771,7 +775,7 @@ index 5145b6a..d55e149 100644
      case CC_FINE_TUNE:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1633,12 @@ void midi_reset(void)
+@@ -1311,11 +1637,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -786,7 +790,7 @@ index 5145b6a..d55e149 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1662,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1666,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
@@ -7954,7 +7958,7 @@ index 8dd9ef6..b196d60 100644
          e2e_test(test_plays_pcm_sample),
          e2e_test(test_midi_last_note_played_priority_respected_on_fm),
 diff --git a/tests/system/test_e2e.c b/tests/system/test_e2e.c
-index d9cce30..6f70132 100644
+index d9cce30..714c042 100644
 --- a/tests/system/test_e2e.c
 +++ b/tests/system/test_e2e.c
 @@ -1,4 +1,5 @@
@@ -8294,7 +8298,7 @@ index d9cce30..6f70132 100644
      expect_value(__wrap_Z80_loadDriver, waitReady, true);
      expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
      will_return(__wrap_Z80_getAndRequestBus, false);
-@@ -264,15 +505,57 @@ void test_plays_pcm_sample(void** state)
+@@ -264,15 +505,49 @@ void test_plays_pcm_sample(void** state)
      expect_value(__wrap_YM2612_write, port, 0);
      expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
      expect_function_call(__wrap_Z80_releaseBus);
@@ -8321,15 +8325,7 @@ index d9cce30..6f70132 100644
 +    expect_value(__wrap_YM2612_write, port, 0);
 +    expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
 +    expect_function_call(__wrap_Z80_releaseBus);
-+    // The keys of channel 3 go off with the switch (stage 21).
-+    expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
-+    will_return(__wrap_Z80_getAndRequestBus, false);
-+    expect_value(__wrap_YM2612_writeReg, part, 0);
-+    expect_value(__wrap_YM2612_writeReg, reg, YM_KEY_ON_OFF);
-+    expect_value(__wrap_YM2612_writeReg, data, 0x02);
-+    expect_value(__wrap_YM2612_write, port, 0);
-+    expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
-+    expect_function_call(__wrap_Z80_releaseBus);
++    // Channel 3's keys stay: outside Ch3 Special it is keyed again like the others (0.35.1).
 +    // Channel 6's pan goes to the DAC as it takes the channel over (stage 18).
 +    expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
 +    will_return(__wrap_Z80_getAndRequestBus, false);
@@ -9891,7 +9887,7 @@ index 0000000..779ee17
 +void test_midi_ch3_csm_portamento_moves_timer_a(UNUSED void** state);
 +void test_midi_ch3_one_note_portamento(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..5c9ff9e 100644
+index 9650279..550e6dc 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,8 +1,12 @@
@@ -9908,11 +9904,10 @@ index 9650279..5c9ff9e 100644
  
  static const u8 noteKey = 39;
  static const u8 nullNoteKey = 1;
-@@ -13,7 +17,11 @@ int test_midi_dac_setup(UNUSED void** state)
+@@ -13,7 +17,10 @@ int test_midi_dac_setup(UNUSED void** state)
      test_midi_setup(state);
  
      expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
      __real_midi_cc(0, 78, 0x7F);
@@ -9920,21 +9915,19 @@ index 9650279..5c9ff9e 100644
  
      return 0;
  }
-@@ -21,6 +29,9 @@ int test_midi_dac_setup(UNUSED void** state)
+@@ -21,6 +28,8 @@ int test_midi_dac_setup(UNUSED void** state)
  void test_midi_enables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
  
      __real_midi_cc(0, 78, 0x7F);
  }
-@@ -28,37 +39,409 @@ void test_midi_enables_dac(UNUSED void** state)
+@@ -28,37 +37,405 @@ void test_midi_enables_dac(UNUSED void** state)
  void test_midi_disables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, false);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
  
@@ -9960,7 +9953,6 @@ index 9650279..5c9ff9e 100644
 +    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    expect_psg_tone(psgChan, TONE_NTSC_C4);
@@ -9971,7 +9963,6 @@ index 9650279..5c9ff9e 100644
 +    __real_midi_note_off(chan, MIDI_PITCH_C4);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, false);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0);
@@ -9982,7 +9973,7 @@ index 9650279..5c9ff9e 100644
 +}
 +
 +// Stage 35 (D80): the driver's load resets the YM2612; the ROM keys again the FM voices that still
-+// hold a note, on and off, but not channel 6: under the DAC it is no FM voice, after it its note was
++// hold a note, on and off, channel 3 too outside Ch3 Special, but not channel 6: under the DAC it is no FM voice, after it its note was
 +// the DAC's. A DAC On repeated loads nothing and keys nothing.
 +void test_midi_dac_switch_keys_held_fm_notes_again(UNUSED void** state)
 +{
@@ -9990,6 +9981,10 @@ index 9650279..5c9ff9e 100644
 +    expect_synth_volume_any();
 +    expect_synth_note_on(0);
 +    __real_midi_note_on(0, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_synth_pitch(2, 4, SYNTH_NTSC_C);
++    expect_synth_volume_any();
++    expect_synth_note_on(2);
++    __real_midi_note_on(2, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
 +    expect_synth_pitch(5, 4, SYNTH_NTSC_C);
 +    expect_synth_volume_any();
 +    expect_synth_note_on(5);
@@ -9997,20 +9992,19 @@ index 9650279..5c9ff9e 100644
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
 +    expect_synth_note_on(0);
-+    expect_synth_special_mode_keys_off();
++    expect_synth_note_on(2);
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0x7F);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0x7F);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, false);
 +    expect_synth_note_on(0);
-+    expect_synth_special_mode_keys_off();
++    expect_synth_note_on(2);
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0);
@@ -10026,7 +10020,6 @@ index 9650279..5c9ff9e 100644
 +    __real_midi_note_on(GENERAL_MIDI_PERCUSSION_CHANNEL, 36, MAX_MIDI_VOLUME);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
 +    expect_psg_tone(PSG_CH3, 106);
@@ -10041,7 +10034,6 @@ index 9650279..5c9ff9e 100644
 +    __real_midi_cc(dacFmChannel, CC_PAN, 0);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(dacFmChannel, STEREO_MODE_LEFT);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0x7F);
@@ -10054,7 +10046,6 @@ index 9650279..5c9ff9e 100644
 +    __real_midi_cc(dacFmChannel, CC_PAN, 127);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, false);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(dacFmChannel, STEREO_MODE_RIGHT);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0);
@@ -10326,7 +10317,6 @@ index 9650279..5c9ff9e 100644
 +    __real_midi_note_on(dacFmChannel, noteKey, 100);
 +    driver_takes();
 +    expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0x7F);
@@ -10390,10 +10380,10 @@ index 5e63f7b..99fcdeb 100644
 +void test_midi_dac_voice_view_reads_a_start(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac_marks.c b/tests/unit/test_midi_dac_marks.c
 new file mode 100644
-index 0000000..b97b712
+index 0000000..ac8d524
 --- /dev/null
 +++ b/tests/unit/test_midi_dac_marks.c
-@@ -0,0 +1,345 @@
+@@ -0,0 +1,343 @@
 +#include "test_midi_dac_marks.h"
 +#include "test_midi.h"
 +#include "mocks/mock_midi.h"
@@ -10650,7 +10640,6 @@ index 0000000..b97b712
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), (u16)((u32)(long)otherData >> 8));
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 0);
 +    expect_value(__wrap_synth_enable_dac, enable, false);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0);
@@ -10691,7 +10680,6 @@ index 0000000..b97b712
 +    use_marked(&marked);
 +    __real_midi_note_on(dacChannel, key, 100);
 +    expect_value(__wrap_synth_enable_dac, enable, false);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_CLOCK2);
 +    __real_midi_cc(0, 78, 0);
@@ -11265,7 +11253,7 @@ index 892e0c2..d6704b4 100644
 +void test_midi_note_stack_keeps_a_held_note_after_another_raised(UNUSED void** state);
 +void test_midi_portamento_keeps_a_held_note_after_another_raised(UNUSED void** state);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..b68df7a 100644
+index affbb29..7c5498d 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
 @@ -2,6 +2,13 @@
@@ -11449,7 +11437,7 @@ index affbb29..b68df7a 100644
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state)
  {
      const u8 chan = MIN_PSG_CHAN;
-@@ -428,4 +519,254 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +519,253 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -11651,7 +11639,6 @@ index affbb29..b68df7a 100644
 +    __real_midi_note_off(NOISE_MIDI_CHAN, 52);
 +
 +    expect_value(__wrap_synth_enable_dac, enable, true);
-+    expect_synth_special_mode_keys_off();
 +    expect_synth_stereo(5, STEREO_MODE_CENTRE);
 +    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
 +    __real_midi_cc(0, 78, 0x7F);

@@ -527,8 +527,8 @@ static void reset_energy(void);
 
 static void test_dac_held(void)
 {
-	static const int HELD[] = {0, 1, 3, 4};
-	for (int i = 0; i < 4; i++) {
+	static const int HELD[] = {0, 1, 2, 3, 4};
+	for (int i = 0; i < 5; i++) {
 		midi((uint8_t)(0x90 | HELD[i]), (uint8_t)(60 + 4 * i), 127);
 	}
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS - 1; i++) {
@@ -546,12 +546,12 @@ static void test_dac_held(void)
 		const int sent = switch_messages;
 		render(DAC_BLOCKS);
 		int wrong = 0, silent = 0;
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < 5; i++) {
 			wrong += compare(HELD[i], HELD[i], dac ? "DAC on, held" : "DAC off, held") != 0;
 		}
 		reset_energy();
 		render(SETTLE_BLOCKS);
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < 5; i++) {
 			silent += out_energy[HELD[i]] < before[HELD[i]] / 100;
 		}
 		for (int i = 0; i < PATCH_NUM_PSG_CHANNELS - 1; i++) {
@@ -560,14 +560,14 @@ static void test_dac_held(void)
 				silent++;
 			}
 		}
-		printf("    DAC %s: %d messages from the plugin; held FM outputs 1, 2, 4, 5 at %.3g %.3g %.3g %.3g of before\n", dac ? "on" : "off", sent,
-			out_energy[0] / before[0], out_energy[1] / before[1], out_energy[3] / before[3], out_energy[4] / before[4]);
+		printf("    DAC %s: %d messages from the plugin; held FM outputs 1-5 at %.3g %.3g %.3g %.3g %.3g of before\n", dac ? "on" : "off", sent,
+			out_energy[0] / before[0], out_energy[1] / before[1], out_energy[2] / before[2], out_energy[3] / before[3], out_energy[4] / before[4]);
 		check(sent == 1, dac ? "DAC on: the plugin sends the switch alone, no voice, LFO or Ch3 mode" : "DAC off: the plugin sends the switch alone");
-		check(wrong == 0 && silent == 0, dac ? "DAC on: the held FM notes on 1, 2, 4, 5 sound on with their registers, and the PSG's, with no new note"
+		check(wrong == 0 && silent == 0, dac ? "DAC on: the held FM notes on 1-5 sound on with their registers, and the PSG's, with no new note"
 											 : "DAC off: the held FM notes and the PSG's sound on with no new note");
 	}
 	check_globals("after the switches the LFO and Ch3 mode are the ROM's own");
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < 5; i++) {
 		midi((uint8_t)(0x80 | HELD[i]), (uint8_t)(60 + 4 * i), 0);
 	}
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS - 1; i++) {
