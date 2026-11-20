@@ -2276,7 +2276,8 @@ static bool stage21_cc(const uint8_t *bytes, size_t length)
 static void emit_ch3(void *context, const uint8_t *bytes, size_t length)
 {
 	// Stage 38 (D83): MONO's CC 105 on MIDI 1-6 came after 0.20, apart from stage 21's: it goes on, uncounted.
-	if (length == 3 && (bytes[0] & 0xF0) == 0xB0 && bytes[1] == 105 && (bytes[0] & 0x0F) < 6) {
+	// Stage 44 (D88): so is the PSG envelope's speed, CC 9 on MIDI 7-10.
+	if (length == 3 && (bytes[0] & 0xF0) == 0xB0 && ((bytes[1] == 105 && (bytes[0] & 0x0F) < 6) || (bytes[1] == 9 && (bytes[0] & 0x0F) >= 6 && (bytes[0] & 0x0F) < 10))) {
 		emit(context, bytes, length);
 		return;
 	}
@@ -3381,6 +3382,45 @@ static void steady(patch_envelope *envelope, uint8_t level, int steps)
 	eef[steps] = PATCH_EEF_END;
 	patch_envelope_from_eef(envelope, eef, (size_t)steps + 1);
 	snprintf(envelope->name, sizeof(envelope->name), "Steady %d", level);
+}
+
+// Stage 44 (D88): CC 9 through the shipped ROM in the emulator. A ramp of 14 steps, level 0 to 14, then
+// 14 held: the time to reach 14 is 14 steps at the speed, within two frames, at x1/16, x1/2, x1, x2, x4.
+static void test_env_speed(void)
+{
+	printf("PSG envelope speed\n");
+	uint8_t eef[17];
+	for (int i = 0; i < 14; i++) {
+		eef[i] = (uint8_t)i;
+	}
+	eef[14] = PATCH_EEF_LOOP_START;
+	eef[15] = 14;
+	eef[16] = PATCH_EEF_END;
+	patch_envelope envelope;
+	patch_envelope_from_eef(&envelope, eef, sizeof(eef));
+	snprintf(envelope.name, sizeof(envelope.name), "Ramp 14");
+	patch_load_envelope(patch, PATCH_NUM_FM_CHANNELS + 1, &envelope, NULL);
+	patch_take_incoming(patch);
+	sync_and_settle();
+	static const int VALUES[5] = {0, 48, 64, 95, 127};
+	bool all = true;
+	for (int k = 0; k < 5; k++) {
+		set_global(GLOBAL_ENV_SPEED(1), VALUES[k]);
+		sync_and_settle();
+		midi(0x97, 69, 127);
+		int samples = 0;
+		for (; samples < 6 * RATE && mdmi_engine_test_psg_volume(engine, 1) != 14; samples += KEY_BLOCK) {
+			mdmi_engine_render(engine, left, right, KEY_BLOCK);
+		}
+		const double ms = samples * 1000.0 / RATE, want = 14 * 1000.0 / (59.92 * patch_env_speed(VALUES[k]));
+		printf("    CC 9 = %d (x%.2f): 14 steps in %.1f ms, %.1f expected\n", VALUES[k], patch_env_speed(VALUES[k]), ms, want);
+		all = all && fabs(ms - want) <= 2 * 1000.0 / 59.92;
+		midi(0x87, 69, 0);
+		render(SETTLE_BLOCKS);
+	}
+	set_global(GLOBAL_ENV_SPEED(1), 64);
+	sync_and_settle();
+	check(all, "PSG envelope speed: 14 steps take 14 steps' time at x1/16, x1/2, x1, x2 and x4, within two frames");
 }
 
 static double time_to_volume(int psg, uint8_t level)
@@ -6256,6 +6296,22 @@ static void test_screen_cells(void)
 	printf("      PSG wave: flat %d, louder taller %d, bent %d, flat again %d, glide A2-C6 in %d steps\n", flat, taller, bent, back, steps);
 	check(flat && taller && bent && back, "screen: the PSG wave is flat when silent, changes with loudness and bend");
 	check(steps >= 8, "screen: a PSG glide from A2 to C6 steps the wave through 8 classes or more");
+	// Stage 46: A5, C6 and D#6 draw three different waves (periods 4, 3 and 2 points).
+	{
+		static const int KEYS[3] = {81, 84, 87};
+		uint16_t top[3][4];
+		for (int k = 0; k < 3; k++) {
+			midi(0x96, KEYS[k], 100);
+			render(10);
+			read_cells(SCREEN_X_LEVEL, psgRow, 4, top[k]);
+			midi(0x86, KEYS[k], 0);
+			render(300);
+		}
+		const bool apart = memcmp(top[0], top[1], sizeof(top[0])) && memcmp(top[1], top[2], sizeof(top[0]))
+			&& memcmp(top[0], top[2], sizeof(top[0]));
+		printf("      PSG wave at A5, C6, D#6: %s\n", apart ? "three different" : "not all different");
+		check(apart, "screen: the PSG wave differs at A5, C6 and D#6");
+	}
 
 	// Vibrato by bend on the three tone channels at once: every frame a new class on each, which
 	// costs at most 12 words (4 cells a channel) and keeps under the ceiling.
@@ -7506,6 +7562,9 @@ int main(int argc, char **argv)
 	test_reset();
 	test_vowels();
 	owner_wait_after("vowels");
+	test_reset();
+	// Stage 44 last, for the same reason.
+	test_env_speed();
 	test_reset();
 	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
 	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;

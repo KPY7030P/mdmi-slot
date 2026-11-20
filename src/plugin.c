@@ -8,6 +8,8 @@
 #include "engine.h"
 #include "gui.h"
 #include "patch.h"
+// Stage 44 (D88): CC 9, the PSG envelope's speed.
+#include "../third_party/mdmi/src/env_speed.h"
 #include "state.h"
 
 #define PLUGIN_ID "dev.mdmi-slot.instrument"
@@ -145,12 +147,25 @@ static void time_psg_notes(mdmi_plugin *self, uint64_t when, const uint8_t *byte
 	if (length < 3 || psg < 0 || psg >= PATCH_NUM_PSG_CHANNELS) {
 		return;
 	}
+	// Stage 44 (D88): the envelope's way so far at the speed in force, from the last change of it.
+	const uint64_t since = times->env_since[psg];
+	const uint64_t at = times->env_at[psg] + (when > since ? when - since : 0) * times->env_rate[psg];
+	if (status == 0xB0 && bytes[1] == ENV_SPEED_CC) {
+		__atomic_store_n(&times->env_at[psg], at, __ATOMIC_RELEASE);
+		__atomic_store_n(&times->env_since[psg], when, __ATOMIC_RELEASE);
+		__atomic_store_n(&times->env_rate[psg], (uint32_t)(patch_env_speed(bytes[2]) * 256 + 0.5), __ATOMIC_RELEASE);
+		return;
+	}
 	if (status == 0x90 && bytes[2] > 0) {
 		times->key[psg] = bytes[1];
 		__atomic_store_n(&times->off[psg], GUI_NEVER, __ATOMIC_RELEASE);
+		__atomic_store_n(&times->env_off[psg], GUI_NEVER, __ATOMIC_RELEASE);
+		__atomic_store_n(&times->env_at[psg], 0, __ATOMIC_RELEASE);
+		__atomic_store_n(&times->env_since[psg], when, __ATOMIC_RELEASE);
 		__atomic_store_n(&times->on[psg], when, __ATOMIC_RELEASE);
 	} else if ((((status == 0x80 || status == 0x90) && bytes[1] == times->key[psg]) || (status == 0xB0 && bytes[1] == 123))
 		&& __atomic_load_n(&times->off[psg], __ATOMIC_ACQUIRE) == GUI_NEVER) {
+		__atomic_store_n(&times->env_off[psg], at, __ATOMIC_RELEASE);
 		__atomic_store_n(&times->off[psg], when, __ATOMIC_RELEASE);
 	}
 }
@@ -1128,6 +1143,8 @@ static const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *f
 	self->host = host;
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		self->psg_times.on[i] = self->psg_times.off[i] = GUI_NEVER;
+		self->psg_times.env_off[i] = GUI_NEVER;
+		self->psg_times.env_rate[i] = 256;
 	}
 	for (int i = 0; i < PATCH_NUM_FM_CHANNELS; i++) {
 		self->psg_times.fm_on[i] = self->psg_times.fm_off[i] = GUI_NEVER;

@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "patch.h"
+// Stage 44 (D88): the ROM's own table of envelope speeds, so the two cannot differ.
+#include "../third_party/mdmi/src/env_speed.h"
 #include "presets_gm.h"
 #include "rom_image.h"
 
@@ -203,6 +205,11 @@ void patch_global_init(void)
 		static char names[PATCH_NUM_FM_CHANNELS][12];
 		snprintf(names[channel], sizeof(names[channel]), "Mono CH%d", channel + 1);
 		define(&globals[GLOBAL_MONO(channel)], names[channel], 1, 0, true);
+	}
+	for (int psg = 0; psg < PATCH_NUM_PSG_CHANNELS; psg++) {
+		static char names[PATCH_NUM_PSG_CHANNELS][20];
+		snprintf(names[psg], sizeof(names[psg]), "Ch%d Env Speed", PATCH_NUM_FM_CHANNELS + psg + 1);
+		define(&globals[GLOBAL_ENV_SPEED(psg)], names[psg], 127, ENV_SPEED_DEFAULT, false);
 	}
 	for (int op = 0; op < PATCH_OPS; op++) {
 		char name[24];
@@ -908,6 +915,11 @@ double patch_master_gain(int value)
 	return value <= 0 ? 0.0 : pow(10.0, (value - PATCH_MASTER_UNITY) / 200.0);
 }
 
+double patch_env_speed(int value)
+{
+	return ENV_SPEED_RATE[value & 0x7F] / (double)ENV_SPEED_ONE;
+}
+
 static void format_global(int global, int value, char *text, size_t size)
 {
 	if (global >= GLOBAL_CH3_OP_BASE && global < GLOBAL_CH3_OP_END) {
@@ -919,6 +931,10 @@ static void format_global(int global, int value, char *text, size_t size)
 		} else {
 			snprintf(text, size, "%s", value ? "On" : "Off");
 		}
+		return;
+	}
+	if (global >= GLOBAL_ENV_SPEED_BASE && global < GLOBAL_ENV_SPEED_BASE + PATCH_NUM_PSG_CHANNELS) {
+		snprintf(text, size, "x%.2f", patch_env_speed(value));
 		return;
 	}
 	switch (global) {
@@ -2290,6 +2306,14 @@ static void sync_receiver(mdmi_patch *patch, patch_receiver *receiver, patch_emi
 		emit_cc(emit, context, GLOBAL_CC_CHANNEL, CC_LFO_RESET, (model_globals[GLOBAL_LFO_RESET] * 128 + LFO_RESET_CC_RANGE - 1) / LFO_RESET_CC_RANGE);
 		rom_globals[GLOBAL_LFO_RESET] = model_globals[GLOBAL_LFO_RESET];
 	}
+	// Stage 44 (D88): the PSG envelope's speed on its channel; a reset brings the ROM back to x1.
+	for (int psg = 0; psg < PATCH_NUM_PSG_CHANNELS; psg++) {
+		const int g = GLOBAL_ENV_SPEED(psg);
+		if (model_globals[g] != rom_globals[g]) {
+			emit_cc(emit, context, PATCH_NUM_FM_CHANNELS + psg, ENV_SPEED_CC, model_globals[g]);
+			rom_globals[g] = model_globals[g];
+		}
+	}
 	// Stage 38 (D83): MONO on its channel; the ROM forgets it at a reset as it does Porta.
 	for (int channel = 0; channel < PATCH_NUM_FM_CHANNELS; channel++) {
 		const int g = GLOBAL_MONO(channel);
@@ -2523,6 +2547,12 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 		} else if (cc == CC_LFO_RESET) {
 			patch->model.globals[GLOBAL_LFO_RESET] = (int16_t)(value * LFO_RESET_CC_RANGE / 128);
 			changed = true;
+		} else if (cc == ENV_SPEED_CC) {
+			// Stage 44: on a PSG channel it moves that channel's envelope speed; elsewhere nothing.
+			if (channel >= PATCH_NUM_FM_CHANNELS && channel < PATCH_NUM_CHANNELS) {
+				patch->model.globals[GLOBAL_ENV_SPEED(channel - PATCH_NUM_FM_CHANNELS)] = (int16_t)value;
+				changed = true;
+			}
 		} else if (cc == CC_MONO) {
 			// Stage 38: on an FM channel it moves that channel's MONO; elsewhere it means nothing.
 			if (channel < PATCH_NUM_FM_CHANNELS) {

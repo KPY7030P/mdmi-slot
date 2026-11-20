@@ -40,7 +40,8 @@ NAMES = ["C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"]
 LOWEST_NAMED = 0  # every note since stage 30 (rom-screen.md 12); octave -1 shows '-' for its digit
 
 # The PSG wave (rom-screen.md 8, mockup final_psgwave): one period per 3 semitones from A2, the PSG's lowest note, up.
-WAVE_PERIODS = [32, 27, 23, 19, 16, 13, 11, 10, 8, 7, 6, 5, 4]
+# Stage 46: periods 3 and 2 at C6 and D#6, so a change of note shows up to about E6.
+WAVE_PERIODS = [32, 27, 23, 19, 16, 13, 11, 10, 8, 7, 6, 5, 4, 3, 2]
 WAVE_WIDTH = 32
 PSG_CLOCK = 3579545
 

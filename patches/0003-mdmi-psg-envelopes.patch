@@ -209,10 +209,15 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..dc5f426 100644
+index 5145b6a..849095b 100644
 --- a/src/midi.c
 +++ b/src/midi.c
-@@ -37,6 +37,8 @@ typedef struct MidiChannel {
+@@ -1,3 +1,4 @@
++#include "env_speed.h"
+ #include "midi.h"
+ #include "comm/comm.h"
+ #include "log.h"
+@@ -37,9 +38,13 @@ typedef struct MidiChannel {
      NotePriorityStack notePriority;
      DeviceSelect deviceSelect;
      bool portamento;
@@ -221,7 +226,12 @@ index 5145b6a..dc5f426 100644
      u16 portamentoInterval;
      s8 fineTune;
      u16 rpn;
-@@ -71,7 +73,14 @@ static const u16 portaTimeToInterval[128]
++    // MDMI plugin fork, stage 44 (D88): CC 9, the PSG envelope's speed (env_speed.h).
++    u8 envSpeed;
+ } MidiChannel;
+ 
+ typedef enum MappingMode { MappingMode_Static, MappingMode_Dynamic, MappingMode_Auto } MappingMode;
+@@ -71,7 +76,14 @@ static const u16 portaTimeToInterval[128]
  
  static DeviceChannel deviceChannels[DEV_CHANS];
  static MidiChannel midiChannels[MIDI_CHANNELS];
@@ -236,7 +246,7 @@ index 5145b6a..dc5f426 100644
  static void (*changeCallback)(MidiChangeEvent);
  
  typedef struct MidiConfig {
-@@ -102,10 +111,15 @@ static void set_downstream_pitch(DeviceChannel* devChan);
+@@ -102,10 +114,15 @@ static void set_downstream_pitch(DeviceChannel* devChan);
  static bool valid_midi_channel(u8 midiChan);
  static bool valid_device_channel(u8 devChan);
  static bool is_single_voice_channel(u8 midiChan, bool playing);
@@ -254,7 +264,7 @@ index 5145b6a..dc5f426 100644
      defaultEnvelopes = envelopes;
      defaultPresets = presets;
      defaultPercussionPresets = percussionPresets;
-@@ -120,7 +134,12 @@ static void reset(void)
+@@ -120,7 +137,12 @@ static void reset(void)
  {
      midi_psg_reset();
      midi_fm_reset();
@@ -267,7 +277,7 @@ index 5145b6a..dc5f426 100644
      config = (MidiConfig) {
          .mappingModePref = DEFAULT_MAPPING_MODE,
          .disableNonGeneralMidiCCs = false,
-@@ -155,6 +174,7 @@ static void init_midi_channel(u8 midiChan)
+@@ -155,9 +177,11 @@ static void init_midi_channel(u8 midiChan)
      note_priority_init(&chan->notePriority);
      chan->deviceSelect = Auto;
      chan->portamento = false;
@@ -275,7 +285,11 @@ index 5145b6a..dc5f426 100644
      chan->portamentoInterval = DEFAULT_PORTAMENTO_INTERVAL;
      chan->fineTune = 0;
      chan->rpn = NULL_RPN;
-@@ -179,6 +199,9 @@ static void init_device_channel(u8 devChan)
++    chan->envSpeed = ENV_SPEED_DEFAULT;
+ }
+ 
+ static void init_device_channel(u8 devChan)
+@@ -179,6 +203,9 @@ static void init_device_channel(u8 devChan)
      chan->cents = 0;
      chan->pitchBend = DEFAULT_MIDI_PITCH_BEND;
      chan->glideTargetPitch = 0;
@@ -285,7 +299,18 @@ index 5145b6a..dc5f426 100644
      update_device_channel_from_associated_midi_channel(chan);
  }
  
-@@ -401,12 +424,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+@@ -394,6 +421,10 @@ static void update_device_channel_from_associated_midi_channel(DeviceChannel* de
+     update_pan(midiChannel, devChan);
+     update_program(midiChannel, devChan);
+     update_pitch_bend(midiChannel, devChan);
++    // Stage 44 (D88): a PSG voice plays at its MIDI channel's envelope speed.
++    if (devChan->ops == &PSG_VTable) {
++        midi_psg_env_speed(devChan->num, midiChannel->envSpeed);
++    }
+ }
+ 
+ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+@@ -401,12 +432,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
      return findFreeChannel(midiChan);
  }
  
@@ -337,7 +362,7 @@ index 5145b6a..dc5f426 100644
  }
  
  static void set_downstream_pitch(DeviceChannel* devChan)
-@@ -415,8 +476,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
+@@ -415,8 +484,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
      devChan->ops->pitch(devChan->num, pc.pitch, pc.cents);
  }
  
@@ -366,7 +391,7 @@ index 5145b6a..dc5f426 100644
      PitchCents pc = effectivePitchCents(devChan);
      devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
  }
-@@ -446,7 +527,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -446,7 +535,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -390,7 +415,7 @@ index 5145b6a..dc5f426 100644
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
              return;
-@@ -462,14 +559,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -462,14 +567,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      reapply_program_if_channel_was_formerly_percussive(devChan, midiChan);
@@ -419,7 +444,7 @@ index 5145b6a..dc5f426 100644
  static bool is_single_voice_channel(u8 midiChan, bool playing)
  {
      u8 count = 0;
-@@ -483,20 +594,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,20 +602,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -465,7 +490,7 @@ index 5145b6a..dc5f426 100644
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
                  handledRetrigger = true;
-@@ -510,6 +643,8 @@ void midi_note_off(u8 chan, u8 pitch)
+@@ -510,6 +651,8 @@ void midi_note_off(u8 chan, u8 pitch)
  static void dev_chan_note_on(DeviceChannel* devChan, u8 pitch, u8 velocity)
  {
      devChan->noteOn = true;
@@ -474,7 +499,7 @@ index 5145b6a..dc5f426 100644
      devChan->cents = 0;
      devChan->pitch = pitch;
      set_downstream_note_on(devChan, velocity);
-@@ -519,6 +654,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
+@@ -519,6 +662,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
  {
      devChan->noteOn = false;
      devChan->pitch = 0;
@@ -484,7 +509,7 @@ index 5145b6a..dc5f426 100644
      devChan->ops->noteOff(devChan->num, pitch);
  }
  
-@@ -606,9 +744,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +752,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -497,7 +522,7 @@ index 5145b6a..dc5f426 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +790,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +798,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -576,7 +601,7 @@ index 5145b6a..dc5f426 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -675,7 +881,7 @@ static void store_program(const u8* data, u16 length)
+@@ -675,7 +889,7 @@ static void store_program(const u8* data, u16 length)
              fmPreset.operators[i].ssgEg = data[16 + i * 11];
          }
          midi_fm_store_preset(program, &fmPreset);
@@ -585,7 +610,7 @@ index 5145b6a..dc5f426 100644
          break;
      }
      default:
-@@ -692,7 +898,7 @@ static void clear_program(const u8* data, u16 length)
+@@ -692,7 +906,7 @@ static void clear_program(const u8* data, u16 length)
      switch (type) {
      case STORE_PROGRAM_TYPE_FM:
          midi_fm_clear_preset(program);
@@ -594,7 +619,7 @@ index 5145b6a..dc5f426 100644
          break;
      default:
          log_warn("Invalid clear program type: %d", type);
-@@ -811,9 +1017,9 @@ static void dump_preset_request(const u8* data, u16 length)
+@@ -811,9 +1025,9 @@ static void dump_preset_request(const u8* data, u16 length)
          const FmPreset* preset = midi_fm_get_stored_preset(program);
          if (preset != NULL) {
              send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
@@ -606,7 +631,7 @@ index 5145b6a..dc5f426 100644
          }
          break;
      }
-@@ -841,7 +1047,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1055,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -615,7 +640,7 @@ index 5145b6a..dc5f426 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1204,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1212,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -724,7 +749,7 @@ index 5145b6a..dc5f426 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1523,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1531,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -733,7 +758,7 @@ index 5145b6a..dc5f426 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1550,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1558,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -765,17 +790,26 @@ index 5145b6a..dc5f426 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1265,6 +1588,9 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1265,6 +1596,18 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_PORTAMENTO_ENABLE:
          set_portamento_mode(chan, RANGE(value, 2));
          break;
 +    case CC_MONO:
 +        chan->mono = value >= 64;
 +        break;
++    case ENV_SPEED_CC:
++        // Stage 44 (D88): at once on a sounding PSG voice of the channel; FM ignores it.
++        chan->envSpeed = value;
++        FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
++            if (devChan->ops == &PSG_VTable) {
++                midi_psg_env_speed(devChan->num, value);
++            }
++        }
++        break;
      case CC_FINE_TUNE:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1637,12 @@ void midi_reset(void)
+@@ -1311,11 +1654,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -790,7 +824,7 @@ index 5145b6a..dc5f426 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1666,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1683,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
@@ -1647,10 +1681,18 @@ index c1b1091..b1e782e 100644
  void midi_fm_sm_program(u8 chan, u8 program);
 -void midi_fm_sm_all_notes_off(u8 chan);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..daaa2bd 100644
+index 82a5655..9313278 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
-@@ -11,6 +11,28 @@
+@@ -1,6 +1,7 @@
+ #include "midi_psg.h"
+ #include "utils.h"
+ #include "envelopes.h"
++#include "env_speed.h"
+ #include "midi.h"
+ #include "psg.h"
+ #include "scheduler.h"
+@@ -11,6 +12,28 @@
  #define MIN_MIDI_KEY 45
  #define MAX_MIDI_KEY 127
  #define NUM_TONES (128 - MIN_MIDI_KEY)
@@ -1679,13 +1721,17 @@ index 82a5655..daaa2bd 100644
  
  static const u16 TONES_NTSC[NUM_TONES] = { 1016, 959, 905, 855, 807, 761, 719, 678, 640, 604, 570,
      538, 508, 479, 452, 427, 403, 380, 359, 339, 320, 302, 285, 269, 254, 239, 226, 213, 201, 190,
-@@ -42,13 +64,24 @@ typedef struct MidiPsgChannel {
+@@ -42,13 +65,28 @@ typedef struct MidiPsgChannel {
      u8 envelope;
      const u8* envelopeStep;
      const u8* envelopeLoopStart;
 +    // MDMI plugin fork, stage 22b (D54): the first step of the envelope the note plays.
 +    const u8* envelopeFirst;
      bool noteReleased;
++    // MDMI plugin fork, stage 44 (D88): envelope steps a frame times 256, and the part of a step built
++    // up so far.
++    u16 envRate;
++    u16 envPart;
  } MidiPsgChannel;
  
  static u8 userDefinedEnvelope[256];
@@ -1704,7 +1750,7 @@ index 82a5655..daaa2bd 100644
  
  static u16 tone_for_midi_key(u8 midiKey);
  static MidiPsgChannel* psg_channel(u8 psgChan);
-@@ -67,6 +100,9 @@ void midi_psg_init(const u8** defaultEnvelopes)
+@@ -67,6 +105,9 @@ void midi_psg_init(const u8** defaultEnvelopes)
  void midi_psg_reset(void)
  {
      userDefinedEnvelopePtr = NULL;
@@ -1714,7 +1760,7 @@ index 82a5655..daaa2bd 100644
      for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
          MidiPsgChannel* psgChan = psg_channel(chan);
          psgChan->attenuation = PSG_ATTENUATION_SILENCE;
-@@ -76,7 +112,7 @@ void midi_psg_reset(void)
+@@ -76,20 +117,48 @@ void midi_psg_reset(void)
          psgChan->velocity = MAX_MIDI_VOLUME;
          psgChan->envelope = 0;
          psgChan->noteReleased = false;
@@ -1722,8 +1768,11 @@ index 82a5655..daaa2bd 100644
 +        psgChan->freq = TONE_UNKNOWN;
          psgChan->pitch = 0;
          psgChan->cents = 0;
++        psgChan->envRate = ENV_SPEED_ONE;
++        psgChan->envPart = 0;
          init_envelope(psgChan);
-@@ -85,11 +121,37 @@ void midi_psg_reset(void)
+     }
+ }
  
  static void init_envelope(MidiPsgChannel* psgChan)
  {
@@ -1763,7 +1812,7 @@ index 82a5655..daaa2bd 100644
  static u8 effective_attenuation(MidiPsgChannel* psgChan)
  {
      u8 att = ATTENUATIONS[(psgChan->volume * psgChan->velocity) / MAX_MIDI_VOLUME];
-@@ -116,9 +178,29 @@ static u16 tone_from_pitch_cents(PitchCents pc)
+@@ -116,9 +185,29 @@ static u16 tone_from_pitch_cents(PitchCents pc)
      return tone + (((tone_for_midi_key(pc.pitch + 1) - tone) * pc.cents) / 100);
  }
  
@@ -1793,7 +1842,7 @@ index 82a5655..daaa2bd 100644
      u8 shift = *psgChan->envelopeStep >> 4;
      switch (shift) {
      case 0:
-@@ -169,16 +251,52 @@ static u16 envelope_tone(MidiPsgChannel* psgChan)
+@@ -169,16 +258,52 @@ static u16 envelope_tone(MidiPsgChannel* psgChan)
      return tone_from_pitch_cents(pc);
  }
  
@@ -1847,7 +1896,7 @@ index 82a5655..daaa2bd 100644
      if (newAtt != psgChan->attenuation) {
          PSG_setEnvelope(psgChan->chanNum, newAtt);
          psgChan->attenuation = newAtt;
-@@ -209,12 +327,41 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
+@@ -209,17 +334,47 @@ static void apply_envelope_step(MidiPsgChannel* psgChan)
      apply_attenuation(psgChan, effective_attenuation(psgChan));
  }
  
@@ -1890,7 +1939,13 @@ index 82a5655..daaa2bd 100644
      psgChan->noteReleased = false;
      psgChan->pitch = pitch;
      psgChan->cents = cents;
-@@ -228,7 +375,9 @@ void midi_psg_note_off(u8 chan, u8 pitch)
+     psgChan->velocity = velocity;
+     psgChan->noteOn = true;
++    psgChan->envPart = 0;
+     init_envelope(psgChan);
+     apply_envelope_step(psgChan);
+ }
+@@ -228,7 +383,9 @@ void midi_psg_note_off(u8 chan, u8 pitch)
  {
      MidiPsgChannel* psgChan = psg_channel(chan);
      if (psgChan->noteOn) {
@@ -1901,7 +1956,7 @@ index 82a5655..daaa2bd 100644
              psgChan->noteReleased = true;
          } else {
              note_off(psgChan);
-@@ -236,9 +385,14 @@ void midi_psg_note_off(u8 chan, u8 pitch)
+@@ -236,9 +393,14 @@ void midi_psg_note_off(u8 chan, u8 pitch)
      }
  }
  
@@ -1917,7 +1972,36 @@ index 82a5655..daaa2bd 100644
  }
  
  void midi_psg_channel_volume(u8 chan, u8 volume)
-@@ -293,6 +447,15 @@ void midi_psg_load_envelope(const u8* eef)
+@@ -270,16 +432,27 @@ static void increment_envelope_step(MidiPsgChannel* chan)
+     apply_envelope_step(chan);
+ }
+ 
++// MDMI plugin fork, stage 44 (D88): a frame takes as many steps as whole ones have built up at the
++// channel's speed, 0 to 4; a step that ends the note ends the frame's steps too.
+ void midi_psg_tick(u16 delta)
+ {
+     for (u8 chan = 0; chan < MAX_PSG_CHANS; chan++) {
+         MidiPsgChannel* psgChan = psg_channel(chan);
+         if (psgChan->noteOn) {
+-            increment_envelope_step(psgChan);
++            psgChan->envPart += psgChan->envRate;
++            while (psgChan->envPart >= ENV_SPEED_ONE && psgChan->noteOn) {
++                psgChan->envPart -= ENV_SPEED_ONE;
++                increment_envelope_step(psgChan);
++            }
+         }
+     }
+ }
+ 
++void midi_psg_env_speed(u8 chan, u8 value)
++{
++    psg_channel(chan)->envRate = ENV_SPEED_RATE[value & 0x7F];
++}
++
+ void midi_psg_load_envelope(const u8* eef)
+ {
+     u16 i = 0;
+@@ -293,6 +466,15 @@ void midi_psg_load_envelope(const u8* eef)
      userDefinedEnvelopePtr = userDefinedEnvelope;
  }
  
@@ -1933,7 +2017,7 @@ index 82a5655..daaa2bd 100644
  static u16 tone_for_midi_key(u8 midiKey)
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
-@@ -310,6 +473,53 @@ static MidiPsgChannel* psg_channel(u8 chan)
+@@ -310,6 +492,53 @@ static MidiPsgChannel* psg_channel(u8 chan)
      return &psgChannels[chan];
  }
  
@@ -1987,7 +2071,7 @@ index 82a5655..daaa2bd 100644
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
  {
      MidiPsgChannel* psgChan = psg_channel(chan);
-@@ -317,3 +527,30 @@ void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
+@@ -317,3 +546,30 @@ void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
      psgChan->cents = cents;
      apply_tone(psgChan, envelope_tone(psgChan));
  }
@@ -2019,7 +2103,7 @@ index 82a5655..daaa2bd 100644
 +    return psgChannels[chan].noteOn ? psgChannels[chan].envelopeStep : NULL;
 +}
 diff --git a/src/midi_psg.h b/src/midi_psg.h
-index e5bb02e..feb9868 100644
+index e5bb02e..81fbffa 100644
 --- a/src/midi_psg.h
 +++ b/src/midi_psg.h
 @@ -9,6 +9,8 @@
@@ -2039,9 +2123,12 @@ index e5bb02e..feb9868 100644
  void midi_psg_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity);
  void midi_psg_note_off(u8 chan, u8 pitch);
  void midi_psg_all_notes_off(u8 chan);
-@@ -24,4 +27,17 @@ void midi_psg_program(u8 chan, u8 program);
+@@ -23,5 +26,20 @@ void midi_psg_channel_volume(u8 chan, u8 volume);
+ void midi_psg_program(u8 chan, u8 program);
  void midi_psg_pan(u8 chan, u8 pan);
  void midi_psg_tick(u16 delta);
++// MDMI plugin fork, stage 44 (D88): the envelope's speed, a CC value (env_speed.h).
++void midi_psg_env_speed(u8 chan, u8 value);
  void midi_psg_load_envelope(const u8* eef);
 +void midi_psg_store_envelope(u8 program, const u8* eef, u16 length);
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents);
@@ -6084,10 +6171,10 @@ index 30787c8..6e0b1cc 100644
  }
 diff --git a/src/ui_tiles.c b/src/ui_tiles.c
 new file mode 100644
-index 0000000..342643b
+index 0000000..006bab9
 --- /dev/null
 +++ b/src/ui_tiles.c
-@@ -0,0 +1,1344 @@
+@@ -0,0 +1,1364 @@
 +// Generated by tools/gen_rom_screen.py (MDMI plugin, stage 24a). Do not edit.
 +#include "ui_tiles.h"
 +
@@ -6435,6 +6522,24 @@ index 0000000..342643b
 +    0x00000000, 0x00000000, 0x22202220, 0x20202020, 0x20202020, 0x20202020, 0x20222022, 0x00000000,
 +    0x00000000, 0x22202220, 0x00202020, 0x00202020, 0x00202020, 0x00202020, 0x00202020, 0x00222022,
 +    0x00000000, 0x22202220, 0x20202020, 0x20202020, 0x20202020, 0x20202020, 0x20202020, 0x20222022,
++    0x00000000, 0x00000000, 0x00000000, 0x22022022, 0x02022022, 0x02222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x02202202, 0x02202202, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x20220220, 0x20220220, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22022022, 0x22022022, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22022022, 0x02022022, 0x02022022, 0x02022022, 0x02222222, 0x00000000,
++    0x00000000, 0x00000000, 0x02202202, 0x02202202, 0x02202202, 0x02202202, 0x22222222, 0x00000000,
++    0x00000000, 0x00000000, 0x20220220, 0x20220220, 0x20220220, 0x20220220, 0x22222222, 0x00000000,
++    0x00000000, 0x00000000, 0x22022022, 0x22022022, 0x22022022, 0x22022022, 0x22222222, 0x00000000,
++    0x00000000, 0x22022022, 0x02022022, 0x02022022, 0x02022022, 0x02022022, 0x02022022, 0x02222222,
++    0x00000000, 0x02202202, 0x02202202, 0x02202202, 0x02202202, 0x02202202, 0x02202202, 0x22222222,
++    0x00000000, 0x20220220, 0x20220220, 0x20220220, 0x20220220, 0x20220220, 0x20220220, 0x22222222,
++    0x00000000, 0x22022022, 0x22022022, 0x22022022, 0x22022022, 0x22022022, 0x22022022, 0x22222222,
++    0x00000000, 0x00000000, 0x00000000, 0x22222222, 0x02222222, 0x02222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x00000000, 0x22222222, 0x22222222, 0x22222222, 0x00000000, 0x00000000,
++    0x00000000, 0x00000000, 0x22222222, 0x02222222, 0x02222222, 0x02222222, 0x02222222, 0x00000000,
++    0x00000000, 0x00000000, 0x22222222, 0x22222222, 0x22222222, 0x22222222, 0x22222222, 0x00000000,
++    0x00000000, 0x22222222, 0x02222222, 0x02222222, 0x02222222, 0x02222222, 0x02222222, 0x02222222,
++    0x00000000, 0x22222222, 0x22222222, 0x22222222, 0x22222222, 0x22222222, 0x22222222, 0x22222222,
 +};
 +
 +const u16 UI_PALETTE[64] = {
@@ -6471,7 +6576,7 @@ index 0000000..342643b
 +    { 4, -1, -1, -1, -1 },
 +};
 +
-+const u16 UI_WAVE_PERIOD[UI_WAVE_CLASSES - 1] = { 880, 740, 622, 523, 440, 370, 311, 262, 220, 185, 156, 131 };
++const u16 UI_WAVE_PERIOD[UI_WAVE_CLASSES - 1] = { 880, 740, 622, 523, 440, 370, 311, 262, 220, 185, 156, 131, 110, 93 };
 +
 +const u8 UI_WAVE[UI_WAVE_CLASSES][3][4] = {
 +    { { 1, 1, 2, 3 }, { 4, 4, 5, 6 }, { 7, 7, 8, 9 } },
@@ -6487,6 +6592,8 @@ index 0000000..342643b
 +    { { 67, 68, 69, 70 }, { 71, 72, 73, 74 }, { 75, 76, 77, 78 } },
 +    { { 79, 80, 81, 82 }, { 83, 84, 85, 86 }, { 87, 88, 89, 90 } },
 +    { { 91, 92, 92, 92 }, { 93, 94, 94, 94 }, { 95, 96, 96, 96 } },
++    { { 97, 98, 99, 100 }, { 101, 102, 103, 104 }, { 105, 106, 107, 108 } },
++    { { 109, 110, 110, 110 }, { 111, 112, 112, 112 }, { 113, 114, 114, 114 } },
 +};
 +
 +const u8 UI_ATTACK_FRAMES[32] = { 0, 255, 255, 255, 255, 168, 125, 84, 63, 42, 31, 21, 16, 10, 8, 5, 4, 3, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -7434,7 +7541,7 @@ index 0000000..342643b
 +const u16 UI_NOISE_SILENT[2][4] = { { 0x220, 0x000, 0x000, 0x000 }, { 0x222, 0x000, 0x000, 0x000 } };
 diff --git a/src/ui_tiles.h b/src/ui_tiles.h
 new file mode 100644
-index 0000000..113a541
+index 0000000..0de00f0
 --- /dev/null
 +++ b/src/ui_tiles.h
 @@ -0,0 +1,94 @@
@@ -7456,8 +7563,8 @@ index 0000000..113a541
 +#define UI_T_BAR (UI_TILE_BASE + 225)
 +#define UI_T_SQUARE (UI_TILE_BASE + 240)
 +#define UI_T_WAVE (UI_TILE_BASE + 246)
-+#define UI_T_END (UI_TILE_BASE + 343)
-+#define UI_TILE_COUNT 343
++#define UI_T_END (UI_TILE_BASE + 361)
++#define UI_TILE_COUNT 361
 +// Stage 24a2: the ribbon's patterns from 384, the hold tile and the noise's (rom-screen.md 10.3).
 +#define UI_TILE_B_BASE 384
 +#define UI_T_RIBBON (UI_TILE_B_BASE + 0)
@@ -7484,7 +7591,7 @@ index 0000000..113a541
 +#define UI_GLYPH_QUESTION 19
 +#define UI_GLYPH_DASH 18
 +#define UI_LEVEL_PATTERNS 15
-+#define UI_WAVE_CLASSES 13
++#define UI_WAVE_CLASSES 15
 +#define UI_WAVE_FLAT 0
 +
 +// The plugin's tests read the tile numbers alone.
@@ -8369,7 +8476,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..604d8ee 100644
+index d2449c4..aa7a2b2 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -8403,7 +8510,21 @@ index d2449c4..604d8ee 100644
          midi_test(test_midi_triggers_psg_note_off),
          midi_test(test_midi_drops_psg_key_below_45),
          midi_test(test_midi_psg_note_off_only_triggered_if_specific_note_is_on),
-@@ -126,6 +135,10 @@ int main(void)
+@@ -99,6 +108,13 @@ int main(void)
+         midi_test(test_midi_plays_psg_envelope),
+         midi_test(test_midi_plays_advanced_psg_envelope),
+         midi_test(test_midi_loops_psg_envelope),
++        midi_test(test_midi_psg_envelope_half_speed),
++        midi_test(test_midi_psg_envelope_slowest_speed),
++        midi_test(test_midi_psg_envelope_fastest_speed),
++        midi_test(test_midi_psg_envelope_speed_ends_note_mid_frame),
++        midi_test(test_midi_psg_envelope_speed_changes_mid_note),
++        midi_test(test_midi_psg_envelope_speed_ignored_on_fm),
++        midi_test(test_midi_psg_envelope_speed_reset_by_cc_121),
+         midi_test(test_midi_psg_envelope_with_only_end_flag_is_silent),
+         midi_test(
+             test_midi_psg_envelope_with_loop_end_continues_playing_after_note_off),
+@@ -126,6 +142,10 @@ int main(void)
          midi_test(test_midi_sets_psg_pitch_bend_up),
          midi_test(test_midi_psg_pitch_bend_persists_after_tick),
          midi_test(test_midi_loads_psg_envelope),
@@ -8414,7 +8535,7 @@ index d2449c4..604d8ee 100644
          midi_test(test_midi_polyphonic_mode_returns_state),
          midi_test(test_midi_polyphonic_mode_uses_multiple_fm_channels),
          midi_test(
-@@ -207,6 +220,12 @@ int main(void)
+@@ -207,6 +227,12 @@ int main(void)
          midi_test(test_midi_sysex_sets_mapping_mode_to_auto),
          midi_test(test_midi_sysex_disables_fm_parameter_CCs),
          midi_test(test_midi_sysex_loads_psg_envelope),
@@ -8427,7 +8548,7 @@ index d2449c4..604d8ee 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +245,51 @@ int main(void)
+@@ -226,10 +252,51 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -8481,7 +8602,7 @@ index d2449c4..604d8ee 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +309,9 @@ int main(void)
+@@ -249,6 +316,9 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -8491,7 +8612,7 @@ index d2449c4..604d8ee 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,7 +375,22 @@ int main(void)
+@@ -312,7 +382,22 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -8514,7 +8635,7 @@ index d2449c4..604d8ee 100644
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
          comm_test(test_comm_reads_from_serial_when_ready),
-@@ -380,8 +458,10 @@ int main(void)
+@@ -380,8 +465,10 @@ int main(void)
          dynamic_midi_test(test_midi_static_mode_plays_correct_note_off_after_multiple_notes_played),
  
          log_test(test_log_info_writes_to_log_buffer),
@@ -8525,7 +8646,7 @@ index d2449c4..604d8ee 100644
          log_test(test_log_stores_multiple_logs_and_overwrites_older),
          log_test(
              test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
-@@ -440,6 +520,69 @@ int main(void)
+@@ -440,6 +527,69 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
@@ -8643,7 +8764,7 @@ index e212165..befcfbe 100644
 +
 +void test_log_screen_shows_warnings_only(UNUSED void** state);
 diff --git a/tests/unit/test_midi.c b/tests/unit/test_midi.c
-index e17b775..146571d 100644
+index e17b775..72a0ee3 100644
 --- a/tests/unit/test_midi.c
 +++ b/tests/unit/test_midi.c
 @@ -53,6 +53,9 @@ static const u8* TEST_ENVELOPES[MIDI_PROGRAMS] = { ENVELOPE_0, ENVELOPE_1, ENVEL
@@ -8666,6 +8787,16 @@ index e17b775..146571d 100644
      mock_synth_enable_checks();
      mock_sgdk_set_SYS_isPAL(false);
      return 0;
+@@ -94,7 +98,8 @@ void test_midi_sets_unknown_CC(UNUSED void** state)
+ {
+     mock_log_enable_checks();
+ 
+-    u8 expectedController = 0x9;
++    // MDMI plugin fork, stage 44: CC 9 is the PSG envelope's speed now; 3 is still unknown.
++    u8 expectedController = 0x3;
+     u8 expectedValue = 0x50;
+ 
+     expect_log_warn("Ch %d: CC 0x%02X 0x%02X?");
 diff --git a/tests/unit/test_midi.h b/tests/unit/test_midi.h
 index 729d99e..da26e28 100644
 --- a/tests/unit/test_midi.h
@@ -11253,10 +11384,12 @@ index 892e0c2..d6704b4 100644
 +void test_midi_note_stack_keeps_a_held_note_after_another_raised(UNUSED void** state);
 +void test_midi_portamento_keeps_a_held_note_after_another_raised(UNUSED void** state);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..7c5498d 100644
+index affbb29..fcdd57b 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
-@@ -2,6 +2,13 @@
+@@ -1,7 +1,15 @@
++#include "env_speed.h"
+ #include "test_midi_psg.h"
  #include "test_midi.h"
  #include "mocks/mock_psg.h"
  #include "mocks/mock_sgdk.h"
@@ -11270,7 +11403,7 @@ index affbb29..7c5498d 100644
  
  void test_midi_triggers_psg_note_on(UNUSED void** state)
  {
-@@ -9,7 +16,7 @@ void test_midi_triggers_psg_note_on(UNUSED void** state)
+@@ -9,7 +17,7 @@ void test_midi_triggers_psg_note_on(UNUSED void** state)
      const u16 tones[] = { 1016, 254, 26 };
  
      for (u8 i = 0; i < sizeof(midiKeys); i++) {
@@ -11279,7 +11412,7 @@ index affbb29..7c5498d 100644
  
              u16 expectedFrequency = tones[i];
              u8 expectedMidiKey = midiKeys[i];
-@@ -81,7 +88,7 @@ void test_midi_changing_volume_during_psg_note_on_respects_velocity(UNUSED void*
+@@ -81,7 +89,7 @@ void test_midi_changing_volume_during_psg_note_on_respects_velocity(UNUSED void*
  
  void test_midi_triggers_psg_note_off(UNUSED void** state)
  {
@@ -11288,7 +11421,7 @@ index affbb29..7c5498d 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          u8 midiKey = MIDI_PITCH_C4;
  
-@@ -98,7 +105,7 @@ void test_midi_triggers_psg_note_off(UNUSED void** state)
+@@ -98,7 +106,7 @@ void test_midi_triggers_psg_note_off(UNUSED void** state)
  
  void test_midi_drops_psg_key_below_45(UNUSED void** state)
  {
@@ -11297,7 +11430,7 @@ index affbb29..7c5498d 100644
  
          u8 expectedMidiKey = 44;
          __real_midi_note_on(chan, expectedMidiKey, MAX_MIDI_VOLUME);
-@@ -109,7 +116,7 @@ void test_midi_triggers_psg_note_off_and_volume_change_does_not_cause_psg_channe
+@@ -109,7 +117,7 @@ void test_midi_triggers_psg_note_off_and_volume_change_does_not_cause_psg_channe
      UNUSED void** state)
  {
      u8 midiKey = MIDI_PITCH_C4;
@@ -11306,7 +11439,7 @@ index affbb29..7c5498d 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
  
          expect_any_psg_tone();
-@@ -159,7 +166,7 @@ void test_midi_channel_volume_sets_psg_attenuation_2(UNUSED void** state)
+@@ -159,7 +167,7 @@ void test_midi_channel_volume_sets_psg_attenuation_2(UNUSED void** state)
  
  void test_midi_sets_psg_pitch_bend_down(UNUSED void** state)
  {
@@ -11315,7 +11448,7 @@ index affbb29..7c5498d 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          expect_psg_tone(expectedPsgChan, TONE_NTSC_C4);
          expect_psg_attenuation(expectedPsgChan, PSG_ATTENUATION_LOUDEST);
-@@ -172,7 +179,7 @@ void test_midi_sets_psg_pitch_bend_down(UNUSED void** state)
+@@ -172,7 +180,7 @@ void test_midi_sets_psg_pitch_bend_down(UNUSED void** state)
  
  void test_midi_sets_psg_pitch_bend_up(UNUSED void** state)
  {
@@ -11324,7 +11457,7 @@ index affbb29..7c5498d 100644
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          expect_psg_tone(expectedPsgChan, TONE_NTSC_C4);
          expect_psg_attenuation(expectedPsgChan, PSG_ATTENUATION_LOUDEST);
-@@ -185,7 +192,7 @@ void test_midi_sets_psg_pitch_bend_up(UNUSED void** state)
+@@ -185,7 +193,7 @@ void test_midi_sets_psg_pitch_bend_up(UNUSED void** state)
  
  void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state)
  {
@@ -11333,7 +11466,7 @@ index affbb29..7c5498d 100644
          debug_message("channel %d\n", chan);
          __real_midi_program(chan, 8);
  
-@@ -211,7 +218,7 @@ void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state)
+@@ -211,7 +219,7 @@ void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state)
  void test_midi_plays_psg_envelope(UNUSED void** state)
  {
      u8 pitch = MIDI_PITCH_C4;
@@ -11342,7 +11475,7 @@ index affbb29..7c5498d 100644
  
          u8 expectedPsgChan = chan - MIN_PSG_CHAN;
          __real_midi_program(chan, 1);
-@@ -355,10 +362,94 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state)
+@@ -355,10 +363,94 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state)
          expect_psg_tone(expectedPsgChan, expectedInitialTone);
          __real_midi_psg_tick();
  
@@ -11437,7 +11570,7 @@ index affbb29..7c5498d 100644
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state)
  {
      const u8 chan = MIN_PSG_CHAN;
-@@ -428,4 +519,253 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +520,348 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -11693,11 +11826,120 @@ index affbb29..7c5498d 100644
 +    assert_true(UI_WAVE[0][2][0] != UI_WAVE[UI_WAVE_CLASSES - 1][2][0]
 +        || UI_WAVE[0][2][1] != UI_WAVE[UI_WAVE_CLASSES - 1][2][1]);
 +}
++
++// MDMI plugin fork, stage 44 (D88): CC 9 sets the envelope's speed. Program 4 loops 7, loudest.
++void test_midi_psg_envelope_half_speed(UNUSED void** state)
++{
++    u8 chan = MIN_PSG_CHAN;
++    __real_midi_program(chan, 4);
++    __real_midi_cc(chan, ENV_SPEED_CC, 48);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    __real_midi_psg_tick();
++    expect_psg_attenuation(0, 7);
++    __real_midi_psg_tick();
++    __real_midi_psg_tick();
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_envelope_slowest_speed(UNUSED void** state)
++{
++    u8 chan = MIN_PSG_CHAN;
++    __real_midi_program(chan, 4);
++    __real_midi_cc(chan, ENV_SPEED_CC, 0);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    for (int i = 0; i < 15; i++) {
++        __real_midi_psg_tick();
++    }
++    expect_psg_attenuation(0, 7);
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_envelope_fastest_speed(UNUSED void** state)
++{
++    u8 chan = MIN_PSG_CHAN;
++    __real_midi_program(chan, 4);
++    __real_midi_cc(chan, ENV_SPEED_CC, 127);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(0, 7);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    expect_psg_attenuation(0, 7);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_envelope_speed_ends_note_mid_frame(UNUSED void** state)
++{
++    u8 chan = MIN_PSG_CHAN;
++    __real_midi_program(chan, 2);
++    __real_midi_cc(chan, ENV_SPEED_CC, 127);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(0, 7);
++    expect_psg_attenuation(0, PSG_ATTENUATION_SILENCE);
++    __real_midi_psg_tick();
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_envelope_speed_changes_mid_note(UNUSED void** state)
++{
++    u8 chan = MIN_PSG_CHAN;
++    __real_midi_program(chan, 4);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(0, 7);
++    __real_midi_psg_tick();
++    __real_midi_cc(chan, ENV_SPEED_CC, 48);
++    __real_midi_psg_tick();
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_psg_tick();
++}
++
++void test_midi_psg_envelope_speed_ignored_on_fm(UNUSED void** state)
++{
++    __real_midi_cc(0, ENV_SPEED_CC, 0);
++}
++
++void test_midi_psg_envelope_speed_reset_by_cc_121(UNUSED void** state)
++{
++    u8 chan = MIN_PSG_CHAN;
++    __real_midi_program(chan, 4);
++    __real_midi_cc(chan, ENV_SPEED_CC, 0);
++    __real_midi_cc(chan, CC_RESET_ALL_CONTROLLERS, 0);
++    __real_midi_program(chan, 4);
++    expect_psg_tone(0, TONE_NTSC_C4);
++    expect_psg_attenuation(0, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(chan, MIDI_PITCH_C4, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(0, 7);
++    __real_midi_psg_tick();
++}
 diff --git a/tests/unit/test_midi_psg.h b/tests/unit/test_midi_psg.h
-index bfb01a6..8c7f1b3 100644
+index bfb01a6..1e95a6e 100644
 --- a/tests/unit/test_midi_psg.h
 +++ b/tests/unit/test_midi_psg.h
-@@ -26,4 +26,22 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
+@@ -18,6 +18,13 @@ void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state);
+ void test_midi_plays_psg_envelope(UNUSED void** state);
+ void test_midi_plays_advanced_psg_envelope(UNUSED void** state);
+ void test_midi_loops_psg_envelope(UNUSED void** state);
++void test_midi_psg_envelope_half_speed(UNUSED void** state);
++void test_midi_psg_envelope_slowest_speed(UNUSED void** state);
++void test_midi_psg_envelope_fastest_speed(UNUSED void** state);
++void test_midi_psg_envelope_speed_ends_note_mid_frame(UNUSED void** state);
++void test_midi_psg_envelope_speed_changes_mid_note(UNUSED void** state);
++void test_midi_psg_envelope_speed_ignored_on_fm(UNUSED void** state);
++void test_midi_psg_envelope_speed_reset_by_cc_121(UNUSED void** state);
+ void test_midi_psg_envelope_with_only_end_flag_is_silent(UNUSED void** state);
+ void test_midi_psg_envelope_with_loop_end_continues_playing_after_note_off(UNUSED void** state);
+ void test_midi_psg_envelope_with_loop_end_resets_release_note_after_note_silenced(
+@@ -26,4 +33,22 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_lower_limit_psg_envelope(UNUSED void** state);
  void test_midi_loads_psg_envelope(UNUSED void** state);

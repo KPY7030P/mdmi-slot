@@ -945,6 +945,12 @@ static void draw_lends(mdmi_gui *g)
 	}
 }
 
+// Stage 44 (D88): a PSG channel's envelope speed, a global.
+static bool is_env_speed(uint32_t id)
+{
+	return id >= GLOBAL_ENV_SPEED_BASE && id < GLOBAL_ENV_SPEED_BASE + PATCH_NUM_PSG_CHANNELS;
+}
+
 static void add_cell(mdmi_gui *g, int x, int y, int w, int h, uint32_t id, const char *label, int kind)
 {
 	if (g->cell_count < MAX_CELLS) {
@@ -1215,6 +1221,10 @@ static void layout(mdmi_gui *g, const patch_values *values)
 				g->cells[g->cell_count - 1].look = LOOK_SWITCH;
 			}
 		}
+		// Stage 44 (D88, env-speed.md): the envelope's speed in PSG's PAN place, also on the noise.
+		if (!channel_is_fm(channel)) {
+			add_cell(g, GRID_X[1], GRID_ROW1_Y, 60, CELL_H, (uint32_t)GLOBAL_ENV_SPEED(channel - PATCH_NUM_FM_CHANNELS), "SPD", CELL_ROW);
+		}
 		// Stage 38 (D83): MONO, a global per FM channel, paired with PORTA (MONO_X, mono_pair_click).
 		if (channel_is_fm(channel)) {
 			add_cell(g, MONO_X, GRID_ROW1_Y, MONO_W, CELL_H, (uint32_t)GLOBAL_MONO(channel), "MONO", CELL_ROW);
@@ -1469,7 +1479,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		// A channel's cell is a bar filled up to its value, as in the mockup; TUNE from its middle.
 		fill(g, c->x, c->y, c->w, c->h, C_CELL);
 		const int at = c->w * value / max;
-		if ((channel >= 0 && param == PARAM_FINE_TUNE) || ch3_op) {
+		if ((channel >= 0 && param == PARAM_FINE_TUNE) || ch3_op || is_env_speed(c->id)) {
 			const int middle = c->w * patch_param(c->id)->default_value / max;
 			fill(g, c->x + (at < middle ? at : middle), c->y, at < middle ? middle - at : at - middle, c->h, dark);
 			fill(g, c->x + middle, c->y, 1, c->h, C_LINE);
@@ -1504,6 +1514,14 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		text(g, c->x + 4, c->y + 14, buffer, shown, 2);
 	} else {
 		int label_end = text(g, c->x + 4, c->y + (c->h - 7) / 2, c->label, label, 1);
+		// Stage 44 (env-speed.md): x1.00 fits its 60 px only small; the bar and the footer say the rest.
+		if (is_env_speed(c->id)) {
+			text_right(g, c->x + c->w - 3, c->y + (c->h - 7) / 2, buffer, shown, 1, c->w - 4 - label_end);
+			if (held) {
+				frame(g, c->x, c->y, c->w, c->h, C_TEXT);
+			}
+			return;
+		}
 		// A value without room for its unit drops it: +0 for +0 ct.
 		const int room = c->x + c->w - 4 - label_end - 6;
 		char *space = strchr(buffer, ' ');
@@ -4365,11 +4383,7 @@ static void draw_page(mdmi_gui *g, const patch_values *values)
 		return;
 	}
 	if (!channel_is_fm(channel)) {
-		// PSG has no pan; its place stays so TUNE and BEND are where they are on FM.
-		frame(g, GRID_X[1], GRID_ROW1_Y, 60, CELL_H, C_CELL);
-		text(g, GRID_X[1] + 4, GRID_ROW1_Y + 6, "PAN", C_LINE, 1);
-		text_right(g, GRID_X[1] + 56, GRID_ROW1_Y + 3, "-", C_LINE, 2, 20);
-		// Nor MONO (stage 38): a PSG channel plays one note anyway; its place dim like PAN's.
+		// PSG has no pan: its place has the envelope's speed (stage 44, a cell). Nor MONO (stage 38): a PSG channel plays one note anyway; its place dim like PAN's.
 		frame(g, MONO_X, GRID_ROW1_Y, MONO_W, CELL_H, C_CELL);
 		text(g, MONO_X + (MONO_W - 23) / 2, GRID_ROW1_Y + 6, "MONO", C_LINE, 1);
 		// The row reaches the right edge (stage 24d): the chip's caveats moved, the noise's to the footer.
@@ -4775,6 +4789,19 @@ static bool bank_hint(mdmi_gui *g, char *hint, size_t size, uint32_t *color);
 // Stage 24e: ALL's OUT box and the DAC's VOL, defined with ALL.
 static bool out_hint(mdmi_gui *g, char *hint, size_t size);
 
+// Stage 44 (env-speed.md): SPD under the mouse or dragged, with the step's length.
+static bool env_speed_hint(mdmi_gui *g, char *hint, size_t size)
+{
+	const int index = g->dragging ? -1 : hovered(g);
+	const uint32_t id = g->dragging ? g->drag_id : index >= 0 ? g->cells[index].id : 0;
+	if (!is_env_speed(id) || *g->source.page != PAGE_EDITOR) {
+		return false;
+	}
+	const double speed = patch_env_speed(patch_get(g->source.patch, id));
+	snprintf(hint, size, "ENV SPEED X%.2f: A STEP %.0f MS%s", speed, 1000.0 / 59.92 / speed, g->dragging ? "" : ". DOUBLE CLICK: X1");
+	return true;
+}
+
 // One line, by what matters most: a dead engine, a file being dragged, the button under the mouse,
 // what just happened, then the engine's numbers.
 static void draw_footer(mdmi_gui *g)
@@ -4825,6 +4852,8 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_ERROR);
 	} else if (g->message_ticks > 0) {
 		footer_text(g, g->message, g->message_color);
+	} else if (env_speed_hint(g, buffer, sizeof(buffer))) {
+		footer_text(g, buffer, C_LABEL);
 	} else if (master_hint(g)) {
 		footer_text(g, "MASTER: PLUGIN ONLY, NOT ON THE CONSOLE", C_LABEL);
 	} else if (ch3_hint(g, buffer, sizeof(buffer))) {
@@ -5663,11 +5692,16 @@ static int envelope_frame(mdmi_gui *g, const patch_shape *shape, int psg, unsign
 	if (on == GUI_NEVER || on > now) {
 		return -1;
 	}
-	const long total = (long)((double)(now - on) * PSG_FRAME_HZ / rate);
+	// Stage 44 (D88): the frames the envelope went at the speeds sent; at x1 the time since Note On.
+	const uint64_t since = __atomic_load_n(&times->env_since[psg], __ATOMIC_ACQUIRE);
+	const uint64_t at = __atomic_load_n(&times->env_at[psg], __ATOMIC_ACQUIRE) + (now > since ? now - since : 0) * __atomic_load_n(&times->env_rate[psg], __ATOMIC_ACQUIRE);
+	const double scale = PSG_FRAME_HZ / (256.0 * rate);
+	const long total = (long)((double)at * scale);
 	if (off == GUI_NEVER || off < on) {
 		return patch_shape_position(shape, total, -1);
 	}
-	const long held = (long)((double)((off < now ? off : now) - on) * PSG_FRAME_HZ / rate);
+	const uint64_t env_off = __atomic_load_n(&times->env_off[psg], __ATOMIC_ACQUIRE);
+	const long held = (long)((double)(env_off == GUI_NEVER || env_off > at ? at : env_off) * scale);
 	return patch_shape_position(shape, held, total - held);
 }
 

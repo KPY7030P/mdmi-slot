@@ -15,7 +15,7 @@
 #define MAX_EVENTS 512
 #define FFT_SIZE 16384
 // Stage 38: six MONO knobs more (ids 24-29).
-#define NUM_PARAMS 383
+#define NUM_PARAMS 387
 
 // Ids by D3: a global's id is its index, a channel's knob 1000 + channel number * 100 + param.
 // Id 0 held Polyphony until D20 and stays unused.
@@ -308,7 +308,7 @@ static void test_listing(void)
 	printf("listing\n");
 	instance *in = create_instance();
 	uint32_t count = in->params->count(in->plugin);
-	CHECK(count == NUM_PARAMS, "%u parameters: 29 global, 55 on each FM channel, 6 on each PSG channel", count);
+	CHECK(count == NUM_PARAMS, "%u parameters: 33 global, 55 on each FM channel, 6 on each PSG channel", count);
 	static bool seen[MAX_ID];
 	bool ids_valid = true;
 	for (uint32_t i = 0; i < count; i++) {

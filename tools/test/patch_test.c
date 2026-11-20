@@ -289,7 +289,7 @@ static void test_mono(void)
 	for (size_t i = 0; i < patch_save_size() / 6; i++) {
 		uint32_t id;
 		memcpy(&id, state + i * 6, sizeof(id));
-		if (id < GLOBAL_MONO_BASE || id >= PATCH_NUM_GLOBALS) {
+		if (id < GLOBAL_MONO_BASE || id >= GLOBAL_ENV_SPEED_BASE) {
 			memcpy(old + old_size, state + i * 6, 6);
 			old_size += 6;
 		}
@@ -297,6 +297,22 @@ static void test_mono(void)
 	patch_init(&other);
 	CHECK(old_size == patch_save_size() - 6 * 6 && patch_load(&other, old, old_size, NULL, NULL, NULL, NULL) && patch_take_incoming(&other) && !other.model.globals[GLOBAL_MONO(3)],
 		"a project without ids 24-29 opens with MONO off");
+	// Stage 44 (D88): a project from before it opens with every PSG envelope at x1.
+	old_size = 0;
+	for (size_t i = 0; i < patch_save_size() / 6; i++) {
+		uint32_t id;
+		memcpy(&id, state + i * 6, sizeof(id));
+		if (id < GLOBAL_ENV_SPEED_BASE || id >= PATCH_NUM_GLOBALS) {
+			memcpy(old + old_size, state + i * 6, 6);
+			old_size += 6;
+		}
+	}
+	patch_init(&other);
+	bool all_x1 = old_size == patch_save_size() - 4 * 6 && patch_load(&other, old, old_size, NULL, NULL, NULL, NULL) && patch_take_incoming(&other);
+	for (int psg = 0; psg < PATCH_NUM_PSG_CHANNELS; psg++) {
+		all_x1 = all_x1 && other.model.globals[GLOBAL_ENV_SPEED(psg)] == 64;
+	}
+	CHECK(all_x1, "a project without ids 30-33 opens with every PSG envelope at x1 (64)");
 }
 
 // Stage 16 (D45): the noise's two knobs go as CC 12 and 13 on MIDI 10 and again after a reset.
@@ -2848,7 +2864,7 @@ static void test_ch3_ops(void)
 	static mdmi_patch patch, other;
 	patch_init(&patch);
 	char name[32], text[16];
-	bool ids = GLOBAL_CH3_NOTES == 10 && GLOBAL_LFO_RESET == 11 && GLOBAL_CH3_OP(0, PATCH_CH3_SEMI) == 12 && GLOBAL_CH3_OP(3, PATCH_CH3_FIXED) == 23 && GLOBAL_CH3_OP_END == 24 && GLOBAL_MONO(0) == 24 && PATCH_NUM_GLOBALS == 30;
+	bool ids = GLOBAL_CH3_NOTES == 10 && GLOBAL_LFO_RESET == 11 && GLOBAL_CH3_OP(0, PATCH_CH3_SEMI) == 12 && GLOBAL_CH3_OP(3, PATCH_CH3_FIXED) == 23 && GLOBAL_CH3_OP_END == 24 && GLOBAL_MONO(0) == 24 && GLOBAL_ENV_SPEED(0) == 30 && PATCH_NUM_GLOBALS == 34;
 	patch_param_name(GLOBAL_CH3_NOTES, name, sizeof(name));
 	ids = ids && !strcmp(name, "Ch3 Notes") && patch_param(GLOBAL_CH3_NOTES)->max == 2 && patch_param(GLOBAL_CH3_NOTES)->default_value == PATCH_CH3_OPS;
 	patch_param_name(GLOBAL_LFO_RESET, name, sizeof(name));
@@ -2866,8 +2882,12 @@ static void test_ch3_ops(void)
 	}
 	CHECK(ids, "ids 10-23: Ch3 Notes (three positions since 0.22), LFO Reset, then Semi, Fine, Fixed of operators 1-4, with their ranges and defaults");
 	// Stage 38: the six MONO knobs come last, after the operators' (ids 24-29).
-	CHECK(patch_param_id_at(PATCH_NUM_IDS - 21) == GLOBAL_MASTER && patch_param_id_at(PATCH_NUM_IDS - 20) == 10 && patch_param_id_at(PATCH_NUM_IDS - 7) == 23
-			&& patch_param_id_at(PATCH_NUM_IDS - 6) == 24 && patch_param_id_at(PATCH_NUM_IDS - 1) == 29 && PATCH_NUM_IDS == 383,
+	// Stage 44: the four Env Speed knobs after them (ids 30-33).
+	char speed_name[32];
+	patch_param_name(GLOBAL_ENV_SPEED(3), speed_name, sizeof(speed_name));
+	CHECK(patch_param_id_at(PATCH_NUM_IDS - 25) == GLOBAL_MASTER && patch_param_id_at(PATCH_NUM_IDS - 24) == 10 && patch_param_id_at(PATCH_NUM_IDS - 11) == 23
+			&& patch_param_id_at(PATCH_NUM_IDS - 10) == 24 && patch_param_id_at(PATCH_NUM_IDS - 5) == 29 && patch_param_id_at(PATCH_NUM_IDS - 4) == 30
+			&& patch_param_id_at(PATCH_NUM_IDS - 1) == 33 && PATCH_NUM_IDS == 387 && !strcmp(speed_name, "Ch10 Env Speed") && patch_param(30)->default_value == 64,
 		"in the host's list after Master Volume, %d knobs", PATCH_NUM_IDS);
 	bool labels = true;
 	patch_format(&patch.bank, GLOBAL_CH3_NOTES, PATCH_CH3_ONE_NOTE, text, sizeof(text));

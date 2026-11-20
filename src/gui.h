@@ -35,6 +35,13 @@ typedef struct {
 	uint64_t fm_on[PATCH_NUM_FM_CHANNELS];
 	uint64_t fm_off[PATCH_NUM_FM_CHANNELS];
 	uint8_t fm_key[PATCH_NUM_FM_CHANNELS];
+	// Stage 44 (D88): how far the PSG envelopes went at the speeds sent (CC 9), in samples times the
+	// rate (envelope steps a frame times 256): env_at at clock env_since, then env_rate on from there;
+	// env_off where Note Off came, or GUI_NEVER. A torn read costs one frame of a cursor.
+	uint64_t env_at[PATCH_NUM_PSG_CHANNELS];
+	uint64_t env_since[PATCH_NUM_PSG_CHANNELS];
+	uint64_t env_off[PATCH_NUM_PSG_CHANNELS];
+	uint32_t env_rate[PATCH_NUM_PSG_CHANNELS];
 } gui_psg_times;
 
 // 1 when the host sent a knob a value since the window last edited it (D32, D33), at GUI_HOST_SLOT

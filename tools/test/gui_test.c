@@ -47,6 +47,9 @@
 #define ALG_Y 198
 #define AMS_X 550
 #define AMS_Y 92
+#define SPD_X 388
+#define SPD_Y 66
+#define CH8_ENV_SPEED 31
 #define EDITOR_SOURCE_X 640
 #define EDITOR_SOURCE_Y 40
 // The LFO Rate cell among the global knobs, and its id.
@@ -1789,6 +1792,32 @@ int main(int argc, char **argv)
 			const int lit2 = lit_columns(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left2, &right2);
 			CHECK(lit > 0 && lit2 > 0 && right - left < 20 && right2 - left2 < 20 && left2 != left && green == 0,
 				"the held note lights one column on the envelope editor (x %d-%d, 150 ms later %d-%d), no green line", left, right, left2, right2);
+		}
+		// Stage 44 (D88): SPD in PSG's PAN place; a notch +1; at its slowest (x1/16) the lit column stays
+		// near where it was for 300 ms; a double click puts x1 back.
+		{
+			wheel(window, SPD_X, SPD_Y, 120);
+			run_ms(100);
+			const int one_up = get_value(CH8_ENV_SPEED);
+			wheel(window, SPD_X, SPD_Y, -120);
+			// A new note at x1, then x1/16 while it holds: the cursor slows from where it is (D88).
+			send_midi(0x87, 72, 0);
+			send_midi(0x97, 72, 100);
+			run_ms(100);
+			wheel(window, SPD_X, SPD_Y, -120 * 80);
+			run_ms(50);
+			const int slowest = get_value(CH8_ENV_SPEED);
+			capture(window);
+			save_bmp(argv[2], "psg-speed");
+			int left, right, left2, right2;
+			lit_columns(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left, &right);
+			run_ms(300);
+			capture(window);
+			lit_columns(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left2, &right2);
+			double_click(window, SPD_X, SPD_Y);
+			run_ms(100);
+			CHECK(one_up == 65 && slowest == 0 && left > ENV_X && left2 >= left && left2 - left <= 2 * (right - left + 2) && get_value(CH8_ENV_SPEED) == 64,
+				"SPD: a notch gives %d, many down %d (x1/16): the lit column at x %d, 300 ms later %d; a double click gives x1 (%d)", one_up, slowest, left, left2, get_value(CH8_ENV_SPEED));
 		}
 		send_midi(0x87, 72, 0);
 		click(window, RAIL_X, RAIL_CH4_Y);

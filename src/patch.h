@@ -45,9 +45,14 @@ enum {
 	// Stage 38 (D83): MONO of FM channels 1-6, CC 105 on the channel (GLOBAL_MONO). The console's,
 	// as the operators' are: not part of a sound, the bank or files.
 	GLOBAL_MONO_BASE = GLOBAL_CH3_OP_END,
-	PATCH_NUM_GLOBALS = GLOBAL_MONO_BASE + 6,
+	// Stage 44 (D88): the envelope's speed of PSG channels 7-10, CC 9 on the channel
+	// (GLOBAL_ENV_SPEED). The console's, as MONO: not part of a sound; 64 is the stock x1.
+	GLOBAL_ENV_SPEED_BASE = GLOBAL_MONO_BASE + 6,
+	PATCH_NUM_GLOBALS = GLOBAL_ENV_SPEED_BASE + 4,
 };
 #define GLOBAL_MONO(channel) (GLOBAL_MONO_BASE + (channel))
+// psg: 0-3, channels 7-10.
+#define GLOBAL_ENV_SPEED(psg) (GLOBAL_ENV_SPEED_BASE + (psg))
 enum { PATCH_CH3_SEMI, PATCH_CH3_FINE, PATCH_CH3_FIXED, PATCH_CH3_OP_FIELDS };
 #define GLOBAL_CH3_OP(op, field) (GLOBAL_CH3_OP_BASE + (op) * PATCH_CH3_OP_FIELDS + (field))
 // Stage 22 (D52): CSM, timer A keys all four operators at the rate of MIDI 3's note.
@@ -470,6 +475,8 @@ void patch_arp_base_view(mdmi_patch *patch, int channel, patch_arp *base);
 bool patch_set(mdmi_patch *patch, uint32_t id, int value);
 // Sends the receiver whatever differs from the model.
 void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context);
+// Stage 44 (D88): envelope steps a frame at an Env Speed value, 1.0 at the default 64.
+double patch_env_speed(int value);
 // A message from the host: updates the model and sends the ROM what it needs. True if knobs moved.
 // Notes starting at the same moment wait for patch_flush, so their voices change in one batch (D21).
 bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_emit_fn emit, void *context);

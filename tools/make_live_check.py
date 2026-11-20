@@ -314,6 +314,28 @@ add_clip(rm, '7 гласные плавно перетекают', R0 + 8 * BAR,
 new_tracks += [rack_t, rm]
 start = R0 + 18 * BAR
 
+# --- stages 41, 44, 46: PSG on the main MDMI; Env Speed of channels 8 and 10 automated (ids 31, 33) ---
+S0 = start
+sp8 = configure_param(mdmi_t, 4, 'Ch8 Env Speed', 31, 3)
+sp10 = configure_param(mdmi_t, 5, 'Ch10 Env Speed', 33, 4)
+X1 = 64 / 127
+# 87-88 x1, 89-90 down to x1/16, 91-92 up to x4, 93-94 back to x1
+automate_points(mdmi_t, sp8, [(S0, X1), (S0 + 2 * BAR, X1), (S0 + 4 * BAR, 0.0), (S0 + 6 * BAR, 1.0),
+                              (S0 + 8 * BAR, X1)])
+# 95-96 x1, 97-100 down to x1/16 and back, 101-102 x1
+automate_points(mdmi_t, sp10, [(S0, X1), (S0 + 10 * BAR, X1), (S0 + 12 * BAR, 0.0), (S0 + 14 * BAR, X1)])
+psg = {}
+for tid, name, ch, col in (('37', 'К7 PSG1', 6, 21), ('38', 'К8 PSG2', 7, 21), ('39', 'К10 шум', 9, 23)):
+    t = copy.deepcopy(midi_t); t.set('Id', tid)
+    clear(t); renumber(t); set_name(t, name); t.find('Color').set('Value', str(col))
+    route(t, f'MidiOut/Track.12/DeviceIn.3.{ch}', 'MDMI песня', f'MDMI Slot | Ch {ch + 1}')
+    psg[ch] = t; new_tracks.append(t)
+add_clip(psg[7], '8 скорость огибающей К8: x1, медленнее, быстрее', S0, 8 * BAR,
+         [(60, 0, 8), (64, 8, 8), (67, 16, 8), (72, 24, 8)], 21)
+add_clip(psg[9], '8 скорость огибающей шума', S0 + 8 * BAR, 6 * BAR, [(60, i * 0.5, 0.5) for i in range(48)], 23)
+add_clip(psg[6], '9 волна PSG на ROM: A5, C6, D#6', S0 + 14 * BAR, 2 * BAR, [(81, 0, 2), (84, 2, 2), (87, 4, 2), (81, 6, 2)], 21)
+start = S0 + 16 * BAR
+
 for t in all_tracks: tracks.remove(t)
 for t in new_tracks + returns: tracks.append(t)
 for sc in ls.find('Scenes'):
@@ -327,7 +349,7 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
 Сделан из tst6: на дорожке «MDMI песня» ваш звук из tst6 с сэмплом DAC. Пункты = пункты docs/owner-check-*.md.
 
 Дорожки:
-  MDMI песня            плагин; на ней автоматизация DAC Enable и Mono CH1 (видно в списке огибающих дорожки)
+  MDMI песня            плагин; на ней автоматизация DAC Enable, Mono CH1, Ch8 и Ch10 Env Speed
   К1-К6                 шлют ноты в «MDMI песня» на MIDI-каналы 1-6
   MDMI гласная А…Э      пять плагинов, в каждый уже загружен свой CSM vowel (LOAD не нужен)
   К3 → гласная А…Э      шлют ноты на канал 3 своего плагина
@@ -348,6 +370,11 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
   69-76  п.7  «MDMI гласные на макросах»: один плагин в стойке (Instrument Rack), гласные А, О, У, И, Э
               по очереди, по полтора такта. Их переключает автоматизация макросов.
   77-86       та же стойка: гласные плавно перетекают А → О → У → И → Э → А, по два такта.
+  87-94  п.8  К8 PSG держит ноты по два такта. На странице канала 8 горит столбик, который играет.
+              Автоматизация Ch8 Env Speed: такты 87-88 обычная скорость, 89-90 огибающая замедляется до x1/16,
+              91-92 ускоряется до x4, 93-94 снова x1. Столбик идёт медленнее и быстрее вместе со звуком.
+  95-100      К10 шум восьмыми, Ch10 Env Speed: 97-98 замедляется, 99-100 возвращается к x1.
+  101-102 п.9 К7 PSG играет A5, C6, D#6: на странице ROM волна канала 7 у каждой ноты своя.
 
 Стойка «Гласные CSM» (дорожка «MDMI гласные на макросах»):
   F1 рот, F2 язык   две главные крутилки: F1 открывает рот (И, У внизу, А вверху), F2 двигает язык (У внизу,
