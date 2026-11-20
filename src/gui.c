@@ -396,6 +396,8 @@ struct mdmi_gui {
 	bool file_over;
 	int file_kind;
 	int file_count;
+	// Stage 49: files offered past the 128 taken, counted in the message as extra.
+	int file_beyond;
 	int file_instruments;
 	int file_envelopes;
 	// WAV among the files, and the notes they would go to on the DAC page.
@@ -462,6 +464,8 @@ struct mdmi_gui {
 	// window's alone: no knob, no project.
 	int last_op;
 	int ssg_open;
+	// Stage 49: the channel the choice of SSG was opened on; another closes it, however it came.
+	int ssg_channel;
 	// The operator of channel 3 whose pitch editor is open (stage 21, docs/design/ch3-ops.md), -1
 	// when closed; at most one of it and the choice of SSG is open.
 	int pitch_open;
@@ -1175,6 +1179,9 @@ static void layout(mdmi_gui *g, const patch_values *values)
 	if (channel != 2 || !is_special(values, channel) || *g->source.page != PAGE_EDITOR) {
 		g->pitch_open = -1;
 	}
+	if (g->ssg_open >= 0 && channel != g->ssg_channel) {
+		g->ssg_open = -1;
+	}
 	// Ahead of the column's rows it lies over, as the choice of SSG.
 	if (g->pitch_open >= 0) {
 		const int x = GRID_X[g->pitch_open];
@@ -1515,7 +1522,9 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		buffer[(c->w - 8) / 12] = 0;
 		text(g, c->x + 4, c->y + 14, buffer, shown, 2);
 	} else {
-		int label_end = text(g, c->x + 4, c->y + (c->h - 7) / 2, c->label, label, 1);
+		// Stage 49 (ui-concept.md): TIME pads 2 px, not 4, so 100-127 fit at size 2 in its 64 px.
+		const int pad = channel >= 0 && param == PARAM_PORTA_TIME ? 2 : 4;
+		int label_end = text(g, c->x + pad, c->y + (c->h - 7) / 2, c->label, label, 1);
 		// Stage 44 (env-speed.md): x1.00 fits its 60 px only small; the bar and the footer say the rest.
 		if (is_env_speed(c->id)) {
 			text_right(g, c->x + c->w - 3, c->y + (c->h - 7) / 2, buffer, shown, 1, c->x + c->w - 4 - label_end);
@@ -1525,12 +1534,14 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 			return;
 		}
 		// A value without room for its unit drops it: +0 for +0 ct.
-		const int room = c->x + c->w - 4 - label_end - 6;
+		// TIME's value ends its last glyph's blank at the cell's edge: drawn to 699, 3 px after the label.
+		const int right = pad == 2 ? c->x + c->w : c->x + c->w - 4;
+		const int room = right - label_end - (pad == 2 ? 2 : 6);
 		char *space = strchr(buffer, ' ');
 		if ((int)strlen(buffer) * 12 > room && space) {
 			*space = 0;
 		}
-		text_right(g, c->x + c->w - 4, c->y + (c->h - 14) / 2, buffer, shown, 2, room);
+		text_right(g, right, c->y + (c->h - 14) / 2, buffer, shown, 2, room);
 		if (changed) {
 			fill(g, c->x + (c->w - 2) * base / max, c->y + c->h - 4, 2, 4, C_AMBER);
 		}
@@ -1556,7 +1567,9 @@ static void draw_cell(mdmi_gui *g, const cell *c, const patch_values *values)
 	if (c->look == LOOK_SHAPE || (c + 1 < g->cells + g->cell_count && c[1].id == c->id)) {
 		return;
 	}
-	fill(g, c->x + c->w - 4, c->y + 1, 3, 3, C_ERROR);
+	// Stage 49 (ui-concept.md): TIME's value reaches its right edge, so its dot goes top left.
+	const bool time = channel >= 0 && param == PARAM_PORTA_TIME;
+	fill(g, time ? c->x + 1 : c->x + c->w - 4, c->y + 1, 3, 3, C_ERROR);
 }
 
 // Operator positions in the diagram (column, row), what modulates what, and which are carriers.
@@ -1700,6 +1713,15 @@ static void pitch_text(uint8_t frame, char *out, size_t size)
 static int frame_ms(int frame)
 {
 	return (frame * 1000 + 30) / 60;
+}
+
+// Stage 49: steps of the open PSG channel's envelope in ms at its SPD (the ROM's own table, D88);
+// at x1 the same as frame_ms.
+static int env_ms(mdmi_gui *g, int steps)
+{
+	const int psg = *g->source.channel - PATCH_NUM_FM_CHANNELS;
+	const long rate = psg >= 0 ? patch_env_rate(patch_get(g->source.patch, (uint32_t)GLOBAL_ENV_SPEED(psg))) : PATCH_ENV_RATE_ONE;
+	return (int)(((long)steps * 1000 * PATCH_ENV_RATE_ONE + 30 * rate) / (60 * rate));
 }
 
 static int loop_end_of(const patch_shape *shape)
@@ -2117,7 +2139,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	char pitch[16];
 	// The release after the loop, played or not (stage 22b).
 	const bool tail = has_tail(shape), stop = tail && shown_stop(g, shape);
-	const int tail_ms = tail ? frame_ms(shape->count - shape->loop_end) : 0;
+	const int tail_ms = tail ? env_ms(g, shape->count - shape->loop_end) : 0;
 	if ((part == ENV_LEVEL || part == ENV_PITCH) && step >= 0 && step < shape->count) {
 		if (part == ENV_PITCH && noise_without_pitch(patch_view(g->source.patch), *g->source.channel)) {
 			snprintf(hint, size, "CH10: SHIFT WORKS ONLY WITH RATE TONE 3");
@@ -2131,11 +2153,11 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 		pitch_text(shape->frames[step], pitch, sizeof(pitch));
 		char db[12];
 		snprintf(db, sizeof(db), level == 15 ? "OFF" : "%d DB", -2 * level);
-		snprintf(hint, size, "STEP %d/%d  %d MS  LEVEL %s  PITCH %s", step + 1, shape->count, frame_ms(step), db, pitch);
+		snprintf(hint, size, "STEP %d/%d  %d MS  LEVEL %s  PITCH %s", step + 1, shape->count, env_ms(g, step), db, pitch);
 	} else if (part == ENV_LOOP_START || part == ENV_LOOP_END) {
 		const int end = loop_end_of(shape);
 		if (g->env_drag != ENV_NONE && g->env_moved) {
-			snprintf(hint, size, "LOOP %d-%d: %d STEPS, %d MS", shape->loop_start + 1, end, end - shape->loop_start, frame_ms(end - shape->loop_start));
+			snprintf(hint, size, "LOOP %d-%d: %d STEPS, %d MS", shape->loop_start + 1, end, end - shape->loop_start, env_ms(g, end - shape->loop_start));
 		} else if (part == ENV_LOOP_START) {
 			snprintf(hint, size, "LOOP START: DRAG BETWEEN STEPS");
 		} else if (!tail) {
@@ -2148,7 +2170,7 @@ static bool envelope_hint(mdmi_gui *g, char *hint, size_t size)
 	} else if (part == ENV_LENGTH && shape->count >= room) {
 		snprintf(hint, size, "MAX %d BYTES, LOOP MARKS TAKE %d", PATCH_ENVELOPE_STEPS, PATCH_ENVELOPE_STEPS - room);
 	} else if (part == ENV_LENGTH) {
-		snprintf(hint, size, g->env_drag != ENV_NONE ? "LENGTH %d STEPS, %d MS" : "LENGTH %d STEPS, %d MS: DRAG UP OR DOWN", shape->count, frame_ms(shape->count));
+		snprintf(hint, size, g->env_drag != ENV_NONE ? "LENGTH %d STEPS, %d MS" : "LENGTH %d STEPS, %d MS: DRAG UP OR DOWN", shape->count, env_ms(g, shape->count));
 	} else if (part == ENV_LOOP && shape->loop_start >= 0) {
 		snprintf(hint, size, g->env_moved ? "LOOP %d-%d: RELEASE TO KEEP" : "LOOP %d-%d: CLICK OFF, DRAG TO MOVE", shape->loop_start + 1, loop_end_of(shape));
 	} else if (part == ENV_LOOP && shape->count >= room && parked_loop(g, shape, &kept_start, &kept_end)) {
@@ -2359,12 +2381,13 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 		if (labelled && x + 76 <= lane_end) {
 			snprintf(buffer, sizeof(buffer), "%d", f);
 			text(g, x - (int)strlen(buffer) * 3, ENV_AXIS_Y + 4, buffer, C_HINT, 1);
-			snprintf(buffer, sizeof(buffer), "%d", frame_ms(f));
+			snprintf(buffer, sizeof(buffer), "%d", env_ms(g, f));
 			text(g, x - (int)strlen(buffer) * 3, ENV_AXIS_Y + 14, buffer, C_HINT, 1);
 		}
 	}
 	fill(g, lane_end, ENV_AXIS_Y, 1, 3, C_LABEL);
-	text_right(g, 286, ENV_AXIS_Y + 4, "FRAME", C_HINT, 1, 40);
+	// Stage 49 (ui-concept.md): at x1/2 a step is two frames; the row counts steps, the MS row follows SPD.
+	text_right(g, 286, ENV_AXIS_Y + 4, "STEP", C_HINT, 1, 40);
 	text_right(g, 286, ENV_AXIS_Y + 14, "MS", C_HINT, 1, 40);
 	// The length is the number at the axis' end, dragged like a value cell. At the limit, 124 bytes
 	// with the loop marks, it turns amber and says MAX.
@@ -4659,11 +4682,13 @@ static bool noise_hint(mdmi_gui *g, char *hint, size_t size)
 	return true;
 }
 
-// Master Volume under the mouse: say that the console has no such knob.
-static bool master_hint(mdmi_gui *g)
+// Master Volume or Retrigger under the mouse (stage 49): say that the console has no such knob. The
+// knob's id, or 0.
+static uint32_t plugin_only_hint(mdmi_gui *g)
 {
 	const int over = g->file_over ? -1 : hovered(g);
-	return over >= 0 && g->cells[over].id == GLOBAL_MASTER;
+	const uint32_t id = over >= 0 ? g->cells[over].id : 0;
+	return id == GLOBAL_MASTER || id == GLOBAL_RETRIGGER ? id : 0;
 }
 
 // A rail row with cut notes under the mouse (stage 24b): why no voice was free. The voices that never
@@ -4684,7 +4709,7 @@ static bool cut_hint(mdmi_gui *g, char *hint, size_t size)
 	char causes[3][24] = {"", "", ""};
 	for (int voice = 0; voice < PATCH_NUM_FM_CHANNELS; voice++) {
 		const int reason = patch_lend_reason(values, voice);
-		if (reason != PATCH_ALONE_NO) {
+		if (reason != PATCH_ALONE_NO && reason <= (int)(sizeof(causes) / sizeof(*causes))) {
 			char *list = causes[reason - 1];
 			snprintf(list + strlen(list), sizeof(causes[0]) - strlen(list), " %d", voice + 1);
 		}
@@ -4811,8 +4836,8 @@ static bool env_speed_hint(mdmi_gui *g, char *hint, size_t size)
 	return true;
 }
 
-// One line, by what matters most: a dead engine, a file being dragged, the button under the mouse,
-// what just happened, then the engine's numbers.
+// One line, by what matters most: a dead engine, a gesture under way or the button under the mouse,
+// what just happened, what the mouse is over, then the engine's numbers.
 static void draw_footer(mdmi_gui *g)
 {
 	fill(g, 0, FOOTER_Y, GUI_WIDTH, GUI_HEIGHT - FOOTER_Y, C_BG);
@@ -4857,14 +4882,17 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_LABEL);
 	} else if (g->arp_drag != ARP_NONE && arp_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
+	} else if (g->message_ticks > 0) {
+		// Stage 49 (ui-concept.md): what just happened, then what the mouse is over, CUT first.
+		footer_text(g, g->message, g->message_color);
 	} else if (cut_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_ERROR);
-	} else if (g->message_ticks > 0) {
-		footer_text(g, g->message, g->message_color);
 	} else if (env_speed_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
-	} else if (master_hint(g)) {
+	} else if (plugin_only_hint(g) == GLOBAL_MASTER) {
 		footer_text(g, "MASTER: PLUGIN ONLY, NOT ON THE CONSOLE", C_LABEL);
+	} else if (plugin_only_hint(g) == GLOBAL_RETRIGGER) {
+		footer_text(g, "RETRIGGER: PLUGIN ONLY, NOT ON THE CONSOLE", C_LABEL);
 	} else if (ch3_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (bank_hint(g, buffer, sizeof(buffer), &color)) {
@@ -5704,7 +5732,7 @@ static int envelope_frame(mdmi_gui *g, const patch_shape *shape, int psg, unsign
 	// Stage 44 (D88): the frames the envelope went at the speeds sent; at x1 the time since Note On.
 	const uint64_t since = __atomic_load_n(&times->env_since[psg], __ATOMIC_ACQUIRE);
 	const uint64_t at = __atomic_load_n(&times->env_at[psg], __ATOMIC_ACQUIRE) + (now > since ? now - since : 0) * __atomic_load_n(&times->env_rate[psg], __ATOMIC_ACQUIRE);
-	const double scale = PSG_FRAME_HZ / (256.0 * rate);
+	const double scale = PSG_FRAME_HZ / ((double)PATCH_ENV_RATE_ONE * rate);
 	const long total = (long)((double)at * scale);
 	if (off == GUI_NEVER || off < on) {
 		return patch_shape_position(shape, total, -1);
@@ -6063,10 +6091,13 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 				draw_mini_diagram(g, ALL_SOUND_X, y, v[PARAM_ALGORITHM], v[PARAM_FEEDBACK], is_special(values, channel) ? C_FM_LIGHT : C_FM);
 			}
 		} else {
-			patch_shape shape;
-			patch_shape_of(&values->psg[channel - PATCH_NUM_FM_CHANNELS], &shape);
-			// Where the note is in it, its column lit (stage 41).
-			draw_mini_envelope(g, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, &shape, envelope_frame(g, &shape, channel - PATCH_NUM_FM_CHANNELS, rate));
+			// Where the note is in what plays, its column lit (stage 41), reckoned as the editor does
+			// (stage 49): a release kept while the loop stops is not played, so never lit.
+			patch_shape shape, played;
+			bool stop;
+			channel_shape(g, channel, &shape, &stop);
+			played_shape(&shape, stop, &played);
+			draw_mini_envelope(g, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, &played, envelope_frame(g, &played, channel - PATCH_NUM_FM_CHANNELS, rate));
 		}
 		draw_all_more(g, values, channel, y + 28);
 	}
@@ -6382,14 +6413,14 @@ static void open_file(mdmi_gui *g, const char *path, int channel)
 }
 
 // Instruments or envelopes into the bank from a place, or added after the last file when first < 0 (D26).
-static void put_places(mdmi_gui *g, const char *const *paths, int count, bool envelopes, int first)
+static void put_places(mdmi_gui *g, const char *const *paths, int count, int beyond, bool envelopes, int first)
 {
 	char message[FILES_MESSAGE];
 	if (first < 0) {
 		first = files_add_place(g->source.files, envelopes);
 	}
 	int skipped;
-	const int loaded = files_put_places(g->source.files, paths, count, envelopes, first, &skipped, message, sizeof(message));
+	const int loaded = files_put_places(g->source.files, paths, count, beyond, envelopes, first, &skipped, message, sizeof(message));
 	say(g, message, !loaded ? C_ERROR : skipped ? C_AMBER : C_TEXT, loaded && !skipped ? MESSAGE_TICKS : ERROR_TICKS);
 	// The places filled, or the one the files were aimed at.
 	flash(g, -1, first, loaded ? loaded : 1, loaded > 0);
@@ -6441,6 +6472,10 @@ static void load_dialog(mdmi_gui *g, bool add)
 		path[MAX_PATH * 2 - 1] = 0;
 		to_utf8(path, g->file_paths[count++], sizeof(g->file_paths[0]));
 	}
+	int beyond = 0;
+	for (; *name; name += wcslen(name) + 1) {
+		beyond++;
+	}
 	free(buffer);
 
 	const char *paths[PATCH_BANK_SIZE];
@@ -6450,11 +6485,11 @@ static void load_dialog(mdmi_gui *g, bool add)
 	if (!bank || (count == 1 && !add && files_kind(paths[0]) != (envelopes ? FILES_ENVELOPE : FILES_INSTRUMENT))) {
 		open_file(g, paths[0], channel);
 	} else if (add) {
-		put_places(g, paths, count, envelopes, -1);
+		put_places(g, paths, count, beyond, envelopes, -1);
 	} else if (!takes_files(values, channel)) {
 		say(g, "Select another CH to choose a slot", C_ERROR, ERROR_TICKS);
 	} else {
-		put_places(g, paths, count, envelopes, values->channels[channel][PARAM_PRESET]);
+		put_places(g, paths, count, beyond, envelopes, values->channels[channel][PARAM_PRESET]);
 	}
 }
 
@@ -6510,19 +6545,22 @@ static void save_dialog(mdmi_gui *g)
 	if (!GetSaveFileNameW(&dialog)) {
 		return;
 	}
-	// The name's extension says what the file is when it is ours, since loading goes by it; without
-	// one, the chosen type's extension is added.
-	const int KINDS[3] = {envelope ? FILES_ENVELOPE : FILES_INSTRUMENT, FILES_BANK, FILES_SNAPSHOT};
-	const char *const EXTENSIONS[3] = {envelope ? ".eef" : ".vgi", ".mdbank", ".mdsnap"};
 	const int chosen = dialog.nFilterIndex >= 1 && dialog.nFilterIndex <= 3 ? (int)dialog.nFilterIndex - 1 : 1;
-	char utf8[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
-	to_utf8(path, utf8, MAX_PATH * 3);
-	const char *dot = strrchr(utf8, '.');
-	const bool ours = dot && (!_stricmp(dot, EXTENSIONS[0]) || files_kind(utf8) == FILES_BANK || files_kind(utf8) == FILES_SNAPSHOT);
-	if (!ours) {
-		strcat(utf8, EXTENSIONS[chosen]);
+	char given[MAX_PATH * 3], utf8[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
+	to_utf8(path, given, sizeof(given));
+	int kind;
+	if (files_save_path(given, chosen, envelope, utf8, sizeof(utf8), &kind)) {
+		// Stage 49: the dialog asked about the name without the extension added here.
+		wchar_t question[MAX_PATH * 2 + 64];
+		wchar_t written[MAX_PATH * 2];
+		MultiByteToWideChar(CP_UTF8, 0, utf8, -1, written, MAX_PATH * 2);
+		const wchar_t *slash = wcsrchr(written, L'\\');
+		_snwprintf(question, sizeof(question) / sizeof(*question), L"%s already exists.\nDo you want to replace it?", slash ? slash + 1 : written);
+		question[sizeof(question) / sizeof(*question) - 1] = 0;
+		if (MessageBoxW(g->window, question, L"Save", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+			return;
+		}
 	}
-	const int kind = ours ? files_kind(utf8) : KINDS[chosen];
 	bool done = files_save(g->source.files, utf8, kind, sound ? channel : -1, message, sizeof(message));
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
 }
@@ -7015,6 +7053,7 @@ static void on_down(mdmi_gui *g, int x, int y)
 	const cell *c = &g->cells[index];
 	if (c->kind == CELL_SSG) {
 		g->ssg_open = g->last_op = op_of(c->id);
+		g->ssg_channel = *g->source.channel;
 		refresh(g);
 		return;
 	}
@@ -7094,6 +7133,23 @@ static void on_move(mdmi_gui *g, int x, int y)
 	if (value != g->drag_value) {
 		g->drag_value = value;
 		edit(g, GUI_EDIT_SET, g->drag_id, value);
+	}
+}
+
+// Stage 38 (D83): the other of the pair MONO | PORTA of an FM channel's knob, or 0.
+static uint32_t pair_other(uint32_t id)
+{
+	const int mono = mono_channel_of(id), porta = porta_channel_of(id);
+	return mono >= 0 ? PATCH_CHANNEL_ID(mono, PARAM_PORTA_ON) : porta >= 0 ? (uint32_t)GLOBAL_MONO(porta) : 0;
+}
+
+// The pair's one rule, for a click, a drag and the wheel alike (stage 49): one of MONO and PORTA
+// turned on turns the other off.
+static void pair_rule(mdmi_gui *g, uint32_t id, int value)
+{
+	const uint32_t other = pair_other(id);
+	if (other && value && patch_get(g->source.patch, other)) {
+		edit_once(g, other, 0);
 	}
 }
 
@@ -7198,20 +7254,17 @@ static void on_up(mdmi_gui *g)
 	const int max = patch_param(g->drag_id)->max;
 	// Stage 38 (art-director): MONO and PORTA are a pair, at most one the mode. A click on an unlit one,
 	// or on an overruled MONO, makes it the mode and turns the other off; on the lit one, turns it off.
-	const int mono = mono_channel_of(g->drag_id), porta = porta_channel_of(g->drag_id);
-	const int pair = mono >= 0 ? mono : porta;
-	const uint32_t other = mono >= 0 ? PATCH_CHANNEL_ID(mono, PARAM_PORTA_ON) : porta >= 0 ? (uint32_t)GLOBAL_MONO(porta) : 0;
-	const bool other_on = pair >= 0 && patch_get(g->source.patch, other);
+	const int mono = mono_channel_of(g->drag_id);
+	const bool other_on = pair_other(g->drag_id) && patch_get(g->source.patch, pair_other(g->drag_id));
 	if (!g->drag_moved && max + 1 <= 8) {
 		const bool overruled = mono >= 0 && g->drag_start && other_on;
 		g->drag_value = overruled ? 1 : g->drag_start < max ? g->drag_start + 1 : 0;
 		edit(g, GUI_EDIT_SET, g->drag_id, g->drag_value);
 	}
 	edit(g, GUI_EDIT_END, g->drag_id, 0);
-	if (!g->drag_moved && pair >= 0 && g->drag_value && other_on && (mono >= 0 || porta >= 0)) {
-		// A lit PORTA clicked while MONO is set turns PORTA off only, so this is for turning one on.
-		edit_once(g, other, 0);
-	}
+	// A lit PORTA clicked while MONO is set turns PORTA off only, so this is for turning one on; a
+	// drag keeps the pair's rule as a click does (stage 49).
+	pair_rule(g, g->drag_id, g->drag_value);
 	g->dragging = false;
 	if (GetCapture() == g->window) {
 		ReleaseCapture();
@@ -7382,7 +7435,7 @@ static mdmi_gui *gui_of(IDropTarget *self)
 // The files offered, up to a bank of them, and how many are instruments and envelopes.
 static void read_drop(mdmi_gui *g, IDataObject *data)
 {
-	g->file_count = g->file_instruments = g->file_envelopes = g->file_samples = 0;
+	g->file_count = g->file_beyond = g->file_instruments = g->file_envelopes = g->file_samples = 0;
 	g->file_paths[0][0] = g->file_name[0] = g->file_stem[0] = 0;
 	FORMATETC format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
 	STGMEDIUM medium;
@@ -7392,7 +7445,8 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 	HDROP drop = GlobalLock(medium.hGlobal);
 	if (drop) {
 		const int offered = (int)DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
-		for (int i = 0; i < offered && g->file_count < PATCH_BANK_SIZE; i++) {
+		int i = 0;
+		for (; i < offered && g->file_count < PATCH_BANK_SIZE; i++) {
 			wchar_t path[MAX_PATH];
 			if (DragQueryFileW(drop, (UINT)i, path, MAX_PATH)) {
 				char *utf8 = g->file_paths[g->file_count++];
@@ -7402,6 +7456,7 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 				g->file_samples += files_kind(utf8) == FILES_SAMPLE;
 			}
 		}
+		g->file_beyond = offered - i;
 		GlobalUnlock(medium.hGlobal);
 	}
 	ReleaseStgMedium(&medium);
@@ -7613,7 +7668,7 @@ static HRESULT STDMETHODCALLTYPE drop_drop(IDropTarget *self, IDataObject *data,
 		for (int i = 0; i < g->file_count; i++) {
 			paths[i] = g->file_paths[i];
 		}
-		put_places(g, paths, g->file_count, g->drop_envelopes, g->drop_add ? -1 : g->drop_place);
+		put_places(g, paths, g->file_count, g->file_beyond, g->drop_envelopes, g->drop_add ? -1 : g->drop_place);
 	} else {
 		// What the footer said while the file was over the window stays there after it.
 		say(g, g->drop_hint, C_ERROR, ERROR_TICKS);
@@ -7725,6 +7780,7 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 				files_preset_step(g->source.files, channel);
 			}
 			edit_once(g, id, value);
+			pair_rule(g, id, value);
 			g->wheel_pending = true;
 			g->wheel_id = id;
 			g->wheel_value = value;
@@ -7781,6 +7837,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		return 1;
 	case WM_DESTROY:
 		// Also reached when the host destroys our parent first. The next set_parent makes a new window.
+		// A press let go here is no click (stage 49): a row or a switch held stays as it was.
+		g->row_list = -1;
+		g->drag_moved = true;
 		on_up(g);
 		KillTimer(window, TIMER_ID);
 		if (g->drop_registered) {

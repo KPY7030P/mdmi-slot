@@ -102,12 +102,17 @@ int files_kind(const char *path);
 bool files_open(mdmi_files *files, const char *path, int channel, char *message, size_t size);
 // Instruments, or envelopes, into the bank one after another in the order of their names, from the
 // place first, or from files_add_place when first < 0 (D26). Files that can't be read, are of the
-// other kind, or come after place 128 are skipped and counted in the message. One undo step puts
+// other kind, or come after place 128 are skipped and counted in the message; beyond counts the
+// files offered past the list's 128 (stage 49), extra like those past place 128. One undo step puts
 // the bank back. Returns how many went in.
-int files_put_places(mdmi_files *files, const char *const *paths, int count, bool envelopes, int first, int *skipped, char *message, size_t size);
+int files_put_places(mdmi_files *files, const char *const *paths, int count, int beyond, bool envelopes, int first, int *skipped, char *message, size_t size);
 // The place after the last one that differs from GM, or from the ROM's envelope; PATCH_BANK_SIZE
 // when that is the last.
 int files_add_place(const mdmi_files *files, bool envelopes);
+// The path SAVE writes for the name the save dialog gave and the type chosen in it (0 the channel's
+// sound, 1 bank, 2 snapshot), and its kind. True when the plugin added the extension itself and that
+// file exists: the dialog asked about another name, so the caller asks before replacing (stage 49).
+bool files_save_path(const char *chosen, int type, bool envelope, char *out, size_t size, int *kind);
 bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size);
 // A drawn envelope for a PSG channel, the way a dropped EEF goes (stage 8). The first of a gesture
 // gives what the channel had before it, which undo puts back.

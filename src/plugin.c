@@ -153,7 +153,7 @@ static void time_psg_notes(mdmi_plugin *self, uint64_t when, const uint8_t *byte
 	if (status == 0xB0 && bytes[1] == ENV_SPEED_CC) {
 		__atomic_store_n(&times->env_at[psg], at, __ATOMIC_RELEASE);
 		__atomic_store_n(&times->env_since[psg], when, __ATOMIC_RELEASE);
-		__atomic_store_n(&times->env_rate[psg], (uint32_t)(patch_env_speed(bytes[2]) * 256 + 0.5), __ATOMIC_RELEASE);
+		__atomic_store_n(&times->env_rate[psg], (uint32_t)patch_env_rate(bytes[2]), __ATOMIC_RELEASE);
 		return;
 	}
 	if (status == 0x90 && bytes[2] > 0) {
@@ -1146,7 +1146,7 @@ static const clap_plugin_t *factory_create_plugin(const clap_plugin_factory_t *f
 	for (int i = 0; i < PATCH_NUM_PSG_CHANNELS; i++) {
 		self->psg_times.on[i] = self->psg_times.off[i] = GUI_NEVER;
 		self->psg_times.env_off[i] = GUI_NEVER;
-		self->psg_times.env_rate[i] = 256;
+		self->psg_times.env_rate[i] = PATCH_ENV_RATE_ONE;
 	}
 	for (int i = 0; i < PATCH_NUM_FM_CHANNELS; i++) {
 		self->psg_times.fm_on[i] = self->psg_times.fm_off[i] = GUI_NEVER;

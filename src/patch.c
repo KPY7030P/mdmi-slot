@@ -920,6 +920,13 @@ double patch_env_speed(int value)
 	return ENV_SPEED_RATE[value & 0x7F] / (double)ENV_SPEED_ONE;
 }
 
+_Static_assert(ENV_SPEED_ONE == PATCH_ENV_RATE_ONE, "the window counts the ROM's envelope rate in its units");
+
+int patch_env_rate(int value)
+{
+	return ENV_SPEED_RATE[value & 0x7F];
+}
+
 static void format_global(int global, int value, char *text, size_t size)
 {
 	if (global >= GLOBAL_CH3_OP_BASE && global < GLOBAL_CH3_OP_END) {

@@ -479,6 +479,9 @@ bool patch_set(mdmi_patch *patch, uint32_t id, int value);
 void patch_sync(mdmi_patch *patch, patch_receiver *receiver, patch_emit_fn emit, void *context);
 // Stage 44 (D88): envelope steps a frame at an Env Speed value, 1.0 at the default 64.
 double patch_env_speed(int value);
+// Stage 49: the same as the ROM's table has it, envelope steps a frame times PATCH_ENV_RATE_ONE.
+#define PATCH_ENV_RATE_ONE 256
+int patch_env_rate(int value);
 // A message from the host: updates the model and sends the ROM what it needs. True if knobs moved.
 // Notes starting at the same moment wait for patch_flush, so their voices change in one batch (D21).
 bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_emit_fn emit, void *context);

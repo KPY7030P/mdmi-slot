@@ -836,7 +836,7 @@ static bool open_file(mdmi_files *files, const char *dir, const char *name, int 
 	char path[MAX_PATH];
 	path_in(path, sizeof(path), dir, name);
 	const char *one = path;
-	return place >= 0 ? files_put_places(files, &one, 1, false, place, NULL, message, FILES_MESSAGE) : files_open(files, path, channel, message, FILES_MESSAGE);
+	return place >= 0 ? files_put_places(files, &one, 1, 0, false, place, NULL, message, FILES_MESSAGE) : files_open(files, path, channel, message, FILES_MESSAGE);
 }
 
 static bool files_put_places_one(mdmi_files *files, const char *name, int place, char *message)
@@ -844,7 +844,7 @@ static bool files_put_places_one(mdmi_files *files, const char *name, int place,
 	char path[MAX_PATH];
 	path_in(path, sizeof(path), files_dir, name);
 	const char *one = path;
-	return files_put_places(files, &one, 1, true, place, NULL, message, FILES_MESSAGE) == 1;
+	return files_put_places(files, &one, 1, 0, true, place, NULL, message, FILES_MESSAGE) == 1;
 }
 
 static bool same_model(const patch_values *a, const patch_values *b)
@@ -966,7 +966,7 @@ static void test_places(void)
 	patch_publish(patch);
 	static patch_bank gm;
 	gm = patch->bank;
-	CHECK(files_put_places(&files, list, 5, false, 9, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 10-14"), "five files on slot 10: %s", message);
+	CHECK(files_put_places(&files, list, 5, 0, false, 9, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 10-14"), "five files on slot 10: %s", message);
 	bool in_order = true;
 	for (int i = 0; i < 5; i++) {
 		in_order &= !strcmp(patch->bank.places[9 + i].name, SORTED[i]) && !strcmp(patch_bank_view(patch)->places[9 + i].name, SORTED[i]);
@@ -978,12 +978,12 @@ static void test_places(void)
 	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->bank, &gm, sizeof(gm)) && !strcmp(patch->model.names[0], patch_gm_name(11)), "one undo puts the whole bank and the channel back");
 	files_redo(&files, message, sizeof(message));
 
-	CHECK(files_put_places(&files, list, 5, false, -1, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 15-19"), "the same five added: %s", message);
+	CHECK(files_put_places(&files, list, 5, 0, false, -1, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 15-19"), "the same five added: %s", message);
 	CHECK(!strcmp(patch->bank.places[14].name, SORTED[0]) && !strcmp(patch->bank.places[18].name, SORTED[4]), "after the last file");
 
-	CHECK(files_put_places(&files, list, 5, false, 125, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[127].name, SORTED[2]) && strstr(message, "2 didn't fit"),
+	CHECK(files_put_places(&files, list, 5, 0, false, 125, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[127].name, SORTED[2]) && strstr(message, "2 extra"),
 		"what doesn't fit before 128 is skipped and told: %s", message);
-	CHECK(files_add_place(&files, false) == PATCH_BANK_SIZE && !files_put_places(&files, list, 1, false, -1, NULL, message, sizeof(message)), "with a file in slot 128 nothing more is added: %s", message);
+	CHECK(files_add_place(&files, false) == PATCH_BANK_SIZE && !files_put_places(&files, list, 1, 0, false, -1, NULL, message, sizeof(message)), "with a file in slot 128 nothing more is added: %s", message);
 
 	uint8_t junk[42];
 	memset(junk, 0x7F, sizeof(junk));
@@ -991,13 +991,37 @@ static void test_places(void)
 	char junk_path[MAX_PATH];
 	path_in(junk_path, sizeof(junk_path), temp_dir, "junk.tfi");
 	const char *mixed[3] = {list[0], junk_path, list[1]};
-	CHECK(files_put_places(&files, mixed, 3, false, 30, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[30].name, "Duck Guitar") && !strcmp(patch->bank.places[31].name, "Turtles Guitar")
-		&& !strcmp(patch->bank.places[32].name, patch_gm_name(32)) && strstr(message, "skipped 1: junk.tfi"),
+	CHECK(files_put_places(&files, mixed, 3, 0, false, 30, NULL, message, sizeof(message)) && !strcmp(patch->bank.places[30].name, "Duck Guitar") && !strcmp(patch->bank.places[31].name, "Turtles Guitar")
+		&& !strcmp(patch->bank.places[32].name, patch_gm_name(32)) && strstr(message, "1 unread: junk.tfi"),
 		"a file that can't be read is skipped, the rest close up: %s", message);
 	static patch_bank kept;
 	kept = patch->bank;
 	const char *bad[1] = {junk_path};
-	CHECK(!files_put_places(&files, bad, 1, false, 40, NULL, message, sizeof(message)) && !memcmp(&patch->bank, &kept, sizeof(kept)), "only bad files: the bank stays: %s", message);
+	CHECK(!files_put_places(&files, bad, 1, 0, false, 40, NULL, message, sizeof(message)) && !memcmp(&patch->bank, &kept, sizeof(kept)), "only bad files: the bank stays: %s", message);
+
+	// Stage 49: 130 files dropped, the window takes 128 (2 beyond), one of them unread: the two counts apart.
+	static const char *many[PATCH_BANK_SIZE];
+	for (int i = 0; i < PATCH_BANK_SIZE; i++) {
+		many[i] = i == 64 ? junk_path : list[i % 5];
+	}
+	int skipped = 0;
+	const int many_loaded = files_put_places(&files, many, PATCH_BANK_SIZE, 2, false, 0, &skipped, message, sizeof(message));
+	CHECK(many_loaded == 127 && skipped == 3 && !strcmp(message, "Loaded 127 to slots 1-127, 2 extra, 1 unread"), "130 files, 1 unread: %d loaded, %d skipped: %s", many_loaded, skipped, message);
+	CHECK(!files_put_places(&files, bad, 1, 2, false, 40, NULL, message, sizeof(message)) && !strcmp(message, "Nothing loaded, 2 extra, 1 unread"), "nothing read, 2 beyond: %s", message);
+
+	// Stage 49: SAVE of "Bass v1.2" adds .vgi itself; with "Bass v1.2.vgi" there it asks, not replaces.
+	char chosen[MAX_PATH], written[MAX_PATH + 8];
+	int save_kind = -1;
+	path_in(chosen, sizeof(chosen), temp_dir, "Bass v1.2");
+	DeleteFileA(strcat(strcpy(written, chosen), ".vgi"));
+	CHECK(!files_save_path(chosen, 0, false, written, sizeof(written), &save_kind) && save_kind == FILES_INSTRUMENT && strstr(written, "Bass v1.2.vgi"),
+		"SAVE \"Bass v1.2\" with no such file: writes %s at once", written);
+	write_bytes("Bass v1.2.vgi", junk, 42);
+	CHECK(files_save_path(chosen, 0, false, written, sizeof(written), &save_kind) && strstr(written, "Bass v1.2.vgi"), "with \"Bass v1.2.vgi\" there: asks before replacing it");
+	path_in(chosen, sizeof(chosen), temp_dir, "Bass v1.2.vgi");
+	CHECK(!files_save_path(chosen, 0, false, written, sizeof(written), &save_kind) && !strcmp(written, chosen), "a name with .vgi: the dialog asked, nothing added, no question");
+	path_in(chosen, sizeof(chosen), temp_dir, "Bass v1.2");
+	CHECK(!files_save_path(chosen, 1, false, written, sizeof(written), &save_kind) && save_kind == FILES_BANK && strstr(written, "Bass v1.2.mdbank"), "the bank type adds .mdbank");
 	files_free(&files);
 }
 
@@ -1118,11 +1142,11 @@ static void test_envelopes(void)
 		path_in(place_paths[i], sizeof(place_paths[i]), files_dir, PLACES[i]);
 		place_list[i] = place_paths[i];
 	}
-	CHECK(files_put_places(&files, place_list, 3, true, 40, NULL, message, sizeof(message)) == 2 && !strcmp(patch->bank.envelopes[40].name, "PSG Pluck")
-		&& !strcmp(patch->bank.envelopes[41].name, "PSG Vibrato") && strstr(message, "skipped 1: Duck Guitar.tfi") && !strcmp(patch->bank.places[40].name, patch_gm_name(40)),
+	CHECK(files_put_places(&files, place_list, 3, 0, true, 40, NULL, message, sizeof(message)) == 2 && !strcmp(patch->bank.envelopes[40].name, "PSG Pluck")
+		&& !strcmp(patch->bank.envelopes[41].name, "PSG Vibrato") && strstr(message, "1 unread: Duck Guitar.tfi") && !strcmp(patch->bank.places[40].name, patch_gm_name(40)),
 		"envelopes into places 41-42 by name, the TFI skipped: %s", message);
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "envelopes before 2 files"), "undo would put the envelopes back: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
-	CHECK(files_put_places(&files, place_list, 3, true, -1, NULL, message, sizeof(message)) == 2 && !strcmp(patch->bank.envelopes[42].name, "PSG Pluck"), "added after them: %s", message);
+	CHECK(files_put_places(&files, place_list, 3, 0, true, -1, NULL, message, sizeof(message)) == 2 && !strcmp(patch->bank.envelopes[42].name, "PSG Pluck"), "added after them: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && patch_envelope_is_rom(&patch->bank, 42) && !strcmp(patch->bank.envelopes[41].name, "PSG Vibrato"), "undo takes the added ones away");
 
 	// A place from 121 on is a place: Plain there is the channel's own service number holding it,

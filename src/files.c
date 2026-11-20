@@ -561,10 +561,10 @@ static int by_name(const void *a, const void *b)
 	return _stricmp(base_of(*(const char *const *)a), base_of(*(const char *const *)b));
 }
 
-int files_put_places(mdmi_files *files, const char *const *paths, int count, bool envelopes, int first, int *skipped, char *message, size_t size)
+int files_put_places(mdmi_files *files, const char *const *paths, int count, int beyond, bool envelopes, int first, int *skipped, char *message, size_t size)
 {
 	if (skipped) {
-		*skipped = count;
+		*skipped = count + beyond;
 	}
 	if (first < 0) {
 		first = files_add_place(files, envelopes);
@@ -602,13 +602,16 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, boo
 		}
 	}
 	const int loaded = place - first;
+	// Stage 49 (ui-concept.md): files with no place, past 128 or past the bank's end, are extra;
+	// those not read are counted apart, the first one named when no file is extra.
+	const int extra = beyond + no_room;
 	if (loaded == 0) {
 		if (first >= PATCH_BANK_SIZE) {
 			snprintf(message, size, envelopes ? "Envelopes full to 128" : "Bank is full to 128");
-		} else if (count == 1) {
+		} else if (count == 1 && !beyond) {
 			snprintf(message, size, "%s", why);
 		} else {
-			snprintf(message, size, "Nothing loaded: %d files not read", count);
+			snprintf(message, size, "Nothing loaded");
 		}
 	} else if (loaded == 1 && envelopes) {
 		const patch_envelope envelope = bank->envelopes[first];
@@ -629,20 +632,42 @@ int files_put_places(mdmi_files *files, const char *const *paths, int count, boo
 		files->host.handed(files->host.context, false);
 		snprintf(message, size, "Loaded %d to slots %d-%d", loaded, first + 1, place);
 	}
-	if (loaded > 0) {
-		const size_t used = strlen(message);
-		if (unread) {
-			snprintf(message + used, size - used, ", skipped %d: %s", unread + no_room, first_unread);
-		} else if (no_room) {
-			snprintf(message + used, size - used, ", %d didn't fit", no_room);
+	if (loaded > 0 || (first < PATCH_BANK_SIZE && (count > 1 || beyond))) {
+		size_t used = strlen(message);
+		if (extra && used < size) {
+			snprintf(message + used, size - used, ", %d extra", extra);
+			used = strlen(message);
+		}
+		if (unread && used < size) {
+			snprintf(message + used, size - used, extra ? ", %d unread" : ", %d unread: %s", unread, first_unread);
 		}
 	}
 	if (skipped) {
-		*skipped = unread + no_room;
+		*skipped = unread + extra;
 	}
 	free(sorted);
 	free(bank);
 	return loaded;
+}
+
+bool files_save_path(const char *chosen, int type, bool envelope, char *out, size_t size, int *kind)
+{
+	// The name's extension says what the file is when it is ours, since loading goes by it; without
+	// one, the chosen type's extension is added.
+	const int KINDS[3] = {envelope ? FILES_ENVELOPE : FILES_INSTRUMENT, FILES_BANK, FILES_SNAPSHOT};
+	const char *const EXTENSIONS[3] = {envelope ? ".eef" : ".vgi", ".mdbank", ".mdsnap"};
+	type = type >= 0 && type <= 2 ? type : 1;
+	const char *dot = strrchr(base_of(chosen), '.');
+	const bool ours = dot && (!_stricmp(dot, EXTENSIONS[0]) || files_kind(chosen) == FILES_BANK || files_kind(chosen) == FILES_SNAPSHOT);
+	snprintf(out, size, "%s%s", chosen, ours ? "" : EXTENSIONS[type]);
+	*kind = ours ? files_kind(out) : KINDS[type];
+	// Stage 49: "Bass v1.2" looks to Windows as if it had an extension, so the dialog asked about
+	// that name, not the one written.
+	FILE *there = ours ? NULL : open_utf8(out, L"rb");
+	if (there) {
+		fclose(there);
+	}
+	return there != NULL;
 }
 
 bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size)

@@ -54,7 +54,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Voices (D20, D21): each FM channel plays on its own voice, and a chord borrows the voices of channels
   that are silent, nothing to set up. A channel always plays on its own voice: when a chord holds it,
   the chord's note there moves to a free voice and starts again, and is cut only if none is free (D22). A cut note that is still held starts again as soon as a voice comes free. Notes beyond the free
-  voices don't sound, and the window marks them as CUT; over such a row the footer names the voices that never lend and why (stage 24b, D69, `patch_lend_reason`: SP, DAC). A green bracket in the window joins a chord's
+  voices don't sound, and the window marks them as CUT; over such a row the footer names the voices that never lend and why (stage 24b, D69, `patch_lend_reason`: SP, DAC); a fresh message comes first (stage 49: the footer's one order is a gesture under way or the button under the mouse, what just happened, what the mouse is over, the engine's numbers). A green bracket in the window joins a chord's
   channel to the rows whose voices it plays. A borrowed voice
   first gets the channel's sound: notes of one moment wait until all their voices have it, a few ms, up to
   about 20 ms for a chord on voices that held other presets. Channels with Porta On, channel 3 in Ch3
@@ -74,6 +74,11 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   snapshot, which is the project's own state. UNDO puts back what the last file replaced, and a second
   UNDO brings the file back. `src/instrument.c` reads the formats, `src/files.c` and `src/state.c`
   the rest.
+- Several files at once (LOAD, ADD or a drop): the window takes 128, `files_put_places` counts the rest
+  (`beyond`) with those past place 128 as extra, the unread apart: `Loaded 127 to slots 1-127, 2 extra,
+  1 unread` (stage 49). SAVE adds the chosen type's extension to a name that has none of ours; when it
+  did and that file exists (`Bass v1.2`: Windows takes `.2` for an extension and asked about another
+  name), `files_save_path` says so and the window asks before replacing.
 - Libraries (stage 22c, D56): `.mdbank` files in the folder `MDMI Banks` beside the plugin's DLL, or
   beside the `.vst3` bundle that holds it (`src/library.c`: `library_folder`, `library_folder_for` from a
   path, `MDMI_BANKS` for tests; `library_scan` lists up to 64 by name). The format is the bank file's;
@@ -159,7 +164,13 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   On an FM channel that plays alone, without Porta, a note over the sounding one and the raised top key's
   return write key-off, then key-on (`mono_voice`, not channel 3 in Ch3 Special, not the DAC), so the
   attack starts again. The dealer treats MONO as Porta (`PATCH_ALONE_MONO`, lent while silent). The window
-  pairs MONO and PORTA (art-director, ui-concept.md): a click makes one the mode, the other goes off.
+  pairs MONO and PORTA (art-director, ui-concept.md): a click makes one the mode, the other goes off; the
+  wheel and a drag keep the same rule (stage 49, `pair_rule`).
+- Envelope speed (stage 44, D88): globals `Ch7`-`Ch10 Env Speed`, CC 9 on MIDI 7-10, the ROM's table
+  `ENV_SPEED_RATE` (`third_party/mdmi/src/env_speed.h`, steps a frame times 256), read by the plugin through
+  `patch_env_rate` and `patch_env_speed` only. SPD on the PSG page; the envelope editor's footer times
+  (STEP, LOOP, LENGTH, RELEASE) and its axis' MS row count at the channel's SPD (`env_ms`, stage 49), the
+  axis' other row counts steps (STEP). The arp row's times stay frames: SPD doesn't move the arp.
 - PSG noise (stage 16, D45): Noise Type (Periodic, White) and Noise Rate (High, Mid, Low: the chip's clock
   / 512, 1024, 2048; Tone 3; Kit) are the console's, one noise register, and go as CC 12 and 13 on MIDI 10.
   The window shows the fixed rates low to high, L M H. Kit is a General MIDI drum kit in every octave: C
@@ -369,12 +380,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - Window (stage 9, D29): every page puts the same things in the same places: number, name, source
   (`ROM N`, the place of the ROM bank, grey while it holds the factory sound and white once replaced, stage 24d; FILE over it for a dropped file; drag it to change the Preset), and
   the channel's cells VOL, PAN (L C R), TUNE, BEND, PORTA, TIME in one row, PSG keeping PAN's
-  place empty. A rail row shows the name, a `*` when the bank place's sound was tweaked, and a bar of
+  place empty (TIME pads 2 px, not 4, so 100-127 fit at size 2, and has its host dot top left: stage 49). A rail row shows the name, a `*` when the bank place's sound was tweaked, and a bar of
   16 segments: the channel's volume (CC7), and green while a note is held, CC7 x velocity / 127,
   grey after. The ROM itself has no velocity curve; the bar shows what the plugin sent. In Ch3
   Special Mode channel 3 is pink (`C_SP`, D62) everywhere FM's colours are: `fill` swaps FM's three for `C_SP_DARK`/`C_SP` while `g->sp` is set (its rail row, its page, its ALL row, its cells and the pitch editor), text on a pink fill is black (`on_fill`); with Ops it shows four notes in a column at the right, its own
   on top. Stage 24c: the bar is 16 segments of 9 px on every row (x 54-196); the note is at the right
-  (x 202-225, `C--1` fits), and under it, right to left, `xN`, `n CUT` and `CHn`. The column (held green,
+  (x 202-225, 3 characters, `C--` for MIDI 0 since stage 30), and under it, right to left, `xN`, `n CUT` and `CHn`. The column (held green,
   let go grey, `---` none) also shows the DAC's four voices on channel 6's row, line k voice k, from
   `patch_dac_voice_state` (D59: `patch.c` copies `midi_dac.c`'s choice of voice and reckons each end from
   the playing image's record, `patch_set_dac_image`; `reg_test` `test_dac_shown` compares it with PCM4's
@@ -437,7 +448,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   channel 3's number on the page is pink in Ch3 Special (D62), as in the rail. On channel 3 (stage 21) each header says only
   OP1-OP4 and has a tag of the operator's pitch (`+7 +10`, or the note with FIX, filled pink); a click on
   it opens SEMI, FINE and FIX where the choice of SSG opens, one of the two at a time; any other click,
-  another channel or Ch3 Special off closes it. Without Ch3 Special the tags are dim and take no mouse.
+  another channel or Ch3 Special off closes it. The choice of SSG also closes when the channel changes
+  without a click, as when a project's view comes in (stage 49, `ssg_channel`). Without Ch3 Special the tags are dim and take no mouse.
 
 - Outputs (stage 17, D46): Main and Ch 1 to Ch 10, one stereo port each, in this order and with these ids for
   good (Live keeps routing by them). The patched BlastEm hands over each of the chip's ten voices (FM 1-6, the
@@ -459,7 +471,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   plugin's, never sent to the ROM. `plugin.c` multiplies every output buffer, Main included, right after
   `mdmi_engine_render_outputs`, moving in a line across the block from the last block's factor, so Main
   stays the outputs' sum and a lane has no steps. No limiter. In the window MASTER sits at the right end
-  of the strip of globals, on every page but ROM; the footer says the console ignores it. A double click
+  of the strip of globals, on every page but ROM; the footer says the console ignores it, for RETRIGGER too
+  (stage 49). A double click
   on any global cell puts its default back on every page.
   The strip's cells are as wide as what they show (stage 21): LFO, LFO RATE, LFO RESET, FILTER, CH3 SPECIAL
   (On in pink), CH3 NOTES (segments OPS, 1 NOTE and CSM, `docs/design/ch3-ops.md`), DAC, RETRIGGER, MASTER. LFO RESET is dim and

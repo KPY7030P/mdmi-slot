@@ -336,6 +336,22 @@ add_clip(psg[9], '8 скорость огибающей шума', S0 + 8 * BAR,
 add_clip(psg[6], '9 волна PSG на ROM: A5, C6, D#6', S0 + 14 * BAR, 2 * BAR, [(81, 0, 2), (84, 2, 2), (87, 4, 2), (81, 6, 2)], 21)
 start = S0 + 16 * BAR
 
+# --- stage 49: the delay of a big chord, for the owner to measure on a recording (bars 103-106) ---
+# tst6 has other presets on channels 1-4 and 6 than on 5, Ch3 Special off, and the DAC is off here
+# (automation from bar 29). On K5 a single note on the beat (its own voice: where zero is in the
+# recording), then a chord on the third beat: in 103 of 4 notes (own and 3 free voices, ~18 ms by
+# reg_test), in 105 of 6 notes taking the 5 voices of the other presets (46-52 ms by reg_test).
+# In 104 and 106 channels 1-4 and 6 play a short note each, which takes their voices home with
+# their own sounds again, so the next chord has to carry the sound over once more.
+H0 = start
+add_clip(lanes[4], '10 опоздание аккорда из 4 (~18 мс)', H0, BAR, [(60, 0, 1), (60, 2, 1), (64, 2, 1), (67, 2, 1), (72, 2, 1)], 3)
+add_clip(lanes[4], '10 опоздание аккорда из 6 (46-52 мс)', H0 + 2 * BAR, BAR,
+         [(60, 0, 1), (48, 2, 1), (55, 2, 1), (60, 2, 1), (64, 2, 1), (67, 2, 1), (72, 2, 1)], 3)
+for ch, key in ((0, 48), (1, 36), (2, 64), (3, 67), (5, 43)):
+    for bar in (1, 3):
+        add_clip(lanes[ch], '10 голос домой', H0 + bar * BAR, BAR, [(key, 0, 0.25)], lanes[ch].find('Color').get('Value'))
+start = H0 + 4 * BAR
+
 for t in all_tracks: tracks.remove(t)
 for t in new_tracks + returns: tracks.append(t)
 for sc in ls.find('Scenes'):
@@ -375,6 +391,16 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               91-92 ускоряется до x4, 93-94 снова x1. Столбик идёт медленнее и быстрее вместе со звуком.
   95-100      К10 шум восьмыми, Ch10 Env Speed: 97-98 замедляется, 99-100 возвращается к x1.
   101-102 п.9 К7 PSG играет A5, C6, D#6: на странице ROM волна канала 7 у каждой ноты своя.
+  103-106 п.10 опоздание большого аккорда (этап 49), меряете вы по записи. На К5 в 103 и 105 такте:
+              на первую долю одна нота (свой голос, звучит сразу: это ноль), на третью долю аккорд.
+              103: аккорд из 4 нот, 105: из 6 нот, он забирает голоса каналов 1-4 и 6 с другими звуками.
+              В 104 и 106 каналы 1-4 и 6 коротко играют свою ноту, чтобы голоса вернулись со своими звуками.
+              Как записать: новая аудиодорожка, Audio From «Resampling» (или «MDMI песня» и выход плагина
+              «Ch 5»), Monitor Off, запись тактов 103-106. В записи увеличьте волну у третьей доли:
+              первая нота аккорда (свой голос) начнётся на линии доли, остальные позже, волна растёт
+              ступеньками. Опоздание = от линии доли до последней ступеньки. Одиночная нота на первой доле
+              должна начаться прямо на своей линии; если она сдвинута, вычтите этот сдвиг.
+              Ожидание по тестам (reg_test): аккорд из 4 около 18 мс, аккорд из 6 46-52 мс.
 
 Стойка «Гласные CSM» (дорожка «MDMI гласные на макросах»):
   F1 рот, F2 язык   две главные крутилки: F1 открывает рот (И, У внизу, А вверху), F2 двигает язык (У внизу,

@@ -15,6 +15,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <clap/clap.h>
+#include "../../src/font5x7.h"
 
 #define RATE 48000
 #define BLOCK 128
@@ -79,6 +80,7 @@
 #define ENV_LENGTH_Y 317
 #define ENV_LOOP_STRIP_Y 112
 #define COLOR_PSG 0x22CCEE
+#define COLOR_PSG_DARK 0x004466
 #define COLOR_CELL 0x222222
 // Stage 9: the rail's bars and the bank's scroll track.
 #define RAIL_CH1_TOP 44
@@ -530,6 +532,67 @@ static int get_value(clap_id id)
 	double value = -1;
 	params->get_value(plugin, id, &value);
 	return (int)value;
+}
+
+// Stage 49: the window wrote text at x, y in the plugin's own font: each glyph's pixels in color and
+// the rest of its 6 x 8 cell not, at the scale given.
+static bool says(int x, int y, int scale, const char *text, uint32_t color)
+{
+	for (const char *c = text; *c; c++, x += 6 * scale) {
+		const unsigned index = (unsigned char)*c - 32;
+		for (int col = 0; col < 6 * scale; col++) {
+			for (int row = 0; row < 8 * scale; row++) {
+				const bool ink = index < 95 && col < 5 * scale && (FONT_5X7[index][col / scale] >> (row / scale) & 1);
+				const int px = x + col, py = y + row;
+				if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT) {
+					return false;
+				}
+				// The host's red dot (D33) may lie over a cell's text at its top right: not the text's.
+				const uint32_t seen = pixels[py * WIDTH + px] & 0xFFFFFF;
+				if ((seen != COLOR_ERROR || color == COLOR_ERROR) && ink != (seen == color)) {
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+// Stage 49: the envelope editor's playing column in [x0, x1): its white top, or its ground lit in
+// PSG's dark colour on the lane's second row (a quiet step has no top there).
+static int editor_lit(int x0, int x1)
+{
+	int left, right;
+	return lit_columns(x0, x1, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left, &right) + count_color_in(x0, x1, ENV_LEVEL_Y + 1, ENV_LEVEL_Y + 2, COLOR_PSG_DARK);
+}
+
+// The footer's line starts with text (size 2 at x 8, as footer_text draws it).
+#define FOOTER_TEXT_Y (FOOTER_TOP + 4)
+static bool footer_says(const char *text, uint32_t color)
+{
+	return says(8, FOOTER_TEXT_Y, 2, text, color);
+}
+
+// Stage 49: pumps until the footer's size-2 line (a message; the mouse has left) is gone, up to 12 s;
+// how long it took, or -1.
+static long wait_message_gone(HWND window)
+{
+	const DWORD start = GetTickCount();
+	while (GetTickCount() - start < 12000) {
+		run_ms(100);
+		capture(window);
+		if (count_not_black_in(8, 540, FOOTER_TEXT_Y, FOOTER_TEXT_Y + 3) == 0) {
+			return (long)(GetTickCount() - start);
+		}
+	}
+	return -1;
+}
+
+// A knob set as the host sets it, in one block.
+static void set_param(clap_id id, double value)
+{
+	clap_event_param_value_t event = {{sizeof(event), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0}, id, NULL, -1, -1, -1, -1, value};
+	run_block(&event);
 }
 
 // A project in memory, for the state extension.
@@ -985,6 +1048,8 @@ int main(int argc, char **argv)
 		// Stage 24b: over the row the footer says why, in red. Without a real mouse the hover leaves as
 		// soon as messages are pumped, so the frame is taken right after the move (WM_PRINTCLIENT draws
 		// it afresh). Only red pixels are counted, not the text.
+		// Stage 49: a fresh message comes before the hint; the one left by earlier steps goes first.
+		wait_message_gone(window);
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, RAIL_CH4_TOP + 10));
 		capture(window);
 		CHECK(count_color_in(0, WIDTH, FOOTER_TOP, HEIGHT, COLOR_ERROR) > 50, "over the cut row the footer says why no voice was free");
@@ -1078,6 +1143,18 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		const int bank_pink = count_color_in(242, 702, HEADER_H, 80, COLOR_SP);
+		// Stage 49: in Ch3 OPS operator 1 (MIDI 11) at MIDI note 0 shows its whole name, C-- (stage 30's
+		// rule), on the column's second line: 3 glyphs ending at x 226.
+		{
+			send_midi(0x9A, 0, 100);
+			run_ms(100);
+			capture(window);
+			const bool whole = says(226 - 18, RAIL_CH3_TOP + 2 + 9, 1, "C--", COLOR_PLAYING);
+			save_bmp(argv[2], "sp-low-note");
+			send_midi(0x8A, 0, 0);
+			run_ms(50);
+			CHECK(whole, "the SP column names operator 1's MIDI note 0 whole: C--");
+		}
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		click(window, CH3_SPECIAL_X, CH3_SPECIAL_Y);
 		run_ms(100);
@@ -1107,6 +1184,51 @@ int main(int argc, char **argv)
 			run_ms(50);
 			CHECK(mono_on == 1 && porta_then == 0 && lit > 100 && porta_on == 1 && mono_off == 0 && mono_back == 1 && porta_off == 0 && get_value(mono3) == 0,
 				"MONO and PORTA: MONO on (lit, %d px), PORTA takes over and turns MONO off, MONO back turns PORTA off, a click on the lit MONO turns it off", lit);
+			// Stage 49: the wheel and a drag keep the pair's rule as a click does.
+			click(window, porta_x, cells_y);
+			run_ms(50);
+			wheel(window, mono_x, cells_y, 120);
+			run_ms(50);
+			const int wheel_mono = get_value(mono3), wheel_porta = get_value(porta3);
+			click(window, porta_x, cells_y);
+			run_ms(50);
+			const int porta_again = get_value(porta3);
+			drag(window, mono_x, cells_y, cells_y - 30);
+			run_ms(50);
+			const int drag_mono = get_value(mono3), drag_porta = get_value(porta3);
+			wheel(window, porta_x, cells_y, 120);
+			run_ms(50);
+			const int wheel_porta2 = get_value(porta3), wheel_mono2 = get_value(mono3);
+			click(window, porta_x, cells_y);
+			run_ms(50);
+			CHECK(wheel_mono == 1 && wheel_porta == 0 && porta_again == 1 && drag_mono == 1 && drag_porta == 0 && wheel_porta2 == 1 && wheel_mono2 == 0
+					&& get_value(mono3) == 0 && get_value(porta3) == 0,
+				"MONO and PORTA by wheel and drag: one on, the other off (wheel MONO %d PORTA %d, drag MONO %d PORTA %d, wheel PORTA %d MONO %d)",
+				wheel_mono, wheel_porta, drag_mono, drag_porta, wheel_porta2, wheel_mono2);
+			// Stage 49 (ui-concept.md): Porta Time 127 and 100 in TIME's 64 px, three size-2 digits ending at 699.
+			const clap_id time3 = 1306;
+			const int time_before = get_value(time3);
+			set_param(time3, 127);
+			run_ms(100);
+			capture(window);
+			const bool says_127 = says(666, 59, 2, "127", COLOR_TEXT);
+			// The host's dot top left in TIME, clear of the value (art-director, frames of stage 49).
+			const int time_dot = count_color_in(639, 642, 57, 60, COLOR_ERROR), time_dot_right = count_color_in(690, 702, 56, 62, COLOR_ERROR);
+			save_bmp(argv[2], "time-127");
+			set_param(time3, 100);
+			run_ms(100);
+			capture(window);
+			const bool says_100 = says(666, 59, 2, "100", COLOR_TEXT);
+			save_bmp(argv[2], "time-100");
+			set_param(time3, 64);
+			run_ms(100);
+			capture(window);
+			const bool says_64 = says(678, 59, 2, "64", COLOR_TEXT);
+			set_param(time3, time_before);
+			run_ms(50);
+			CHECK(says_127 && says_100 && says_64 && time_dot == 9 && time_dot_right == 0,
+				"TIME draws 127 and 100 with three digits, 64 with two at the same right edge (127 %d, 100 %d, 64 %d); the host's dot top left (%d px, %d right)",
+				says_127, says_100, says_64, time_dot, time_dot_right);
 		}
 
 		// Editing by mouse: the view is not a knob, a drag is one gesture on one channel's knob.
@@ -1363,6 +1485,42 @@ int main(int argc, char **argv)
 		run_ms(50);
 		click(window, SSG_PICK_OFF_X, SSG_PICK_Y);
 		run_ms(50);
+		// Stage 49: the choice of SSG open on channel 4 closes when the channel changes without a click
+		// (arrows only step the place on BANK; here the project's view, as a host's undo brings it).
+		{
+			const clap_plugin_state_t *view_state = plugin->get_extension(plugin, CLAP_EXT_STATE);
+			clap_ostream_t view_out = {NULL, project_write};
+			project_size = 0;
+			view_state->save(plugin, &view_out);
+			click(window, SSG_BUTTON_X, SSG_BUTTON_Y);
+			run_ms(50);
+			capture(window);
+			const int open_before = count_color_in(OP_X[0] - 1, OP_X[0] + OP_RIGHT_W + 1, 226, 300, COLOR_LABEL);
+			// The view block (type 2): page, then the channel, now channel 5's.
+			for (size_t at = 4; at + 8 <= project_size;) {
+				uint32_t type, length;
+				memcpy(&type, project + at, 4);
+				memcpy(&length, project + at + 4, 4);
+				if (type == 2) {
+					project[at + 8 + 1] = 4;
+				}
+				at += 8 + length;
+			}
+			project_read = 0;
+			clap_istream_t view_in = {NULL, project_take};
+			const bool loaded = view_state->load(plugin, &view_in);
+			wait_applied(window);
+			run_ms(200);
+			capture(window);
+			save_bmp(argv[2], "ssg-closed");
+			const int open_after = count_color_in(OP_X[0] - 1, OP_X[0] + OP_RIGHT_W + 1, 226, 300, COLOR_LABEL);
+			click(window, RAIL_X, RAIL_CH4_Y);
+			run_ms(100);
+			capture(window);
+			const int closed_four = count_color_in(OP_X[0] - 1, OP_X[0] + OP_RIGHT_W + 1, 226, 300, COLOR_LABEL);
+			CHECK(loaded && open_before > closed_four + 40 && open_after <= closed_four + 10,
+				"the SSG choice open on channel 4 (%d px) is closed after the view goes to channel 5 (%d px, closed %d)", open_before, open_after, closed_four);
+		}
 		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(OP_X[2] + 60, OP_AR_Y));
 		run_ms(50);
 		click(window, LFO_RATE_X, LFO_RATE_Y);
@@ -1669,6 +1827,32 @@ int main(int argc, char **argv)
 			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RAIL_X, ch8_y));
 			run_ms(100);
 			CHECK(get_value(CH2_ALG + 300) == alg8_before, "ALL: a drop of an FM row on a PSG row copies nothing");
+			// Stage 49 (ui-concept.md): a copy let go over a row with cut notes: its message first, then CUT.
+			{
+				for (int key = 48; key < 56; key++) {
+					send_midi(0x94, (uint8_t)key, 100);
+				}
+				run_ms(200);
+				SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH4_Y));
+				SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH4_Y + 20));
+				SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, ch5_y));
+				SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RAIL_X, ch5_y));
+				run_ms(200);
+				capture(window);
+				const bool message = footer_says("CH5 now plays CH4's sound", COLOR_AMBER);
+				const int red_then = count_color_in(0, 600, FOOTER_TOP, HEIGHT, COLOR_ERROR);
+				save_bmp(argv[2], "footer-copy-over-cut");
+				const long gone_ms = wait_message_gone(window);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(RAIL_X, ch5_y));
+				capture(window);
+				const bool cut = footer_says("1 CUT", COLOR_ERROR) || footer_says("2 CUT", COLOR_ERROR) || footer_says("3 CUT", COLOR_ERROR) || footer_says("4 CUT", COLOR_ERROR);
+				save_bmp(argv[2], "footer-cut-after");
+				for (int key = 48; key < 56; key++) {
+					send_midi(0x84, (uint8_t)key, 0);
+				}
+				run_ms(100);
+				CHECK(message && red_then == 0 && cut && gone_ms > 3000, "a copy let go over channel 5 with cut notes: the copy's message shows (%d, red %d px), after it goes (%ld ms) the CUT hint (%d)", message, red_then, gone_ms, cut);
+			}
 			wheel(window, RAIL_X, RAIL_CH4_Y, 120);
 			run_ms(200);
 		}
@@ -1682,6 +1866,15 @@ int main(int argc, char **argv)
 		run_ms(100);
 		CHECK(master_dragged == 560 && pushed_id[0] == MASTER && get_value(MASTER) == 600,
 			"MASTER on ALL drags to %d (560 is -4 dB) and a double click sets it back to %d (600 is 0 dB)", master_dragged, get_value(MASTER));
+		// Stage 49 (ui-concept.md): Retrigger under the mouse says it is the plugin's, as MASTER does.
+		wait_message_gone(window);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(MASTER_X, LFO_RATE_Y));
+		capture(window);
+		const bool master_says = footer_says("MASTER: PLUGIN ONLY, NOT ON THE CONSOLE", COLOR_LABEL);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(574, LFO_RATE_Y));
+		capture(window);
+		save_bmp(argv[2], "retrigger-hint");
+		CHECK(master_says && footer_says("RETRIGGER: PLUGIN ONLY, NOT ON THE CONSOLE", COLOR_LABEL), "MASTER and RETRIGGER under the mouse: PLUGIN ONLY, NOT ON THE CONSOLE (MASTER %d)", master_says);
 		capture(window);
 		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH1_TOP, RAIL_CH1_TOP + 6 * ROW_H, COLOR_FM) > 6 * 50, "the FM rows draw their algorithms");
 		// Stage 24d (from stage 10's parking): a double click on ALL's VOL sets the preset's value.
@@ -1875,6 +2068,41 @@ int main(int argc, char **argv)
 			CHECK(value_px > 20, "SPD shows its value x1.00 (%d px)", value_px);
 			CHECK(one_up == 65 && slowest == 0 && left > ENV_X && left2 >= left && left2 - left <= 2 * (right - left + 2) && get_value(CH8_ENV_SPEED) == 64,
 				"SPD: a notch gives %d, many down %d (x1/16): the lit column at x %d, 300 ms later %d; a double click gives x1 (%d)", one_up, slowest, left, left2, get_value(CH8_ENV_SPEED));
+		}
+		// Stage 49: the STEP hint counts time at SPD: at x1/2 (48) twice x1's, at x1 as before (frame_ms).
+		{
+			const int over_x = ENV_X + (ENV_RIGHT - ENV_X) * 2 / 3, over_y = ENV_LEVEL_Y + 60;
+			int step = -1, count = -1, ms_one = -1, ms_half = -1;
+			for (int pass = 0; pass < 2; pass++) {
+				if (pass) {
+					wheel(window, SPD_X, SPD_Y, -120 * 16);
+					run_ms(100);
+				}
+				// Without a real mouse the hover leaves once messages are pumped: the frame right after the move.
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(over_x, over_y));
+				capture(window);
+				for (int n = 1; n <= 124 && (pass ? ms_half : ms_one) < 0; n++) {
+					for (int s = 1; s <= n && (pass ? ms_half : ms_one) < 0; s++) {
+						const int ms = pass ? ((s - 1) * 2000 + 30) / 60 : ((s - 1) * 1000 + 30) / 60;
+						char hint[64];
+						snprintf(hint, sizeof(hint), "STEP %d/%d  %d MS", s, n, ms);
+						if (footer_says(hint, COLOR_LABEL) && (!pass || (s == step && n == count))) {
+							step = s;
+							count = n;
+							*(pass ? &ms_half : &ms_one) = ms;
+						}
+					}
+				}
+				if (!pass) {
+					save_bmp(argv[2], "psg-step-x1");
+				} else {
+					save_bmp(argv[2], "psg-step-half");
+				}
+			}
+			const int half_speed = get_value(CH8_ENV_SPEED);
+			double_click(window, SPD_X, SPD_Y);
+			run_ms(100);
+			CHECK(half_speed == 48 && ms_one > 0 && ms_half > 0 && step > 1, "STEP %d/%d: %d MS at x1, %d MS at x1/2 (SPD %d)", step, count, ms_one, ms_half, half_speed);
 		}
 		send_midi(0x87, 72, 0);
 		click(window, RAIL_X, RAIL_CH4_Y);
@@ -2220,6 +2448,46 @@ int main(int argc, char **argv)
 			capture(window);
 			const int lit_again = count_color_in(last + 1, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG);
 			CHECK(lit_again == lit_release, "PSG: stop, the loop off and on again: it comes back with its release (%d px)", lit_again);
+			// Stage 49: with stop the release is not played: while a note holds no column after the loop's
+			// end lights in the editor; after Note Off none lights, in the editor or on ALL.
+			{
+				click(window, last - 4, ENV_LOOP_STRIP_Y);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+				send_midi(0x97, 72, 100);
+				int beyond = 0, held_lit = 0;
+				for (int k = 0; k < 8; k++) {
+					run_ms(60);
+					capture(window);
+					int left, right;
+					held_lit += editor_lit(ENV_X, ENV_RIGHT) > 0;
+					beyond += editor_lit(last + 2, ENV_RIGHT);
+				}
+				send_midi(0x87, 72, 0);
+				run_ms(150);
+				capture(window);
+				int left, right;
+				const int editor_after = editor_lit(ENV_X, ENV_RIGHT);
+				click(window, BUTTON_ALL_X, BUTTON_Y);
+				run_ms(150);
+				capture(window);
+				save_bmp(argv[2], "all-psg-stop");
+				const int all_after = lit_columns(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, &left, &right);
+				click(window, BUTTON_EDITOR_X, BUTTON_Y);
+				click(window, last + 40, ENV_LOOP_STRIP_Y);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+				// With the release back the window reckons the note's release on from its Note Off (parked,
+				// stage 49): wait it out, 124 steps at most.
+				for (int k = 0; k < 60; k++) {
+					run_ms(100);
+					capture(window);
+					if (!editor_lit(ENV_X, ENV_RIGHT)) {
+						break;
+					}
+				}
+				CHECK(held_lit > 0 && beyond == 0 && editor_after == 0 && all_after == 0,
+					"PSG stop: the held note lights the loop (%d of 8 looks), never the release (%d); after Note Off nothing lit in the editor (%d) or on ALL (%d)",
+					held_lit, beyond, editor_after, all_after);
+			}
 		}
 		// Stage 24d: a double click on a level column sets 0 dB (the top) in the first click's undo step.
 		{
