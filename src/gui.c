@@ -301,6 +301,7 @@ struct mdmi_gui {
 	int copy_x, copy_y;
 	bool copy_moved;
 	bool drag_moved;
+	bool closing; // WM_DESTROY lets the press go: no click, no pair rule (review 49)
 	int drag_y;
 	// Parts of a wheel notch not yet spent on a cell (stage 22a), and the value the wheel last sent
 	// while the model hasn't taken it yet: edits reach the model through the writer's queue, so
@@ -7264,7 +7265,9 @@ static void on_up(mdmi_gui *g)
 	edit(g, GUI_EDIT_END, g->drag_id, 0);
 	// A lit PORTA clicked while MONO is set turns PORTA off only, so this is for turning one on; a
 	// drag keeps the pair's rule as a click does (stage 49).
-	pair_rule(g, g->drag_id, g->drag_value);
+	if (!g->closing) {
+		pair_rule(g, g->drag_id, g->drag_value);
+	}
 	g->dragging = false;
 	if (GetCapture() == g->window) {
 		ReleaseCapture();
@@ -7840,7 +7843,9 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		// A press let go here is no click (stage 49): a row or a switch held stays as it was.
 		g->row_list = -1;
 		g->drag_moved = true;
+		g->closing = true;
 		on_up(g);
+		g->closing = false;
 		KillTimer(window, TIMER_ID);
 		if (g->drop_registered) {
 			RevokeDragDrop(window);
