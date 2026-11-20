@@ -7415,9 +7415,11 @@ int main(int argc, char **argv)
 			for (int k = 0; k < 3; k++) {
 				midi((uint8_t)(0x90 | channel), (uint8_t)KEYS[k], 127);
 				float mid = 0, side = 0;
-				for (int b = 0; b < 40; b++) {
+				// The first blocks hold the note's start: a PSG square's first edge, before the DC blocker
+				// centres it, is twice its later peak. The steady peak is what the scope shows.
+				for (int b = 0; b < 80; b++) {
 					tick(BLOCK);
-					for (int i = 0; i < BLOCK; i++) {
+					for (int i = 0; i < BLOCK && b >= 40; i++) {
 						const float l = outputs[channel * 2][i], r = outputs[channel * 2 + 1][i];
 						mid = fabsf((l + r) * 0.5f) > mid ? fabsf((l + r) * 0.5f) : mid;
 						side = fmaxf(fabsf(l), fabsf(r)) > side ? fmaxf(fabsf(l), fabsf(r)) : side;

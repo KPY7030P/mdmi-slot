@@ -5793,10 +5793,11 @@ static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const
 // colour a pixel wider under the light one as a phosphor's glow; only its frame and middle line when
 // the channel holds no note. Channel 3 in Ch3 Special is pink through g->sp.
 #define OUT_FULL 0.25f
-// Stage 47 (D89): FM and PSG rows each at their chip's loudest, measured by reg_test --peaks (FM about
-// 0.14 at TL 0, PSG 0.10 at volume 0), so a channel turned up fills its box; the DAC keeps OUT_FULL.
-#define OUT_FULL_FM 0.15f
-#define OUT_FULL_PSG 0.10f
+// Stage 47 (D89): FM and PSG rows each at their chip's loudest as it holds, measured by reg_test --peaks
+// (FM 0.12-0.14 at TL 0, PSG 0.042 at volume 0, noise 0.047; a note's first edge is higher and is
+// cut at the box), so a channel turned up fills its box; the DAC keeps OUT_FULL.
+#define OUT_FULL_FM 0.13f
+#define OUT_FULL_PSG 0.045f
 // A live trace in a box of the row (stage 24e, D60; stage 39 for the DAC): span samples of s from start
 // over the box's inner columns, min and max a column, at one scale (OUT_FULL), the dark colour a pixel
 // wider under the light one.
