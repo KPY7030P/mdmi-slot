@@ -290,6 +290,8 @@ struct mdmi_gui {
 	// The cell being dragged, -1 when none.
 	uint32_t drag_id;
 	bool dragging;
+	// Shift held at the last press (stage 48: UNDO with Shift is redo).
+	bool shift;
 	// The last choice a press set (stage 42): a double click resets it only over that same button.
 	bool chosen;
 	uint32_t chosen_id;
@@ -1516,7 +1518,7 @@ static void draw_cell_body(mdmi_gui *g, const cell *c, const patch_values *value
 		int label_end = text(g, c->x + 4, c->y + (c->h - 7) / 2, c->label, label, 1);
 		// Stage 44 (env-speed.md): x1.00 fits its 60 px only small; the bar and the footer say the rest.
 		if (is_env_speed(c->id)) {
-			text_right(g, c->x + c->w - 3, c->y + (c->h - 7) / 2, buffer, shown, 1, c->w - 4 - label_end);
+			text_right(g, c->x + c->w - 3, c->y + (c->h - 7) / 2, buffer, shown, 1, c->x + c->w - 4 - label_end);
 			if (held) {
 				frame(g, c->x, c->y, c->w, c->h, C_TEXT);
 			}
@@ -4594,8 +4596,15 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 		snprintf(hint, size, envelopes ? "SAVE: CH%d as EEF w/o arp, bank, snapshot" : "SAVE: CH%d as VGI w/o arp, bank, snapshot", channel + 1);
 	} else if (action == ACTION_SAVE) {
 		snprintf(hint, size, envelopes ? "SAVE: CH%d as EEF, the bank or a snapshot" : takes_fm(values, channel) ? "SAVE: CH%d as VGI, the bank or a snapshot" : "SAVE: the bank or a snapshot", channel + 1);
-	} else if (action == ACTION_UNDO && undo) {
-		snprintf(hint, size, "UNDO: %s", undo);
+	} else if (action == ACTION_UNDO && (undo || files_redo_text(g->source.files))) {
+		const char *redo = files_redo_text(g->source.files);
+		if (undo && redo) {
+			snprintf(hint, size, "UNDO: %.36s. SHIFT: %.36s", undo, redo);
+		} else if (undo) {
+			snprintf(hint, size, "UNDO: %s", undo);
+		} else {
+			snprintf(hint, size, "SHIFT+CLICK: REDO %s", redo);
+		}
 	} else if (action == ACTION_EXPORT) {
 		snprintf(hint, size, "EXPORT: bank, DAC, names to a ROM for SD");
 	} else {
@@ -5784,11 +5793,15 @@ static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const
 // colour a pixel wider under the light one as a phosphor's glow; only its frame and middle line when
 // the channel holds no note. Channel 3 in Ch3 Special is pink through g->sp.
 #define OUT_FULL 0.25f
+// Stage 47 (D89): FM and PSG rows each at their chip's loudest, measured by reg_test --peaks (FM about
+// 0.14 at TL 0, PSG 0.10 at volume 0), so a channel turned up fills its box; the DAC keeps OUT_FULL.
+#define OUT_FULL_FM 0.15f
+#define OUT_FULL_PSG 0.10f
 // A live trace in a box of the row (stage 24e, D60; stage 39 for the DAC): span samples of s from start
 // over the box's inner columns, min and max a column, at one scale (OUT_FULL), the dark colour a pixel
 // wider under the light one.
 #define TRACE_W_MAX 128
-static void draw_trace(mdmi_gui *g, int box_x, int box_w, int y, const float *s, int count, double start, int span, uint32_t light, uint32_t dark)
+static void draw_trace(mdmi_gui *g, int box_x, int box_w, int y, const float *s, int count, double start, int span, float full, uint32_t light, uint32_t dark)
 {
 	const int x0 = box_x + 1, w = box_w - 2 < TRACE_W_MAX ? box_w - 2 : TRACE_W_MAX, mid = y + 19;
 	int tops[TRACE_W_MAX], bottoms[TRACE_W_MAX];
@@ -5807,7 +5820,7 @@ static void draw_trace(mdmi_gui *g, int box_x, int box_w, int y, const float *s,
 				hi = s[i] > hi ? s[i] : hi;
 			}
 		}
-		int top = mid - (int)(hi / OUT_FULL * 13), bottom = mid - (int)(lo / OUT_FULL * 13);
+		int top = mid - (int)(hi / full * 13), bottom = mid - (int)(lo / full * 13);
 		top = top < mid - 14 ? mid - 14 : top > mid + 14 ? mid + 14 : top;
 		bottom = bottom < mid - 14 ? mid - 14 : bottom > mid + 14 ? mid + 14 : bottom;
 		// Joined to the column before, so a step is a line, not a gap.
@@ -5837,7 +5850,7 @@ static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y
 		return;
 	}
 	const bool fm = channel_is_fm(channel);
-	draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, waves->samples[channel], (int)waves->count, start, span, fm ? C_FM_LIGHT : C_PSG, fm ? C_FM_DARK : C_PSG_DARK);
+	draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, waves->samples[channel], (int)waves->count, start, span, fm ? OUT_FULL_FM : OUT_FULL_PSG, fm ? C_FM_LIGHT : C_PSG, fm ? C_FM_DARK : C_PSG_DARK);
 }
 
 // Stage 39 (art-director, ui-concept.md): the DAC row's live view, bit 6 of the ALL mask: the last
@@ -5876,7 +5889,7 @@ static void draw_dac_live(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned 
 	double start;
 	int span;
 	if (dac_live_span(waves, rate, &start, &span)) {
-		draw_trace(g, ALL_SOUND_X, ALL_SOUND_W, y, waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)waves->count, start, span, C_DAC, C_DAC_DARK);
+		draw_trace(g, ALL_SOUND_X, ALL_SOUND_W, y, waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)waves->count, start, span, OUT_FULL, C_DAC, C_DAC_DARK);
 	}
 }
 
@@ -6253,7 +6266,7 @@ static void render(mdmi_gui *g)
 	draw_status(g);
 	action_button(g, ACTION_LOAD, "LOAD", true);
 	action_button(g, ACTION_SAVE, "SAVE", true);
-	action_button(g, ACTION_UNDO, "UNDO", files_undo_text(g->source.files) != NULL);
+	action_button(g, ACTION_UNDO, "UNDO", files_undo_text(g->source.files) != NULL || files_redo_text(g->source.files) != NULL);
 	if (page == PAGE_BANK) {
 		action_button(g, ACTION_ADD, "ADD", files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE);
 	}
@@ -6563,7 +6576,11 @@ static void on_action(mdmi_gui *g, int action)
 		}
 	} else if (action == ACTION_UNDO) {
 		message[0] = 0;
-		if (files_undo(g->source.files, message, sizeof(message))) {
+		// Stage 48 (D90): Shift takes the step ahead again. Up and Down start from the Preset as it is.
+		g->key_channel = -1;
+		if (!g->shift && !files_undo_text(g->source.files) && files_redo_text(g->source.files)) {
+			say(g, "Nothing to undo. SHIFT+CLICK: REDO", C_TEXT, MESSAGE_TICKS);
+		} else if (g->shift ? files_redo(g->source.files, message, sizeof(message)) : files_undo(g->source.files, message, sizeof(message))) {
 			say(g, message, C_TEXT, MESSAGE_TICKS);
 		} else if (!strncmp(message, "Can't undo", 10)) {
 			say(g, message, C_ERROR, ERROR_TICKS);
@@ -6766,6 +6783,9 @@ static void click_row(mdmi_gui *g, int list, int place)
 	const int channel = *g->source.channel;
 	const bool envelopes = !channel_is_fm(channel);
 	if (g->lists[list].kind == LIST_ROM) {
+		if (place != patch_view(g->source.patch)->channels[channel][PARAM_PRESET]) {
+			files_preset_step(g->source.files, channel);
+		}
 		edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
 		return;
 	}
@@ -7228,6 +7248,11 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		g->press_eaten = false;
 		return;
 	}
+	// Stage 48: a quick second click on UNDO is one more step back (or ahead with Shift), not lost.
+	if (action_at(g, x, y) == ACTION_UNDO) {
+		on_down(g, x, y);
+		return;
+	}
 	// The global strip is the same on every page: a double click there puts a knob back on any of them.
 	const bool globals = y >= GLOBALS_Y && y < FOOTER_Y;
 	if (!globals && dac_editor(g, patch_view(g->source.patch))) {
@@ -7613,13 +7638,17 @@ bool gui_key(mdmi_gui *g, bool up)
 	// Until the model takes the last step, the next one goes on from where that one asked to go.
 	const int playing = values->channels[channel][PARAM_PRESET];
 	const bool pending = g->key_channel == channel && playing == g->key_from && g->key_to != g->key_from;
-	int place = (pending ? g->key_to : playing) + (up ? -1 : 1);
+	const int from = pending ? g->key_to : playing;
+	int place = from + (up ? -1 : 1);
 	place = place < 0 ? 0 : place >= PATCH_BANK_SIZE ? PATCH_BANK_SIZE - 1 : place;
 	if (!pending) {
 		g->key_channel = channel;
 		g->key_from = playing;
 	}
 	g->key_to = place;
+	if (place != from) {
+		files_preset_step(g->source.files, channel);
+	}
 	edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
 	if (place < g->bank_top) {
 		scroll_bank(g, place);
@@ -7670,6 +7699,10 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 			g->wheel_rest = 0;
 			return;
 		}
+		// A Preset steps like the bank list it names: the wheel down goes down the list, to the next place.
+		if (rail >= 0 || g->cells[index].kind == CELL_SOURCE) {
+			delta = -delta;
+		}
 		// Parts of a notch count for one cell only.
 		if (id != g->wheel_rest_id) {
 			g->wheel_rest = 0;
@@ -7685,6 +7718,11 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 		const int now = g->wheel_pending && g->wheel_id == id ? g->wheel_value : patch_get(g->source.patch, id);
 		const int value = now + notches < 0 ? 0 : now + notches > max ? max : now + notches;
 		if (value != now) {
+			int channel, param;
+			// Stage 48 (D90): a Preset step is an UNDO step, the channel's sound before it kept.
+			if (patch_id_split(id, &channel, &param) && channel >= 0 && param == PARAM_PRESET) {
+				files_preset_step(g->source.files, channel);
+			}
 			edit_once(g, id, value);
 			g->wheel_pending = true;
 			g->wheel_id = id;
@@ -7754,6 +7792,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		InterlockedDecrement(&window_count);
 		return 0;
 	case WM_LBUTTONDOWN:
+		g->shift = (wparam & MK_SHIFT) != 0;
 		on_down(g, x, y);
 		return 0;
 	case WM_MOUSEMOVE:
@@ -7790,6 +7829,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		on_up(g);
 		return 0;
 	case WM_LBUTTONDBLCLK:
+		g->shift = (wparam & MK_SHIFT) != 0;
 		on_double_click(g, x, y);
 		return 0;
 	case WM_SETCURSOR:

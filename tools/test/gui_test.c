@@ -418,6 +418,13 @@ static void click(HWND window, int x, int y)
 	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
 }
 
+// Stage 48: a click with Shift held, as UNDO's redo takes it.
+static void shift_click(HWND window, int x, int y)
+{
+	SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON | MK_SHIFT, MAKELPARAM(x, y));
+	SendMessageA(window, WM_LBUTTONUP, MK_SHIFT, MAKELPARAM(x, y));
+}
+
 static void drag(HWND window, int x, int y, int to_y)
 {
 	SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
@@ -1163,17 +1170,17 @@ int main(int argc, char **argv)
 			// The wheel on channel 2's rail row from channel 4's page steps channel 2's Preset and leaves
 			// channel 4 selected (TL's wheel still moves channel 4); on the page's PRESET, channel 4's.
 			const int ch2 = get_value(CH2_PRESET), ch4 = get_value(CH4_PRESET), tl = get_value(CH4_OP1_TL);
-			wheel(window, RAIL_X, ALL_CH2_Y, ch2 < 127 ? 120 : -120);
+			wheel(window, RAIL_X, ALL_CH2_Y, ch2 < 127 ? -120 : 120);
 			run_ms(100);
 			const int ch2_step = get_value(CH2_PRESET) - ch2;
 			wheel(window, OP1_TL_X, OP1_TL_Y, -120);
 			run_ms(100);
 			const int tl_step = get_value(CH4_OP1_TL) - tl;
-			wheel(window, RAIL_X, ALL_CH2_Y, ch2 < 127 ? -120 : 120);
-			wheel(window, EDITOR_SOURCE_X, EDITOR_SOURCE_Y, ch4 < 127 ? 120 : -120);
+			wheel(window, RAIL_X, ALL_CH2_Y, ch2 < 127 ? 120 : -120);
+			wheel(window, EDITOR_SOURCE_X, EDITOR_SOURCE_Y, ch4 < 127 ? -120 : 120);
 			run_ms(100);
 			const int ch4_step = get_value(CH4_PRESET) - ch4;
-			wheel(window, EDITOR_SOURCE_X, EDITOR_SOURCE_Y, ch4 < 127 ? -120 : 120);
+			wheel(window, EDITOR_SOURCE_X, EDITOR_SOURCE_Y, ch4 < 127 ? 120 : -120);
 			run_ms(100);
 			CHECK(abs(ch2_step) == 1 && tl_step == -1 && get_value(CH2_PRESET) == ch2 && abs(ch4_step) == 1 && get_value(CH4_PRESET) == ch4,
 				"EDITOR: a notch on channel 2's rail row steps its Preset (%+d) and channel 4 stays selected (TL %+d); one on PRESET steps channel 4's (%+d)", ch2_step, tl_step, ch4_step);
@@ -1587,20 +1594,55 @@ int main(int argc, char **argv)
 		// Stage 42: the wheel on channel 2's name in the rail, and on its PRESET, steps the Preset.
 		{
 			const int preset = get_value(CH2_PRESET);
-			wheel(window, RAIL_X, ALL_CH2_Y, preset < 127 ? 120 : -120);
+			// The wheel down goes down the list: to the next place (stage 42 remark).
+			wheel(window, RAIL_X, ALL_CH2_Y, preset < 127 ? -120 : 120);
 			run_ms(100);
 			const int rail_step = get_value(CH2_PRESET) - preset;
-			wheel(window, ALL_SOURCE_X + 20, ALL_CH2_Y, preset < 127 ? -120 : 120);
+			wheel(window, ALL_SOURCE_X + 20, ALL_CH2_Y, preset < 127 ? 120 : -120);
 			run_ms(100);
 			CHECK(rail_step == (preset < 127 ? 1 : -1) && get_value(CH2_PRESET) == preset,
 				"ALL: a notch on channel 2's name steps its Preset by %+d, one on its PRESET back to %d (%d)", rail_step, preset, get_value(CH2_PRESET));
+			// Stage 48 (D90): a notch on channel 4 is a step of its own; three on channel 2 then are one
+			// UNDO step back to channel 2's Preset; Shift+UNDO forward; a quick second click (a double
+			// click) takes both steps back, channel 4's too; two Shift+UNDO bring both forward.
+			const int ch4 = get_value(CH2_PRESET + 200);
+			const int up = preset < 120 ? -120 : 120, step = preset < 120 ? 3 : -3, up4 = ch4 < 127 ? -120 : 120;
+			wheel(window, RAIL_X, RAIL_CH4_Y, up4);
+			run_ms(100);
+			const int ch4_stepped = get_value(CH2_PRESET + 200);
+			wheel(window, RAIL_X, ALL_CH2_Y, up);
+			wheel(window, RAIL_X, ALL_CH2_Y, up);
+			wheel(window, RAIL_X, ALL_CH2_Y, up);
+			run_ms(150);
+			const int stepped = get_value(CH2_PRESET);
+			click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(150);
+			const int undone = get_value(CH2_PRESET);
+			shift_click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(150);
+			const int redone = get_value(CH2_PRESET);
+			double_click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(150);
+			const int twice = get_value(CH2_PRESET), ch4_twice = get_value(CH2_PRESET + 200);
+			shift_click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(80);
+			shift_click(window, ACTION_UNDO_X, BUTTON_Y);
+			run_ms(150);
+			CHECK(ch4_stepped != ch4 && stepped == preset + step && undone == preset && redone == preset + step && twice == preset && ch4_twice == ch4
+				&& get_value(CH2_PRESET) == preset + step && get_value(CH2_PRESET + 200) == ch4_stepped,
+				"ALL: 3 quick notches (Preset %d) are one UNDO back to %d, Shift+UNDO forward (%d); a double click on UNDO takes back channel 4's notch too (%d to %d), two Shift+UNDO forward",
+				stepped + 1, undone + 1, redone + 1, ch4_stepped + 1, ch4_twice + 1);
+			wheel(window, RAIL_X, RAIL_CH4_Y, -up4);
+			run_ms(100);
+			wheel(window, RAIL_X, ALL_CH2_Y, -up * 3);
+			run_ms(150);
 		}
 		// Stage 43 (D87): channel 4's rail row (TL tweaked) dragged onto channel 5 copies its voice, channel 5's Volume
 		// stays and channel 5 is selected; dragged onto channel 8 (PSG) nothing; a press alone selects.
 		{
 			const int ch5_y = RAIL_CH1_TOP + 4 * ROW_H + 20, ch8_y = RAIL_CH1_TOP + 7 * ROW_H + 20;
 			// Channel 4 another sound first, a notch of its Preset, so the copy shows.
-			wheel(window, RAIL_X, RAIL_CH4_Y, 120);
+			wheel(window, RAIL_X, RAIL_CH4_Y, -120);
 			run_ms(200);
 			const int vol5 = get_value(CH2_VOLUME + 300), alg5 = get_value(CH2_ALG + 300), tl5 = get_value(CH2_ALG + 300 + 4); const bool differed = alg5 != get_value(CH2_ALG + 200) || tl5 != get_value(CH2_ALG + 204);
 			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH4_Y));
@@ -1627,7 +1669,7 @@ int main(int argc, char **argv)
 			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RAIL_X, ch8_y));
 			run_ms(100);
 			CHECK(get_value(CH2_ALG + 300) == alg8_before, "ALL: a drop of an FM row on a PSG row copies nothing");
-			wheel(window, RAIL_X, RAIL_CH4_Y, -120);
+			wheel(window, RAIL_X, RAIL_CH4_Y, 120);
 			run_ms(200);
 		}
 		// Master Volume (stage 18a): on ALL too, a drag of 10 px is 4 dB, a double click puts 0 dB back.
@@ -1703,17 +1745,28 @@ int main(int argc, char **argv)
 			// Stage 35 (D80, architect): 7 frames over about 1 s, each 2 crests (runs of 4 px or more;
 			// slivers at the right edge don't count) starting on the rising edge; the first crest moves by
 			// 1 px at most, the edge's fraction of a sample (2.4 samples a pixel).
+			// Stage 47 (D89): at full height a crest sags a few pixels, so a column is high when it has the
+			// trace in the upper half of the wave (top to the middle of top and bottom), not on the top row.
+			int bottom = -1;
+			for (int y = RAIL_CH8_Y + 30; y > RAIL_CH8_Y - 30 && bottom < 0; y--) {
+				bottom = count_color_in(533, 611, y, y + 1, COLOR_PSG) > 0 ? y : -1;
+			}
+			const int half = (top + bottom) / 2 - 1;
 			int crests_low = 99, crests_high = 0, first_low = 9999, first_high = -1;
 			for (int k = 0; k < 7; k++) {
 				if (k) {
 					run_ms(150);
 					capture(window);
 				}
+				bool high[611] = {false};
+				for (int x = 532; top >= 0 && x < 611; x++) {
+					high[x] = count_color_in(x, x + 1, top, half, COLOR_PSG) > 0;
+				}
 				int crests = 0, first = -1;
 				for (int x = 533; top >= 0 && x < 611; x++) {
-					if ((pixels[top * WIDTH + x] & 0xFFFFFF) == COLOR_PSG && (pixels[top * WIDTH + x - 1] & 0xFFFFFF) != COLOR_PSG) {
+					if (high[x] && !high[x - 1]) {
 						int end = x;
-						while (end < 611 && (pixels[top * WIDTH + end] & 0xFFFFFF) == COLOR_PSG) {
+						while (end < 611 && high[end]) {
 							end++;
 						}
 						if (end - x >= 4) {
@@ -1816,6 +1869,10 @@ int main(int argc, char **argv)
 			lit_columns(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left2, &right2);
 			double_click(window, SPD_X, SPD_Y);
 			run_ms(100);
+			// Its value, x1.00, stands in the cell's right part (the owner's frame showed it empty).
+			capture(window);
+			const int value_px = count_color_in(384, 416, SPD_Y - 8, SPD_Y + 8, COLOR_TEXT) + count_color_in(384, 416, SPD_Y - 8, SPD_Y + 8, COLOR_LABEL);
+			CHECK(value_px > 20, "SPD shows its value x1.00 (%d px)", value_px);
 			CHECK(one_up == 65 && slowest == 0 && left > ENV_X && left2 >= left && left2 - left <= 2 * (right - left + 2) && get_value(CH8_ENV_SPEED) == 64,
 				"SPD: a notch gives %d, many down %d (x1/16): the lit column at x %d, 300 ms later %d; a double click gives x1 (%d)", one_up, slowest, left, left2, get_value(CH8_ENV_SPEED));
 		}
@@ -1892,10 +1949,10 @@ int main(int argc, char **argv)
 			run_ms(50);
 			size = read_file(new_bank, now, sizeof(now));
 			CHECK(size == empty_size && !memcmp(now, empty, size), "UNDO writes the place back");
-			click(window, ACTION_UNDO_X, BUTTON_Y);
+			shift_click(window, ACTION_UNDO_X, BUTTON_Y);
 			run_ms(50);
 			size = read_file(new_bank, now, sizeof(now));
-			CHECK(size == empty_size && memcmp(now, empty, size), "and again brings it");
+			CHECK(size == empty_size && memcmp(now, empty, size), "and Shift+UNDO brings it");
 			// A press on the library's sound plays it on channel 4; the Preset stays.
 			// Channel 4 on place 1 first, so the tried sound is not the place it already plays.
 			click(window, BANK_ROW_X, 102);

@@ -9,7 +9,7 @@
 #include "state.h"
 
 // What the window does with files, on the main thread: an instrument onto a channel or a place of
-// the bank, a bank or a snapshot onto everything, saving them, and one step of undo (D25). An
+// the bank, a bank or a snapshot onto everything, saving them, and undo with its history (D25, D90). An
 // envelope does on a PSG channel and the bank's envelopes what an instrument does on FM (D28).
 // A WAV goes to a note of the DAC (stage 12).
 enum { FILES_INSTRUMENT, FILES_BANK, FILES_SNAPSHOT, FILES_ENVELOPE, FILES_SAMPLE };
@@ -25,7 +25,8 @@ typedef struct {
 
 // UNDO_ARP: a drawn row, only the row comes back (review of stage 20: a voice's knobs moved since stay).
 // UNDO_LIBRARY: a place of a library file, written back to the file (stage 22c).
-enum { UNDO_NONE, UNDO_CHANNEL, UNDO_PLACE, UNDO_ENVELOPE_PLACE, UNDO_STATE, UNDO_SAMPLES, UNDO_ARP, UNDO_LIBRARY };
+// UNDO_PRESET: a Preset step made in the window, the channel's whole sound before it (stage 48).
+enum { UNDO_NONE, UNDO_CHANNEL, UNDO_PLACE, UNDO_ENVELOPE_PLACE, UNDO_STATE, UNDO_SAMPLES, UNDO_ARP, UNDO_LIBRARY, UNDO_PRESET };
 
 // A place of a bank the window shows (stage 22c, D56): of the ROM bank, the one that plays, when
 // library is NULL, otherwise of the library file at that path.
@@ -34,36 +35,56 @@ typedef struct {
 	int place;
 } files_spot;
 
+// One step of UNDO (D25, a history since stage 48, D90): what an action replaced, put back by the
+// same command. Applying a step leaves in it what it replaced in turn, which is the redo step.
 typedef struct {
-	files_host host;
-	// What the last file replaced, put back by the same command; undoing keeps what it replaced, so
-	// a second undo brings it back.
-	int undo;
-	int undo_target;
-	patch_instrument undo_instrument;
-	patch_envelope undo_envelope;
+	int kind;
+	int target;
+	patch_instrument instrument;
+	patch_envelope envelope;
 	// The channel's base with it (D31).
-	patch_instrument undo_base_instrument;
-	patch_envelope undo_base_envelope;
+	patch_instrument base_instrument;
+	patch_envelope base_envelope;
 	// The row of the channel or the place, and of the channel's base (stage 20).
-	patch_arp undo_arp;
-	patch_arp undo_base_arp;
+	patch_arp arp;
+	patch_arp base_arp;
 	// A place record of STORE: the channel whose base it changed, which undo gives back with the
 	// place, or -1.
-	int undo_channel;
-	uint8_t *undo_state;
-	size_t undo_state_size;
+	int channel;
+	uint8_t *state;
+	size_t state_size;
 	// The DAC samples before the last change of them, swapped back by undo.
-	dac_set undo_dac;
-	// UNDO_LIBRARY: the file, and whether the place is of its envelopes; the place is undo_target.
-	bool undo_envelopes;
-	char undo_library[LIBRARY_PATH];
-	char undo_text[FILES_MESSAGE];
+	dac_set dac;
+	// UNDO_LIBRARY: the file, and whether the place is of its envelopes; the place is target.
+	bool envelopes;
+	char library[LIBRARY_PATH];
+	char text[FILES_MESSAGE];
 	// Stage 43 (D87): a channel copied onto a PSG channel also took the source's loop shadow and kept
-	// release; undo puts the target's back, and keeps the copy's for a second undo.
-	bool undo_view;
-	state_loop undo_loop;
-	state_tail undo_tail;
+	// release; undo puts the target's back.
+	bool view;
+	state_loop loop;
+	state_tail tail;
+	// UNDO_PRESET (stage 48): the values before a Preset step made in the window; only the channel
+	// target's part of them comes back, its Preset with it.
+	patch_values *values;
+} files_step;
+
+// Stage 48 (D90): steps back and steps ahead, the oldest dropped first.
+#define FILES_UNDO_DEPTH 32
+// What heavy steps (whole states, sample sets) may hold together, each way.
+#define FILES_UNDO_BYTES (64u << 20)
+
+typedef struct {
+	files_host host;
+	// The step UNDO takes next (kind UNDO_NONE when there is none), the older ones, and the steps an
+	// UNDO undid, for redo; a new action empties those.
+	files_step now;
+	files_step *back;
+	int back_count;
+	files_step *ahead;
+	int ahead_count;
+	// Set while a step is applied: the step it leaves goes into now, the history stays.
+	bool replaying;
 	// Stage 24: the bank and samples the signature was last reckoned for, and the signature.
 	patch_bank *signed_bank;
 	uint32_t signed_dac;
@@ -101,6 +122,14 @@ void files_draw_arp(mdmi_files *files, int channel, const patch_arp *before, con
 bool files_can_store(mdmi_files *files, int channel);
 bool files_store(mdmi_files *files, int channel, char *message, size_t size);
 bool files_undo(mdmi_files *files, char *message, size_t size);
+// Stage 48 (D90): the step the last UNDO took back, done again; false when there is none.
+bool files_redo(mdmi_files *files, char *message, size_t size);
+// Before a Preset step the window makes (the wheel, a click on a bank place, Up and Down): the
+// channel's sound before it becomes an undo step. Steps one after another on the same channel, with
+// no edit of its sound between them, are one step.
+void files_preset_step(mdmi_files *files, int channel);
+// A project the host loaded: no step goes back or ahead over it.
+void files_forget(mdmi_files *files);
 // WAV files onto the DAC's notes one after another from first (stage 12, D36), in the order given;
 // the core restarts with them. The set's room is checked for all of them first: if they don't fit,
 // or one can't be read, nothing changes. Returns how many went in.
@@ -138,6 +167,7 @@ bool files_copy_place(mdmi_files *files, bool envelopes, const files_spot *from,
 bool files_clear_place(mdmi_files *files, bool envelopes, const files_spot *spot, char *message, size_t size);
 // What undo would put back, or NULL.
 const char *files_undo_text(const mdmi_files *files);
+const char *files_redo_text(const mdmi_files *files);
 // EXPORT (stage 24): the ROM for the SD card, with the ROM bank, the DAC samples, the names and the
 // signature, written beside the file and then put in its place, so a refusal leaves it as it was. Not
 // remembered by the project, no undo. The message names the channels that play a sound the bank

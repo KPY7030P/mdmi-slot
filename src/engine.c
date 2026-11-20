@@ -553,7 +553,8 @@ static void publish_waves(mdmi_engine *e)
 		const float *l = e->ring[2 + o * 2], *r = e->ring[3 + o * 2];
 		for (uint32_t i = 0; i < count; i++) {
 			const uint64_t at = (end - count + i) & e->ring_mask;
-			waves->samples[o][i] = (l[at] + r[at]) * 0.5f;
+			// The louder side (stage 47, D89): a channel panned L or R draws as big as one in the middle.
+			waves->samples[o][i] = fabsf(l[at]) >= fabsf(r[at]) ? l[at] : r[at];
 		}
 	}
 	e->wave_back = __atomic_exchange_n(&e->wave_shared, e->wave_back | FRAME_NEW, __ATOMIC_ACQ_REL) & FRAME_INDEX;

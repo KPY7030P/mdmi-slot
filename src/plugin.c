@@ -934,6 +934,8 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
 	if (!loaded) {
 		return false;
 	}
+	// Stage 48 (D90): a project the host loaded is where UNDO's history starts.
+	files_forget(&self->files);
 	after_load(self, knobs);
 	return true;
 }

@@ -871,7 +871,7 @@ static void test_files(void)
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH4 back to Grand Piano"), "undo says what it puts back: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
 	patch_values duck = patch->model;
 	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &gm), "undo puts the channel back: %s", message);
-	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &duck), "and again brings the file back");
+	CHECK(files_redo(&files, message, sizeof(message)) && same_model(&patch->model, &duck), "and again brings the file back");
 
 	// Bad files leave everything as it was.
 	patch_values before = patch->model;
@@ -910,7 +910,7 @@ static void test_files(void)
 	open_file(&files, files_dir, "Duck Guitar.tfi", 0, 20, message);
 	CHECK(files_open(&files, bank_path, 0, message, sizeof(message)) && !memcmp(&patch->bank, &thunder, sizeof(thunder)) && !memcmp(patch_bank_view(patch), &thunder, sizeof(thunder)), "and loaded back: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && !strcmp(patch->bank.places[20].name, "Duck Guitar"), "undo of a bank puts the bank before it back");
-	files_undo(&files, message, sizeof(message));
+	files_redo(&files, message, sizeof(message));
 
 	// A snapshot: bank, channels and their values.
 	open_file(&files, files_dir, "GTR_Dis._'94.vgi", 2, -1, message);
@@ -976,7 +976,7 @@ static void test_places(void)
 	CHECK(files_add_place(&files, false) == 14, "adding starts after the last file, slot 15");
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "bank before 5 files"), "undo would put the bank back");
 	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->bank, &gm, sizeof(gm)) && !strcmp(patch->model.names[0], patch_gm_name(11)), "one undo puts the whole bank and the channel back");
-	files_undo(&files, message, sizeof(message));
+	files_redo(&files, message, sizeof(message));
 
 	CHECK(files_put_places(&files, list, 5, false, -1, NULL, message, sizeof(message)) && !strcmp(message, "Loaded 5 to slots 15-19"), "the same five added: %s", message);
 	CHECK(!strcmp(patch->bank.places[14].name, SORTED[0]) && !strcmp(patch->bank.places[18].name, SORTED[4]), "after the last file");
@@ -1108,7 +1108,7 @@ static void test_envelopes(void)
 	CHECK(!strcmp(patch->bank.places[9].name, patch_gm_name(9)), "the FM voices of the bank stay");
 	CHECK(files_add_place(&files, true) == 10 && files_add_place(&files, false) == 0, "adding envelopes starts after the last one from a file, voices stay at slot 1");
 	CHECK(files_undo(&files, message, sizeof(message)) && patch_envelope_is_rom(&patch->bank, 9), "undo puts the place back");
-	files_undo(&files, message, sizeof(message));
+	files_redo(&files, message, sizeof(message));
 
 	// Several envelopes into the bank, and added after the last one from a file.
 	static const char *const PLACES[3] = {"PSG Vibrato.eef", "Duck Guitar.tfi", "PSG Pluck.eef"};
@@ -1306,7 +1306,7 @@ static void test_drawing(void)
 	CHECK(stored_envelope(&program, &length) && length == 8 + 2 * (size_t)patch_envelope_length(&drawn), "and goes to the ROM as a stored envelope");
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH8 envelope before drawing"), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
 	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &organ, sizeof(organ)), "undo puts back the envelope before the gesture: %s", message);
-	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)), "and again the drawing");
+	CHECK(files_redo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)), "and again the drawing");
 
 	// SAVE writes the drawing, and the file sounds the same on another channel.
 	char eef_path[MAX_PATH];
@@ -1507,7 +1507,7 @@ static void test_copy_channel(void)
 	static patch_values copied;
 	copied = patch->model;
 	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &before), "undo gives channel 5 back exactly: %s", message);
-	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &copied), "a second undo brings the copy back");
+	CHECK(files_redo(&files, message, sizeof(message)) && same_model(&patch->model, &copied), "a second undo brings the copy back");
 	CHECK(!files_copy_channel(&files, 1, 1, message, sizeof(message)) && !files_copy_channel(&files, 1, 7, message, sizeof(message))
 		&& !files_copy_channel(&files, 8, 2, message, sizeof(message)) && same_model(&patch->model, &copied) && files_undo_text(&files) != NULL,
 		"the same channel and the other kind are refused, the undo step stays");
@@ -1524,7 +1524,109 @@ static void test_copy_channel(void)
 		"channel 7 onto 10: the envelope, its loop shadow and its kept release");
 	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &psg_before) && !files_view.loops[3].kept && !files_view.tails[3].stop,
 		"undo gives channel 10 its envelope back, without the shadow and release");
-	CHECK(files_undo(&files, message, sizeof(message)) && files_view.loops[3].kept && files_view.tails[3].stop, "a second undo brings them back with the copy");
+	CHECK(files_redo(&files, message, sizeof(message)) && files_view.loops[3].kept && files_view.tails[3].stop, "a second undo brings them back with the copy");
+	files_free(&files);
+}
+
+// A Preset step the window makes, as the wheel does: the step first, then the knob.
+static void preset_step(mdmi_files *files, mdmi_patch *patch, int channel, int place)
+{
+	patch_publish(patch);
+	files_preset_step(files, channel);
+	patch_set(patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
+	patch_publish(patch);
+}
+
+// Stage 48 (D90): UNDO is a history of 32 steps with redo, and takes back Preset steps made in the window.
+static void test_undo_history(void)
+{
+	printf("Undo history\n");
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	files_view = (state_view){0};
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	const int tl = op_param(0, OP_TL);
+	// An edited FM channel (a file, TL tweaked: *), then three Preset steps: one UNDO puts it all back.
+	CHECK(open_file(&files, files_dir, "Duck Guitar.tfi", 1, -1, message), "channel 2 plays a file: %s", message);
+	patch_set(patch, op_id(1, 0, OP_TL), patch->model.channels[1][tl] + 5);
+	patch_publish(patch);
+	static patch_values before;
+	before = patch->model;
+	const int place = before.channels[1][PARAM_PRESET];
+	handed_knobs = 0;
+	for (int k = 1; k <= 3; k++) {
+		preset_step(&files, patch, 1, place + k);
+	}
+	const bool moved = patch->model.channels[1][PARAM_PRESET] == place + 3 && !patch_sound_changed(&patch->model, NULL, 1);
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH2 back to Duck Guitar"), "three steps are one undo step: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
+	CHECK(moved && files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &before) && !memcmp(patch->model.base[1], before.base[1], sizeof(before.base[1]))
+		&& patch_sound_changed(&patch->model, NULL, 1) && handed_knobs == 1,
+		"one undo gives the file, its tweak, base and Preset %d back in one block, the host told of knobs: %s", patch->model.channels[1][PARAM_PRESET] + 1, message);
+	CHECK(files_redo(&files, message, sizeof(message)) && patch->model.channels[1][PARAM_PRESET] == place + 3 && !patch_sound_changed(&patch->model, NULL, 1),
+		"redo goes to the place again: %s", message);
+	files_undo(&files, message, sizeof(message));
+	// A step, an edit, a step: two undo steps.
+	preset_step(&files, patch, 1, place + 1);
+	patch_set(patch, op_id(1, 0, OP_TL), patch->model.channels[1][tl] + 3);
+	static patch_values edited;
+	edited = patch->model;
+	preset_step(&files, patch, 1, place + 2);
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &edited) && files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &before),
+		"an edit between steps makes two undo steps");
+
+	// PSG: a drawn envelope with a loop shadow, two Preset steps; undo brings envelope, shadow and Preset back.
+	patch_envelope drawn = patch->model.psg[1], was = drawn;
+	drawn.steps[0] = 3;
+	drawn.steps[1] = 9;
+	files_draw_envelope(&files, 7, &was, &drawn);
+	patch_publish(patch);
+	files_view.loops[1] = (state_loop){true, 1, 2, ""};
+	memcpy(files_view.loops[1].name, patch->model.psg[1].name, PATCH_NAME);
+	static patch_values psg_before;
+	psg_before = patch->model;
+	const state_loop loop = files_view.loops[1];
+	const int envelope_place = psg_before.channels[7][PARAM_PRESET];
+	preset_step(&files, patch, 7, envelope_place + 1);
+	files_view.loops[1] = (state_loop){0};
+	preset_step(&files, patch, 7, envelope_place + 2);
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &psg_before) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn))
+		&& !memcmp(&files_view.loops[1], &loop, sizeof(loop)),
+		"PSG: one undo gives the drawn envelope, its loop shadow and Preset %d back: %s", patch->model.channels[7][PARAM_PRESET] + 1, message);
+
+	// 40 drawn rows: 32 undo steps back in order, then nothing; redo forward; a new action empties redo.
+	files_forget(&files);
+	CHECK(!files_undo_text(&files) && !files_redo_text(&files), "a loaded project empties both ways");
+	patch_arp rows[41];
+	for (int k = 0; k <= 40; k++) {
+		rows[k] = patch->model.arps[2];
+		rows[k].count = 1;
+		rows[k].steps[0] = (int8_t)(k % 24);
+	}
+	files_draw_arp(&files, 2, NULL, &rows[0]);
+	for (int k = 1; k <= 40; k++) {
+		files_draw_arp(&files, 2, &rows[k - 1], &rows[k]);
+	}
+	int back = 0;
+	bool in_order = true;
+	while (files_undo(&files, message, sizeof(message))) {
+		back++;
+		in_order = in_order && patch_arp_same(&patch->model.arps[2], &rows[40 - back]);
+	}
+	int ahead = 0;
+	while (files_redo(&files, message, sizeof(message))) {
+		ahead++;
+		in_order = in_order && patch_arp_same(&patch->model.arps[2], &rows[8 + ahead]);
+	}
+	CHECK(back == FILES_UNDO_DEPTH && ahead == FILES_UNDO_DEPTH && in_order && patch_arp_same(&patch->model.arps[2], &rows[40]),
+		"40 actions: %d undo steps back in order, then nothing; %d redo steps forward", back, ahead);
+	files_undo(&files, message, sizeof(message));
+	files_undo(&files, message, sizeof(message));
+	files_draw_arp(&files, 2, &rows[38], &rows[0]);
+	CHECK(!files_redo_text(&files) && !files_redo(&files, message, sizeof(message)) && files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[2], &rows[38]),
+		"a new action after undo empties redo, and undoes itself");
 	files_free(&files);
 }
 
@@ -1561,7 +1663,7 @@ static void test_bases(void)
 
 	CHECK(files_undo(&files, message, sizeof(message)) && !patch_sound_changed(&patch->model, NULL, 3) && !memcmp(patch->model.base[3], patch->bank.places[0].voice, sizeof(patch->model.base[3])),
 		"undo puts the place back as base");
-	CHECK(files_undo(&files, message, sizeof(message)) && patch_sound_changed(&patch->model, NULL, 3) && patch_base_value(&patch->model, 3, tl) == file_tl, "a second undo brings the file back as base, tweak and all");
+	CHECK(files_redo(&files, message, sizeof(message)) && patch_sound_changed(&patch->model, NULL, 3) && patch_base_value(&patch->model, 3, tl) == file_tl, "a second undo brings the file back as base, tweak and all");
 
 	patch_set(patch, PATCH_CHANNEL_ID(3, PARAM_PRESET), 9);
 	patch_publish(patch);
@@ -1738,7 +1840,7 @@ static void test_arps(void)
 	sync(patch);
 	row = sent_row(0x02, 0, &length);
 	CHECK(last_program(1) >= 116 && row && length == 9 && row[7] == 0x7F, "back on a service number; number 0 gets its empty row again as 0A 02 00 7F F7");
-	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->bank.place_arps[0], &octave) && !patch_sound_changed(&patch->model, NULL, 1), "a second undo stores it again");
+	CHECK(files_redo(&files, message, sizeof(message)) && patch_arp_same(&patch->bank.place_arps[0], &octave) && !patch_sound_changed(&patch->model, NULL, 1), "a second undo stores it again");
 	clear();
 	sync(patch);
 	CHECK(last_program(1) == 0, "and the channel is on number 0 again");
@@ -1754,7 +1856,7 @@ static void test_arps(void)
 	patch_set(patch, tl, tl_was + 7);
 	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &octave) && patch_get(patch, tl) == tl_was + 7,
 		"undo of a drawing on FM puts back only the row, a knob moved since stays (TL %d)", patch_get(patch, tl));
-	CHECK(files_undo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &chord), "a second undo brings the drawing back");
+	CHECK(files_redo(&files, message, sizeof(message)) && patch_arp_same(&patch->model.arps[1], &chord), "a second undo brings the drawing back");
 	files_undo(&files, message, sizeof(message));
 	CHECK(open_file(&files, files_dir, "Duck Guitar.tfi", 1, -1, message) && patch->model.arps[1].count == 0 && patch->model.arp_bases[1].count == 0 && !patch_sound_changed(&patch->model, NULL, 1),
 		"a dropped TFI brings an empty row, its base too: %s", message);
@@ -2313,7 +2415,7 @@ static void test_dac_files(void)
 	CHECK(!loaded && !set.notes[60] && !set.notes[61] && set.version == version, "files past the ROM's room and none go in: %s", message);
 	CHECK(files_reset_sample(&files, 30, message, sizeof(message)) && !set.notes[30] && set.notes[31], "CLEAR gives note 30 the ROM's sample: %s", message);
 	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[30] && !strcmp(set.notes[30]->name, "mdmi-test-kick.wav"), "undo brings the file back: %s", message);
-	CHECK(files_undo(&files, message, sizeof(message)) && !set.notes[30] && set.notes[31], "and a second undo clears it again");
+	CHECK(files_redo(&files, message, sizeof(message)) && !set.notes[30] && set.notes[31], "and a second undo clears it again");
 	const char *one[1] = {other};
 	loaded = files_put_samples(&files, one, 1, 127, message, sizeof(message));
 	CHECK(loaded == 1 && set.notes[127] && files_put_samples(&files, two, 2, 127, message, sizeof(message)) == 1, "files past note 127 are left out");
@@ -3151,7 +3253,7 @@ static void test_libraries(void)
 	snprintf(expected, sizeof(expected), "A Bass 5 back to empty");
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), expected), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
 	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(a, &library) && files_place_empty(&library, false, 4), "undo empties it in the file: %s", message);
-	CHECK(files_undo(&files, message, sizeof(message)) && files_read_library(a, &library) && !strcmp(library.places[4].name, "Thunder Guitar 03"), "and again brings it back");
+	CHECK(files_redo(&files, message, sizeof(message)) && files_read_library(a, &library) && !strcmp(library.places[4].name, "Thunder Guitar 03"), "and again brings it back");
 
 	// Library to library, then into the ROM bank: a channel playing the place as it is sounds new.
 	CHECK(files_copy_place(&files, false, &a5, &b1, NULL, message, sizeof(message)) && files_read_library(b, &library) && !strcmp(library.places[0].name, "Thunder Guitar 03"), "library to library: %s", message);
@@ -3559,6 +3661,7 @@ int main(int argc, char **argv)
 	test_dac_moves();
 	test_libraries();
 	test_copy_channel();
+	test_undo_history();
 	test_export();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);

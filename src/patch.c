@@ -2873,6 +2873,15 @@ void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *e
 	end_incoming(patch);
 }
 
+void patch_load_values(mdmi_patch *patch, const patch_values *values)
+{
+	begin_incoming(patch);
+	patch->incoming.arp_parts = 0;
+	patch->incoming.parts = (patch->incoming.parts & PATCH_INCOMING_BANK) | PATCH_INCOMING_VALUES;
+	patch->incoming.values = *values;
+	end_incoming(patch);
+}
+
 void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument, const patch_instrument *base)
 {
 	if (channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {

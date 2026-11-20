@@ -458,6 +458,8 @@ void patch_load_envelope_place(mdmi_patch *patch, int place, const patch_envelop
 // Main thread: a file's voice for an FM channel, as if its knobs moved; the Preset stays (D23).
 // The base becomes base's voice, or stays when it is NULL (D31): a drawing keeps it.
 void patch_load_voice(mdmi_patch *patch, int channel, const patch_instrument *instrument, const patch_instrument *base);
+// Main thread: whole values in one block, as a loaded state brings them (stage 48: undo of a Preset step).
+void patch_load_values(mdmi_patch *patch, const patch_values *values);
 // The same for a PSG channel's envelope (D28).
 void patch_load_envelope(mdmi_patch *patch, int channel, const patch_envelope *envelope, const patch_envelope *base);
 // Main thread: what the channel's base is now, a handed one not taken yet included.

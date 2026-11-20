@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.40.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.41.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -68,6 +68,11 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   double click sets a default where that makes sense (a knob to its preset's value, an envelope column
   to 0 dB or no pitch shift, an arp step to 0, VOL on ALL), in one UNDO step with the click before it;
   on switches (ARP ON, a loop's strip, release or stop) the second click does nothing more.
+- UNDO (0.41.0): a history of 32 steps; Shift+click on UNDO redoes. A Preset step made in the window
+  (the wheel on a channel's name or PRESET, a click on a bank place, Up and Down) is an UNDO step that
+  brings back the channel's whole sound with its old Preset, edits (`*`) included; a run of steps on one
+  channel is one step. Knob edits and automation stay with the host's undo. The wheel down goes down
+  the bank list. On ALL the OUT boxes are scaled per chip, so a channel at full volume fills its box.
 - ALL page (0.24.4): each FM and PSG row has an OUT box with the channel's live output from the emulator,
   two periods of its lowest sounding note (the noise channel the last 5 ms), empty without a note. The DAC's
   row has PAN and VOL and shows the last sample struck with a line where each sounding voice is. DAC VOL is

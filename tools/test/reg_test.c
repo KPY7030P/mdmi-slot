@@ -7403,6 +7403,33 @@ int main(int argc, char **argv)
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
 	}
+	if (argc == 3 && !strcmp(argv[2], "--peaks")) {
+		// Stage 47: each output's peak at full volume, as the ALL scope takes it (mid of L and R) and
+		// the louder side.
+		full_velocity();
+		static const int KEYS[] = {48, 60, 72};
+		for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+			if (channel == 5 || channel == 8) {
+				continue;
+			}
+			for (int k = 0; k < 3; k++) {
+				midi((uint8_t)(0x90 | channel), (uint8_t)KEYS[k], 127);
+				float mid = 0, side = 0;
+				for (int b = 0; b < 40; b++) {
+					tick(BLOCK);
+					for (int i = 0; i < BLOCK; i++) {
+						const float l = outputs[channel * 2][i], r = outputs[channel * 2 + 1][i];
+						mid = fabsf((l + r) * 0.5f) > mid ? fabsf((l + r) * 0.5f) : mid;
+						side = fmaxf(fabsf(l), fabsf(r)) > side ? fmaxf(fabsf(l), fabsf(r)) : side;
+					}
+				}
+				midi((uint8_t)(0x80 | channel), (uint8_t)KEYS[k], 0);
+				render(SETTLE_BLOCKS * 4);
+				printf("    channel %d key %d: mid %.3f, side %.3f\n", channel + 1, KEYS[k], mid, side);
+			}
+		}
+		return 0;
+	}
 	if (argc == 3 && !strcmp(argv[2], "--porta")) {
 		// Stage 28: Porta channels lending, alone.
 		full_velocity();
