@@ -1460,6 +1460,58 @@ static uint8_t *without_block(const uint8_t *state, size_t size, uint32_t type, 
 	return out;
 }
 
+// Stage 43 (D87): a channel's sound onto another of its kind, as a dropped file goes: the voice, name,
+// base and row; the knobs stay; one undo step, which on PSG also gives the loop shadow and release back.
+static void test_copy_channel(void)
+{
+	printf("Channel copy\n");
+	mdmi_patch *patch = &files_patch;
+	patch_init(patch);
+	files_view = (state_view){0};
+	const files_host host = {patch, &files_view, take_now, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	const int tl = op_param(0, OP_TL);
+	const size_t voice = (PATCH_NUM_CHANNEL_PARAMS - PARAM_ALGORITHM) * sizeof(int16_t);
+	CHECK(open_file(&files, files_dir, "Duck Guitar.tfi", 1, -1, message), "channel 2 plays a file: %s", message);
+	patch_set(patch, op_id(1, 0, OP_TL), patch->model.channels[1][tl] + 5);
+	patch_set(patch, PATCH_CHANNEL_ID(4, PARAM_VOLUME), 77);
+	patch_set(patch, PATCH_CHANNEL_ID(4, PARAM_PAN), 0);
+	patch_publish(patch);
+	static patch_values before;
+	before = patch->model;
+	CHECK(files_copy_channel(&files, 1, 4, message, sizeof(message)), "channel 2 copies onto 5: %s", message);
+	const patch_values *m = &patch->model;
+	CHECK(!memcmp(m->channels[4] + PARAM_ALGORITHM, m->channels[1] + PARAM_ALGORITHM, voice) && !strcmp(m->names[4], m->names[1])
+		&& !memcmp(m->base[4], m->base[1], sizeof(m->base[1])) && patch_sound_changed(m, NULL, 4) && patch_arp_same(&m->arps[4], &m->arps[1]),
+		"channel 5 has channel 2's voice, name, base (still tweaked: *) and row");
+	CHECK(m->channels[4][PARAM_VOLUME] == 77 && m->channels[4][PARAM_PAN] == 0 && m->channels[4][PARAM_PRESET] == before.channels[4][PARAM_PRESET],
+		"channel 5 keeps its own Volume, Pan and Preset");
+	static patch_values copied;
+	copied = patch->model;
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &before), "undo gives channel 5 back exactly: %s", message);
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &copied), "a second undo brings the copy back");
+	CHECK(!files_copy_channel(&files, 1, 1, message, sizeof(message)) && !files_copy_channel(&files, 1, 7, message, sizeof(message))
+		&& !files_copy_channel(&files, 8, 2, message, sizeof(message)) && same_model(&patch->model, &copied) && files_undo_text(&files) != NULL,
+		"the same channel and the other kind are refused, the undo step stays");
+
+	// PSG: channel 7's envelope with a loop shadow and a kept release onto channel 10.
+	files_view.loops[0] = (state_loop){true, 1, 3, ""};
+	memcpy(files_view.loops[0].name, m->psg[0].name, PATCH_NAME);
+	files_view.tails[0] = (state_tail){true, 2, {5, 9}, ""};
+	memcpy(files_view.tails[0].name, m->psg[0].name, PATCH_NAME);
+	static patch_values psg_before;
+	psg_before = patch->model;
+	CHECK(files_copy_channel(&files, 6, 9, message, sizeof(message)) && !memcmp(&m->psg[3], &m->psg[0], sizeof(m->psg[0]))
+		&& !memcmp(&files_view.loops[3], &files_view.loops[0], sizeof(state_loop)) && !memcmp(&files_view.tails[3], &files_view.tails[0], sizeof(state_tail)),
+		"channel 7 onto 10: the envelope, its loop shadow and its kept release");
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &psg_before) && !files_view.loops[3].kept && !files_view.tails[3].stop,
+		"undo gives channel 10 its envelope back, without the shadow and release");
+	CHECK(files_undo(&files, message, sizeof(message)) && files_view.loops[3].kept && files_view.tails[3].stop, "a second undo brings them back with the copy");
+	files_free(&files);
+}
+
 // D31: a channel's base is what it got whole, its bank place or a dropped file. The rail's * and
 // the window's labels compare with it, undo puts it back, and a project keeps it.
 static void test_bases(void)
@@ -3486,6 +3538,7 @@ int main(int argc, char **argv)
 	test_dac_old_project();
 	test_dac_moves();
 	test_libraries();
+	test_copy_channel();
 	test_export();
 	test_threads();
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);

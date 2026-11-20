@@ -290,6 +290,14 @@ struct mdmi_gui {
 	// The cell being dragged, -1 when none.
 	uint32_t drag_id;
 	bool dragging;
+	// The last choice a press set (stage 42): a double click resets it only over that same button.
+	bool chosen;
+	uint32_t chosen_id;
+	int chosen_value;
+	// Stage 43 (channel-copy.md): a press on a rail row, past DRAG_SLOP a drag that copies its sound.
+	int copy_from;
+	int copy_x, copy_y;
+	bool copy_moved;
 	bool drag_moved;
 	int drag_y;
 	// Parts of a wheel notch not yet spent on a cell (stage 22a), and the value the wheel last sent
@@ -724,6 +732,29 @@ static void column_note(mdmi_gui *g, int y, int k, bool seen, int key, bool held
 
 // One rail row (0A): the number x3 beside the name and the bar, the name x2 above with 3 px to the
 // line below it, the bar and the note x1 on that line. Heights and row_y stay: drops, hover and brackets use them.
+// Stage 43 (channel-copy.md): a rail row is being dragged past DRAG_SLOP.
+static bool copy_dragged(const mdmi_gui *g)
+{
+	return g->copy_from >= 0 && g->copy_moved;
+}
+
+static int row_at(const mdmi_gui *g, int x, int y);
+
+// A channel the dragged row's sound can go to: another of the same kind, not the DAC.
+static bool copy_takes(mdmi_gui *g, int channel)
+{
+	const patch_values *values = patch_view(g->source.patch);
+	return g->copy_from >= 0 && channel >= 0 && channel != g->copy_from && !is_dac(values, channel)
+		&& channel_is_fm(channel) == channel_is_fm(g->copy_from);
+}
+
+// The row under the mouse the sound would go to, or -1.
+static int copy_target(mdmi_gui *g)
+{
+	const int row = row_at(g, g->mouse_x, g->mouse_y);
+	return copy_takes(g, row) ? row : -1;
+}
+
 static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 {
 	const int y = row_y(channel);
@@ -732,9 +763,12 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	const bool selected = *g->source.channel == channel;
 	const uint32_t kind = dac ? C_DAC : special ? C_FM_LIGHT : channel_is_fm(channel) ? C_FM : C_PSG;
 	const uint32_t dark = dac ? C_DAC_DARK : channel_is_fm(channel) ? C_FM_DARK : C_PSG_DARK;
-	// While a file is over the window: the row it would go to is lit, rows it can't go to are dim.
-	const bool target = g->file_over && g->drop_channel == channel;
-	const bool dim = g->file_over && !target && (g->file_count != 1 || !takes_kind(values, channel, g->file_kind));
+	// While a file is over the window: the row it would go to is lit, rows it can't go to are dim. A rail
+	// row dragged (stage 43) looks the same: rows of its kind framed, the one under the mouse lit.
+	const bool copying = copy_dragged(g);
+	const bool target = (g->file_over && g->drop_channel == channel) || (copying && copy_target(g) == channel);
+	const bool dim = (g->file_over && !target && (g->file_count != 1 || !takes_kind(values, channel, g->file_kind)))
+		|| (copying && channel != g->copy_from && !copy_takes(g, channel));
 	const bool flash = g->flash_ticks > 0 && g->flash_channel == channel;
 #define INK(color) (target ? C_BG : dim ? C_LINE : (color))
 
@@ -756,7 +790,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		text(g, BAR_X, y + 5, buffer, INK(taken ? C_HINT : C_TEXT), 2);
 	}
 #undef INK
-	if (g->file_over && !target && !dim) {
+	if ((g->file_over || (copying && channel != g->copy_from)) && !target && !dim) {
 		frame(g, 0, y, RAIL_W, ROW_H - 1, C_AMBER);
 		frame(g, 1, y + 1, RAIL_W - 2, ROW_H - 3, C_AMBER);
 	} else if (flash && g->flash_color == C_ERROR) {
@@ -2212,24 +2246,30 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	// One column per frame, filling the whole lane at every length: the loop on a lighter ground, a
 	// grid of levels behind, a dark body with a bright top.
 	const int hover = over == ENV_LEVEL || over == ENV_PITCH ? column_at(count, g->mouse_x) : -1;
+	// Stage 41 (psg-playing-column.md): the column the note is at lights up, as W17 on the ROM screen;
+	// never in a release not played.
+	patch_shape played;
+	played_shape(shape, stop, &played);
+	const int playing = envelope_frame(g, &played, psg, mdmi_engine_get_stats(g->source.engine).sample_rate);
 	for (int i = 0; i < count; i++) {
 		const int x = column_x(count, i), w = column_x(count, i + 1) - x;
 		const bool in_loop = loop && i >= shape->loop_start && i < end;
 		// A release not played (stage 22b): there, but as dim as can still be read.
 		const bool unplayed = stop && i >= end;
-		const uint32_t back = i == hover ? C_LINE : in_loop ? C_CELL : C_BG;
+		const bool lit = i == playing && !unplayed;
+		const uint32_t back = lit ? C_PSG_DARK : i == hover ? C_LINE : in_loop ? C_CELL : C_BG;
 		fill(g, x, ENV_LEVEL_Y, w, ENV_LEVEL_BOTTOM - ENV_LEVEL_Y, back);
 		fill(g, x, ENV_PITCH_Y, w, ENV_PITCH_BOTTOM - ENV_PITCH_Y, back);
 		for (int k = 1; k < 15; k++) {
-			fill(g, x, ENV_LEVEL_Y + ENV_LEVEL_ROW * k, w, 1, in_loop || i == hover ? C_LINE : C_CELL);
+			fill(g, x, ENV_LEVEL_Y + ENV_LEVEL_ROW * k, w, 1, lit || in_loop || i == hover ? C_LINE : C_CELL);
 		}
 		const int level = shape->frames[i] & 15, top = ENV_LEVEL_Y + ENV_LEVEL_ROW * level;
 		if (level < 15) {
-			fill(g, x, top + 3, w - 1, ENV_BASE_Y - top - 3, unplayed ? C_CELL : C_PSG_DARK);
-			fill(g, x, top, w - 1, 3, unplayed ? C_LINE : C_PSG);
+			fill(g, x, top + 3, w - 1, ENV_BASE_Y - top - 3, unplayed ? C_CELL : lit ? C_PSG : C_PSG_DARK);
+			fill(g, x, top, w - 1, 3, unplayed ? C_LINE : lit ? C_TEXT : C_PSG);
 		}
 		const int row = pitch_row(shape->frames[i]), pitch_top = ENV_PITCH_Y + row * ENV_PITCH_ROW;
-		const uint32_t pitch_ink = noise || unplayed ? C_LINE : C_PSG;
+		const uint32_t pitch_ink = noise || unplayed ? C_LINE : lit ? C_TEXT : C_PSG;
 		if (row < 7) {
 			fill(g, x, pitch_top, w - 1, ENV_CENTRE_Y - pitch_top, pitch_ink);
 		} else if (row > 7) {
@@ -2238,14 +2278,6 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	}
 	fill(g, ENV_X, ENV_BASE_Y, ENV_LANE_W - 1, 1, C_LINE);
 	fill(g, ENV_X, ENV_CENTRE_Y, ENV_LANE_W - 1, 1, C_LINE);
-	// Where the note is, the same green line as on ALL, down both lanes; never in a release not played.
-	patch_shape played;
-	played_shape(shape, stop, &played);
-	const int playing = envelope_frame(g, &played, psg, mdmi_engine_get_stats(g->source.engine).sample_rate);
-	if (playing >= 0 && playing < count) {
-		const int x = column_x(count, playing), w = column_x(count, playing + 1) - x;
-		fill(g, x + (w - 1) / 2, ENV_LEVEL_Y, 1, ENV_PITCH_BOTTOM - ENV_LEVEL_Y, C_PLAYING);
-	}
 
 	// The loop's strip: its body is the switch, the tabs point outward so a loop of one step keeps
 	// them apart, LOOP between them and RELEASE over the tail that plays after Note Off.
@@ -4765,6 +4797,20 @@ static void draw_footer(mdmi_gui *g)
 		footer_text(g, buffer, C_ERROR);
 	} else if (g->file_over) {
 		footer_text(g, g->drop_hint, g->drop_hint_color);
+	} else if (copy_dragged(g)) {
+		// Stage 43 (channel-copy.md): what letting go would do.
+		const int to = copy_target(g), over = row_at(g, g->mouse_x, g->mouse_y);
+		const bool fm = channel_is_fm(g->copy_from);
+		if (to >= 0) {
+			snprintf(buffer, sizeof(buffer), "COPY CH%d TO CH%d, REPLACES %.13s", g->copy_from + 1, to + 1, sound_name(patch_view(g->source.patch), to));
+			footer_text(g, buffer, C_AMBER);
+		} else if (over == g->copy_from) {
+			footer_text(g, fm ? "DROP ON ANOTHER FM ROW" : "DROP ON ANOTHER PSG ROW", C_LABEL);
+		} else if (over >= 0) {
+			footer_text(g, fm ? "FM GOES TO FM 1-6" : "PSG GOES TO PSG 7-10", C_LABEL);
+		} else {
+			footer_text(g, "LET GO OUTSIDE A ROW TO CANCEL", C_LABEL);
+		}
 	} else if (action_hint(g, buffer, sizeof(buffer))) {
 		footer_text(g, buffer, C_LABEL);
 	} else if (tv_hint(g, buffer, sizeof(buffer))) {
@@ -5571,23 +5617,33 @@ static int mini_edge(int x, int w, int n, int i)
 }
 
 // The envelope in small, frame by frame: dark body, bright top, the loop on a grey ground.
-static void draw_mini_envelope(mdmi_gui *g, int x, int y, int w, int h, const patch_shape *shape)
+// The column at `playing` (or none at -1) lights up as in the editor (stage 41).
+static void draw_mini_envelope(mdmi_gui *g, int x, int y, int w, int h, const patch_shape *shape, int playing)
 {
 	const int n = shape->count > 0 ? shape->count : 1;
 	if (shape->loop_start >= 0) {
 		const int from = mini_edge(x, w, n, shape->loop_start);
 		fill(g, from, y, mini_edge(x, w, n, loop_end_of(shape)) - from, h, C_CELL);
 	}
-	for (int i = 0; i < shape->count; i++) {
-		const int level = shape->frames[i] & 15;
+	// The playing column last: with more frames than pixels the next frame shares its x and would cover it.
+	for (int i = 0; i <= shape->count; i++) {
+		const int frame = i < shape->count ? i : playing;
+		const bool lit = frame == playing;
+		if (frame < 0 || frame >= shape->count || (lit && i < shape->count)) {
+			continue;
+		}
+		const int level = shape->frames[frame] & 15;
+		int width = mini_edge(x, w, n, frame + 1) - mini_edge(x, w, n, frame) - (w / n >= 3 ? 1 : 0);
+		width = width < 1 ? 1 : width;
+		if (lit) {
+			fill(g, mini_edge(x, w, n, frame), y, width, h, C_PSG_DARK);
+		}
 		if (level >= 15) {
 			continue;
 		}
 		const int top = y + ((h - 3) * level + 7) / 15;
-		int width = mini_edge(x, w, n, i + 1) - mini_edge(x, w, n, i) - (w / n >= 3 ? 1 : 0);
-		width = width < 1 ? 1 : width;
-		fill(g, mini_edge(x, w, n, i), top, width, y + h - top, C_PSG_DARK);
-		fill(g, mini_edge(x, w, n, i), top, width, 2, C_PSG);
+		fill(g, mini_edge(x, w, n, frame), top, width, y + h - top, lit ? C_PSG : C_PSG_DARK);
+		fill(g, mini_edge(x, w, n, frame), top, width, 2, lit ? C_TEXT : C_PSG);
 	}
 	fill(g, x, y + h, w, 1, C_LINE);
 }
@@ -5961,14 +6017,8 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 		} else {
 			patch_shape shape;
 			patch_shape_of(&values->psg[channel - PATCH_NUM_FM_CHANNELS], &shape);
-			draw_mini_envelope(g, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, &shape);
-			// Where the note is in it, a green line over the frame.
-			const int frame = envelope_frame(g, &shape, channel - PATCH_NUM_FM_CHANNELS, rate);
-			if (frame >= 0) {
-				const int n = shape.count > 0 ? shape.count : 1;
-				const int left = mini_edge(ALL_SOUND_X, ALL_SOUND_W, n, frame), right = mini_edge(ALL_SOUND_X, ALL_SOUND_W, n, frame + 1);
-				fill(g, left + (right - left) / 2, y + 2, 1, 35, C_PLAYING);
-			}
+			// Where the note is in it, its column lit (stage 41).
+			draw_mini_envelope(g, ALL_SOUND_X, y + 3, ALL_SOUND_W, 33, &shape, envelope_frame(g, &shape, channel - PATCH_NUM_FM_CHANNELS, rate));
 		}
 		draw_all_more(g, values, channel, y + 28);
 	}
@@ -6188,6 +6238,13 @@ static void render(mdmi_gui *g)
 		draw_editor(g);
 	}
 	draw_footer(g);
+	// Stage 43: the dragged channel's name at the mouse, as a dragged BANK row's.
+	if (copy_dragged(g) && !rom && g->mouse_x >= 0) {
+		char buffer[32];
+		snprintf(buffer, sizeof(buffer), "%.13s", sound_name(patch_view(g->source.patch), g->copy_from));
+		fill(g, g->mouse_x + 8, g->mouse_y - 10, (int)strlen(buffer) * 12 + 8, 20, C_TEXT);
+		text(g, g->mouse_x + 12, g->mouse_y - 7, buffer, C_BG, 2);
+	}
 }
 
 static void paint(mdmi_gui *g, HDC dc)
@@ -6803,6 +6860,16 @@ static void on_down(mdmi_gui *g, int x, int y)
 	int channel = rail_channel_at(x, y);
 	if (channel >= 0) {
 		*g->source.channel = channel;
+		// Stage 43: the press may become a drag that copies the sound; never from the DAC.
+		if (!is_dac(patch_view(g->source.patch), channel) && !g->file_over) {
+			g->copy_from = channel;
+			g->copy_x = x;
+			g->copy_y = y;
+			g->copy_moved = false;
+			if (g->window) {
+				SetCapture(g->window);
+			}
+		}
 		refresh(g);
 		return;
 	}
@@ -6906,6 +6973,9 @@ static void on_down(mdmi_gui *g, int x, int y)
 	}
 	if (c->kind == CELL_CHOICE) {
 		edit_once(g, c->id, c->choice);
+		g->chosen = true;
+		g->chosen_id = c->id;
+		g->chosen_value = c->choice;
 		return;
 	}
 	g->dragging = true;
@@ -6926,6 +6996,11 @@ static void on_move(mdmi_gui *g, int x, int y)
 {
 	g->mouse_x = x;
 	g->mouse_y = y;
+	if (g->copy_from >= 0) {
+		g->copy_moved = g->copy_moved || abs(x - g->copy_x) >= DRAG_SLOP || abs(y - g->copy_y) >= DRAG_SLOP;
+		refresh(g);
+		return;
+	}
 	if (g->dac_drag != DACC_NONE) {
 		dac_drag_to(g, x, y);
 		refresh(g);
@@ -6969,6 +7044,24 @@ static void on_move(mdmi_gui *g, int x, int y)
 
 static void on_up(mdmi_gui *g)
 {
+	if (g->copy_from >= 0) {
+		const int from = g->copy_from, to = copy_dragged(g) ? copy_target(g) : -1;
+		g->copy_from = -1;
+		g->copy_moved = false;
+		if (GetCapture() == g->window) {
+			ReleaseCapture();
+		}
+		char message[FILES_MESSAGE] = "";
+		if (to >= 0 && files_copy_channel(g->source.files, from, to, message, sizeof(message))) {
+			*g->source.channel = to;
+			flash(g, to, -1, 1, true);
+			char said[FILES_MESSAGE + 32];
+			snprintf(said, sizeof(said), "%s. UNDO TAKES IT BACK", message);
+			say(g, said, C_AMBER, MESSAGE_TICKS);
+		}
+		refresh(g);
+		return;
+	}
 	if (g->row_list >= 0) {
 		if (g->row_moved) {
 			drop_row(g);
@@ -7071,6 +7164,27 @@ static void on_up(mdmi_gui *g)
 }
 
 // Back to the value of the channel's preset, or the default for global knobs. The preset itself stays.
+// Stage 42 (wheel-double-click.md): a double click on a choice the first click set puts back the
+// preset's value, or a global's default. Windows takes a click on the next button, a few pixels on, as
+// the second of a double click: then it chooses that button, as a click.
+static void choice_reset(mdmi_gui *g, int index, int x, int y)
+{
+	const uint32_t id = g->cells[index].id;
+	// The model may not have the first click's value yet: what that click chose is kept for this.
+	if (!g->chosen || g->chosen_id != id || g->chosen_value != g->cells[index].choice) {
+		on_down(g, x, y);
+		return;
+	}
+	g->chosen = false;
+	int channel, param;
+	patch_id_split(id, &channel, &param);
+	const int value = channel < 0 ? patch_param(id)->default_value
+		: patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET)));
+	if (value != g->cells[index].choice) {
+		edit_once(g, id, value);
+	}
+}
+
 static void on_double_click(mdmi_gui *g, int x, int y)
 {
 	g->mouse_x = x;
@@ -7126,6 +7240,8 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		patch_id_split(g->cells[index].id, &channel, &param);
 		if (channel >= 0 && param == PARAM_VOLUME) {
 			edit_once(g, g->cells[index].id, patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET))));
+		} else if (g->cells[index].kind == CELL_CHOICE) {
+			choice_reset(g, index, x, y);
 		}
 		return;
 	}
@@ -7140,7 +7256,12 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		edit_once(g, g->cells[index].id, patch_param(g->cells[index].id)->default_value);
 		return;
 	}
-	if (index < 0 || g->cells[index].kind == CELL_CHOICE) {
+	if (index < 0) {
+		return;
+	}
+	// Stage 42: PAN, ALG, DT, RS and the noise's choice go back to the preset's (or default) value.
+	if (g->cells[index].kind == CELL_CHOICE) {
+		choice_reset(g, index, x, y);
 		return;
 	}
 	const uint32_t id = g->cells[index].id;
@@ -7153,12 +7274,13 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	if (mono_channel_of(id) >= 0 || porta_channel_of(id) >= 0) {
 		return;
 	}
-	// Where a click steps, a quick second click is one more step on EDITOR, as ever; elsewhere the
-	// strip took no double click before, and a second step of DAC would reset the chips twice.
-	if (patch_param(id)->max + 1 <= 8 && *g->source.page != PAGE_EDITOR) {
+	// Where a global's click steps, a quick second click is one more step on EDITOR, as ever; elsewhere
+	// the strip took no double click before, and a second step of DAC would reset the chips twice. A
+	// channel's short cells (FB, AMS, FMS, AM) take the preset's value as the rest do (stage 42).
+	if (channel < 0 && patch_param(id)->max + 1 <= 8 && *g->source.page != PAGE_EDITOR) {
 		return;
 	}
-	if (patch_param(id)->max + 1 <= 8) {
+	if (channel < 0 && patch_param(id)->max + 1 <= 8) {
 		on_down(g, x, y);
 		on_up(g);
 		return;
@@ -7493,20 +7615,31 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 	} else if (dac_bank(g, patch_view(g->source.patch)) && client.x / g->scale >= BANK_X) {
 		scroll_dac(g, g->dac_top - delta / WHEEL_DELTA * WHEEL_ROWS);
 		refresh(g);
-	} else if (!g->dragging) {
+	} else {
 		// Stage 22a: a notch over a numeric cell steps it by one, a whole change to the host each.
 		// Smooth wheels send parts of a notch; they add up to one.
 		g->mouse_x = client.x / g->scale;
 		g->mouse_y = client.y / g->scale;
-		const int index = hovered(g);
-		if (index < 0 || (g->cells[index].kind != CELL_ROW && g->cells[index].kind != CELL_COLUMN)) {
+		// Not while anything is dragged or a file is over the window (stage 42, wheel-double-click.md).
+		const bool busy = g->dragging || g->row_list >= 0 || g->env_drag != ENV_NONE || g->arp_drag != ARP_NONE || g->dac_drag != DACC_NONE
+			|| g->grid_from >= 0 || g->file_over || g->copy_from >= 0;
+		// Stage 42: over a channel's row of the rail, or its PRESET, the wheel steps the Preset. ROM shows
+		// neither the rail nor the channel page's cells: there the wheel does nothing.
+		const int rail = busy || *g->source.page == PAGE_ROM ? -1 : rail_channel_at(g->mouse_x, g->mouse_y);
+		const int index = busy || rail >= 0 || *g->source.page == PAGE_ROM ? -1 : hovered(g);
+		uint32_t id;
+		if (rail >= 0 && !is_dac(patch_view(g->source.patch), rail)) {
+			id = PATCH_CHANNEL_ID(rail, PARAM_PRESET);
+		} else if (index >= 0 && (g->cells[index].kind == CELL_ROW || g->cells[index].kind == CELL_COLUMN || g->cells[index].kind == CELL_SOURCE)) {
+			id = g->cells[index].id;
+		} else {
 			g->wheel_rest = 0;
 			return;
 		}
 		// Parts of a notch count for one cell only.
-		if (g->cells[index].id != g->wheel_rest_id) {
+		if (id != g->wheel_rest_id) {
 			g->wheel_rest = 0;
-			g->wheel_rest_id = g->cells[index].id;
+			g->wheel_rest_id = id;
 		}
 		g->wheel_rest += delta;
 		const int notches = g->wheel_rest / WHEEL_DELTA;
@@ -7514,7 +7647,6 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 		if (!notches) {
 			return;
 		}
-		const uint32_t id = g->cells[index].id;
 		const int max = patch_param(id)->max;
 		const int now = g->wheel_pending && g->wheel_id == id ? g->wheel_value : patch_get(g->source.patch, id);
 		const int value = now + notches < 0 ? 0 : now + notches > max ? max : now + notches;
@@ -7599,12 +7731,28 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		return 0;
 	case WM_MOUSELEAVE:
 		g->tracking = false;
-		if (!g->dragging) {
+		if (!g->dragging && g->copy_from < 0) {
 			g->mouse_x = g->mouse_y = -1;
 		}
 		return 0;
-	case WM_LBUTTONUP:
 	case WM_CAPTURECHANGED:
+	case WM_RBUTTONDOWN:
+		// Stage 43: a copy's drag lost or cancelled by the right button copies nothing.
+		if (g->copy_from >= 0) {
+			g->copy_from = -1;
+			g->copy_moved = false;
+			if (message == WM_RBUTTONDOWN && GetCapture() == g->window) {
+				ReleaseCapture();
+			}
+			refresh(g);
+			return 0;
+		}
+		if (message == WM_RBUTTONDOWN) {
+			return DefWindowProcA(window, message, wparam, lparam);
+		}
+		on_up(g);
+		return 0;
+	case WM_LBUTTONUP:
 		on_up(g);
 		return 0;
 	case WM_LBUTTONDBLCLK:
@@ -7656,6 +7804,7 @@ mdmi_gui *gui_create(const gui_source *source)
 	g->rom_copy_note = -1;
 	g->bank_seen_channel = g->drop_channel = g->drop_place = g->flash_channel = g->flash_place = -1;
 	g->chooser = g->row_list = g->tried_channel = g->flash_list = -1;
+	g->copy_from = -1;
 	mdmi_engine_watch_frames(g->source.engine, true);
 	return g;
 }

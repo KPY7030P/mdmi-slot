@@ -59,6 +59,11 @@ typedef struct {
 	bool undo_envelopes;
 	char undo_library[LIBRARY_PATH];
 	char undo_text[FILES_MESSAGE];
+	// Stage 43 (D87): a channel copied onto a PSG channel also took the source's loop shadow and kept
+	// release; undo puts the target's back, and keeps the copy's for a second undo.
+	bool undo_view;
+	state_loop undo_loop;
+	state_tail undo_tail;
 	// Stage 24: the bank and samples the signature was last reckoned for, and the signature.
 	patch_bank *signed_bank;
 	uint32_t signed_dac;
@@ -117,6 +122,11 @@ bool files_read_library(const char *path, patch_bank *bank);
 bool files_place_empty(const patch_bank *bank, bool envelopes, int place);
 // A new library, every place empty, over a file that is there (the save dialog has asked).
 bool files_new_library(const char *path, char *message, size_t size);
+// Stage 43 (D87): channel from's sound onto channel to of the same kind, as a dropped file goes: the
+// voice or envelope with its name, the row, the base (so the target shows the source's `*`) and, on
+// PSG, the loop shadow and kept release. The channels' knobs stay; the host is told nothing (D19). One
+// undo step. False, with a message, for the same channel or another kind.
+bool files_copy_channel(mdmi_files *files, int from, int to, char *message, size_t size);
 // A place's sound, name and row onto the channel, as a dropped file goes (D25): Preset stays.
 bool files_try_place(mdmi_files *files, int channel, const files_spot *from, char *message, size_t size);
 // A place's sound, name and row over another's, of the same list: FM voices, or envelopes. One undo

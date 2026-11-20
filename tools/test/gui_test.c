@@ -38,6 +38,17 @@
 #define OP1_TL_Y 230
 #define CH3_OP1_TL 1311
 #define CH4_OP1_TL 1411
+#define CH4_OP1_RS 1414
+#define CH4_ALG 1407
+#define CH4_AMS 1409
+#define RS_SEG_X 270
+#define OP_RS_ROW_Y 445
+#define ALG_X0 539
+#define ALG_Y 198
+#define AMS_X 550
+#define AMS_Y 92
+#define EDITOR_SOURCE_X 640
+#define EDITOR_SOURCE_Y 40
 // The LFO Rate cell among the global knobs, and its id.
 #define LFO_RATE_X 100
 #define LFO_RATE_Y 484
@@ -88,6 +99,9 @@
 #define ALL_SOUND_X 290
 #define ALL_SOUND_RIGHT 346
 #define CH2_VOLUME 1201
+#define CH2_PRESET 1200
+#define CH2_ALG 1207
+#define ALL_SOURCE_X 616
 // The DAC page (stage 12).
 #define RAIL_CH6_Y 264
 #define COLOR_AMBER 0xEECC66
@@ -330,6 +344,25 @@ static int count_color_in(int left, int right, int top, int bottom, uint32_t col
 		}
 	}
 	return count;
+}
+
+// Stage 41: the x span of the playing PSG column, the white of its top inside the box; returns its
+// pixel count.
+static int lit_columns(int x0, int x1, int y0, int y1, int *left, int *right)
+{
+	int n = 0;
+	*left = 9999;
+	*right = -1;
+	for (int y = y0; y < y1; y++) {
+		for (int x = x0; x < x1; x++) {
+			if ((pixels[y * WIDTH + x] & 0xFFFFFF) == COLOR_TEXT) {
+				n++;
+				*left = x < *left ? x : *left;
+				*right = x > *right ? x : *right;
+			}
+		}
+	}
+	return n;
 }
 
 static int count_not_black(int top, int bottom)
@@ -652,6 +685,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: %s <plugin.clap> <picture_prefix>\n", argv[0]);
 		return 2;
 	}
+	// A crash keeps the lines before it (stage 43).
+	setvbuf(stdout, NULL, _IONBF, 0);
 	const bool expect_crash = getenv("MDMI_TEST_CRASH") != NULL;
 	// Stage 22c: the libraries in a folder of the test's, gone before it starts.
 	snprintf(banks_dir, sizeof(banks_dir), "%s-banks", argv[2]);
@@ -1092,6 +1127,57 @@ int main(int argc, char **argv)
 		wheel(window, OP1_TL_X, OP1_TL_Y, -240);
 		run_ms(50);
 		CHECK(quick == ch4_before + 12 && get_value(CH4_OP1_TL) == ch4_before + 10, "two quick notches give +2 (%+d), two down back", quick - ch4_before - 10);
+		// Stage 42: a double click on a choice (RS, ALG) or a short cell (AMS) puts the preset's value
+		// back; a quick click on the next RS segment chooses it.
+		{
+			const int rs = get_value(CH4_OP1_RS), alg = get_value(CH4_ALG), ams = get_value(CH4_AMS);
+			click(window, RS_SEG_X + 2 * 13, OP_RS_ROW_Y);
+			run_ms(50);
+			SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(RS_SEG_X + 3 * 13, OP_RS_ROW_Y));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RS_SEG_X + 3 * 13, OP_RS_ROW_Y));
+			run_ms(100);
+			const int rs_next = get_value(CH4_OP1_RS);
+			double_click(window, RS_SEG_X + 3 * 13, OP_RS_ROW_Y);
+			run_ms(100);
+			const int rs_back = get_value(CH4_OP1_RS);
+			const int other = alg == 5 ? 6 : 5;
+			click(window, ALG_X0 + other * 22, ALG_Y);
+			run_ms(100);
+			const int alg_mid = get_value(CH4_ALG);
+			SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(ALG_X0 + other * 22, ALG_Y));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ALG_X0 + other * 22, ALG_Y));
+			run_ms(100);
+			const int alg_back = get_value(CH4_ALG);
+			click(window, AMS_X, AMS_Y);
+			run_ms(100);
+			const int ams_mid = get_value(CH4_AMS);
+			SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(AMS_X, AMS_Y));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(AMS_X, AMS_Y));
+			run_ms(100);
+			CHECK(rs_next == 3 && rs_back == rs && alg_mid == other && alg_back == alg && ams_mid != ams && get_value(CH4_AMS) == ams,
+				"EDITOR: a quick click on the next RS segment sets it (%d); a double click puts back RS %d (%d), ALG %d (%d, after a click %d), AMS %d (%d, after a click %d)",
+				rs_next, rs, rs_back, alg, alg_back, alg_mid, ams, get_value(CH4_AMS), ams_mid);
+			// The wheel on channel 2's rail row from channel 4's page steps channel 2's Preset and leaves
+			// channel 4 selected (TL's wheel still moves channel 4); on the page's PRESET, channel 4's.
+			const int ch2 = get_value(CH2_PRESET), ch4 = get_value(CH4_PRESET), tl = get_value(CH4_OP1_TL);
+			wheel(window, RAIL_X, ALL_CH2_Y, ch2 < 127 ? 120 : -120);
+			run_ms(100);
+			const int ch2_step = get_value(CH2_PRESET) - ch2;
+			wheel(window, OP1_TL_X, OP1_TL_Y, -120);
+			run_ms(100);
+			const int tl_step = get_value(CH4_OP1_TL) - tl;
+			wheel(window, RAIL_X, ALL_CH2_Y, ch2 < 127 ? -120 : 120);
+			wheel(window, EDITOR_SOURCE_X, EDITOR_SOURCE_Y, ch4 < 127 ? 120 : -120);
+			run_ms(100);
+			const int ch4_step = get_value(CH4_PRESET) - ch4;
+			wheel(window, EDITOR_SOURCE_X, EDITOR_SOURCE_Y, ch4 < 127 ? -120 : 120);
+			run_ms(100);
+			CHECK(abs(ch2_step) == 1 && tl_step == -1 && get_value(CH2_PRESET) == ch2 && abs(ch4_step) == 1 && get_value(CH4_PRESET) == ch4,
+				"EDITOR: a notch on channel 2's rail row steps its Preset (%+d) and channel 4 stays selected (TL %+d); one on PRESET steps channel 4's (%+d)", ch2_step, tl_step, ch4_step);
+			// The Preset's round trip loaded the place again: TL back to the tweak the next checks expect.
+			wheel(window, OP1_TL_X, OP1_TL_Y, 120 * (tl - get_value(CH4_OP1_TL)));
+			run_ms(100);
+		}
 		// Stage 24f: the cursor on the FM graph runs with the note, stays at Note Off while the key is held
 		// past 1 s, then runs on through the release; x = 243 + sqrt(s / 2) * 280, s the graph's time.
 		{
@@ -1477,9 +1563,70 @@ int main(int argc, char **argv)
 		run_ms(100);
 		CHECK(pushed[0] == 1 && pushed[2] == 1 && pushed_id[0] == CH2_VOLUME && pushed_id[1] == CH2_VOLUME && get_value(CH2_VOLUME) == vol_before - 10,
 			"VOL dragged on channel 2's row of ALL is one gesture on its Volume, %d to %d", vol_before, get_value(CH2_VOLUME));
+		const int pan_before = get_value(CH2_PAN);
 		click(window, ALL_PAN_R_X, ALL_CH2_Y);
 		run_ms(100);
 		CHECK(get_value(CH2_PAN) == 2, "a click on R pans channel 2 right");
+		// Stage 42 (wheel-double-click.md): a double click on the PAN set puts the preset's back; a
+		// quick second click on the next button chooses that one.
+		click(window, ALL_PAN_R_X, ALL_CH2_Y);
+		run_ms(50);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(ALL_PAN_R_X - 36, ALL_CH2_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ALL_PAN_R_X - 36, ALL_CH2_Y));
+		run_ms(100);
+		const int pan_next = get_value(CH2_PAN);
+		click(window, ALL_PAN_R_X, ALL_CH2_Y);
+		run_ms(50);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(ALL_PAN_R_X, ALL_CH2_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ALL_PAN_R_X, ALL_CH2_Y));
+		run_ms(100);
+		CHECK(pan_next == 0 && pan_before != 0 && get_value(CH2_PAN) == pan_before, "ALL: a quick click on L after R sets L; a double click on R gives the preset's PAN %d (%d)", pan_before, get_value(CH2_PAN));
+		// Stage 42: the wheel on channel 2's name in the rail, and on its PRESET, steps the Preset.
+		{
+			const int preset = get_value(CH2_PRESET);
+			wheel(window, RAIL_X, ALL_CH2_Y, preset < 127 ? 120 : -120);
+			run_ms(100);
+			const int rail_step = get_value(CH2_PRESET) - preset;
+			wheel(window, ALL_SOURCE_X + 20, ALL_CH2_Y, preset < 127 ? -120 : 120);
+			run_ms(100);
+			CHECK(rail_step == (preset < 127 ? 1 : -1) && get_value(CH2_PRESET) == preset,
+				"ALL: a notch on channel 2's name steps its Preset by %+d, one on its PRESET back to %d (%d)", rail_step, preset, get_value(CH2_PRESET));
+		}
+		// Stage 43 (D87): channel 4's rail row (TL tweaked) dragged onto channel 5 copies its voice, channel 5's Volume
+		// stays and channel 5 is selected; dragged onto channel 8 (PSG) nothing; a press alone selects.
+		{
+			const int ch5_y = RAIL_CH1_TOP + 4 * ROW_H + 20, ch8_y = RAIL_CH1_TOP + 7 * ROW_H + 20;
+			// Channel 4 another sound first, a notch of its Preset, so the copy shows.
+			wheel(window, RAIL_X, RAIL_CH4_Y, 120);
+			run_ms(200);
+			const int vol5 = get_value(CH2_VOLUME + 300), alg5 = get_value(CH2_ALG + 300), tl5 = get_value(CH2_ALG + 300 + 4); const bool differed = alg5 != get_value(CH2_ALG + 200) || tl5 != get_value(CH2_ALG + 204);
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH4_Y));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH4_Y + 20));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, ch8_y));
+			run_ms(50);
+			capture(window);
+			const int amber_psg = count_color_in(0, 232, ch8_y - 15, ch8_y + 15, COLOR_AMBER);
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, ch5_y));
+			run_ms(50);
+			capture(window);
+			save_bmp(argv[2], "copy-drag");
+			const int amber_target = count_color_in(0, 232, ch5_y - 15, ch5_y + 15, COLOR_AMBER);
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RAIL_X, ch5_y));
+			run_ms(200);
+			const bool copied = get_value(CH2_ALG + 300) == get_value(CH2_ALG + 200) && get_value(CH2_ALG + 300 + 4) == get_value(CH2_ALG + 204) && get_value(CH2_VOLUME + 300) == vol5;
+			CHECK(differed && copied && amber_target > 1000 && amber_psg < 200,
+				"ALL: channel 4's row dragged onto 5 lights 5 (%d px) and not PSG 8 (%d px), and copies its voice (ALG %d to %d, op 1 TL %d to %d), Volume stays %d",
+				amber_target, amber_psg, alg5, get_value(CH2_ALG + 300), tl5, get_value(CH2_ALG + 304), vol5);
+			// Dropped on a PSG row: nothing.
+			const int alg8_before = get_value(CH2_ALG + 300);
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH4_Y));
+			SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, ch8_y));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RAIL_X, ch8_y));
+			run_ms(100);
+			CHECK(get_value(CH2_ALG + 300) == alg8_before, "ALL: a drop of an FM row on a PSG row copies nothing");
+			wheel(window, RAIL_X, RAIL_CH4_Y, -120);
+			run_ms(200);
+		}
 		// Master Volume (stage 18a): on ALL too, a drag of 10 px is 4 dB, a double click puts 0 dB back.
 		memset(pushed, 0, sizeof(pushed));
 		drag(window, MASTER_X, LFO_RATE_Y, LFO_RATE_Y + 10);
@@ -1536,7 +1683,13 @@ int main(int argc, char **argv)
 		send_midi(0x97, 72, 100);
 		run_ms(300);
 		capture(window);
-		CHECK(count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, COLOR_PLAYING) > 20, "a held note on channel 8 draws the envelope's cursor");
+		// Stage 41: the playing column lights (white top, cyan body) instead of a green line.
+		{
+			int left, right;
+			const int lit = lit_columns(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, &left, &right);
+			CHECK(lit > 0 && right - left < 4 && count_color_in(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, COLOR_PLAYING) == 0,
+				"a held note on channel 8 lights one column of its envelope on ALL (x %d-%d), no green line", left, right);
+		}
 		// Stage 24e (D60): the OUT box shows channel 8's output, 2 periods of its square, standing still.
 		{
 			int top = -1;
@@ -1625,7 +1778,18 @@ int main(int argc, char **argv)
 		run_ms(100);
 		capture(window);
 		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PSG) > 0, "a click on channel 8's sound opens its envelope page");
-		CHECK(count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PLAYING) > 50, "the held note's cursor runs on the envelope editor too");
+		{
+			// Stage 41: one column lit on the editor too, and it moves on while the note plays.
+			int left, right, left2, right2;
+			const int lit = lit_columns(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left, &right);
+			const int green = count_color_in(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, COLOR_PLAYING);
+			save_bmp(argv[2], "psg-playing");
+			run_ms(150);
+			capture(window);
+			const int lit2 = lit_columns(ENV_X, ENV_RIGHT, ENV_LEVEL_Y, ENV_LEVEL_BOTTOM, &left2, &right2);
+			CHECK(lit > 0 && lit2 > 0 && right - left < 20 && right2 - left2 < 20 && left2 != left && green == 0,
+				"the held note lights one column on the envelope editor (x %d-%d, 150 ms later %d-%d), no green line", left, right, left2, right2);
+		}
 		send_midi(0x87, 72, 0);
 		click(window, RAIL_X, RAIL_CH4_Y);
 		run_ms(100);

@@ -145,6 +145,7 @@ static void remember(mdmi_files *files, int undo, int target, const patch_instru
 	files->undo_channel = -1;
 	files->undo_state = state;
 	files->undo_state_size = state_size;
+	files->undo_view = false;
 	if (instrument) {
 		files->undo_instrument = *instrument;
 	}
@@ -1021,6 +1022,60 @@ bool files_new_library(const char *path, char *message, size_t size)
 	return written;
 }
 
+// The target's loop shadow and kept release for the source's (or undo's), the target's kept in their place.
+static void swap_view(mdmi_files *files, int channel, const state_loop *loop, const state_tail *tail)
+{
+	state_view *view = files->host.view;
+	const int psg = channel - PATCH_NUM_FM_CHANNELS;
+	const state_loop old_loop = view->loops[psg];
+	const state_tail old_tail = view->tails[psg];
+	view->loops[psg] = *loop;
+	view->tails[psg] = *tail;
+	files->undo_view = true;
+	files->undo_loop = old_loop;
+	files->undo_tail = old_tail;
+}
+
+bool files_copy_channel(mdmi_files *files, int from, int to, char *message, size_t size)
+{
+	if (from < 0 || to < 0 || from >= PATCH_NUM_CHANNELS || to >= PATCH_NUM_CHANNELS || from == to) {
+		snprintf(message, size, "Drop on another channel");
+		return false;
+	}
+	if (is_psg(from) != is_psg(to)) {
+		snprintf(message, size, is_psg(from) ? "PSG goes to PSG 7-10" : "FM goes to FM 1-6");
+		return false;
+	}
+	// Channel 6 plays the DAC's samples while it is on: no voice to give or take (D87).
+	const int dac = PATCH_NUM_FM_CHANNELS - 1;
+	if ((from == dac || to == dac) && patch_view(files->host.patch)->globals[GLOBAL_DAC]) {
+		snprintf(message, size, "CH6 plays the DAC");
+		return false;
+	}
+	patch_instrument base;
+	patch_envelope base_envelope;
+	patch_base_view(files->host.patch, from, &base, &base_envelope);
+	patch_arp arp = *patch_arp_view(files->host.patch, from), arp_base;
+	patch_arp_base_view(files->host.patch, from, &arp_base);
+	if (is_psg(to)) {
+		patch_envelope envelope;
+		channel_envelope(files->host.patch, from, &envelope);
+		put_envelope_on_channel(files, to, &envelope, &base_envelope, &arp, &arp_base);
+		if (files->host.view) {
+			const int psg = from - PATCH_NUM_FM_CHANNELS;
+			const state_loop loop = files->host.view->loops[psg];
+			const state_tail tail = files->host.view->tails[psg];
+			swap_view(files, to, &loop, &tail);
+		}
+	} else {
+		patch_instrument instrument;
+		channel_instrument(files->host.patch, from, &instrument);
+		put_on_channel(files, to, &instrument, &base, &arp, &arp_base);
+	}
+	snprintf(message, size, "CH%d now plays CH%d's sound", to + 1, from + 1);
+	return true;
+}
+
 bool files_try_place(mdmi_files *files, int channel, const files_spot *from, char *message, size_t size)
 {
 	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
@@ -1130,7 +1185,14 @@ bool files_undo(mdmi_files *files, char *message, size_t size)
 		remember_library(files, envelopes, path, target, &now, now_empty);
 	} else if (undo == UNDO_CHANNEL && is_psg(target)) {
 		patch_envelope back = files->undo_envelope, base = files->undo_base_envelope;
+		const bool view = files->undo_view && files->host.view;
+		const state_loop loop = files->undo_loop;
+		const state_tail tail = files->undo_tail;
 		put_envelope_on_channel(files, target, &back, &base, &arp, &base_arp);
+		// A copy's loop shadow and kept release go back with it (stage 43).
+		if (view) {
+			swap_view(files, target, &loop, &tail);
+		}
 	} else if (undo == UNDO_CHANNEL) {
 		patch_instrument back = files->undo_instrument, base = files->undo_base_instrument;
 		put_on_channel(files, target, &back, &base, &arp, &base_arp);
