@@ -409,22 +409,25 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   voices from the dealer, or its PSG note) from the rising zero crossing nearest a grid of whole periods on the outputs' clock (the same crest each frame, a chord too), at one scale (`OUT_FULL`),
   the noise 5 ms. The source cell moved to x 620. The DAC's row has VOL (bar in the DAC's dark colour) and PAN,
   and `draw_all_dac` draws the last struck note's sample (`note_sample`) with its loop on grey and a line per
-  voice from `patch_dac_voice_place` (D59's copy). Our ROM's `midi_dac_play` writes the voice's volume as
+  voice from `patch_dac_voice_place` (D59's copy; since stage 53 in the OUT box, below). Our ROM's `midi_dac_play` writes the voice's volume as
   velocity x (CC 7 + 1) >> 10 (`midi_dac_channel_volume`; `enable_dac` hands it channel 6's volume), not MDMI canon.
-- ALL's DAC live view (stage 39, art-director, ui-concept.md): bit 6 of the ALL mask (`DAC_LIVE_BIT`; bits
-  0-5 are FM rows' envelopes) swaps the DAC row's sample picture for channel 6's live output: the last
-  20 ms of the copied waves, no anchor, through the same `draw_trace` as the OUT boxes; under
-  1 px of peak only the frame and the middle line. A click on the picture toggles it; the project keeps it.
-  Its scale is the DAC's own (stage 51, D89): `OUT_FULL_DAC` 0.168, from `reg_test --peaks` (a voice at volume
-  15 on a square of full swing holds 0.1685, half bytes 0.086; the ROM's own samples peak at 0.025-0.169), so
-  full swing comes to the box's edge, 13 px.
-- Right of ALL's DAC row (stage 51, art-director, ui-concept.md), in both views: one line of the small font,
-  the last sample's name (`C_DAC`, right edge 670, 23 letters, the rest cut) and `N/4`, how many DAC voices
-  sound, from x 682 (the digit green while one sounds, else grey; `/4` grey). The count and the picture's
-  voice lines take one rule, `dac_voice_at` (D59's copy: not free and a place on the sample). Before any
-  note only `0/4`. Over x 532-701 of the row the footer says `CH6 DAC: N OF 4 VOICES SOUND` or `NO VOICE
-  SOUNDS`. The picture's columns are worked out from the bytes each frame: on the longest sample the plugin
-  takes (2289920 bytes) `gui_test` prints 1.8-1.95 ms a frame, under the stage's 2 ms for keeping them.
+- ALL's DAC row (stage 53, D92, art-director, ui-concept.md) reads as the other rows. Where FM has its diagram
+  (x 242-345), four squares 23 x 20, square k voice k as the ROM screen's DAC table: lit `C_DAC` with the key in
+  black while the voice sounds, the key in orange with no fill once it played out (it kept its key: a one-shot run
+  out, a loop's release ended), `---` dark grey when free (key 0: never struck, or let go and freed). Then VOL and
+  PAN; channel 6's live output in the OUT box (the last 20 ms, no anchor, `OUT_FULL_DAC` 0.168 from
+  `reg_test --peaks`, so full swing at volume 15 comes to the box's edge; silence is the frame and the middle
+  line); the last sample's name in the source column (`sample_label`, cut to 14 letters by `text_right`, `FILE`
+  above a file's, `---` before any note on MIDI 6 since the plugin opened or on a key with no sample). Bit 6 of
+  the ALL mask (`DAC_PICTURE_BIT`, stage 39's switch; bits 0-5 are FM rows' envelopes) puts the last sample in the
+  box instead: its loop on grey, the bytes at the wave's height, a line per sounding voice, green with black sides
+  on its key, grey on another. A click on the box (or a double click: two) switches; the squares and the name only
+  select the channel. `dac_voices_read` reads D59's copy of the four voices once a frame (`patch_dac_voice_state`,
+  `patch_dac_voice_place`) for the squares, the lines and the footer. Footers: over the squares how many sound,
+  over the box what it shows and what a click does, over the name the key and the whole name. The picture's
+  columns are worked out from the bytes each frame: on the longest sample the plugin takes (2289920 bytes)
+  `gui_test` prints about 1.6 ms a frame, under the stage's 2 ms for keeping them. A project of 0.41-0.44 saved
+  with the live view opens on the picture.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.

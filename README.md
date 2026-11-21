@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.44.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.45.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -33,8 +33,11 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - CSM vowels (0.35.0): five snapshots in `presets/vowels` beside the plugin, the vowels А, О, У, И, Э as
   channel 3 in CSM: play MIDI 3, the note is the voice's pitch, the formants stay. A snapshot replaces the whole
   state, so open one in an empty instance. How to play and move the formants: [docs/csm-vowels.md](docs/csm-vowels.md) (Russian).
-- The DAC's row on ALL (0.34.0): a click on its picture shows channel 6's live output, the last 20 ms at the
-  same scale as the other rows' OUT boxes; a second click brings the last sample with its voices back.
+- The DAC's row on ALL (0.45.0) reads as the other rows: four squares for the four DAC voices (lit with the key
+  while a voice sounds, the key in orange once it played out, `---` when free), VOL and PAN, channel 6's live
+  output in the OUT box (the last 20 ms), the last sample's name in the source column. A click on the OUT box
+  shows the last sample with its loop and a line where each voice is; a second click brings the wave back.
+  A project saved in 0.41-0.44 with the live view open opens on the sample's picture: one click back.
 - MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts
   its own attack, with no glide and no second voice; letting go of the top key strikes the one below again.
   MONO and PORTA are a pair in the channel's row, one click picks either; PORTA wins if both are on (from a

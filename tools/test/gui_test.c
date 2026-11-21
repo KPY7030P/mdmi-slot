@@ -597,7 +597,7 @@ static void set_param(clap_id id, double value)
 }
 
 // A project in memory, for the state extension.
-// 8 MB: stage 51 loads the longest sample the plugin takes, about 4 MB.
+// 8 MB: stage 51 loads the longest sample the plugin takes (2289920 bytes) with a project.
 static uint8_t project[1 << 23];
 static size_t project_size, project_read;
 
@@ -801,12 +801,15 @@ static bool one_undo_step(HWND window, int x, int y, int left, int top, int righ
 }
 
 // Stage 51: a block of samples (type 9, D38) after the project in memory: squares of +-level, 40
-// bytes a period, no source, as the bytes are kept.
+// bytes a period, no source, as the bytes are kept; how Note Off ends it (stage 53, dac.c): SAMPLE_CUT,
+// SAMPLE_ONE_SHOT leaves it alone, SAMPLE_LOOP loops all of it (no source to reckon marks by).
+enum { SAMPLE_CUT, SAMPLE_ONE_SHOT, SAMPLE_LOOP };
 typedef struct {
 	int note;
 	const char *name;
 	uint32_t bytes;
 	int level;
+	int mode;
 } test_sample;
 
 static void append_samples(const test_sample *samples, int count)
@@ -825,6 +828,7 @@ static void append_samples(const test_sample *samples, int count)
 		memcpy(at + 1, &head, 2);
 		memcpy(at + 3, samples[k].name, strlen(samples[k].name) < 31 ? strlen(samples[k].name) : 31);
 		at[3 + 52] = 0xFF;
+		at[3 + 54] = (uint8_t)samples[k].mode;
 		at[3 + 55] = 1;
 		memcpy(at + 3 + head - 4, &samples[k].bytes, 4);
 		for (uint32_t i = 0; i < samples[k].bytes; i++) {
@@ -859,11 +863,110 @@ static bool save_project(void)
 	return state && state->save(plugin, &out_stream);
 }
 
+// Stage 53 (ui-concept.md): ALL's DAC row. Square k (voice k) at x 242 + 27k, 23 x 20 from y + 4, its
+// key at (x + 3, y + 10); the OUT box 532-611 (inside 533-610); the name right-aligned to 700 at y + 16,
+// FILE at y + 6.
+#define DAC_SQUARE_X(k) (242 + 27 * (k))
+#define DAC_OUT_CLICK_X 572
+#define PAGE_RIGHT_X 702
+#define DAC_ROW_Y 244
+enum { SQUARE_FREE, SQUARE_SOUNDS, SQUARE_DONE, SQUARE_ODD };
+static const char *const NO_KEYS[4] = {NULL, NULL, NULL, NULL};
+// Channel 6's Volume (patch.h's PATCH_CHANNEL_ID(5, PARAM_VOLUME)).
+#define CH6_VOLUME 1601
+
+// What square k shows; for a lit or played-out one its key must be key.
+static int dac_square(int k, const char *key)
+{
+	const int x = DAC_SQUARE_X(k), y = DAC_ROW_Y;
+	const int fill = count_color_in(x, x + 23, y + 4, y + 24, COLOR_DAC);
+	if (fill > 300 && says(x + 3, y + 10, 1, key, 0x000000)) {
+		return SQUARE_SOUNDS;
+	}
+	if (fill < 40 && says(x + 3, y + 10, 1, key, COLOR_DAC) && count_not_black_in(x, x + 23, y + 4, y + 24) == fill) {
+		return SQUARE_DONE;
+	}
+	if (says(x + 3, y + 10, 1, "---", COLOR_LINE) && count_not_black_in(x, x + 23, y + 4, y + 24) == 15) {
+		return SQUARE_FREE;
+	}
+	return SQUARE_ODD;
+}
+
+// The four squares against a pattern: S lit, D played out, F free; keys for S and D.
+static bool dac_squares(const char *pattern, const char *const keys[4])
+{
+	for (int k = 0; k < 4; k++) {
+		const int want = pattern[k] == 'S' ? SQUARE_SOUNDS : pattern[k] == 'D' ? SQUARE_DONE : SQUARE_FREE;
+		if (dac_square(k, keys[k] ? keys[k] : "---") != want) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Whether the OUT box shows the wave (its middle line grey) rather than the picture (the DAC's dark).
+static bool dac_wave_shown(void)
+{
+	return count_color_in(533, 611, DAC_ROW_Y + 19, DAC_ROW_Y + 20, COLOR_DAC_DARK) == 0 && count_color_in(533, 611, DAC_ROW_Y + 19, DAC_ROW_Y + 20, COLOR_CELL) > 0;
+}
+
+// The footer with the mouse at x, y of the DAC row.
+static bool dac_footer(HWND window, int x, int y, const char *text)
+{
+	// Captured at once, as stage 51 did: pumping first lets the real pointer's move in.
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(x, y));
+	capture(window);
+	return footer_says(text, COLOR_LABEL);
+}
+
+// Stage 53: before the DAC, on ALL, row 6 is FM6's as in 0.44 (diagram, OUT box, ROM N, none of the
+// DAC's squares); then the DAC switched on before any note on channel 6 since the plugin opened: four
+// free squares, the wave's empty box, the name `---`, and the footers saying so.
+static void dac_row_off_and_before_note(HWND window, const char *dir)
+{
+	const int y = DAC_ROW_Y;
+	click(window, BUTTON_ALL_X, BUTTON_Y);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(200);
+	capture(window);
+	save_bmp(dir, "all-fm6");
+	const int diagram = count_color_in(242, 346, y, y + ROW_H - 1, COLOR_FM);
+	const int dac_left = count_color_in(242, 346, y, y + ROW_H - 1, COLOR_DAC) + count_color_in(242, 346, y, y + ROW_H - 1, COLOR_DAC_DARK);
+	const int box_top = count_color_in(532, 612, y + 4, y + 5, COLOR_CELL), box_middle = count_color_in(533, 611, y + 19, y + 20, COLOR_CELL);
+	const int rom_n = count_color_in(616, 702, y + 4, y + 26, COLOR_LABEL) + count_color_in(616, 702, y + 4, y + 26, COLOR_TEXT);
+	CHECK(diagram > 20 && dac_left == 0 && box_top == 80 && box_middle == 78 && rom_n > 30,
+		"ALL's row 6 without the DAC is FM6's: its diagram (%d px), no DAC square (%d px), the OUT box (%d, %d px), ROM N (%d px)", diagram, dac_left, box_top, box_middle, rom_n);
+	send_midi(0xB0, 78, 127);
+	run_ms(800);
+	wait_message_gone(window);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(100);
+	capture(window);
+	save_bmp(dir, "all-dac-before-note");
+	const bool squares = dac_squares("FFFF", NO_KEYS);
+	const bool name = says(PAGE_RIGHT_X - 2 - 3 * 6, y + 16, 1, "---", COLOR_LINE) && count_not_black_in(612, 720, y, y + ROW_H - 1) == 15;
+	const bool wave = dac_wave_shown() && count_color_in(533, 611, y + 5, y + 34, COLOR_DAC) == 0;
+	const bool over_squares = dac_footer(window, 290, y + 30, "CH6 DAC: NO VOICE SOUNDS");
+	const bool over_box = dac_footer(window, DAC_OUT_CLICK_X, y + 20, "CH6 DAC OUT: SILENT. CLICK: SAMPLE");
+	const bool over_name = dac_footer(window, 650, y + 20, "CH6 DAC: NO SAMPLE YET");
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	const bool picture_hint = dac_footer(window, DAC_OUT_CLICK_X, y + 20, "CH6 DAC: NO SAMPLE YET. CLICK: LIVE OUT");
+	save_bmp(dir, "all-dac-before-note-picture");
+	const bool picture = count_color_in(533, 611, y + 19, y + 20, COLOR_DAC_DARK) == 78 && count_color_in(533, 611, y + 5, y + 34, COLOR_DAC) == 0;
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(60);
+	capture(window);
+	CHECK(squares && name && wave && over_squares && over_box && over_name && picture_hint && picture && dac_wave_shown(),
+		"the DAC on before any note: four free squares (%d), the name --- (%d), the wave's empty box (%d), footers over the squares, box and name (%d, %d, %d); a click gives the empty picture (%d, %d), a second the wave",
+		squares, name, wave, over_squares, over_box, over_name, picture_hint, picture);
+}
+
 // The live trace's farthest pixel from the middle line, in the DAC's colour, over 40 frames 5 ms
 // apart after the first 100 ms of the note (its first edge).
 static int dac_live_peak(HWND window, int key, const char *dir, const char *name)
 {
-	const int y = 244, mid = y + 19;
+	const int y = DAC_ROW_Y, mid = y + 19;
 	send_midi(0x95, (uint8_t)key, 127);
 	run_ms(100);
 	int peak = 0;
@@ -871,7 +974,7 @@ static int dac_live_peak(HWND window, int key, const char *dir, const char *name
 		run_ms(5);
 		capture(window);
 		for (int row = y + 5; row <= y + 33; row++) {
-			if (count_color_in(243, 345, row, row + 1, COLOR_DAC) > 0) {
+			if (count_color_in(533, 611, row, row + 1, COLOR_DAC) > 0) {
 				peak = abs(row - mid) > peak ? abs(row - mid) : peak;
 			}
 		}
@@ -896,101 +999,223 @@ static double capture_ms(HWND window, int times)
 	return (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart / times;
 }
 
-// Stage 51 (art-director, ui-concept.md): right of ALL's DAC row the last sample's name in small and
-// how many of the four voices sound; the live view's scale of its own (D89), a square of full swing at
-// volume 15 to the box's edge and one of half bytes half as high; the live view kept by the project;
-// the time the row takes to draw the longest sample the plugin takes. On ALL, sample view, on entry.
-static void dac_right_and_scale(HWND window, const char *dir)
+// Stage 53 (art-director, ui-concept.md), with stage 51's scale: ALL's DAC row with samples of the
+// project's own (files): the picture kept by the project; the wave's scale (full swing at volume 15 to
+// the box's edge, half bytes half as high); the squares for two and four voices, played out and free,
+// all `---` after All Notes Off with the name kept; the name cut to 14 letters under FILE; the footers;
+// what the mouse does on the squares, the box and the name; the picture's time on the longest sample
+// the plugin takes. On ALL, the wave view, on entry.
+static void dac_row_stage53(HWND window, const char *dir)
 {
 	static uint8_t baseline[1 << 20];
-	const int y = 244, mid = y + 19, text_y = y + 16;
-	CHECK(save_project() && project_size <= sizeof(baseline), "the project saves (stage 51)");
+	const int y = DAC_ROW_Y, mid = y + 19;
+	CHECK(save_project() && project_size <= sizeof(baseline), "the project saves (stage 53)");
 	const size_t baseline_size = project_size;
 	memcpy(baseline, project, project_size);
-	// The live view saved on, then off in the window: the project brings it back.
-	click(window, 290, y + 20);
+	// The picture saved on, then off in the window: the project brings it back.
+	click(window, DAC_OUT_CLICK_X, y + 20);
 	run_ms(100);
 	save_project();
-	click(window, 290, y + 20);
+	click(window, DAC_OUT_CLICK_X, y + 20);
 	run_ms(100);
 	static const char LONG_NAME[] = "Square of full swing, long name";
-	const test_sample squares[2] = {{50, LONG_NAME, 256 * 400, 127}, {52, "Half", 256 * 400, 64}};
-	append_samples(squares, 2);
-	CHECK(load_project(window), "a project with two squares loads");
+	const test_sample samples[5] = {
+		{50, LONG_NAME, 256 * 400, 127, SAMPLE_CUT}, {52, "Half", 256 * 400, 64, SAMPLE_CUT},
+		{53, "Shot A", 256 * 20, 100, SAMPLE_ONE_SHOT}, {55, "Shot B", 256 * 20, 100, SAMPLE_ONE_SHOT},
+		{57, "Loop", 256 * 40, 30, SAMPLE_LOOP},
+	};
+	append_samples(samples, 5);
+	CHECK(load_project(window), "a project with four squares loads");
 	run_ms(200);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(30);
+	capture(window);
+	save_bmp(dir, "all-dac-picture-back");
+	const bool picture_back = !dac_wave_shown() && count_color_in(242, 346, y + 24, y + ROW_H - 1, COLOR_LINE) == 0;
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	run_ms(100);
 	capture(window);
 	save_bmp(dir, "all-dac-live-silent");
-	const int rule = count_color_in(242, 346, y + 36, y + 37, COLOR_LINE);
-	const int frame_px = count_color_in(242, 346, y + 4, y + 5, COLOR_CELL) + count_color_in(242, 346, y + 34, y + 35, COLOR_CELL);
-	const int middle = count_color_in(243, 345, mid, mid + 1, COLOR_CELL);
-	const int trace = count_color_in(243, 345, y + 5, y + 34, COLOR_DAC) + count_color_in(243, 345, y + 5, y + 34, COLOR_DAC_DARK);
-	CHECK(rule == 0 && frame_px >= 200 && middle >= 100 && trace == 0,
-		"the live view comes back with the project (no sample rule, %d px); in silence its box is the frame (%d px) and the middle line (%d px), no trace (%d px)", rule, frame_px, middle, trace);
+	const int frame_px = count_color_in(532, 612, y + 4, y + 5, COLOR_CELL) + count_color_in(532, 612, y + 34, y + 35, COLOR_CELL);
+	const int middle = count_color_in(533, 611, mid, mid + 1, COLOR_CELL);
+	const int trace = count_color_in(533, 611, y + 5, y + 34, COLOR_DAC) + count_color_in(533, 611, y + 5, y + 34, COLOR_DAC_DARK);
+	CHECK(picture_back && frame_px == 160 && middle == 78 && trace == 0,
+		"the picture comes back with the project (%d); a click gives the wave: in silence the frame (%d px) and the middle line (%d px), no trace (%d px)", picture_back, frame_px, middle, trace);
 	const int full = dac_live_peak(window, 50, dir, "all-dac-live-full"), half = dac_live_peak(window, 52, dir, "all-dac-live-half");
-	printf("    DAC live view at volume 15: full swing %d px from the middle, half bytes %d px (edge 13, the box's inside 14)\n", full, half);
-	CHECK(abs(full - 13) <= 1 && abs(half * 2 - full) <= 2, "the DAC's live view: full swing to the box's edge (%d px), half bytes half as high (%d px)", full, half);
-	// The right part: two voices on two keys, the last struck the long name.
+	printf("    DAC wave at volume 15: full swing %d px from the middle, half bytes %d px (edge 13, the box's inside 14)\n", full, half);
+	CHECK(abs(full - 13) <= 1 && abs(half * 2 - full) <= 2, "the DAC's wave: full swing to the box's edge (%d px), half bytes half as high (%d px)", full, half);
+
+	// Two voices on two keys, the last struck the long name: voices 0 and 1 lit, the name under FILE.
 	wait_message_gone(window);
 	send_midi(0x95, 52, 100);
 	send_midi(0x95, 50, 100);
 	run_ms(80);
-	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, y + 20));
-	capture(window);
-	save_bmp(dir, "all-dac-live-two");
-	const bool live_two = says(532, text_y, 1, "Square of full swing, l", COLOR_DAC) && says(682, text_y, 1, "2", COLOR_PLAYING) && says(688, text_y, 1, "/4", COLOR_HINT);
-	const bool live_hint = footer_says("CH6 DAC: 2 OF 4 VOICES SOUND", COLOR_LABEL);
-	click(window, 290, y + 20);
-	run_ms(60);
-	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, y + 20));
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(30);
 	capture(window);
 	save_bmp(dir, "all-dac-two");
-	const bool two = says(532, text_y, 1, "Square of full swing, l", COLOR_DAC) && says(682, text_y, 1, "2", COLOR_PLAYING) && says(688, text_y, 1, "/4", COLOR_HINT);
-	// Only that line: nothing else right of the OUT column's start in the row, the old big name gone.
-	const int outside = count_not_black_in(532, 720, y, text_y) + count_not_black_in(532, 720, text_y + 8, y + ROW_H - 1)
-		+ count_not_black_in(669, 682, text_y, text_y + 8) + count_not_black_in(699, 720, text_y, text_y + 8);
-	// A click on the line changes nothing: no view switched.
-	click(window, 600, text_y + 4);
-	run_ms(60);
+	static const char *const two_keys[4] = {"E-3", "D-3", NULL, NULL};
+	const bool two = dac_squares("SSFF", two_keys);
+	const bool name = says(616, y + 16, 1, "Square of full", COLOR_TEXT) && says(PAGE_RIGHT_X - 2 - 4 * 6, y + 6, 1, "FILE", COLOR_TEXT);
+	// Only the name and FILE right of the box: nothing at 612-615 and past 698, no green or orange.
+	const int outside = count_not_black_in(612, 616, y, y + ROW_H - 1) + count_not_black_in(699, 720, y, y + ROW_H - 1)
+		+ count_not_black_in(612, 720, y, y + 6) + count_not_black_in(612, 720, y + 14, y + 16) + count_not_black_in(612, 720, y + 24, y + ROW_H - 1);
+	const int stage51 = count_color_in(612, 720, y, y + ROW_H - 1, COLOR_PLAYING) + count_color_in(612, 720, y, y + ROW_H - 1, COLOR_DAC);
+	// Nothing below the squares, nothing in their gaps.
+	const int under = count_not_black_in(233, 346, y + 24, y + ROW_H - 1) + count_not_black_in(233, 346, y, y + 4)
+		+ count_not_black_in(265, 269, y, y + ROW_H - 1) + count_not_black_in(292, 296, y, y + ROW_H - 1) + count_not_black_in(319, 323, y, y + ROW_H - 1)
+		+ count_not_black_in(346, 354, y, y + ROW_H - 1) + count_not_black_in(527, 532, y, y + ROW_H - 1);
+	wait_message_gone(window);
+	const bool hint_two = dac_footer(window, 290, y + 30, "CH6 DAC: 2 OF 4 VOICES SOUND");
+	const bool hint_wave = dac_footer(window, DAC_OUT_CLICK_X, y + 20, "CH6 DAC OUT: LAST 20 MS. CLICK: SAMPLE");
+	const bool hint_name = dac_footer(window, 650, y + 20, "CH6 D-3: Square of full swing, long name");
+	CHECK(two && name && outside == 0 && stage51 == 0 && under == 0 && hint_two && hint_wave && hint_name,
+		"two voices on two keys: squares 0 and 1 lit with E-3 and D-3, 2 and 3 free (%d); FILE over the name cut to 14 letters from x 616 (%d); nothing else right of the box (%d px), no N/4 (%d px), nothing under or between the squares (%d px); footers over the squares, the box and the name (%d, %d, %d)",
+		two, name, outside, stage51, under, hint_two, hint_wave, hint_name);
+
+	// Four: two one-shots more; in the picture one green line with black sides, the last key's.
+	send_midi(0x95, 53, 100);
+	send_midi(0x95, 55, 100);
+	run_ms(40);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(20);
 	capture(window);
-	const bool still = count_color_in(242, 346, y + 36, y + 37, COLOR_LINE) > 50;
+	save_bmp(dir, "all-dac-four");
+	static const char *const four_keys[4] = {"E-3", "D-3", "F-3", "G-3"};
+	const bool four = dac_squares("SSSS", four_keys);
+	const bool hint_four = dac_footer(window, 290, y + 30, "CH6 DAC: 4 OF 4 VOICES SOUND");
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(20);
+	capture(window);
+	save_bmp(dir, "all-dac-four-picture");
+	const int green_columns = runs_of(y + 6, 533, 611, COLOR_PLAYING);
+	const int green_x = first_of(y + 6, 533, 611, COLOR_PLAYING);
+	const int green_rows = green_x < 0 ? 0 : count_color_in(green_x, green_x + 1, y + 5, y + 34, COLOR_PLAYING);
+	const bool sides = green_x > 533 && green_x < 610 && count_color_in(green_x - 1, green_x, y + 5, y + 34, 0x000000) == 29 && count_color_in(green_x + 1, green_x + 2, y + 5, y + 34, 0x000000) == 29;
+	const bool picture_four = !dac_wave_shown() && count_color_in(533, 611, y + 5, y + 34, COLOR_DAC) > 100 && count_color_in(533, 611, y + 5, y + 34, COLOR_HINT) >= 29;
+	const int outside_box = count_color_in(233, 532, y, y + ROW_H - 1, COLOR_PLAYING) + count_color_in(233, 532, y, y + ROW_H - 1, COLOR_HINT) + count_color_in(532, 612, y + 35, y + ROW_H - 1, COLOR_PLAYING);
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	CHECK(four && hint_four && green_columns == 1 && green_rows == 29 && sides && picture_four && outside_box == 0,
+		"four voices: four squares lit (%d), the footer (%d); the picture: one green line (%d columns, %d px high) with black sides (%d), the other keys' lines grey (%d), nothing of it outside the box (%d px)",
+		four, hint_four, green_columns, green_rows, sides, picture_four, outside_box);
+
+	// The one-shots run out while held: their squares played out (key in orange, no fill); the two
+	// held squares still lit. Let go: the cut ones free, the one-shots stay played out.
+	run_ms(600);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(20);
+	capture(window);
+	save_bmp(dir, "all-dac-played-out");
+	const bool ran_out = dac_squares("SSDD", four_keys);
 	send_midi(0x85, 50, 0);
 	send_midi(0x85, 52, 0);
-	run_ms(300);
-	wait_message_gone(window);
-	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, y + 20));
+	send_midi(0x85, 53, 0);
+	send_midi(0x85, 55, 0);
+	run_ms(100);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(20);
 	capture(window);
-	save_bmp(dir, "all-dac-silent");
-	const bool silent = says(532, text_y, 1, "Square of full swing, l", COLOR_DAC) && says(682, text_y, 1, "0", COLOR_HINT) && says(688, text_y, 1, "/4", COLOR_HINT);
-	const bool silent_hint = footer_says("CH6 DAC: NO VOICE SOUNDS", COLOR_LABEL);
-	CHECK(live_two && two && outside == 0 && still && silent && live_hint && silent_hint,
-		"ALL's DAC row, right: the last sample's name cut to 23 letters and 2/4 in both views (%d, %d), nothing else there (%d px), a click on it switches nothing (%d); after the voices 0/4 in grey (%d); the footer names the count (%d, %d)",
-		live_two, two, outside, still, silent, live_hint, silent_hint);
-	// The longest sample the plugin takes: the row's time with its picture, against the live view.
+	save_bmp(dir, "all-dac-let-go");
+	const bool let_go = dac_squares("FFDD", four_keys);
+	const bool hint_none = dac_footer(window, 290, y + 30, "CH6 DAC: NO VOICE SOUNDS");
+	CHECK(ran_out && let_go && hint_none, "one-shots that ran out are played out, the held ones lit (%d); let go: the cut ones free, the one-shots still played out (%d), the footer (%d)", ran_out, let_go, hint_none);
+
+	// The mouse: a click on the squares or on the name selects, the view stays; a double click on the
+	// box switches twice; the wheel over the box and the name changes nothing.
+	const int volume = get_value(CH6_VOLUME);
+	click(window, 260, y + 14);
+	click(window, 300, y + 32);
+	click(window, 660, y + 20);
+	click(window, 614, y + 20);
+	run_ms(40);
+	capture(window);
+	const bool clicks_stay = dac_wave_shown();
+	double_click(window, DAC_OUT_CLICK_X, y + 20);
+	run_ms(40);
+	capture(window);
+	const bool double_back = dac_wave_shown();
+	wheel(window, DAC_OUT_CLICK_X, y + 20, 120);
+	wheel(window, 660, y + 20, -120);
+	wheel(window, 290, y + 14, 120);
+	run_ms(40);
+	capture(window);
+	const bool wheel_stays = dac_wave_shown() && get_value(CH6_VOLUME) == volume;
+	CHECK(clicks_stay && double_back && wheel_stays,
+		"clicks on the squares and the name leave the wave (%d), a double click on the box switches twice (%d), the wheel over box, name and squares changes nothing (%d)", clicks_stay, double_back, wheel_stays);
+
+	// All Notes Off frees the four voices; the name and the picture keep the last sample.
+	send_midi(0xB5, 123, 0);
+	run_ms(100);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(20);
+	capture(window);
+	save_bmp(dir, "all-dac-notes-off");
+	const bool notes_off = dac_squares("FFFF", NO_KEYS) && says(PAGE_RIGHT_X - 2 - 6 * 6, y + 16, 1, "Shot B", COLOR_TEXT);
+	CHECK(notes_off, "after All Notes Off four free squares, the name Shot B kept (%d)", notes_off);
+
+	// A loop in the picture (art-director's after-check): its grey ground over the loop (here all of the
+	// sample, the bytes low so the ground shows above and below them), the held voice's green line in it
+	// with black sides; the footer names the view.
+	send_midi(0x95, 57, 100);
+	run_ms(150);
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(20);
+	capture(window);
+	save_bmp(dir, "all-dac-picture-loop");
+	const int ground = count_color_in(533, 611, y + 5, y + 7, COLOR_CELL) + count_color_in(533, 611, y + 32, y + 34, COLOR_CELL);
+	const int loop_x = first_of(y + 6, 533, 611, COLOR_PLAYING);
+	const bool loop_line = loop_x > 533 && loop_x < 610 && count_color_in(loop_x, loop_x + 1, y + 5, y + 34, COLOR_PLAYING) == 29
+		&& count_color_in(loop_x - 1, loop_x, y + 5, y + 34, 0x000000) == 29 && count_color_in(loop_x + 1, loop_x + 2, y + 5, y + 34, 0x000000) == 29;
+	const bool hint_picture = dac_footer(window, DAC_OUT_CLICK_X, y + 20, "CH6 DAC: LAST SAMPLE. CLICK: LIVE OUT");
+	send_midi(0x85, 57, 0);
+	run_ms(100);
+	CHECK(ground >= 4 * 70 && loop_line && hint_picture,
+		"a held loop in the picture: its grey ground (%d px of the 4 rows above and below the bytes), the voice's green line in it with black sides (%d), the footer (%d)", ground, loop_line, hint_picture);
+	// A key with no sample (E-7): the name ---, the picture empty, the footers say so.
+	send_midi(0x95, 100, 100);
+	run_ms(60);
+	send_midi(0x85, 100, 0);
+	run_ms(40);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	save_bmp(dir, "all-dac-no-sample");
+	const bool empty_name = says(PAGE_RIGHT_X - 2 - 3 * 6, y + 16, 1, "---", COLOR_LINE) && count_color_in(533, 611, y + 5, y + 34, COLOR_DAC) == 0;
+	const bool hint_empty = dac_footer(window, DAC_OUT_CLICK_X, y + 20, "CH6 DAC: E-7 EMPTY. CLICK: LIVE OUT");
+	const bool hint_no_sample = dac_footer(window, 650, y + 20, "CH6 E-7: NO SAMPLE");
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	run_ms(40);
+	capture(window);
+	CHECK(empty_name && hint_empty && hint_no_sample && dac_wave_shown(),
+		"a key with no sample: the name --- and an empty picture (%d), the footers over the box and the name (%d, %d); a click back to the wave", empty_name, hint_empty, hint_no_sample);
+
+	// The longest sample the plugin takes: the frame's time with the picture, against the wave.
 	memcpy(project, baseline, baseline_size);
 	project_size = baseline_size;
-	const test_sample longest = {60, "Longest", rom_image_room() & ~(uint32_t)(ROM_SAMPLE_BLOCK - 1), 100};
+	const test_sample longest = {60, "Longest", rom_image_room() & ~(uint32_t)(ROM_SAMPLE_BLOCK - 1), 100, SAMPLE_CUT};
 	append_samples(&longest, 1);
 	CHECK(load_project(window), "a project with the longest sample (%u bytes) loads", longest.bytes);
 	send_midi(0x95, 60, 100);
 	run_ms(200);
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	run_ms(60);
 	capture(window);
-	const int long_px = count_color_in(242, 346, y + 3, y + 36, COLOR_DAC);
+	const int long_px = count_color_in(533, 611, y + 5, y + 34, COLOR_DAC);
 	const double with_picture = capture_ms(window, 20);
-	click(window, 290, y + 20);
+	click(window, DAC_OUT_CLICK_X, y + 20);
 	run_ms(60);
-	const double live = capture_ms(window, 20);
-	click(window, 290, y + 20);
-	run_ms(60);
+	const double wave = capture_ms(window, 20);
 	send_midi(0x85, 60, 0);
 	run_ms(200);
-	printf("    the window with the DAC row's picture of the longest sample (%u bytes): %.2f ms, with the live view %.2f ms: draw_all_dac's picture %.2f ms a frame\n",
-		longest.bytes, with_picture, live, with_picture - live);
+	printf("    the window with the DAC row's picture of the longest sample (%u bytes): %.2f ms, with the wave %.2f ms: the picture %.2f ms a frame\n",
+		longest.bytes, with_picture, wave, with_picture - wave);
 	// The stage's rule: over 2 ms a frame, the columns would be worked out once a sample; the time is
 	// printed, not judged (it is the computer's).
 	CHECK(long_px > 200, "the longest sample's picture is drawn (%d px)", long_px);
 	memcpy(project, baseline, baseline_size);
 	project_size = baseline_size;
-	CHECK(load_project(window), "the project before stage 51's samples loads again");
+	CHECK(load_project(window), "the project before stage 53's samples loads again");
 }
 
 int main(int argc, char **argv)
@@ -3028,8 +3253,9 @@ int main(int argc, char **argv)
 
 		// Stage 12: with the DAC on, EDITOR of channel 6 is the grid of notes, BANK the list. A project
 		// with a sample restarts the engine, and CLEAR gives the note back to the ROM.
-		send_midi(0xB0, 78, 127);
-		run_ms(800);
+		// Stage 53 (ui-concept.md): first, on ALL, row 6 without the DAC is FM6's as in 0.44, and with
+		// the DAC before any note on channel 6 its squares, OUT box and name are empty.
+		dac_row_off_and_before_note(window, argv[2]);
 		click(window, RAIL_X, RAIL_CH6_Y);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(200);
@@ -3048,26 +3274,37 @@ int main(int argc, char **argv)
 		send_midi(0x85, 38, 0);
 		run_ms(100);
 		CHECK(dac_two > 20 && dac_rest == 0, "two held DAC notes fill two lines of the column (%d px, %d below)", dac_two, dac_rest);
-		// Stage 24e: on ALL the DAC's row has VOL and PAN, the last sample and a green line where its voice is.
+		// Stage 24e, 53: on ALL the DAC's row has its voice's square lit with the key, VOL and PAN, the
+		// wave in the OUT box, the ROM sample's name in grey in the source column; a click on the box gives
+		// the last sample with a green line where its voice is.
 		click(window, BUTTON_ALL_X, BUTTON_Y);
 		send_midi(0xB5, 10, 0);
 		send_midi(0x95, 38, 100);
 		run_ms(60);
 		capture(window);
 		save_bmp(argv[2], "all-dac");
-		const int dac_sample_px = count_color_in(242, 346, 244 + 3, 244 + 36, COLOR_DAC), dac_line = count_color_in(242, 346, 244 + 2, 244 + 37, COLOR_PLAYING);
+		const bool dac_square = count_color_in(DAC_SQUARE_X(0), DAC_SQUARE_X(0) + 23, 244 + 4, 244 + 24, COLOR_DAC) > 300 && says(DAC_SQUARE_X(0) + 3, 244 + 10, 1, "D-2", 0x000000);
+		const bool dac_rom_name = says(PAGE_RIGHT_X - 2 - 4 * 6, 244 + 16, 1, "Clap", COLOR_LABEL);
 		const int dac_left = count_color_in(474, 491, 244 + 4, 244 + 24, COLOR_TEXT), dac_vol = count_color_in(354, 466, 244 + 4, 244 + 24, COLOR_DAC_DARK);
+		click(window, DAC_OUT_CLICK_X, 244 + 20);
+		run_ms(40);
+		capture(window);
+		save_bmp(argv[2], "all-dac-picture");
+		const int dac_sample_px = count_color_in(533, 611, 244 + 5, 244 + 34, COLOR_DAC), dac_line = count_color_in(533, 611, 244 + 5, 244 + 34, COLOR_PLAYING);
+		click(window, DAC_OUT_CLICK_X, 244 + 20);
 		send_midi(0x85, 38, 0);
 		send_midi(0xB5, 10, 64);
 		run_ms(100);
-		// Stage 39 (art-director): a click on the DAC's picture shows channel 6's live output, 20 ms;
-		// silence is the frame and the middle line; a second click brings the sample back. Its scale is
-		// stage 51's, checked below with samples of full and half swing.
+		CHECK(dac_square && dac_rom_name && dac_sample_px > 50 && dac_line > 10 && dac_left > 100 && dac_vol > 100,
+			"ALL's DAC row: the voice's square lit with D-2 (%d), the ROM name Clap in grey (%d), the picture's sample (%d px) and its voice's line (%d px), PAN L from CC 10 (%d px), VOL in the DAC's colour (%d px)",
+			dac_square, dac_rom_name, dac_sample_px, dac_line, dac_left, dac_vol);
+		// Stage 39, 53: the wave (the first view) is channel 6's live output, 20 ms in the OUT box; silence
+		// is the frame and the middle line; the picture has a middle line of the DAC's dark colour. Its
+		// scale is stage 51's, checked below with samples of full and half swing.
 		{
-			click(window, 290, 244 + 20);
 			run_ms(300);
 			capture(window);
-			const int silent = count_color_in(243, 345, 244 + 5, 244 + 34, COLOR_DAC);
+			const int silent = count_color_in(533, 611, 244 + 5, 244 + 34, COLOR_DAC);
 			int changed = 0, loudest = -1;
 			static uint32_t last[WIDTH * HEIGHT], clap[WIDTH * HEIGHT];
 			send_midi(0x95, 38, 127);
@@ -3078,7 +3315,7 @@ int main(int argc, char **argv)
 					changed++;
 				}
 				// Stage 51's frame for art-director: the clap at its loudest of the 60.
-				const int lit = count_color_in(243, 345, 244 + 5, 244 + 34, COLOR_DAC);
+				const int lit = count_color_in(533, 611, 244 + 5, 244 + 34, COLOR_DAC);
 				if (lit > loudest) {
 					loudest = lit;
 					memcpy(clap, pixels, sizeof(pixels));
@@ -3092,24 +3329,20 @@ int main(int argc, char **argv)
 			send_midi(0x85, 38, 0);
 			run_ms(300);
 			save_bmp(argv[2], "all-dac-live");
-			// Only the sample view draws the rule at y + 36 (the live view is a box over the row).
-			const int rule_live = count_color_in(242, 346, 244 + 36, 244 + 37, COLOR_LINE);
-			click(window, 290, 244 + 20);
-			send_midi(0x95, 38, 100);
+			const int middle_wave = count_color_in(533, 611, 244 + 19, 244 + 20, COLOR_CELL);
+			click(window, DAC_OUT_CLICK_X, 244 + 20);
 			run_ms(60);
 			capture(window);
-			const int back = count_color_in(242, 346, 244 + 36, 244 + 37, COLOR_LINE);
-			send_midi(0x85, 38, 0);
-			run_ms(100);
-			CHECK(silent == 0 && changed > 3 && rule_live == 0 && back > 50,
-				"ALL's DAC live view: silent %d px, changes in %d frames, no sample rule (%d px), the sample view back with its rule (%d px)", silent, changed, rule_live, back);
+			const int middle_picture = count_color_in(533, 611, 244 + 19, 244 + 20, COLOR_DAC_DARK) + count_color_in(533, 611, 244 + 19, 244 + 20, COLOR_DAC);
+			click(window, DAC_OUT_CLICK_X, 244 + 20);
+			run_ms(60);
+			CHECK(silent == 0 && changed > 3 && middle_wave == 78 && middle_picture >= 70,
+				"ALL's DAC wave: silent %d px, changes in %d frames, middle line grey (%d of 78 px); the picture's middle line the DAC's (%d of 78 px)", silent, changed, middle_wave, middle_picture);
 		}
-		dac_right_and_scale(window, argv[2]);
+		dac_row_stage53(window, argv[2]);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		capture(window);
-		CHECK(dac_sample_px > 50 && dac_line > 10 && dac_left > 100 && dac_vol > 100,
-			"ALL's DAC row: the sample (%d px), its voice's line (%d px), PAN L from CC 10 (%d px), VOL in the DAC's colour (%d px)", dac_sample_px, dac_line, dac_left, dac_vol);
 		// Stage 20: the window still shows FM rows instead of graphs, but channel 6 on the DAC has no row.
 		CHECK(count_color_in(242, 708, HEADER_H, 460, COLOR_FM_LIGHT) + count_color_in(242, 708, HEADER_H, 460, COLOR_FM_DARK) == 0, "the DAC's page draws no arp row");
 		const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
