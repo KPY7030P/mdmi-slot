@@ -7475,6 +7475,8 @@ static void drop_press(mdmi_gui *g)
 	}
 }
 
+// Every branch clears its press's state before ReleaseCapture: that call sends WM_CAPTURECHANGED, whose
+// drop_press must find nothing left (stage 55).
 static void on_up(mdmi_gui *g)
 {
 	if (g->copy_from >= 0) {

@@ -45,7 +45,7 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   gives back the file's value, not the bank place's; the footer over a changed cell says what it gives back
   (`TL 49. DOUBLE CLICK: 39 FROM FILE`). Closing or hiding the plugin's window with the mouse button held
   changes nothing; so does another window taking the mouse mid-press (Alt+Tab). After LOAD, SAVE or EXPORT the
-  footer shows what happened until the mouse moves. Russian sample names are cut by whole letters everywhere.
+  footer shows what happened until the mouse moves. Russian sample names are cut by whole letters on the DAC page, in its list, on ALL and in the footer.
 - MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts
   its own attack, with no glide and no second voice; letting go of the top key strikes the one below again.
   MONO and PORTA are a pair in the channel's row, one click picks either; PORTA wins if both are on (from a

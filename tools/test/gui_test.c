@@ -1802,6 +1802,52 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 			}
 		}
 		const int arp_x = ARP_PSG_RX + 26, arp_y = ARP_PSG_LY - 13 + 6;
+		// The loop's end tab with a release after it (its click chooses release or stop): PSG Organ.eef
+		// has a loop and a release; the tab is found by the footer.
+		char organ[MAX_PATH];
+		GetFullPathNameA("..\\..\\tools\\test\\files\\PSG Organ.eef", MAX_PATH, organ, NULL);
+		drop_file(window, organ, RAIL_X, RAIL_CH8_Y);
+		run_ms(300);
+		// A file's sound may come without the row: steps again, so ARP ON/OFF is there.
+		click(window, PSG_COL(0) + 10, ARP_Y(ARP_PSG_LY, 5));
+		run_ms(200);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		wait_message_gone(window);
+		int end_x = -1;
+		for (int attempt = 0; attempt < 3 && end_x < 0; attempt++) {
+			int plain_end = -1;
+			for (int x = ENV_X; x < ENV_RIGHT + 10 && end_x < 0; x += 2) {
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(x, ENV_LOOP_STRIP_Y));
+				capture(window);
+				if (footer_says("LOOP END,", COLOR_LABEL)) {
+					end_x = x;
+				} else if (plain_end < 0 && footer_says("LOOP END.", COLOR_LABEL)) {
+					plain_end = x;
+				}
+			}
+			if (end_x < 0 && plain_end >= 0) {
+				drag_x(window, plain_end, ENV_LOOP_STRIP_Y, plain_end - 60);
+			} else if (end_x < 0) {
+				click(window, body_x, ENV_LOOP_STRIP_Y);
+			}
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(300);
+		}
+		capture(window);
+		body_x = ENV_X + 10;
+		for (int x = ENV_X - 10; x < ENV_RIGHT; x++) {
+			if ((pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG) {
+				while ((pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG) {
+					x++;
+				}
+				body_x = x + 1;
+				break;
+			}
+		}
+		if (end_x < 0) {
+			save_bmp(dir, "stage55-no-end-tab");
+		}
+		CHECK(end_x >= 0, "stage 55: channel 8's loop has an end tab with a release after it (x %d)", end_x);
 		// The mark: a Preset step of channel 4, which one UNDO after all the closes takes back.
 		const int ch4 = get_value(CH4_PRESET);
 		wheel(window, RAIL_X, RAIL_CH4_Y, ch4 < 127 ? -120 : 120);
@@ -1810,11 +1856,15 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 		const int marked = get_value(CH4_PRESET);
 		click(window, RAIL_X, RAIL_CH8_Y);
 		run_ms(100);
-		static const char *const WHAT[] = {"envelope loop strip", "ARP ON/OFF", "TL drag", "LFO ON switch", "rail row copy", "BANK row", "DAC grid move", "DAC trim tab"};
-		bool kept[8] = {0};
+		static const char *const WHAT[] = {"envelope loop strip", "ARP ON/OFF", "TL drag", "LFO ON switch", "rail row copy", "BANK row", "DAC grid move", "DAC trim tab",
+			"envelope end tab (stop)", "DAC loop body"};
+		enum { ORGANS = 10 };
+		bool kept[ORGANS] = {0};
 		kept[0] = press_ends(&window, gui, parent, body_x, ENV_LOOP_STRIP_Y, body_x, ENV_LOOP_STRIP_Y, END_CLOSE, &balanced);
 		all_balanced &= balanced;
 		kept[1] = press_ends(&window, gui, parent, arp_x, arp_y, arp_x, arp_y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		kept[8] = end_x >= 0 && press_ends(&window, gui, parent, end_x, ENV_LOOP_STRIP_Y, end_x, ENV_LOOP_STRIP_Y, END_CLOSE, &balanced);
 		all_balanced &= balanced;
 		click(window, RAIL_X, RAIL_CH1_TOP + 10);
 		run_ms(100);
@@ -1838,6 +1888,9 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 		run_ms(100);
 		kept[7] = press_ends(&window, gui, parent, 238, DAC_TRIM_Y + 7, 300, DAC_TRIM_Y + 7, END_CLOSE, &balanced);
 		all_balanced &= balanced;
+		// The loop's row over the middle of the wave: the body, whose click turns the loop on or off.
+		kept[9] = press_ends(&window, gui, parent, 470, DAC_LOOP_Y + 6, 470, DAC_LOOP_Y + 6, END_CLOSE, &balanced);
+		all_balanced &= balanced;
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		click(window, RAIL_X, RAIL_CH1_TOP + 10);
 		run_ms(100);
@@ -1846,7 +1899,7 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 		const bool taken = press_ends(&window, gui, parent, LFO_ON_X, LFO_RATE_Y, LFO_ON_X, LFO_RATE_Y, END_TAKEN, &balanced);
 		all_balanced &= balanced;
 		char failed[256] = "";
-		for (int i = 0; i < 8; i++) {
+		for (int i = 0; i < ORGANS; i++) {
 			if (!kept[i]) {
 				strcat(failed, " ");
 				strcat(failed, WHAT[i]);
@@ -1859,10 +1912,12 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 		run_ms(300);
 		CHECK(marked != ch4 && get_value(CH4_PRESET) == ch4, "stage 55: the closes made no UNDO step: one UNDO takes back the mark (%d, %d, now %d)", ch4, marked, get_value(CH4_PRESET));
 		// The same presses let go do act (or the checks above prove nothing).
-		bool acted[8] = {0};
+		bool acted[ORGANS] = {0};
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		click(window, RAIL_X, RAIL_CH8_Y);
 		run_ms(100);
+		// The end tab first: the strip's click after it may switch the loop off.
+		acted[8] = end_x >= 0 && !press_ends(&window, gui, parent, end_x, ENV_LOOP_STRIP_Y, end_x, ENV_LOOP_STRIP_Y, END_RELEASE, &balanced);
 		acted[0] = !press_ends(&window, gui, parent, body_x, ENV_LOOP_STRIP_Y, body_x, ENV_LOOP_STRIP_Y, END_RELEASE, &balanced);
 		acted[1] = !press_ends(&window, gui, parent, arp_x, arp_y, arp_x, arp_y, END_RELEASE, &balanced);
 		click(window, RAIL_X, RAIL_CH1_TOP + 10);
@@ -1882,8 +1937,9 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 		click(window, g40x, g36y);
 		run_ms(100);
 		acted[7] = !press_ends(&window, gui, parent, 238, DAC_TRIM_Y + 7, 300, DAC_TRIM_Y + 7, END_RELEASE, &balanced);
+		acted[9] = !press_ends(&window, gui, parent, 470, DAC_LOOP_Y + 6, 470, DAC_LOOP_Y + 6, END_RELEASE, &balanced);
 		failed[0] = 0;
-		for (int i = 0; i < 8; i++) {
+		for (int i = 0; i < ORGANS; i++) {
 			if (!acted[i]) {
 				strcat(failed, " ");
 				strcat(failed, WHAT[i]);
