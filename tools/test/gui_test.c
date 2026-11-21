@@ -752,6 +752,52 @@ static long wait_applied(HWND window)
 	return (long)(GetTickCount() - start);
 }
 
+// Stage 50: a double click at x, y adds one step to the window's UNDO. A notch of channel 4's Preset
+// first marks the history; after the double click the window's rows top to bottom (between left and
+// right) changed, one UNDO gives them back with the mark still there, a second takes the mark back.
+// away is where the mouse rests for a look; dac waits for the samples as a DAC change does.
+static bool one_undo_step(HWND window, int x, int y, int left, int top, int right, int bottom, int away_x, int away_y, bool dac, int *changed, int *differ)
+{
+	static uint32_t before[WIDTH * HEIGHT];
+	const int ch4 = get_value(CH2_PRESET + 200);
+	wheel(window, RAIL_X, RAIL_CH4_Y, ch4 < 127 ? -120 : 120);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(away_x, away_y));
+	run_ms(200);
+	const int marked = get_value(CH2_PRESET + 200);
+	capture(window);
+	memcpy(before, pixels, sizeof(pixels));
+	double_click(window, x, y);
+	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(away_x, away_y));
+	if (dac) {
+		wait_applied(window);
+	}
+	run_ms(200);
+	capture(window);
+	*changed = 0;
+	for (int row = top; row < bottom; row++) {
+		*changed += memcmp(before + row * WIDTH + left, pixels + row * WIDTH + left, (size_t)(right - left) * sizeof(uint32_t)) != 0;
+	}
+	click(window, ACTION_UNDO_X, BUTTON_Y);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(away_x, away_y));
+	if (dac) {
+		wait_applied(window);
+	}
+	run_ms(200);
+	capture(window);
+	*differ = 0;
+	for (int row = top; row < bottom; row++) {
+		*differ += memcmp(before + row * WIDTH + left, pixels + row * WIDTH + left, (size_t)(right - left) * sizeof(uint32_t)) != 0;
+	}
+	const int after_one = get_value(CH2_PRESET + 200);
+	click(window, ACTION_UNDO_X, BUTTON_Y);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(away_x, away_y));
+	run_ms(200);
+	// The mark's notches told the host; the checks after this one count from here.
+	memset(pushed, 0, sizeof(pushed));
+	return marked != ch4 && *changed > 0 && *differ == 0 && after_one == marked && get_value(CH2_PRESET + 200) == ch4;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 3) {
@@ -2488,6 +2534,24 @@ int main(int argc, char **argv)
 					"PSG stop: the held note lights the loop (%d of 8 looks), never the release (%d); after Note Off nothing lit in the editor (%d) or on ALL (%d)",
 					held_lit, beyond, editor_after, all_after);
 			}
+			// Stage 50: a double click on the end tab, on the strip after it (from stop: the release
+			// comes back, UNDO gives stop and its dim release again) and on the loop's body is one UNDO step.
+			{
+				int changed, differ;
+				const int top = ENV_LOOP_STRIP_Y - 8;
+				const bool tab_one = one_undo_step(window, last - 4, ENV_LOOP_STRIP_Y, ENV_X - 10, top, ENV_RIGHT + 10, ENV_LEVEL_BOTTOM, 100, 400, false, &changed, &differ);
+				CHECK(tab_one, "PSG: a double click on the loop's end tab is one UNDO step (%d rows changed, %d differ after UNDO)", changed, differ);
+				click(window, last + 40, ENV_LOOP_STRIP_Y);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+				run_ms(200);
+				const bool tail_one = one_undo_step(window, last + 40, ENV_LOOP_STRIP_Y, ENV_X - 10, top, ENV_RIGHT + 10, ENV_LEVEL_BOTTOM, 100, 400, false, &changed, &differ);
+				CHECK(tail_one, "PSG: from stop a double click on the strip after the loop is one UNDO step, which gives stop and its dim release back (%d rows changed, %d differ)", changed, differ);
+				click(window, last + 40, ENV_LOOP_STRIP_Y);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+				run_ms(200);
+				const bool body_one = one_undo_step(window, body_x, ENV_LOOP_STRIP_Y, ENV_X - 10, top, ENV_RIGHT + 10, ENV_LEVEL_BOTTOM, 100, 400, false, &changed, &differ);
+				CHECK(body_one, "PSG: a double click on the loop's body is one UNDO step (%d rows changed, %d differ)", changed, differ);
+			}
 		}
 		// Stage 24d: a double click on a level column sets 0 dB (the top) in the first click's undo step.
 		{
@@ -2707,6 +2771,12 @@ int main(int argc, char **argv)
 			capture(window);
 			CHECK(twice_off == PSG_BAND && count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 5), ARP_Y(ly, 5) + 2, COLOR_PSG) == PSG_BAND,
 				"a double click on ARP ON turns the row off once (%d px dim), one UNDO turns it on", twice_off);
+			// Stage 50: and that double click is one step of the history.
+			{
+				int changed, differ;
+				const bool one = one_undo_step(window, switch_x + 26, switch_y + 6, 242, ly - 15, 702, ly + 109, BUTTON_EDITOR_X, BUTTON_Y, false, &changed, &differ);
+				CHECK(one, "a double click on ARP ON is one UNDO step (%d rows changed, %d differ after UNDO)", changed, differ);
+			}
 			// An empty row has no switch: the length dragged to 0, ARP in grey, no frame; UNDO gives the steps back.
 			drag(window, ARP_PSG_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) + 60);
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
@@ -3122,6 +3192,12 @@ int main(int argc, char **argv)
 				const int lit_undone = count_color_in(after, 700, wave_y, wave_bottom, COLOR_DAC);
 				CHECK(l8 > l6 + 50 && l9 == l6 && s9 == s6 && abs(lit_undone - lit_release) < 20,
 					"a double click on the end tab: the loop to the last whole block (%d px, was %d); one UNDO gives back the loop with its release (%d px)", l8, l6, l9);
+				// Stage 50: a double click on the row after the loop's end (release to stop) is one UNDO step.
+				{
+					int changed, differ;
+					const bool one = one_undo_step(window, after + 30, DAC_LOOP_Y + 6, 242, DAC_LOOP_Y - 2, 712, wave_bottom, 100, 400, true, &changed, &differ);
+					CHECK(one, "DAC: a double click on the row after the loop's end is one UNDO step (%d rows changed, %d differ after UNDO)", changed, differ);
+				}
 			}
 			// Stage 30: under one block the row alone turns LOOP off, as the switch did (END dragged
 			// next to START with LOOP on: the row frames TOO SHORT in amber, a click in it ends the loop).

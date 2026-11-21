@@ -61,9 +61,10 @@ def route(t, target, upper, lower):
 
 tmpl_clip = copy.deepcopy(midi_t.find('DeviceChain/MainSequencer/ClipTimeable/ArrangerAutomation/Events/MidiClip'))
 
-def add_clip(t, name, start, length, notes, color):
-    """notes: (pitch, time from clip start, duration)."""
+def add_clip(t, name, start, length, notes, color, program=-1):
+    """notes: (pitch, time from clip start, duration); program: the clip's Pgm (0-127), sent at its start."""
     c = copy.deepcopy(tmpl_clip)
+    c.find('ProgramChange').set('Value', str(program))
     events = t.find('DeviceChain/MainSequencer/ClipTimeable/ArrangerAutomation/Events')
     c.set('Id', str(len(events))); c.set('Time', str(start))
     c.find('CurrentStart').set('Value', str(start))
@@ -352,6 +353,16 @@ for ch, key in ((0, 48), (1, 36), (2, 64), (3, 67), (5, 43)):
         add_clip(lanes[ch], '10 голос домой', H0 + bar * BAR, BAR, [(key, 0, 0.25)], lanes[ch].find('Color').get('Value'))
 start = H0 + 4 * BAR
 
+# --- stage 50: UNDO doesn't jump over a clip's Program Change (bars 107-110) ---
+# K1 plays a note a beat. The owner turns the wheel on CH1's Preset in 107-108; the clip of 109 sends
+# a Program Change at its start (place 41); in 109-110 the wheel again, then UNDO twice: the first goes
+# back to the clip's place, the second to before the wheel of 107.
+U0 = start
+beats = [(60 + [0, 4, 7, 4][i % 4], i, 0.9) for i in range(8)]
+add_clip(lanes[0], '11 UNDO: колесо до Program Change', U0, 2 * BAR, beats, 26)
+add_clip(lanes[0], '11 UNDO: клип ставит место 41, колесо после', U0 + 2 * BAR, 2 * BAR, beats, 26, program=40)
+start = U0 + 4 * BAR
+
 for t in all_tracks: tracks.remove(t)
 for t in new_tracks + returns: tracks.append(t)
 for sc in ls.find('Scenes'):
@@ -401,6 +412,11 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               ступеньками. Опоздание = от линии доли до последней ступеньки. Одиночная нота на первой доле
               должна начаться прямо на своей линии; если она сдвинута, вычтите этот сдвиг.
               Ожидание по тестам (reg_test): аккорд из 4 около 18 мс, аккорд из 6 46-52 мс.
+  107-110 п.11 UNDO и Program Change из клипа (этап 50). К1 играет ноту на каждую долю. Включите петлю
+              на тактах 107-110 или остановитесь на 110. Покрутите колесо до и после: в 107-108 колесом
+              на имени канала 1 (слева) смените звук на несколько мест, в 109 клип сам поставит каналу 1
+              место 41, в 109-110 снова покрутите колесо. Остановите Play и нажмите UNDO два раза.
+              Первый UNDO вернёт место 41 (то, что поставил клип), второй: звук до колеса в 107.
 
 Стойка «Гласные CSM» (дорожка «MDMI гласные на макросах»):
   F1 рот, F2 язык   две главные крутилки: F1 открывает рот (И, У внизу, А вверху), F2 двигает язык (У внизу,

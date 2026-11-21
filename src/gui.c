@@ -426,6 +426,9 @@ struct mdmi_gui {
 	int env_channel;
 	patch_shape env_shape;
 	patch_envelope env_before;
+	// Stage 50: the loop shadow and kept release before the gesture, which its undo step puts back.
+	state_loop env_loop_before;
+	state_tail env_tail_before;
 	bool env_changed;
 	bool env_handed;
 	bool env_told;
@@ -1935,6 +1938,11 @@ static void envelope_take(mdmi_gui *g)
 {
 	g->env_channel = *g->source.channel;
 	g->env_before = *patch_envelope_view(g->source.patch, g->env_channel);
+	const int psg = g->env_channel - PATCH_NUM_FM_CHANNELS;
+	g->env_loop_before = g->source.loop_shadows[psg];
+	if (g->source.tails) {
+		g->env_tail_before = g->source.tails[psg];
+	}
 	channel_shape(g, g->env_channel, &g->env_shape, &g->env_stop);
 	g->env_changed = g->env_handed = false;
 	g->env_last_step = -1;
@@ -1963,7 +1971,7 @@ static void envelope_hand(mdmi_gui *g)
 		}
 	}
 	patch_shape_to_envelope(&played, &envelope);
-	files_draw_envelope(g->source.files, g->env_channel, g->env_handed ? NULL : &g->env_before, &envelope);
+	files_draw_envelope(g->source.files, g->env_channel, g->env_handed ? NULL : &g->env_before, &envelope, &g->env_loop_before, g->source.tails ? &g->env_tail_before : NULL);
 	g->env_handed = true;
 	g->env_changed = false;
 	if (!g->env_told) {
@@ -2032,9 +2040,13 @@ static void envelope_reset(mdmi_gui *g, int x, int y, int part)
 {
 	const bool again = g->env_handed && g->env_channel == *g->source.channel;
 	const patch_envelope before = g->env_before;
+	const state_loop loop_before = g->env_loop_before;
+	const state_tail tail_before = g->env_tail_before;
 	envelope_take(g);
 	if (again) {
 		g->env_before = before;
+		g->env_loop_before = loop_before;
+		g->env_tail_before = tail_before;
 		g->env_handed = true;
 	}
 	patch_shape *shape = &g->env_shape;
@@ -6824,7 +6836,7 @@ static void click_row(mdmi_gui *g, int list, int place)
 	const bool envelopes = !channel_is_fm(channel);
 	if (g->lists[list].kind == LIST_ROM) {
 		if (place != patch_view(g->source.patch)->channels[channel][PARAM_PRESET]) {
-			files_preset_step(g->source.files, channel);
+			files_preset_step(g->source.files, channel, place);
 		}
 		edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
 		return;
@@ -7706,7 +7718,7 @@ bool gui_key(mdmi_gui *g, bool up)
 	}
 	g->key_to = place;
 	if (place != from) {
-		files_preset_step(g->source.files, channel);
+		files_preset_step(g->source.files, channel, place);
 	}
 	edit_once(g, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
 	if (place < g->bank_top) {
@@ -7780,7 +7792,7 @@ static void on_wheel(mdmi_gui *g, int delta, int screen_x, int screen_y)
 			int channel, param;
 			// Stage 48 (D90): a Preset step is an UNDO step, the channel's sound before it kept.
 			if (patch_id_split(id, &channel, &param) && channel >= 0 && param == PARAM_PRESET) {
-				files_preset_step(g->source.files, channel);
+				files_preset_step(g->source.files, channel, value);
 			}
 			edit_once(g, id, value);
 			pair_rule(g, id, value);

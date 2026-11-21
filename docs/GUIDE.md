@@ -71,9 +71,13 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   voice and name, like tweaks: the Preset stays, and the next preset step wipes it. Dropped on a place
   of the BANK page, it replaces that place. LOAD opens an instrument for the selected channel, a
   `.mdbank` for the bank or a `.mdsnap` for everything; SAVE writes the channel as VGI, the bank or a
-  snapshot, which is the project's own state. UNDO puts back what the last file replaced, and a second
-  UNDO brings the file back. `src/instrument.c` reads the formats, `src/files.c` and `src/state.c`
-  the rest.
+  snapshot, which is the project's own state. UNDO puts back what the last file replaced, Shift+UNDO
+  brings the file back; the history holds 32 steps (D90). A Preset step made in the window (the wheel, a
+  bank place, the arrows) is a step: `files_preset_step` keeps the whole values before it. Steps on one
+  channel join while the model shows it untouched on a place the run's steps went to (`went`, those the
+  model hasn't taken yet included); on any other place the host stepped it (Program Change, CC 3, the
+  Preset lane), and the next step is a step of its own, so UNDO stops where the host put the channel
+  (stage 50). `src/instrument.c` reads the formats, `src/files.c` and `src/state.c` the rest.
 - Several files at once (LOAD, ADD or a drop): the window takes 128, `files_put_places` counts the rest
   (`beyond`) with those past place 128 as extra, the unread apart: `Loaded 127 to slots 1-127, 2 extra,
   1 unread` (stage 49). SAVE adds the chosen type's extension to a name that has none of ours; when it
@@ -371,7 +375,9 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   set by a vertical drag, 124 bytes at most with the loop marks (amber MAX at the limit),
   and the columns share the lane, which reaches the page's right edge at every length: 3 or 4 px at 124 frames, wider when shorter (0.8.1). A drawing is the channel's
   own envelope, as a dropped EEF: the Preset and the bank stay, the next preset step wipes it, SAVE
-  writes it as EEF, UNDO puts back the envelope before the last gesture. The window never makes a
+  writes it as EEF, UNDO puts back the envelope before the last gesture with the loop shadow and kept
+  release it had (stage 50: `envelope_take` keeps them, so UNDO of "stop to release" gives stop and its
+  release back), and redo says `envelope as drawn`. The window never makes a
   loop the ROM would misread (`patch_shape_to_envelope`). It hands the drawing over at most once per
   window frame and at mouse up, and tells the host nothing (D19). While the longest envelope is
   re-stored every 33 ms, a note on another PSG channel sounds at worst 9.7 ms later than without

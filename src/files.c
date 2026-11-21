@@ -231,6 +231,9 @@ static void remember(mdmi_files *files, int undo, int target, const patch_instru
 	files->now.state = state;
 	files->now.state_size = state_size;
 	files->now.view = false;
+	files->now.drawing = 0;
+	files->now.went_count = 0;
+	files->now.went_seen = false;
 	if (instrument) {
 		files->now.instrument = *instrument;
 	}
@@ -298,8 +301,9 @@ static void put_envelope_on_channel(mdmi_files *files, int channel, const patch_
 	files->host.handed(files->host.context, false);
 }
 
-// A drawing keeps the base: what the channel got stays what it is compared with.
-void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope)
+// A drawing keeps the base: what the channel got stays what it is compared with. The loop shadow and
+// kept release before the gesture go with its step, as with a Preset step (stage 50).
+void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope, const state_loop *loop, const state_tail *tail)
 {
 	patch_instrument unused;
 	patch_envelope base;
@@ -314,6 +318,12 @@ void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *b
 		files->now.base_envelope = base;
 		files->now.arp = arp;
 		files->now.base_arp = base_arp;
+		files->now.drawing = 1;
+		if (loop && tail && files->host.view) {
+			files->now.view = true;
+			files->now.loop = *loop;
+			files->now.tail = *tail;
+		}
 		snprintf(files->now.text, sizeof(files->now.text), "CH%d envelope before drawing", channel + 1);
 	}
 	files->host.handed(files->host.context, false);
@@ -1328,22 +1338,42 @@ static void remember_preset(mdmi_files *files, int channel, patch_values *values
 	snprintf(files->now.text, sizeof(files->now.text), "CH%d back to %s", channel + 1, channel_name(values, channel));
 }
 
-void files_preset_step(mdmi_files *files, int channel)
+void files_preset_step(mdmi_files *files, int channel, int place)
 {
 	if (channel < 0 || channel >= PATCH_NUM_CHANNELS) {
 		return;
 	}
 	const patch_values *values = patch_view(files->host.patch);
-	// The next step of a run: the channel still plays the place the run went to, untouched, or the
-	// step before hasn't reached the model yet (a fast wheel).
-	if (files->now.kind == UNDO_PRESET && files->now.target == channel && !files->ahead_count
-		&& (!patch_sound_changed(values, is_psg(channel) ? &values->psg[channel - PATCH_NUM_FM_CHANNELS] : NULL, channel)
-			|| same_channel(values, files->now.values, channel))) {
-		return;
+	files_step *run = &files->now;
+	// The next step of a run: the channel plays, untouched, a place the run's steps went to and not
+	// one before the last it was seen on, or no step has reached the model yet (a fast wheel). On any
+	// other place the host stepped it (stage 50): undo goes back to where the host put it, not over it.
+	if (run->kind == UNDO_PRESET && run->target == channel && !files->ahead_count) {
+		int seen = -1;
+		if (!patch_sound_changed(values, is_psg(channel) ? &values->psg[channel - PATCH_NUM_FM_CHANNELS] : NULL, channel)) {
+			for (int k = 0; k < run->went_count && seen < 0; k++) {
+				seen = run->went[k] == values->channels[channel][PARAM_PRESET] ? k : -1;
+			}
+		}
+		if (seen >= 0 || (!run->went_seen && same_channel(values, run->values, channel))) {
+			if (seen >= 0) {
+				memmove(run->went, run->went + seen, (size_t)(run->went_count - seen) * sizeof(run->went[0]));
+				run->went_count -= seen;
+				run->went_seen = true;
+			}
+			if (run->went_count == FILES_RUN_WENT) {
+				memmove(run->went, run->went + 1, (size_t)(FILES_RUN_WENT - 1) * sizeof(run->went[0]));
+				run->went_count--;
+			}
+			run->went[run->went_count++] = (int16_t)place;
+			return;
+		}
 	}
 	patch_values *before = values_now(files);
 	if (before) {
 		remember_preset(files, channel, before);
+		files->now.went[0] = (int16_t)place;
+		files->now.went_count = 1;
 	}
 }
 
@@ -1388,10 +1418,16 @@ static bool apply_step(mdmi_files *files, char *message, size_t size)
 		const bool view = files->now.view && files->host.view;
 		const state_loop loop = files->now.loop;
 		const state_tail tail = files->now.tail;
+		const int drawing = files->now.drawing;
 		put_envelope_on_channel(files, target, &back, &base, &arp, &base_arp);
-		// A copy's loop shadow and kept release go back with it (stage 43).
+		// A copy's loop shadow and kept release go back with it (stage 43), and a drawing's (stage 50).
 		if (view) {
 			swap_view(files, target, &loop, &tail);
+		}
+		// What the step left puts back the drawing, or again the envelope before it (stage 50).
+		if (drawing) {
+			files->now.drawing = 3 - drawing;
+			snprintf(files->now.text, sizeof(files->now.text), drawing == 1 ? "CH%d envelope as drawn" : "CH%d envelope before drawing", target + 1);
 		}
 	} else if (undo == UNDO_CHANNEL) {
 		patch_instrument back = files->now.instrument, base = files->now.base_instrument;
@@ -1426,6 +1462,10 @@ static bool apply_step(mdmi_files *files, char *message, size_t size)
 		copy_channel(next, back, target);
 		patch_load_values(files->host.patch, next);
 		remember_preset(files, target, was);
+		// The run goes on from the place the step put back, as if its steps had come there.
+		files->now.went[0] = next->channels[target][PARAM_PRESET];
+		files->now.went_count = 1;
+		files->now.went_seen = true;
 		if (view) {
 			swap_view(files, target, &loop, &tail);
 		}

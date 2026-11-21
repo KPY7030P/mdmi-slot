@@ -1317,10 +1317,10 @@ static void test_drawing(void)
 	shape.frames[0] = 0x0F;
 	patch_envelope first = organ, drawn = organ;
 	patch_shape_to_envelope(&shape, &first);
-	files_draw_envelope(&files, 7, &organ, &first);
+	files_draw_envelope(&files, 7, &organ, &first, NULL, NULL);
 	shape.frames[1] = 0x50;
 	patch_shape_to_envelope(&shape, &drawn);
-	files_draw_envelope(&files, 7, NULL, &drawn);
+	files_draw_envelope(&files, 7, NULL, &drawn, NULL, NULL);
 	CHECK(!memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)) && patch->model.channels[7][PARAM_PRESET] == preset && !memcmp(patch_bank_view(patch), &bank_before, sizeof(bank_before)),
 		"drawing changes the channel's envelope, not its Preset or the bank");
 	clear();
@@ -1330,7 +1330,10 @@ static void test_drawing(void)
 	CHECK(stored_envelope(&program, &length) && length == 8 + 2 * (size_t)patch_envelope_length(&drawn), "and goes to the ROM as a stored envelope");
 	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH8 envelope before drawing"), "undo says: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
 	CHECK(files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &organ, sizeof(organ)), "undo puts back the envelope before the gesture: %s", message);
-	CHECK(files_redo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)), "and again the drawing");
+	// Stage 50: redo says the drawing comes back, not "back to" the name it had before.
+	CHECK(files_redo_text(&files) && !strcmp(files_redo_text(&files), "CH8 envelope as drawn"), "redo says: %s", files_redo_text(&files) ? files_redo_text(&files) : "nothing");
+	CHECK(files_redo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn)) && !strcmp(message, "Redone: CH8 envelope as drawn"), "and again the drawing: %s", message);
+	CHECK(files_undo_text(&files) && !strcmp(files_undo_text(&files), "CH8 envelope before drawing"), "after redo undo says again: %s", files_undo_text(&files) ? files_undo_text(&files) : "nothing");
 
 	// SAVE writes the drawing, and the file sounds the same on another channel.
 	char eef_path[MAX_PATH];
@@ -1394,7 +1397,7 @@ static void test_drawing(void)
 	cut.loop_end = -1;
 	patch_envelope stopped = drawn;
 	patch_shape_to_envelope(&cut, &stopped);
-	files_draw_envelope(&files, 7, &drawn, &stopped);
+	files_draw_envelope(&files, 7, &drawn, &stopped, NULL, NULL);
 	clear();
 	sync(patch);
 	CHECK(stored_envelope(&program, &length) && length == 8 + 2 * (size_t)patch_envelope_length(&stopped) && patch_envelope_length(&stopped) == patch_envelope_length(&drawn) - released - 1,
@@ -1556,7 +1559,7 @@ static void test_copy_channel(void)
 static void preset_step(mdmi_files *files, mdmi_patch *patch, int channel, int place)
 {
 	patch_publish(patch);
-	files_preset_step(files, channel);
+	files_preset_step(files, channel, place);
 	patch_set(patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET), place);
 	patch_publish(patch);
 }
@@ -1605,7 +1608,7 @@ static void test_undo_history(void)
 	patch_envelope drawn = patch->model.psg[1], was = drawn;
 	drawn.steps[0] = 3;
 	drawn.steps[1] = 9;
-	files_draw_envelope(&files, 7, &was, &drawn);
+	files_draw_envelope(&files, 7, &was, &drawn, NULL, NULL);
 	patch_publish(patch);
 	files_view.loops[1] = (state_loop){true, 1, 2, ""};
 	memcpy(files_view.loops[1].name, patch->model.psg[1].name, PATCH_NAME);
@@ -1619,6 +1622,89 @@ static void test_undo_history(void)
 	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &psg_before) && !memcmp(&patch->model.psg[1], &drawn, sizeof(drawn))
 		&& !memcmp(&files_view.loops[1], &loop, sizeof(loop)),
 		"PSG: one undo gives the drawn envelope, its loop shadow and Preset %d back: %s", patch->model.channels[7][PARAM_PRESET] + 1, message);
+
+	// Stage 50: a Program Change from a clip between the wheel's steps ends the run: three steps, the
+	// clip's program, two steps; the first UNDO goes back to the clip's place, the second before the three.
+	files_forget(&files);
+	static patch_values start, after_clip;
+	start = patch->model;
+	const int p0 = start.channels[0][PARAM_PRESET];
+	for (int k = 1; k <= 3; k++) {
+		preset_step(&files, patch, 0, p0 + k);
+	}
+	clear();
+	midi(patch, 0xC0, (uint8_t)(p0 + 10), 0);
+	patch_publish(patch);
+	after_clip = patch->model;
+	preset_step(&files, patch, 0, p0 + 11);
+	preset_step(&files, patch, 0, p0 + 12);
+	const int stepped = patch->model.channels[0][PARAM_PRESET];
+	const bool first_back = files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &after_clip);
+	const int first_place = patch->model.channels[0][PARAM_PRESET];
+	const bool second_back = files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &start);
+	CHECK(after_clip.channels[0][PARAM_PRESET] == p0 + 10 && stepped == p0 + 12 && first_back && second_back && !files_undo_text(&files),
+		"3 wheel steps, a clip's Program Change to %d, 2 steps to %d: the first UNDO goes back to %d, the second to %d, then nothing",
+		p0 + 11, stepped + 1, first_place + 1, patch->model.channels[0][PARAM_PRESET] + 1);
+	// Without the clip five steps are one, as in 0.41.
+	files_forget(&files);
+	for (int k = 1; k <= 5; k++) {
+		preset_step(&files, patch, 0, p0 + k);
+	}
+	CHECK(patch->model.channels[0][PARAM_PRESET] == p0 + 5 && files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &start) && !files_undo_text(&files),
+		"5 wheel steps with no clip between them are one UNDO step");
+	// A fast wheel: steps sent before the model takes them, the model on one in between; still one run.
+	files_forget(&files);
+	patch_publish(patch);
+	for (int k = 1; k <= 3; k++) {
+		files_preset_step(&files, 0, p0 + k);
+	}
+	patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), p0 + 2);
+	patch_publish(patch);
+	preset_step(&files, patch, 0, p0 + 4);
+	CHECK(files_undo(&files, message, sizeof(message)) && same_model(&patch->model, &start) && !files_undo_text(&files),
+		"steps the model hasn't taken yet, then one more on the place it took: one UNDO step");
+
+	// Stage 50: UNDO and redo of the click "stop to release" on a PSG loop give the envelope back with
+	// its kept release and loop shadow, as a Preset step does.
+	files_forget(&files);
+	{
+		patch_envelope looped = patch->model.psg[1];
+		patch_shape shape;
+		patch_shape_of(&looped, &shape);
+		shape.count = 8;
+		for (int k = 0; k < 8; k++) {
+			shape.frames[k] = (uint8_t)(k < 6 ? 2 : 9);
+		}
+		shape.loop_start = 2;
+		shape.loop_end = 6;
+		patch_envelope with_release = looped, stopped_env = looped;
+		patch_shape_to_envelope(&shape, &with_release);
+		patch_shape cut_shape = shape;
+		cut_shape.count = 6;
+		cut_shape.loop_end = -1;
+		patch_shape_to_envelope(&cut_shape, &stopped_env);
+		files_draw_envelope(&files, 7, &looped, &stopped_env, NULL, NULL);
+		patch_publish(patch);
+		// The view as the window keeps it with stop: the release's two steps, and a shadow of another loop.
+		state_tail stop_tail = {.stop = true, .count = 2, .steps = {9, 9}};
+		snprintf(stop_tail.name, sizeof(stop_tail.name), "%s", stopped_env.name);
+		const state_loop shadow = {true, 1, 3, ""};
+		files_view.tails[1] = stop_tail;
+		files_view.loops[1] = shadow;
+		// The click: the release plays again, the view drops stop; the window gives what it had before.
+		files_view.tails[1] = (state_tail){0};
+		files_view.loops[1] = (state_loop){0};
+		files_draw_envelope(&files, 7, &stopped_env, &with_release, &shadow, &stop_tail);
+		patch_publish(patch);
+		const bool undone = files_undo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &stopped_env, sizeof(stopped_env))
+			&& !memcmp(&files_view.tails[1], &stop_tail, sizeof(stop_tail)) && !memcmp(&files_view.loops[1], &shadow, sizeof(shadow));
+		const bool redone = files_redo(&files, message, sizeof(message)) && !memcmp(&patch->model.psg[1], &with_release, sizeof(with_release))
+			&& !files_view.tails[1].stop && !files_view.loops[1].kept;
+		const bool again = files_undo(&files, message, sizeof(message)) && files_view.tails[1].stop && files_view.tails[1].count == 2 && files_view.loops[1].kept;
+		CHECK(undone && redone && again, "UNDO of stop to release gives the envelope, the kept release and the loop shadow back; redo the release, UNDO again stop");
+		files_view.tails[1] = (state_tail){0};
+		files_view.loops[1] = (state_loop){0};
+	}
 
 	// 40 drawn rows: 32 undo steps back in order, then nothing; redo forward; a new action empties redo.
 	files_forget(&files);
@@ -1700,7 +1786,7 @@ static void test_bases(void)
 	shape.frames[0] ^= 1;
 	patch_shape_to_envelope(&shape, &drawn);
 	const patch_envelope before = patch->model.psg[1];
-	files_draw_envelope(&files, 7, &before, &drawn);
+	files_draw_envelope(&files, 7, &before, &drawn, NULL, NULL);
 	CHECK(patch_sound_changed(&patch->model, &patch->model.psg[1], 7) && !patch_sound_changed(&patch->model, &patch->bank.envelopes[place], 7), "a drawing keeps the place as base");
 	CHECK(files_undo(&files, message, sizeof(message)) && !patch_sound_changed(&patch->model, &patch->model.psg[1], 7), "undo of a drawing is the place again");
 

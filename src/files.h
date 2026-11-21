@@ -35,6 +35,8 @@ typedef struct {
 	int place;
 } files_spot;
 
+#define FILES_RUN_WENT 16
+
 // One step of UNDO (D25, a history since stage 48, D90): what an action replaced, put back by the
 // same command. Applying a step leaves in it what it replaced in turn, which is the redo step.
 typedef struct {
@@ -67,6 +69,16 @@ typedef struct {
 	// UNDO_PRESET (stage 48): the values before a Preset step made in the window; only the channel
 	// target's part of them comes back, its Preset with it.
 	patch_values *values;
+	// Stage 50: the places the run's steps went to since the last one the model was seen on, that one
+	// first (a fast wheel sends several before the model takes them). The channel on another place
+	// means the host stepped it in between (Program Change, CC 3, the Preset lane): the run ends there.
+	int16_t went[FILES_RUN_WENT];
+	int went_count;
+	// The model was seen on one of them: back where the run started is then the host's.
+	bool went_seen;
+	// Stage 50: a drawn envelope's step: 1 undo puts back the envelope before the drawing, 2 the
+	// drawing; applying one leaves the other.
+	int drawing;
 } files_step;
 
 // Stage 48 (D90): steps back and steps ahead, the oldest dropped first.
@@ -115,8 +127,9 @@ int files_add_place(const mdmi_files *files, bool envelopes);
 bool files_save_path(const char *chosen, int type, bool envelope, char *out, size_t size, int *kind);
 bool files_save(mdmi_files *files, const char *path, int kind, int channel, char *message, size_t size);
 // A drawn envelope for a PSG channel, the way a dropped EEF goes (stage 8). The first of a gesture
-// gives what the channel had before it, which undo puts back.
-void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope);
+// gives what the channel had before it, which undo puts back, with the loop shadow and kept release
+// before it when loop and tail are given (stage 50); after undo, redo says the drawing comes back.
+void files_draw_envelope(mdmi_files *files, int channel, const patch_envelope *before, const patch_envelope *envelope, const state_loop *loop, const state_tail *tail);
 // A drawn arp row for any channel 1-10, the same way (stage 20): the voice or envelope and the base
 // stay. Hand it at most once per window frame and at mouse up; before is the row before the gesture
 // on its first call, NULL after, and undo puts it back. The host is told nothing (D19).
@@ -130,9 +143,11 @@ bool files_undo(mdmi_files *files, char *message, size_t size);
 // Stage 48 (D90): the step the last UNDO took back, done again; false when there is none.
 bool files_redo(mdmi_files *files, char *message, size_t size);
 // Before a Preset step the window makes (the wheel, a click on a bank place, Up and Down): the
-// channel's sound before it becomes an undo step. Steps one after another on the same channel, with
-// no edit of its sound between them, are one step.
-void files_preset_step(mdmi_files *files, int channel);
+// channel's sound before it becomes an undo step; place is where the step goes. Steps one after another
+// on the same channel, with no edit of its sound between them and the channel still on the place the
+// last one went to (or that step not in the model yet), are one step (stage 50: a step of the host's
+// in between ends the run).
+void files_preset_step(mdmi_files *files, int channel, int place);
 // A project the host loaded: no step goes back or ahead over it.
 void files_forget(mdmi_files *files);
 // WAV files onto the DAC's notes one after another from first (stage 12, D36), in the order given;

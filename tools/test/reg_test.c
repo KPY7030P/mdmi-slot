@@ -7356,6 +7356,118 @@ static void test_vowels(void)
 	sync_and_settle();
 }
 
+// Stage 50, item 5 (review of stage 48, first point): UNDO of a Preset step loads a whole block of
+// values, every channel's from the main thread's snapshot. While a Volume lane moves channel 2, the
+// snapshot is a block old. Driven as plugin_process does it: the state taken at the block's start
+// and synced at 0, then the lane's point at `at`, render, publish; UNDO on the main thread between
+// blocks. Prints how far and how long channel 2's volume goes back, and output 2's block peaks
+// around the UNDO against the same blocks of a run without it.
+static uint32_t emit_time;
+
+static void emit_timed(void *context, const uint8_t *bytes, size_t length)
+{
+	(void)context;
+	mdmi_engine_midi(engine, emit_time, bytes, length);
+}
+
+static void take_nothing(void *context, bool knobs)
+{
+	(void)context;
+	(void)knobs;
+}
+
+#define JUMP_BLOCKS 120
+#define JUMP_UNDO 60
+
+static void undo_jump_run(bool undo, int at, int blocks_per_fade, float *peaks, int *stale, int *lane)
+{
+	static state_view view;
+	const files_host host = {patch, &view, take_nothing, NULL};
+	static mdmi_files files;
+	files_init(&files, &host);
+	char message[FILES_MESSAGE];
+	set_on(1, PARAM_VOLUME, 127);
+	midi(0x91, 69, 127);
+	render(SETTLE_BLOCKS);
+	patch_publish(patch);
+	const int place = patch->model.channels[0][PARAM_PRESET];
+	*stale = *lane = -1;
+	for (int b = 0; b < JUMP_BLOCKS; b++) {
+		if (b == 20) {
+			// The window's Preset step on channel 1, as the wheel makes it.
+			files_preset_step(&files, 0, place + 1);
+			patch_set(patch, PATCH_CHANNEL_ID(0, PARAM_PRESET), place + 1);
+			emit_time = 0;
+			patch_sync(patch, &patch->rom, emit_timed, NULL);
+		}
+		if (undo && b == JUMP_UNDO) {
+			// The main thread, between blocks: it sees the snapshot of the block before.
+			files_undo(&files, message, sizeof(message));
+		}
+		if (patch_take_incoming(patch)) {
+			*stale = patch->model.channels[1][PARAM_VOLUME];
+			emit_time = 0;
+			patch_sync(patch, &patch->rom, emit_timed, NULL);
+		}
+		// The fade's middle at the UNDO.
+		const int from = JUMP_UNDO - blocks_per_fade / 2;
+		int value = 127 - 127 * (b - from) / blocks_per_fade;
+		value = value < 0 ? 0 : value > 127 ? 127 : value;
+		if (b == JUMP_UNDO) {
+			*lane = value;
+		}
+		patch_set(patch, PATCH_CHANNEL_ID(1, PARAM_VOLUME), value);
+		emit_time = (uint32_t)at;
+		patch_sync(patch, &patch->rom, emit_timed, NULL);
+		tick(BLOCK);
+		float peak = 0;
+		for (int i = 0; i < BLOCK; i++) {
+			peak = fmaxf(peak, fmaxf(fabsf(outputs[2][i]), fabsf(outputs[3][i])));
+		}
+		peaks[b] = peak;
+		patch_publish(patch);
+	}
+	midi(0x81, 69, 0);
+	set_on(1, PARAM_VOLUME, 127);
+	set_on(0, PARAM_PRESET, place);
+	render(SETTLE_BLOCKS);
+	patch_publish(patch);
+	files_free(&files);
+}
+
+static void undo_jump_experiment(void)
+{
+	static const int FADES[] = {200, 50, 10};
+	static const int ATS[] = {0, BLOCK - 1};
+	for (int f = 0; f < 3; f++) {
+		for (int a = 0; a < 2; a++) {
+			static float with[JUMP_BLOCKS], without[JUMP_BLOCKS], again[JUMP_BLOCKS];
+			int stale, lane, unused_stale, unused_lane;
+			undo_jump_run(false, ATS[a], FADES[f], without, &unused_stale, &unused_lane);
+			undo_jump_run(true, ATS[a], FADES[f], with, &stale, &lane);
+			// Two runs without UNDO differ too (the ROM's frames fall elsewhere in the blocks): the yardstick.
+			undo_jump_run(false, ATS[a], FADES[f], again, &unused_stale, &unused_lane);
+			double worst = 0, noise = 0;
+			int worst_block = -1;
+			for (int b = JUMP_UNDO - 4; b < JUMP_UNDO + 6; b++) {
+				const double d = fabs(20.0 * log10((with[b] + 1e-9) / (without[b] + 1e-9)));
+				const double n = fabs(20.0 * log10((again[b] + 1e-9) / (without[b] + 1e-9)));
+				noise = n > noise ? n : noise;
+				if (d > worst) {
+					worst = d;
+					worst_block = b - JUMP_UNDO;
+				}
+			}
+			printf("    fade 127 to 0 in %d blocks of %d (%.0f ms), lane point at sample %d: the UNDO block starts on volume %d instead of %d (%d back) for %d samples (%.2f ms); "
+				"output 2 within 4 blocks before and 6 after differs from the run without UNDO by at most %.2f dB (block %+d), two runs without UNDO by %.2f dB\n",
+				FADES[f], BLOCK, FADES[f] * BLOCK * 1000.0 / RATE, ATS[a], stale, lane, stale - lane, ATS[a], ATS[a] * 1000.0 / RATE, worst, worst_block, noise);
+			for (int b = JUMP_UNDO - 2; b < JUMP_UNDO + 4; b++) {
+				printf("      block %+d: peak %.4f with UNDO, %.4f without\n", b - JUMP_UNDO, with[b], without[b]);
+			}
+		}
+	}
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -7492,6 +7604,14 @@ int main(int argc, char **argv)
 		curves_after_lending();
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
+	}
+	if (argc == 3 && !strcmp(argv[2], "--undo-jump")) {
+		// Stage 50, item 5: how channel 2's volume jumps when UNDO of a Preset step loads the snapshot.
+		full_velocity();
+		test_reset();
+		render(SETTLE_BLOCKS);
+		undo_jump_experiment();
+		return 0;
 	}
 	if (argc == 3 && !strcmp(argv[2], "--meter")) {
 		// Stage 30: the FM level bar frame by frame, for measuring.
