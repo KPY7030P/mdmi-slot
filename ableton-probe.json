@@ -1,0 +1,11 @@
+{
+  "set": "build/probe/MDMI Test Project/MDMI Test.als",
+  "record_track": "Rec Out",
+  "copy_name": "MDMI Auto",
+  "out_dir": "build/ableton-probe",
+  "bar_beats": 4,
+  "sample_rate": 44100,
+  "tail_bars": 2,
+  "udp_in": 9100,
+  "udp_out": 9101
+}

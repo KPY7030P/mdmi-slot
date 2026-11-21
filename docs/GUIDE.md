@@ -626,6 +626,16 @@ is how to tell what is installed.
 Project/`, from the owner's `ALS_tsts` set and `presets/vowels`: clips and automation on the arrangement, one
 part per checked item, and a Russian guide next to it. Stages add their parts to the script.
 
+A session can play bars of that set in Live itself with the owner's tool
+`D:/ALL/MUSIC/TECH/MYPLUGINS/ableton-probe` (its README). The tool records MIDI, not audio, so a run shows only
+three things: the set opens, it plays through without a crash, and what the Live window looks like. Sound is still
+judged with our own hosts. `python tools/make_probe_set.py [--from TRACK_ID]` builds a copy of the check set in
+`build/probe/` with a "Rec Out" track recording one clip track (default 31, channel 1; 35 is channel 6). The owner's
+set is not touched. The new track must go before the return tracks, or Live calls the set corrupt. Then, only while
+Live is closed (an open Live is the owner's or another project's run), run
+`python ../../../MYPLUGINS/ableton-probe/probe.py run --config ableton-probe.json --bars A-B`. Notes and a PNG
+land in `build/ableton-probe/`.
+
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
 is `git describe`, ending in `-dirty` for uncommitted code.
