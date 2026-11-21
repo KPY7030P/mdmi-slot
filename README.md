@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.45.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.46.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -38,6 +38,9 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   output in the OUT box (the last 20 ms), the last sample's name in the source column. A click on the OUT box
   shows the last sample with its loop and a line where each voice is; a second click brings the wave back.
   A project saved in 0.41-0.44 with the live view open opens on the sample's picture: one click back.
+- Chords on ALL (0.46.0): while a channel's chord plays on other channels' voices (the green arrows on the left),
+  each of those rows shows its voice's note in its OUT box in green, 2 periods of that note; the chord's own row
+  keeps the whole chord. The footer over a green box says where the note is heard (the chord's output).
 - MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts
   its own attack, with no glide and no second voice; letting go of the top key strikes the one below again.
   MONO and PORTA are a pair in the channel's row, one click picks either; PORTA wins if both are on (from a

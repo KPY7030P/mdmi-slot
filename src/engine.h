@@ -67,11 +67,19 @@ typedef struct {
 // averaged, at the output's rate; `end` counts the outputs' samples up to the last one. Copied by the
 // worker after each core run while the window watches, the same way as the ROM's screen. Valid until
 // the next call to mdmi_engine_latest_waves.
+// Stage 54 (D93): beside them the FM voices 1-6 on their own, the louder side after each voice's DC
+// blocker, before any output or the resampler, at the core's rate voice_rate; voice_end counts the
+// core's frames up to the last one.
 #define MDMI_WAVE_FRAMES 8192
+#define MDMI_WAVE_VOICES 6
 typedef struct {
 	uint64_t end;
 	uint32_t count;
 	float samples[MDMI_OUTPUTS][MDMI_WAVE_FRAMES];
+	uint64_t voice_end;
+	uint32_t voice_count;
+	double voice_rate;
+	float voices[MDMI_WAVE_VOICES][MDMI_WAVE_FRAMES];
 } mdmi_waves;
 
 bool mdmi_engine_global_init(void);
@@ -109,6 +117,8 @@ void mdmi_engine_test_lockstep(mdmi_engine *e, bool lockstep);
 int mdmi_engine_test_owner(const mdmi_engine *e, int voice);
 // Tests only: the longest wait from an owner to its key-on since the last call, in ms.
 float mdmi_engine_test_take_owner_wait(mdmi_engine *e);
+// Tests only (stage 54): the worker's slowest core run and slowest copy of the waves since the last call, in ms.
+void mdmi_engine_test_take_run_times(mdmi_engine *e, double *worst_run_ms, double *worst_publish_ms);
 // Tests only (stage 18a): measure the outputs' sum against the core's own mix, in lockstep; the
 // result is the outputs' level over the mix's in dB, or with raw the voices' sum as the core made them,
 // all after a DC blocker.

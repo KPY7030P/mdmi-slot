@@ -919,6 +919,229 @@ static bool dac_footer(HWND window, int x, int y, const char *text)
 	return footer_says(text, COLOR_LABEL);
 }
 
+// Stage 54 (D93, ui-concept.md): ALL's OUT box of FM row r (0-5), its 78 inner columns at x 533..610.
+#define COLOR_PLAYING_DARK 0x224400
+#define OUT_ROW_Y(r) (44 + 40 * (r))
+// Each column's top in color inside the box (y+5..y+33), -1 where none.
+static void out_tops(int row, uint32_t color, int tops[78])
+{
+	const int y = OUT_ROW_Y(row);
+	for (int x = 0; x < 78; x++) {
+		tops[x] = -1;
+		for (int yy = y + 5; yy < y + 34 && tops[x] < 0; yy++) {
+			tops[x] = (pixels[yy * WIDTH + 533 + x] & 0xFFFFFF) == color ? yy : -1;
+		}
+	}
+}
+
+// The trace's height in color: its lowest pixel row minus its highest, inside the box.
+static int out_height(int row, uint32_t color)
+{
+	const int y = OUT_ROW_Y(row);
+	int top = 9999, bottom = -1;
+	for (int yy = y + 5; yy < y + 34; yy++) {
+		if (count_color_in(533, 611, yy, yy + 1, color)) {
+			top = yy < top ? yy : top;
+			bottom = yy;
+		}
+	}
+	return bottom < 0 ? 0 : bottom - top;
+}
+
+// The shift of b against a that matches the tops best (stage 35's chord check).
+static int best_shift(const int a[78], const int b[78])
+{
+	int shift = 99, best = 1 << 30;
+	for (int d = -20; d <= 20; d++) {
+		int cost = 0, n = 0;
+		for (int x = 20; x < 58; x++) {
+			if (a[x] >= 0 && b[x + d] >= 0) {
+				cost += abs(a[x] - b[x + d]);
+				n++;
+			}
+		}
+		cost = n ? cost * 38 / n : 1 << 30;
+		if (cost < best) {
+			best = cost;
+			shift = d;
+		}
+	}
+	return shift;
+}
+
+// What row r's box holds: a green trace (lent), a blue one (its own), or nothing but frame and middle.
+enum { OUT_EMPTY, OUT_OWN, OUT_LENT, OUT_ODD };
+static int out_kind(int row)
+{
+	const int y = OUT_ROW_Y(row);
+	const int green = count_color_in(533, 611, y + 5, y + 34, COLOR_PLAYING), blue = count_color_in(533, 611, y + 5, y + 34, COLOR_FM_LIGHT);
+	// Inside the box only black, the middle line and one trace's two colours.
+	int other = 0, columns = 0;
+	for (int x = 533; x < 611; x++) {
+		columns += count_color_in(x, x + 1, y + 5, y + 34, COLOR_PLAYING) > 0;
+		for (int yy = y + 5; yy < y + 34; yy++) {
+			const uint32_t c = pixels[yy * WIDTH + x] & 0xFFFFFF;
+			other += c != 0 && c != COLOR_CELL && c != COLOR_PLAYING && c != COLOR_PLAYING_DARK && c != COLOR_FM_LIGHT && c != COLOR_FM_DARK;
+		}
+	}
+	// No green outside the box's inside (x 520..615 of the row), no dark green outside x 533..610, y+4..y+34
+	// (the dark pass of a loud peak lies on the frame's row, ui-concept.md).
+	const int stray = count_color_in(520, 616, y, y + 40, COLOR_PLAYING) - green
+		+ count_color_in(520, 616, y, y + 40, COLOR_PLAYING_DARK) - count_color_in(533, 611, y + 4, y + 35, COLOR_PLAYING_DARK);
+	if (other || stray) {
+		return OUT_ODD;
+	}
+	if (green && !blue && !count_color_in(533, 611, y + 4, y + 35, COLOR_FM_DARK) && columns == 78) {
+		return OUT_LENT;
+	}
+	if (blue && !green && !count_color_in(533, 611, y + 4, y + 35, COLOR_PLAYING_DARK)) {
+		return OUT_OWN;
+	}
+	return !green && !blue && count_not_black_in(533, 611, y + 5, y + 34) == count_color_in(533, 611, y + 19, y + 20, COLOR_CELL) ? OUT_EMPTY : OUT_ODD;
+}
+
+static void out_kinds(int kinds[6], char text[7])
+{
+	for (int r = 0; r < 6; r++) {
+		kinds[r] = out_kind(r);
+		text[r] = "EOLX"[kinds[r]];
+	}
+	text[6] = 0;
+}
+
+// Over row r's box the footer says one of the chord's notes as lent to channel 5: which, or -1.
+static int lent_footer(HWND window, int row)
+{
+	static const char *const KEYS[4] = {"C-3", "E-3", "G-3", "C-4"};
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(570, OUT_ROW_Y(row) + 20));
+	capture(window);
+	for (int k = 0; k < 4; k++) {
+		char text[64];
+		snprintf(text, sizeof(text), "VOICE %d PLAYS CH5 %s, HEARD ON CH5 OUT", row + 1, KEYS[k]);
+		if (footer_says(text, COLOR_LABEL)) {
+			return k;
+		}
+	}
+	return -1;
+}
+
+// Stage 54: a chord on channel 5 shows each lent voice's own note in its row's box, green; the chord's
+// row keeps its sum; a voice coming home is blue again; nothing after Note Off; Ch3 Special's and the
+// DAC's voices are never lent (D69).
+static void lent_voice_boxes(HWND window, const char *dir)
+{
+	static const uint8_t CHORD[4] = {48, 52, 55, 60};
+	int kinds[6];
+	char text[7];
+	for (int k = 0; k < 4; k++) {
+		send_midi(0x94, CHORD[k], 100);
+	}
+	run_ms(400);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	save_bmp(dir, "all-lent-chord");
+	out_kinds(kinds, text);
+	int lent = 0, first = -1, empty = 0;
+	for (int r = 0; r < 6; r++) {
+		lent += kinds[r] == OUT_LENT;
+		empty += kinds[r] == OUT_EMPTY;
+		first = first < 0 && kinds[r] == OUT_LENT ? r : first;
+	}
+	CHECK(lent == 3 && kinds[4] == OUT_OWN && empty == 2,
+		"stage 54: a chord of 4 on channel 5: three rows' boxes in green only (%d), row 5 its sum in FM colours, the other two empty (rows %s: E empty, O own, L lent, X odd)", lent, text);
+	// It stands: two frames 120 ms apart match best at a shift under 2 px.
+	int tops[2][78], shift = 99, drawn = 0;
+	if (first >= 0) {
+		out_tops(first, COLOR_PLAYING, tops[0]);
+		run_ms(120);
+		capture(window);
+		out_tops(first, COLOR_PLAYING, tops[1]);
+		shift = best_shift(tops[0], tops[1]);
+		for (int x = 0; x < 78; x++) {
+			drawn += tops[0][x] >= 0;
+		}
+	}
+	CHECK(first >= 0 && abs(shift) < 2, "stage 54: row %d's green trace (%d columns) 120 ms later matches best shifted by %d px", first + 1, drawn, shift);
+	const int lent_height = first >= 0 ? out_height(first, COLOR_PLAYING) : -1;
+	// The footers: each lent row names its voice, the chord's note and where it is heard; row 5 as in 0.45.
+	int named = 0, key_of_first = -1;
+	for (int r = 0; r < 6; r++) {
+		if (kinds[r] == OUT_LENT) {
+			const int k = lent_footer(window, r);
+			named += k >= 0;
+			key_of_first = r == first ? k : key_of_first;
+		}
+	}
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(570, OUT_ROW_Y(4) + 20));
+	capture(window);
+	const bool chord_footer = footer_says("CH5 OUT: 2 PERIODS OF C-3", COLOR_LABEL);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	CHECK(lent > 0 && named == lent && chord_footer, "stage 54: over the lent boxes VOICE N PLAYS CH5 <note>, HEARD ON CH5 OUT (%d of %d), over row 5 CH5 OUT: 2 PERIODS OF C-3 (%d)", named, lent, chord_footer);
+	// The voice comes home: that channel's own note takes it, in FM colours; the chord's note moves on.
+	const int home_row = first >= 0 ? first : 0;
+	send_midi((uint8_t)(0x90 | home_row), 72, 100);
+	run_ms(400);
+	capture(window);
+	save_bmp(dir, "all-lent-home");
+	int home[6];
+	char home_text[7];
+	out_kinds(home, home_text);
+	int home_lent = 0;
+	for (int r = 0; r < 6; r++) {
+		home_lent += home[r] == OUT_LENT;
+	}
+	CHECK(first >= 0 && home[first] == OUT_OWN && home[4] == OUT_OWN && home_lent == 3,
+		"stage 54: channel %d's own note brings its voice home in FM colours, the chord's note moved to another voice: rows %s, %d green", home_row + 1, home_text, home_lent);
+	send_midi((uint8_t)(0x80 | home_row), 72, 0);
+	for (int k = 0; k < 4; k++) {
+		send_midi(0x84, CHORD[k], 0);
+	}
+	run_ms(300);
+	capture(window);
+	save_bmp(dir, "all-lent-off");
+	out_kinds(kinds, text);
+	CHECK(!strcmp(text, "EEEEEE"), "stage 54: after Note Off every FM box is empty though tails sound (rows %s)", text);
+	// The same note alone on channel 5 (row 5) draws as high as it did lent, at the same time after its Note On (±1 px).
+	if (key_of_first >= 0) {
+		send_midi(0x94, CHORD[key_of_first], 100);
+		run_ms(520);
+		capture(window);
+		const int alone = out_height(4, COLOR_FM_LIGHT);
+		send_midi(0x84, CHORD[key_of_first], 0);
+		run_ms(300);
+		CHECK(abs(alone - lent_height) <= 1, "stage 54: the same note alone on channel 5 is %d px high, lent on voice %d it was %d", alone, first + 1, lent_height);
+	} else {
+		CHECK(false, "stage 54: no footer named the first lent row's note, so the scale can't be compared");
+	}
+	// Ch3 Special and the DAC: voices 3 and 6 are never lent, so a chord of 6 on channel 5 greens
+	// neither row 3 nor row 6 (wave view).
+	send_midi(0xB0, 80, 127);
+	send_midi(0xB0, 78, 127);
+	run_ms(800);
+	wait_message_gone(window);
+	for (int k = 0; k < 4; k++) {
+		send_midi(0x94, CHORD[k], 100);
+	}
+	send_midi(0x94, 64, 100);
+	send_midi(0x94, 67, 100);
+	run_ms(400);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	save_bmp(dir, "all-lent-special-dac");
+	const int row3 = count_color_in(533, 611, OUT_ROW_Y(2) + 4, OUT_ROW_Y(2) + 35, COLOR_PLAYING), row6 = count_color_in(533, 611, OUT_ROW_Y(5) + 4, OUT_ROW_Y(5) + 35, COLOR_PLAYING);
+	const int others = (out_kind(0) == OUT_LENT) + (out_kind(1) == OUT_LENT) + (out_kind(3) == OUT_LENT);
+	for (int k = 0; k < 4; k++) {
+		send_midi(0x84, CHORD[k], 0);
+	}
+	send_midi(0x84, 64, 0);
+	send_midi(0x84, 67, 0);
+	send_midi(0xB0, 78, 0);
+	send_midi(0xB0, 80, 0);
+	run_ms(800);
+	wait_message_gone(window);
+	CHECK(row3 == 0 && row6 == 0 && others == 3, "stage 54: with Ch3 Special and the DAC on, a chord of 6 on channel 5 lends rows 1, 2, 4 (%d green) and never 3 or 6 (%d, %d px green)", others, row3, row6);
+}
+
 // Stage 53: before the DAC, on ALL, row 6 is FM6's as in 0.44 (diagram, OUT box, ROM N, none of the
 // DAC's squares); then the DAC switched on before any note on channel 6 since the plugin opened: four
 // free squares, the wave's empty box, the name `---`, and the footers saying so.
@@ -2482,6 +2705,7 @@ int main(int argc, char **argv)
 			}
 			CHECK(drawn > 60 && abs(best_shift) < 2, "a chord's OUT box holds by its lowest note: %d columns drawn, 120 ms later it matches best shifted by %d px", drawn, best_shift);
 		}
+		lent_voice_boxes(window, argv[2]);
 		save_bmp(argv[2], "all");
 		send_midi(0x87, 72, 0);
 		run_ms(200);

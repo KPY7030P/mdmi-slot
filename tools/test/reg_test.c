@@ -369,6 +369,7 @@ static void test_dac(void)
 }
 
 static void check(bool passed, const char *what);
+static void checkf(bool passed, const char *format, ...);
 
 // Switching the DAC swaps the Z80 driver, and SGDK resets the PSG with it: tone 0, silence, noise
 // control 0. The same notes on every PSG channel must sound as before the switch.
@@ -4053,6 +4054,56 @@ static void quiet(void)
 
 // Stage 17 (D46): each MIDI channel has an output, and a voice plays into the output of the channel
 // whose note it last started.
+// Stage 54 (D93): the voices' ring the window draws a lent voice from. The louder side's peak over the
+// last 4096 samples of a voice and of an output.
+static float wave_peak(const float *s, uint32_t count)
+{
+	float peak = 0;
+	for (uint32_t i = count > 4096 ? count - 4096 : 0; i < count; i++) {
+		peak = fabsf(s[i]) > peak ? fabsf(s[i]) : peak;
+	}
+	return peak;
+}
+
+static void test_voice_waves(void)
+{
+	quiet();
+	mdmi_engine_watch_waves(engine, true);
+	render(SETTLE_BLOCKS);
+	// A note on channel 2 alone plays on voice 2 into output 2: the same peak in both, within 5% (the
+	// output went through the resampler, the voice did not).
+	midi(0x91, 60, 127);
+	render(60);
+	const mdmi_waves *waves = mdmi_engine_latest_waves(engine);
+	const float voice = wave_peak(waves->voices[1], waves->voice_count), output = wave_peak(waves->samples[1], waves->count);
+	const double rate = waves->voice_rate;
+	const uint32_t voice_count = waves->voice_count;
+	midi(0x81, 60, 0);
+	render(SETTLE_BLOCKS * 4);
+	checkf(output > 0.05f && fabsf(voice - output) <= 0.05f * output && voice_count == MDMI_WAVE_FRAMES && rate > 53000 && rate < 53400,
+		"stage 54: a note on voice 2 peaks %.4f in its voice's ring and %.4f in output 2 (within 5%%); the ring holds %u frames at %.0f Hz", voice, output, voice_count, rate);
+	// A chord of three on channel 5 lends two voices: their rings sound while their own outputs stay silent.
+	quiet();
+	for (int k = 0; k < 3; k++) {
+		midi(0x94, (uint8_t)(48 + k * 4), 127);
+	}
+	render(60);
+	waves = mdmi_engine_latest_waves(engine);
+	int lent = 0, heard = 0;
+	for (int v = 0; v < FM_CHANNELS; v++) {
+		if (v != 4 && patch->playing[v] == 4) {
+			lent++;
+			heard += wave_peak(waves->voices[v], waves->voice_count) > 0.03f && wave_peak(waves->samples[v], waves->count) < 0.001f;
+		}
+	}
+	for (int k = 0; k < 3; k++) {
+		midi(0x84, (uint8_t)(48 + k * 4), 0);
+	}
+	render(SETTLE_BLOCKS * 4);
+	checkf(lent == 2 && heard == 2, "stage 54: a chord of three on channel 5 lends %d voices, %d of them sound in their rings and not in their own outputs", lent, heard);
+	mdmi_engine_watch_waves(engine, false);
+}
+
 static void test_outputs(void)
 {
 	quiet();
@@ -7602,6 +7653,43 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
+	if (argc == 3 && !strcmp(argv[2], "--cost")) {
+		// Stage 54: what the waves for an open ALL cost the worker on a busy clip: a chord of 6 on channel
+		// 5 (voices lent), then all ten channels, the window reading the waves every block as it would.
+		full_velocity();
+		mdmi_engine_watch_waves(engine, true);
+		render(SETTLE_BLOCKS);
+		for (int round = 0; round < 3; round++) {
+			double worst_run, worst_publish;
+			mdmi_engine_test_take_run_times(engine, &worst_run, &worst_publish);
+			const double start = (double)GetTickCount64();
+			for (int bar = 0; bar < 4; bar++) {
+				for (int i = 0; i < 6; i++) {
+					midi(0x94, (uint8_t)(48 + i * 4), 110);
+				}
+				for (int b = 0; b < 100; b++) {
+					tick(BLOCK);
+					mdmi_engine_latest_waves(engine);
+				}
+				for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
+					midi((uint8_t)(0x90 | ch), (uint8_t)(60 + ch), 100);
+				}
+				for (int b = 0; b < 100; b++) {
+					tick(BLOCK);
+					mdmi_engine_latest_waves(engine);
+				}
+				for (int ch = 0; ch < PATCH_NUM_CHANNELS; ch++) {
+					midi((uint8_t)(0xB0 | ch), 123, 0);
+				}
+				render(20);
+			}
+			const double seconds = 4.0 * 220 * BLOCK / RATE;
+			mdmi_engine_test_take_run_times(engine, &worst_run, &worst_publish);
+			printf("    cost round %d: worst_run_ms %.3f, worst publish %.3f ms, %.1f ms of wall a second of sound\n", round, worst_run, worst_publish,
+				((double)GetTickCount64() - start) / seconds);
+		}
+		return 0;
+	}
 	if (argc == 3 && !strcmp(argv[2], "--porta")) {
 		// Stage 28: Porta channels lending, alone.
 		full_velocity();
@@ -7735,6 +7823,9 @@ int main(int argc, char **argv)
 	test_reset();
 	test_outputs();
 	owner_wait_after("outputs");
+	test_reset();
+	test_voice_waves();
+	owner_wait_after("voice_waves");
 	test_reset();
 	test_psg_level();
 	owner_wait_after("psg_level");

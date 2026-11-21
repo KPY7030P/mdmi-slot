@@ -134,6 +134,11 @@ struct mdmi_engine {
 	int8_t pending_owner[MDMI_VOICES];
 	uint64_t pending_since[MDMI_VOICES];
 	uint64_t core_frames;
+	// Stage 54 (D93): the FM voices' last frames for the window while it watches the waves, at core_frames;
+	// voice_from is where the current watch began.
+	float voice_ring[MDMI_WAVE_VOICES][MDMI_WAVE_FRAMES];
+	uint64_t voice_from;
+	bool voice_watching;
 	uint32_t owner_misses;
 	float owner_wait_ms;
 	float owner_wait_round_ms;
@@ -164,6 +169,8 @@ struct mdmi_engine {
 	uint64_t measure_frames;
 	bool thread_started;
 	double worst_run_ms;
+	// Stage 54: the worst copy of the waves for the window after a run, outside run_ms (tests only).
+	double worst_publish_ms;
 	double worst_wait_ms;
 	// Set by the main thread, taken by the worker: the core boots this image next (stage 12).
 	rom_image *next_rom;
@@ -438,6 +445,11 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 	const float scale = 32767.0f / 32768.0f;
 	const uint64_t stuck_frames = (uint64_t)(OWNER_STUCK_SECONDS * CORE_RATE);
 	uint64_t write = e->ring_write;
+	const bool watching = __atomic_load_n(&e->waves_watched, __ATOMIC_RELAXED);
+	if (watching && !e->voice_watching) {
+		e->voice_from = e->core_frames;
+	}
+	e->voice_watching = watching;
 	for (size_t i = 0; i < frames; i++, e->core_frames++) {
 		float in[OUT_CHANNELS] = {0};
 		if (have_voices) {
@@ -513,6 +525,13 @@ static size_t audio_batch_cb(const int16_t *data, size_t frames)
 				e->measure_frames++;
 			}
 		}
+		if (watching) {
+			// The louder side, as the outputs' (stage 47): a voice panned L or R draws as big as one in the middle.
+			for (int v = 0; v < MDMI_WAVE_VOICES; v++) {
+				const float l = e->dc_out[v * 2], r = e->dc_out[v * 2 + 1];
+				e->voice_ring[v][e->core_frames & (MDMI_WAVE_FRAMES - 1)] = !have_voices ? 0 : fabsf(l) >= fabsf(r) ? l : r;
+			}
+		}
 		e->dc_primed = e->dc_primed || have_voices;
 		float out[8 * OUT_CHANNELS];
 		int count = resampler_push(e->rs, in, out, 8);
@@ -556,6 +575,20 @@ static void publish_waves(mdmi_engine *e)
 			// The louder side (stage 47, D89): a channel panned L or R draws as big as one in the middle.
 			waves->samples[o][i] = fabsf(l[at]) >= fabsf(r[at]) ? l[at] : r[at];
 		}
+	}
+	// Stage 54 (D93): the voices' ring is the last MDMI_WAVE_FRAMES frames whole, oldest at voice_end.
+	_Static_assert((MDMI_WAVE_FRAMES & (MDMI_WAVE_FRAMES - 1)) == 0, "the voices' ring is a power of two");
+	const uint64_t voice_end = e->core_frames;
+	const uint64_t watched = e->voice_watching ? voice_end - e->voice_from : 0;
+	const uint32_t voice_count = watched < MDMI_WAVE_FRAMES ? (uint32_t)watched : MDMI_WAVE_FRAMES;
+	const uint32_t head = (uint32_t)((voice_end - voice_count) & (MDMI_WAVE_FRAMES - 1));
+	waves->voice_end = voice_end;
+	waves->voice_count = voice_count;
+	waves->voice_rate = CORE_RATE;
+	for (int v = 0; v < MDMI_WAVE_VOICES; v++) {
+		const uint32_t first = MDMI_WAVE_FRAMES - head < voice_count ? MDMI_WAVE_FRAMES - head : voice_count;
+		memcpy(waves->voices[v], e->voice_ring[v] + head, first * sizeof(float));
+		memcpy(waves->voices[v] + first, e->voice_ring[v], (voice_count - first) * sizeof(float));
 	}
 	e->wave_back = __atomic_exchange_n(&e->wave_shared, e->wave_back | FRAME_NEW, __ATOMIC_ACQ_REL) & FRAME_INDEX;
 }
@@ -1107,7 +1140,10 @@ static DWORD WINAPI worker_main(LPVOID param)
 		double run_start = now_ms();
 		e->retro_run();
 		double run_ms = now_ms() - run_start;
+		const double publish_start = now_ms();
 		publish_waves(e);
+		const double publish_ms = now_ms() - publish_start;
+		e->worst_publish_ms = publish_ms > e->worst_publish_ms ? publish_ms : e->worst_publish_ms;
 		if (run_ms > e->worst_run_ms) {
 			e->worst_run_ms = run_ms;
 			e->worst_run_pos = write;
@@ -1460,6 +1496,13 @@ float mdmi_engine_test_take_owner_wait(mdmi_engine *e)
 	const float wait = e->owner_wait_round_ms;
 	e->owner_wait_round_ms = 0;
 	return wait;
+}
+
+void mdmi_engine_test_take_run_times(mdmi_engine *e, double *worst_run_ms, double *worst_publish_ms)
+{
+	*worst_run_ms = e->worst_run_ms;
+	*worst_publish_ms = e->worst_publish_ms;
+	e->worst_run_ms = e->worst_publish_ms = 0;
 }
 
 mdmi_engine_stats mdmi_engine_get_stats(const mdmi_engine *e)

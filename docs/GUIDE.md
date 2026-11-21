@@ -429,6 +429,17 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   columns are worked out from the bytes each frame: on the longest sample the plugin takes (2289920 bytes)
   `gui_test` prints about 1.6 ms a frame, under the stage's 2 ms for keeping them. A project of 0.41-0.44 saved
   with the live view opens on the picture.
+- A lent voice in ALL's OUT box (stage 54, D93, art-director, ui-concept.md). While ALL is watched, `audio_batch_cb`
+  also writes each FM voice 1-6 after its DC blocker (the louder side) into `voice_ring` at the core's rate, before
+  any output or the resampler; `publish_waves` copies its last 8192 frames into `mdmi_waves.voices` with
+  `voice_end` (core frames) and `voice_rate`. The output path (D46) is unchanged. In the window `out_source_of`
+  picks what a row draws: its own output while `lowest_key` finds a note, else its voice while `voice_lent_to`
+  (the rail's rule: the dealer's player is another channel and the row holds no note of its own) names the
+  chord's channel, else nothing; `out_span` finds 2 periods on either clock (Fine Tune of the playing channel). A
+  lent voice draws `C_PLAYING` over `C_PLAYING_DARK`; the footer says where it is heard
+  (`VOICE 1 PLAYS CH5 E-3, HEARD ON CH5 OUT`). The player comes from the dealer, so for the first frame or two
+  after a chord's Note On (until the ROM keys the voice on) the box shows the voice's ring as it was.
+  `reg_test --cost` prints the worker's worst run and worst copy with ALL watched on a busy clip.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.

@@ -35,6 +35,8 @@
 #define C_DAC_DARK 0x442200
 #define C_DAC 0xEE8822
 #define C_PLAYING 0xAAEE22
+// Stage 54 (art-director, ui-concept.md, D93): under a lent voice's green trace in an OUT box.
+#define C_PLAYING_DARK 0x224400
 #define C_AMBER 0xEECC66
 #define C_ERROR 0xEE2222
 // Stage 24d (D62): channel 3 in Ch3 Special Mode, everything of it that is FM's elsewhere.
@@ -765,6 +767,19 @@ static int copy_target(mdmi_gui *g)
 	return copy_takes(g, row) ? row : -1;
 }
 
+// Stage 54 (D93, ui-concept.md): the channel whose chord plays on the voice of an FM row, or -1: the
+// rail's rule (the row shows that note), so the box, the arrow and the rail's CHn say the same.
+static int voice_lent_to(mdmi_gui *g, int channel)
+{
+	if (!channel_is_fm(channel)) {
+		return -1;
+	}
+	const int player = patch_voice_player(g->source.patch, channel);
+	const uint32_t note = __atomic_load_n(&g->source.notes[channel], __ATOMIC_ACQUIRE);
+	const bool own_held = GUI_NOTE_SEEN(note) && GUI_NOTE_HELD(note);
+	return player >= 0 && player != channel && !own_held ? player : -1;
+}
+
 static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 {
 	const int y = row_y(channel);
@@ -858,7 +873,7 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	// player's volume and that note's velocity.
 	const bool fm = channel_is_fm(channel);
 	const int player = fm ? patch_voice_player(g->source.patch, channel) : -1;
-	const bool lent = player >= 0 && player != channel && !(seen && held);
+	const bool lent = voice_lent_to(g, channel) >= 0;
 	int volume = values->channels[channel][PARAM_VOLUME], velocity = (int)GUI_NOTE_VELOCITY(note);
 	bool bar_seen = seen, bar_held = held > 0;
 	if (lent) {
@@ -5772,26 +5787,57 @@ static int lowest_key(mdmi_gui *g, const patch_values *values, int channel)
 	return lowest;
 }
 
-// Where the picture of a channel's output starts and how long it is, in samples back from the end of
-// `count`: 2 periods of the lowest key, from the last rising crossing of its fundamental that leaves
-// room for them, so a held note stands still (art-director's frame, build/stage24e). The noise has a
-// fixed 5 ms.
-static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, unsigned rate, double *start, int *span, int *key)
+// What an OUT box draws (stage 54): samples at their rate, their end counted in that rate, the key
+// whose 2 periods it shows and the channel whose Fine Tune it plays at.
+typedef struct {
+	const float *s;
+	int count;
+	uint64_t end;
+	double rate;
+	int key;
+	int tuned_by;
+	bool lent;
+} out_source;
+
+// The row's own output while its channel sounds a note (lowest_key), else its voice while another
+// channel's chord plays on it, else nothing (ui-concept.md, stage 54, rule by rule).
+static bool out_source_of(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, unsigned rate, out_source *src)
 {
-	*key = lowest_key(g, values, channel);
-	if (*key < 0 || !waves || waves->count < 64 || rate == 0) {
+	if (!waves) {
 		return false;
 	}
-	const float *s = waves->samples[channel];
-	const int count = (int)waves->count;
+	src->key = lowest_key(g, values, channel);
+	if (src->key >= 0) {
+		*src = (out_source){waves->samples[channel], (int)waves->count, waves->end, rate, src->key, channel, false};
+		return true;
+	}
+	const int player = voice_lent_to(g, channel);
+	if (player < 0) {
+		return false;
+	}
+	*src = (out_source){waves->voices[channel], (int)waves->voice_count, waves->voice_end, waves->voice_rate, patch_voice_key(g->source.patch, channel), player, true};
+	return true;
+}
+
+// Where the picture starts and how long it is, in samples of src: 2 periods of its key, from the last
+// rising crossing of its fundamental that leaves room for them, so a held note stands still
+// (art-director's frame, build/stage24e). The noise (channel 10) has a fixed 5 ms.
+static bool out_span(const patch_values *values, int channel, const out_source *src, double *start, int *span)
+{
+	if (src->key < 0 || src->count < 64 || src->rate <= 0) {
+		return false;
+	}
+	const float *s = src->s;
+	const int count = src->count;
+	const double rate = src->rate;
 	if (channel == PATCH_NUM_CHANNELS - 1) {
 		*span = (int)(rate * 5 / 1000);
 		*span = *span < count ? *span : count;
 		*start = count - *span;
 		return true;
 	}
-	const double cents = values->channels[channel][PARAM_FINE_TUNE] - 64;
-	const double hz = 440.0 * pow(2.0, (*key - 69) / 12.0 + cents / 1200.0);
+	const double cents = values->channels[src->tuned_by][PARAM_FINE_TUNE] - 64;
+	const double hz = 440.0 * pow(2.0, (src->key - 69) / 12.0 + cents / 1200.0);
 	const double period = rate / hz;
 	*span = (int)(2 * period + 0.5);
 	if (*span < 2 || *span + period + 1 > count) {
@@ -5799,11 +5845,11 @@ static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const
 	}
 	// Stage 35 (D80): the start is a rising zero crossing of the lowest key's fundamental, its phase
 	// measured each frame: one bin at the key's frequency over whole periods of the last ~4096 samples,
-	// with a Hann window, on the outputs' own sample count. The waveform's own crossings won't do: a
+	// with a Hann window, on the samples' own count. The waveform's own crossings won't do: a
 	// decaying chord's move, merge and vanish (C3 + C4 of a piano jumped up to 15 px). Over whole periods
 	// of the lowest key, its harmonics (a chord's octave too) add nothing to the bin, and decay changes
 	// its size, not its phase. No state, so nothing wanders from frame to frame.
-	const uint64_t first = waves->end - (uint64_t)count;
+	const uint64_t first = src->end - (uint64_t)count;
 	int periods = (int)(4096 / period);
 	periods = periods < 2 ? 2 : periods;
 	const int n = (int)(periods * period);
@@ -5890,12 +5936,16 @@ static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y
 	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
 	fill(g, ALL_OUT_X + 1, y + 19, ALL_OUT_W - 2, 1, C_CELL);
 	double start;
-	int span, key;
-	if (!out_span(g, values, channel, waves, rate, &start, &span, &key)) {
+	int span;
+	out_source src;
+	if (!out_source_of(g, values, channel, waves, rate, &src) || !out_span(values, channel, &src, &start, &span)) {
 		return;
 	}
 	const bool fm = channel_is_fm(channel);
-	draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, waves->samples[channel], (int)waves->count, start, span, fm ? OUT_FULL_FM : OUT_FULL_PSG, fm ? C_FM_LIGHT : C_PSG, fm ? C_FM_DARK : C_PSG_DARK);
+	// Stage 54 (D93): a voice lent to another channel's chord in the chord arrows' green. Not through
+	// g->sp's pink: channel 3's voice is never lent in Ch3 Special (D69).
+	const uint32_t light = src.lent ? C_PLAYING : fm ? C_FM_LIGHT : C_PSG, dark = src.lent ? C_PLAYING_DARK : fm ? C_FM_DARK : C_PSG_DARK;
+	draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, src.s, src.count, start, span, fm ? OUT_FULL_FM : OUT_FULL_PSG, light, dark);
 }
 
 // Stage 53 (art-director, ui-concept.md, D92): the DAC's row reads as the others: the four voices'
@@ -6171,8 +6221,14 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 		return false;
 	}
 	const int key = lowest_key(g, values, channel);
+	const int player = key < 0 ? voice_lent_to(g, channel) : -1;
 	if (channel == PATCH_NUM_CHANNELS - 1) {
 		snprintf(hint, size, "CH10 OUT: LAST 5 MS");
+	} else if (player >= 0) {
+		// Stage 54 (art-director): where the note is heard, not CH1 OUT: it sounds on the chord's output (D46).
+		char name[8];
+		note_name(patch_voice_key(g->source.patch, channel), name, sizeof(name));
+		snprintf(hint, size, "VOICE %d PLAYS CH%d %s, HEARD ON CH%d OUT", channel + 1, player + 1, name, player + 1);
 	} else if (key >= 0) {
 		char name[8];
 		note_name(key, name, sizeof(name));
