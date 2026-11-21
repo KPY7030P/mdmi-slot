@@ -404,7 +404,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
 - PSG arp row (stage 24d): the widget takes its width from `arp_w` (FM 282 in the graph's place, PSG 460 to the page's right edge); lane `w - 82`, right column at `w - 54`. On CH7-CH9 the noise's warning is one amber line over the envelope; on CH10 TYPE and RATE's caveat is in the footer over that row (`noise_hint`).
 - Chord arrows (stage 24d): the spine, branches and heads sit at the names' height (y + 11), a head is a solid 5 x 10 triangle, clear of the bars.
 - ALL's OUT and DAC row (stage 24e, D60, D61): `publish_waves` in `engine.c` copies each output's last 8192
-  samples (left and right averaged) into a triple buffer after every core run while the window shows ALL
+  samples (the louder of left and right, stage 47) into a triple buffer after every core run while the window shows ALL
   (`mdmi_engine_watch_waves`, set by `render`); `draw_out` draws 2 periods of `lowest_key` (the channel's
   voices from the dealer, or its PSG note) from the rising zero crossing nearest a grid of whole periods on the outputs' clock (the same crest each frame, a chord too), at one scale (`OUT_FULL`),
   the noise 5 ms. The source cell moved to x 620. The DAC's row has VOL (bar in the DAC's dark colour) and PAN,
@@ -413,8 +413,18 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   velocity x (CC 7 + 1) >> 10 (`midi_dac_channel_volume`; `enable_dac` hands it channel 6's volume), not MDMI canon.
 - ALL's DAC live view (stage 39, art-director, ui-concept.md): bit 6 of the ALL mask (`DAC_LIVE_BIT`; bits
   0-5 are FM rows' envelopes) swaps the DAC row's sample picture for channel 6's live output: the last
-  20 ms of the copied waves, no anchor, `OUT_FULL`, through the same `draw_trace` as the OUT boxes; under
+  20 ms of the copied waves, no anchor, through the same `draw_trace` as the OUT boxes; under
   1 px of peak only the frame and the middle line. A click on the picture toggles it; the project keeps it.
+  Its scale is the DAC's own (stage 51, D89): `OUT_FULL_DAC` 0.168, from `reg_test --peaks` (a voice at volume
+  15 on a square of full swing holds 0.1685, half bytes 0.086; the ROM's own samples peak at 0.025-0.169), so
+  full swing comes to the box's edge, 13 px.
+- Right of ALL's DAC row (stage 51, art-director, ui-concept.md), in both views: one line of the small font,
+  the last sample's name (`C_DAC`, right edge 670, 23 letters, the rest cut) and `N/4`, how many DAC voices
+  sound, from x 682 (the digit green while one sounds, else grey; `/4` grey). The count and the picture's
+  voice lines take one rule, `dac_voice_at` (D59's copy: not free and a place on the sample). Before any
+  note only `0/4`. Over x 532-701 of the row the footer says `CH6 DAC: N OF 4 VOICES SOUND` or `NO VOICE
+  SOUNDS`. The picture's columns are worked out from the bytes each frame: on the longest sample the plugin
+  takes (2289920 bytes) `gui_test` prints 1.8-1.95 ms a frame, under the stage's 2 ms for keeping them.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.

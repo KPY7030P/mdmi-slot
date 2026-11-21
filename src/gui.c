@@ -5833,14 +5833,17 @@ static bool out_span(mdmi_gui *g, const patch_values *values, int channel, const
 // The OUT box of an FM or PSG row (stage 24e, D60): the channel's output now, at one scale, the dark
 // colour a pixel wider under the light one as a phosphor's glow; only its frame and middle line when
 // the channel holds no note. Channel 3 in Ch3 Special is pink through g->sp.
-#define OUT_FULL 0.25f
 // Stage 47 (D89): FM and PSG rows each at their chip's loudest as it holds, measured by reg_test --peaks
 // (FM 0.12-0.14 at TL 0, PSG 0.042 at volume 0, noise 0.047; a note's first edge is higher and is
-// cut at the box), so a channel turned up fills its box; the DAC keeps OUT_FULL.
+// cut at the box), so a channel turned up fills its box.
 #define OUT_FULL_FM 0.13f
 #define OUT_FULL_PSG 0.045f
+// Stage 51 (D89): the DAC's live view at its own loudest, measured by reg_test --peaks: a voice at
+// volume 15 on a square of full swing holds 0.1685 (half bytes 0.086); the ROM's own samples peak at
+// 0.025-0.169, none over. 0.168, so full swing comes to 13 px, the box's edge.
+#define OUT_FULL_DAC 0.168f
 // A live trace in a box of the row (stage 24e, D60; stage 39 for the DAC): span samples of s from start
-// over the box's inner columns, min and max a column, at one scale (OUT_FULL), the dark colour a pixel
+// over the box's inner columns, min and max a column, at its chip's scale (full), the dark colour a pixel
 // wider under the light one.
 #define TRACE_W_MAX 128
 static void draw_trace(mdmi_gui *g, int box_x, int box_w, int y, const float *s, int count, double start, int span, float full, uint32_t light, uint32_t dark)
@@ -5897,7 +5900,7 @@ static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y
 
 // Stage 39 (art-director, ui-concept.md): the DAC row's live view, bit 6 of the ALL mask: the last
 // 20 ms of channel 6's output in the sample picture's place, no anchor (the DAC has no pitch), at
-// OUT_FULL as the other rows; silence is the frame and the middle line.
+// OUT_FULL_DAC (stage 51); silence is the frame and the middle line.
 #define DAC_LIVE_BIT 6
 #define DAC_LIVE_MS 20
 static bool dac_live(const mdmi_gui *g)
@@ -5920,7 +5923,7 @@ static bool dac_live_span(const mdmi_waves *waves, unsigned rate, double *start,
 		const float v = fabsf(waves->samples[channel][i]);
 		peak = v > peak ? v : peak;
 	}
-	return peak >= OUT_FULL / 13;
+	return peak >= OUT_FULL_DAC / 13;
 }
 
 static void draw_dac_live(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned rate)
@@ -5931,8 +5934,54 @@ static void draw_dac_live(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned 
 	double start;
 	int span;
 	if (dac_live_span(waves, rate, &start, &span)) {
-		draw_trace(g, ALL_SOUND_X, ALL_SOUND_W, y, waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)waves->count, start, span, OUT_FULL, C_DAC, C_DAC_DARK);
+		draw_trace(g, ALL_SOUND_X, ALL_SOUND_W, y, waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)waves->count, start, span, OUT_FULL_DAC, C_DAC, C_DAC_DARK);
 	}
+}
+
+// A DAC voice that sounds, and where it is in its sample (0 to 1): the one rule for the voice lines of
+// the row's picture and for its count (stage 51), from D59's copy of the driver's voices.
+static bool dac_voice_at(const mdmi_gui *g, int voice, uint64_t now, unsigned rate, double *place, int *key)
+{
+	int voice_key = 0;
+	if (patch_dac_voice_state(g->source.patch, voice, &voice_key) == PATCH_DAC_FREE) {
+		return false;
+	}
+	*place = patch_dac_voice_place(g->source.patch, voice, now, rate);
+	if (key) {
+		*key = voice_key;
+	}
+	return *place >= 0;
+}
+
+static uint64_t dac_now(const mdmi_gui *g)
+{
+	return g->source.psg_times ? __atomic_load_n(&g->source.psg_times->clock, __ATOMIC_ACQUIRE) : 0;
+}
+
+static int dac_voices_sounding(const mdmi_gui *g, uint64_t now, unsigned rate)
+{
+	int count = 0;
+	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+		double place;
+		count += dac_voice_at(g, v, now, rate, &place, NULL);
+	}
+	return count;
+}
+
+// Stage 51 (art-director, ui-concept.md): right of the DAC row, in both views, one small line: the last
+// sample's name and how many of the four voices sound, `Kick  2/4`, the digit green while one sounds.
+#define DAC_COUNT_X 682
+#define DAC_NAME_RIGHT 670
+#define DAC_NAME_ROOM 138
+#define DAC_RIGHT_DY 16
+static void draw_dac_right(mdmi_gui *g, int y, const char *name, int sounding)
+{
+	if (name) {
+		text_right(g, DAC_NAME_RIGHT, y + DAC_RIGHT_DY, name, C_DAC, 1, DAC_NAME_ROOM);
+	}
+	const char digit[2] = {(char)('0' + sounding), 0};
+	text(g, DAC_COUNT_X, y + DAC_RIGHT_DY, digit, sounding ? C_PLAYING : C_HINT, 1);
+	text(g, DAC_COUNT_X + 6, y + DAC_RIGHT_DY, "/4", C_HINT, 1);
 }
 
 // The DAC's row on ALL (stage 24e): the last sample struck, from its start's tab to its end's, its loop
@@ -5946,12 +5995,11 @@ static void draw_all_dac(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned r
 	bool file = false;
 	const int key = GUI_NOTE_SEEN(note) ? (int)GUI_NOTE_KEY(note) : -1;
 	const bool shown = key >= 0 && note_sample(g, key, &sample, &name, &file) && sample.length > 0;
+	const uint64_t now = dac_now(g);
+	draw_dac_right(g, y, shown ? (name ? name : "") : NULL, dac_voices_sounding(g, now, rate));
 	if (dac_live(g)) {
-		// Stage 39: the live output instead of the sample; the sample's name stays.
+		// Stage 39: the live output instead of the sample; the right part stays.
 		draw_dac_live(g, y, waves, rate);
-		if (shown) {
-			text_right(g, PAGE_RIGHT - 2, y + 8, name ? name : "", C_DAC, 2, 170);
-		}
 		return;
 	}
 	fill(g, x0, y + 36, w, 1, C_LINE);
@@ -5974,18 +6022,16 @@ static void draw_all_dac(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned r
 			const int top = mid - hi * 15 / 128, bottom = mid - lo * 15 / 128;
 			fill(g, x0 + k, top, 1, bottom - top + 1, C_DAC);
 		}
-		text_right(g, PAGE_RIGHT - 2, y + 8, name ? name : "", C_DAC, 2, 170);
 	}
-	const uint64_t now = g->source.psg_times ? __atomic_load_n(&g->source.psg_times->clock, __ATOMIC_ACQUIRE) : 0;
 	for (int pass = 0; pass < 2; pass++) {
 		for (int v = 0; v < PATCH_DAC_VOICES; v++) {
 			int voice_key = 0;
-			if (patch_dac_voice_state(g->source.patch, v, &voice_key) == PATCH_DAC_FREE) {
+			double place;
+			if (!dac_voice_at(g, v, now, rate, &place, &voice_key)) {
 				continue;
 			}
-			const double place = patch_dac_voice_place(g->source.patch, v, now, rate);
 			const bool mine = shown && voice_key == key;
-			if (place < 0 || mine != (pass == 1)) {
+			if (mine != (pass == 1)) {
 				continue;
 			}
 			const int x = x0 + (int)(place * (w - 1));
@@ -6022,6 +6068,16 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 				? "CH6 DAC OUT: LAST 20 MS. CLICK: SAMPLE" : "CH6 DAC OUT: SILENT. CLICK: SAMPLE");
 		} else {
 			snprintf(hint, size, GUI_NOTE_SEEN(note) ? "CH6 DAC: LAST SAMPLE. CLICK: LIVE OUT" : "CH6 DAC: NO SAMPLE YET. CLICK: LIVE OUT");
+		}
+		return true;
+	}
+	if (is_dac(values, channel) && in_box(g->mouse_x, g->mouse_y, ALL_OUT_X, row_y(channel), PAGE_RIGHT - ALL_OUT_X, ROW_H)) {
+		// Stage 51 (art-director): the count on the right, named once.
+		const int sounding = dac_voices_sounding(g, dac_now(g), mdmi_engine_get_stats(g->source.engine).sample_rate);
+		if (sounding) {
+			snprintf(hint, size, "CH6 DAC: %d OF 4 VOICES SOUND", sounding);
+		} else {
+			snprintf(hint, size, "CH6 DAC: NO VOICE SOUNDS");
 		}
 		return true;
 	}

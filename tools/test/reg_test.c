@@ -7542,6 +7542,64 @@ int main(int argc, char **argv)
 				printf("    channel %d key %d: mid %.3f, side %.3f\n", channel + 1, KEYS[k], mid, side);
 			}
 		}
+		// Stage 51 (D89): the DAC's voice at volume 15 (velocity 127, CC 7 127) on a square of full
+		// swing and one of half bytes, the steady peak (blocks 40-80, past the first edge); then every
+		// sample of the ROM's own, its peak over the whole hit, to see whether games' samples reach the edge.
+		dac_set set = {0};
+		dac_put(&set, 50, square_sample(256 * 400, 127));
+		dac_put(&set, 52, square_sample(256 * 400, 64));
+		size_t rom_size, image_size;
+		const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+		uint8_t *image = dac_image(&set, rom, rom_size, &image_size);
+		boot_image(image, image_size);
+		free(image);
+		set_global(GLOBAL_DAC, 1);
+		sync_and_settle();
+		render(DAC_BLOCKS);
+		midi(0xB5, 7, 127);
+		render(SETTLE_BLOCKS);
+		for (int k = 0; k < 2; k++) {
+			midi(0x95, (uint8_t)(50 + k * 2), 127);
+			float side = 0;
+			for (int b = 0; b < 80; b++) {
+				tick(BLOCK);
+				for (int i = 0; i < BLOCK && b >= 40; i++) {
+					side = fmaxf(fmaxf(fabsf(outputs[10][i]), fabsf(outputs[11][i])), side);
+				}
+			}
+			midi(0x85, (uint8_t)(50 + k * 2), 0);
+			render(SETTLE_BLOCKS * 4);
+			printf("    DAC square %s: side %.4f\n", k ? "of half bytes (64)" : "of full swing (127)", side);
+		}
+		dac_clear(&set);
+		boot_image(rom, rom_size);
+		set_global(GLOBAL_DAC, 1);
+		sync_and_settle();
+		render(DAC_BLOCKS);
+		midi(0xB5, 7, 127);
+		render(SETTLE_BLOCKS);
+		for (int note = 0; note < ROM_IMAGE_NOTES; note++) {
+			rom_sample sample;
+			if (!rom_image_sample(rom, rom_size, note, &sample) || !sample.length) {
+				continue;
+			}
+			int byte = 0;
+			for (uint32_t i = 0; i < sample.length; i++) {
+				byte = abs(sample.bytes[i]) > byte ? abs(sample.bytes[i]) : byte;
+			}
+			midi(0x95, (uint8_t)note, 127);
+			float side = 0;
+			const int blocks = (int)((double)sample.length / ROM_PCM4_HZ * RATE / BLOCK) + 2;
+			for (int b = 0; b < blocks && b < RATE * 2 / BLOCK; b++) {
+				tick(BLOCK);
+				for (int i = 0; i < BLOCK; i++) {
+					side = fmaxf(fmaxf(fabsf(outputs[10][i]), fabsf(outputs[11][i])), side);
+				}
+			}
+			midi(0x85, (uint8_t)note, 0);
+			render(SETTLE_BLOCKS * 2);
+			printf("    DAC ROM note %d %s: %u bytes, loudest byte %d, side %.4f\n", note, ROM_SAMPLE_NAMES[note], sample.length, byte, side);
+		}
 		return 0;
 	}
 	if (argc == 3 && !strcmp(argv[2], "--porta")) {

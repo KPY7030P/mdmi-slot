@@ -124,7 +124,7 @@ grep -E "FAIL|PASSED|FAILED" "$log"
 
 echo "=== window"
 log="$OUT/gui.log"
-timeout 150 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
+timeout 240 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "gui_test: exit $code"
@@ -132,7 +132,7 @@ grep -E "FAIL|PASSED|FAILED" "$log"
 python -I "$WIN_ROOT/tools/test/check_tv.py" "$WIN_OUT/gui" || fail "TV looks"
 log="$OUT/gui-crash.log"
 export MDMI_TEST_CRASH=segv
-timeout 150 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
+timeout 240 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
 code=$?
 unset MDMI_TEST_CRASH
 grep -E "FAIL|PASSED|FAILED" "$log"

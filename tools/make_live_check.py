@@ -146,8 +146,10 @@ BAR = 4
 A0, B0, C0, D0, E0 = 0, 8 * BAR, 12 * BAR, 20 * BAR, 28 * BAR   # section starts
 C, E, G = 48, 52, 55
 # DAC on/off while notes hold (bars 3, 5, 7), on again for the TV / DAC wave part
+# Stage 51: on again for the drums of bars 111-114 (K0 is where they start).
+K0 = 110 * BAR
 automate(mdmi_t, dac_ptr, [(A0 + 2 * BAR, 1), (A0 + 4 * BAR, 0), (A0 + 6 * BAR, 1), (B0, 0),
-                           (D0, 1), (E0, 0)])
+                           (D0, 1), (E0, 0), (K0, 1), (K0 + 4 * BAR, 0)])
 automate(mdmi_t, mono_ptr, [(C0, 1), (D0, 0)])
 
 new_tracks = [mdmi_t]
@@ -363,6 +365,19 @@ add_clip(lanes[0], '11 UNDO: колесо до Program Change', U0, 2 * BAR, bea
 add_clip(lanes[0], '11 UNDO: клип ставит место 41, колесо после', U0 + 2 * BAR, 2 * BAR, beats, 26, program=40)
 start = U0 + 4 * BAR
 
+# --- stage 51: how many DAC voices sound, right of ALL's DAC row (bars 111-114) ---
+# The ROM's kit on K6 (unless tst6's sample is on these notes): closed hat (41) in eighths, each a
+# voice of its own key; a kick (35) on beats 1 and 3 and a snare (37) on 2 and 4, each held 1.5 beats,
+# so 2/4 and 3/4 take turns; a crash (49 is HiStudio, so 48 Crsh1) held over bar 113 brings 4/4.
+assert start == K0, (start, K0)
+hats = [(41, i * 0.5, 0.4) for i in range(8)]
+kit = hats + [(35, 0, 1.5), (37, 1, 1.5), (35, 2, 1.5), (37, 3, 1.5)]
+add_clip(lanes[5], '12 DAC: хеты восьмыми поверх бочки и малого', K0, BAR, kit, 60)
+add_clip(lanes[5], '12 DAC: хеты восьмыми поверх бочки и малого', K0 + BAR, BAR, kit, 60)
+add_clip(lanes[5], '12 DAC: и тарелка, четыре голоса', K0 + 2 * BAR, BAR, kit + [(48, 0, 4)], 60)
+add_clip(lanes[5], '12 DAC: снова без тарелки', K0 + 3 * BAR, BAR, kit, 60)
+start = K0 + 4 * BAR
+
 for t in all_tracks: tracks.remove(t)
 for t in new_tracks + returns: tracks.append(t)
 for sc in ls.find('Scenes'):
@@ -417,6 +432,11 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               на имени канала 1 (слева) смените звук на несколько мест, в 109 клип сам поставит каналу 1
               место 41, в 109-110 снова покрутите колесо. Остановите Play и нажмите UNDO два раза.
               Первый UNDO вернёт место 41 (то, что поставил клип), второй: звук до колеса в 107.
+  111-114 п.12 сколько голосов DAC звучит (этап 51). DAC включён, на К6 закрытый хет восьмыми, бочка
+              на 1 и 3, малый на 2 и 4, в 113 такте ещё тарелка. На странице ALL справа в строке 6
+              мелко имя последнего сэмпла и число голосов: «2/4», «3/4», в 113 доходит до «4/4».
+              Цифра зелёная, пока звучит; после конца «0/4» серым. Щелчок по картинке DAC: живая волна,
+              громкий удар доходит до края окошка.
 
 Стойка «Гласные CSM» (дорожка «MDMI гласные на макросах»):
   F1 рот, F2 язык   две главные крутилки: F1 открывает рот (И, У внизу, А вверху), F2 двигает язык (У внизу,

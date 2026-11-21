@@ -16,6 +16,7 @@
 #include <shlobj.h>
 #include <clap/clap.h>
 #include "../../src/font5x7.h"
+#include "../../src/rom_image.h"
 
 #define RATE 48000
 #define BLOCK 128
@@ -596,7 +597,8 @@ static void set_param(clap_id id, double value)
 }
 
 // A project in memory, for the state extension.
-static uint8_t project[1 << 20];
+// 8 MB: stage 51 loads the longest sample the plugin takes, about 4 MB.
+static uint8_t project[1 << 23];
 static size_t project_size, project_read;
 
 static int64_t project_write(const clap_ostream_t *stream, const void *buffer, uint64_t size)
@@ -796,6 +798,199 @@ static bool one_undo_step(HWND window, int x, int y, int left, int top, int righ
 	// The mark's notches told the host; the checks after this one count from here.
 	memset(pushed, 0, sizeof(pushed));
 	return marked != ch4 && *changed > 0 && *differ == 0 && after_one == marked && get_value(CH2_PRESET + 200) == ch4;
+}
+
+// Stage 51: a block of samples (type 9, D38) after the project in memory: squares of +-level, 40
+// bytes a period, no source, as the bytes are kept.
+typedef struct {
+	int note;
+	const char *name;
+	uint32_t bytes;
+	int level;
+} test_sample;
+
+static void append_samples(const test_sample *samples, int count)
+{
+	const uint32_t type = 9, head = 61;
+	uint32_t length = 0;
+	for (int k = 0; k < count; k++) {
+		length += 3 + head + samples[k].bytes;
+	}
+	memcpy(project + project_size, &type, 4);
+	memcpy(project + project_size + 4, &length, 4);
+	uint8_t *at = project + project_size + 8;
+	memset(at, 0, length);
+	for (int k = 0; k < count; k++) {
+		at[0] = (uint8_t)samples[k].note;
+		memcpy(at + 1, &head, 2);
+		memcpy(at + 3, samples[k].name, strlen(samples[k].name) < 31 ? strlen(samples[k].name) : 31);
+		at[3 + 52] = 0xFF;
+		at[3 + 55] = 1;
+		memcpy(at + 3 + head - 4, &samples[k].bytes, 4);
+		for (uint32_t i = 0; i < samples[k].bytes; i++) {
+			at[3 + head + i] = (uint8_t)(int8_t)(i / 20 % 2 ? samples[k].level : -samples[k].level);
+		}
+		at += 3 + head + samples[k].bytes;
+	}
+	project_size += 8 + length;
+}
+
+// Loads the project in memory and waits until the samples are in the core: 300 ms without LOADING.
+static bool load_project(HWND window)
+{
+	const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
+	project_read = 0;
+	clap_istream_t in_stream = {NULL, project_take};
+	const bool loaded = state && state->load(plugin, &in_stream);
+	const DWORD start = GetTickCount();
+	for (int calm = 0; calm < 30 && GetTickCount() - start < 20000;) {
+		run_ms(10);
+		capture(window);
+		calm = count_color(0, HEADER_H, COLOR_AMBER) ? 0 : calm + 1;
+	}
+	return loaded;
+}
+
+static bool save_project(void)
+{
+	const clap_plugin_state_t *state = plugin->get_extension(plugin, CLAP_EXT_STATE);
+	clap_ostream_t out_stream = {NULL, project_write};
+	project_size = 0;
+	return state && state->save(plugin, &out_stream);
+}
+
+// The live trace's farthest pixel from the middle line, in the DAC's colour, over 40 frames 5 ms
+// apart after the first 100 ms of the note (its first edge).
+static int dac_live_peak(HWND window, int key, const char *dir, const char *name)
+{
+	const int y = 244, mid = y + 19;
+	send_midi(0x95, (uint8_t)key, 127);
+	run_ms(100);
+	int peak = 0;
+	for (int t = 0; t < 40; t++) {
+		run_ms(5);
+		capture(window);
+		for (int row = y + 5; row <= y + 33; row++) {
+			if (count_color_in(243, 345, row, row + 1, COLOR_DAC) > 0) {
+				peak = abs(row - mid) > peak ? abs(row - mid) : peak;
+			}
+		}
+		if (t == 20) {
+			save_bmp(dir, name);
+		}
+	}
+	send_midi(0x85, (uint8_t)key, 0);
+	run_ms(300);
+	return peak;
+}
+
+static double capture_ms(HWND window, int times)
+{
+	LARGE_INTEGER hz, t0, t1;
+	QueryPerformanceFrequency(&hz);
+	QueryPerformanceCounter(&t0);
+	for (int k = 0; k < times; k++) {
+		capture(window);
+	}
+	QueryPerformanceCounter(&t1);
+	return (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart / times;
+}
+
+// Stage 51 (art-director, ui-concept.md): right of ALL's DAC row the last sample's name in small and
+// how many of the four voices sound; the live view's scale of its own (D89), a square of full swing at
+// volume 15 to the box's edge and one of half bytes half as high; the live view kept by the project;
+// the time the row takes to draw the longest sample the plugin takes. On ALL, sample view, on entry.
+static void dac_right_and_scale(HWND window, const char *dir)
+{
+	static uint8_t baseline[1 << 20];
+	const int y = 244, mid = y + 19, text_y = y + 16;
+	CHECK(save_project() && project_size <= sizeof(baseline), "the project saves (stage 51)");
+	const size_t baseline_size = project_size;
+	memcpy(baseline, project, project_size);
+	// The live view saved on, then off in the window: the project brings it back.
+	click(window, 290, y + 20);
+	run_ms(100);
+	save_project();
+	click(window, 290, y + 20);
+	run_ms(100);
+	static const char LONG_NAME[] = "Square of full swing, long name";
+	const test_sample squares[2] = {{50, LONG_NAME, 256 * 400, 127}, {52, "Half", 256 * 400, 64}};
+	append_samples(squares, 2);
+	CHECK(load_project(window), "a project with two squares loads");
+	run_ms(200);
+	capture(window);
+	save_bmp(dir, "all-dac-live-silent");
+	const int rule = count_color_in(242, 346, y + 36, y + 37, COLOR_LINE);
+	const int frame_px = count_color_in(242, 346, y + 4, y + 5, COLOR_CELL) + count_color_in(242, 346, y + 34, y + 35, COLOR_CELL);
+	const int middle = count_color_in(243, 345, mid, mid + 1, COLOR_CELL);
+	const int trace = count_color_in(243, 345, y + 5, y + 34, COLOR_DAC) + count_color_in(243, 345, y + 5, y + 34, COLOR_DAC_DARK);
+	CHECK(rule == 0 && frame_px >= 200 && middle >= 100 && trace == 0,
+		"the live view comes back with the project (no sample rule, %d px); in silence its box is the frame (%d px) and the middle line (%d px), no trace (%d px)", rule, frame_px, middle, trace);
+	const int full = dac_live_peak(window, 50, dir, "all-dac-live-full"), half = dac_live_peak(window, 52, dir, "all-dac-live-half");
+	printf("    DAC live view at volume 15: full swing %d px from the middle, half bytes %d px (edge 13, the box's inside 14)\n", full, half);
+	CHECK(abs(full - 13) <= 1 && abs(half * 2 - full) <= 2, "the DAC's live view: full swing to the box's edge (%d px), half bytes half as high (%d px)", full, half);
+	// The right part: two voices on two keys, the last struck the long name.
+	wait_message_gone(window);
+	send_midi(0x95, 52, 100);
+	send_midi(0x95, 50, 100);
+	run_ms(80);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, y + 20));
+	capture(window);
+	save_bmp(dir, "all-dac-live-two");
+	const bool live_two = says(532, text_y, 1, "Square of full swing, l", COLOR_DAC) && says(682, text_y, 1, "2", COLOR_PLAYING) && says(688, text_y, 1, "/4", COLOR_HINT);
+	const bool live_hint = footer_says("CH6 DAC: 2 OF 4 VOICES SOUND", COLOR_LABEL);
+	click(window, 290, y + 20);
+	run_ms(60);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, y + 20));
+	capture(window);
+	save_bmp(dir, "all-dac-two");
+	const bool two = says(532, text_y, 1, "Square of full swing, l", COLOR_DAC) && says(682, text_y, 1, "2", COLOR_PLAYING) && says(688, text_y, 1, "/4", COLOR_HINT);
+	// Only that line: nothing else right of the OUT column's start in the row, the old big name gone.
+	const int outside = count_not_black_in(532, 720, y, text_y) + count_not_black_in(532, 720, text_y + 8, y + ROW_H - 1)
+		+ count_not_black_in(669, 682, text_y, text_y + 8) + count_not_black_in(699, 720, text_y, text_y + 8);
+	// A click on the line changes nothing: no view switched.
+	click(window, 600, text_y + 4);
+	run_ms(60);
+	capture(window);
+	const bool still = count_color_in(242, 346, y + 36, y + 37, COLOR_LINE) > 50;
+	send_midi(0x85, 50, 0);
+	send_midi(0x85, 52, 0);
+	run_ms(300);
+	wait_message_gone(window);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(600, y + 20));
+	capture(window);
+	save_bmp(dir, "all-dac-silent");
+	const bool silent = says(532, text_y, 1, "Square of full swing, l", COLOR_DAC) && says(682, text_y, 1, "0", COLOR_HINT) && says(688, text_y, 1, "/4", COLOR_HINT);
+	const bool silent_hint = footer_says("CH6 DAC: NO VOICE SOUNDS", COLOR_LABEL);
+	CHECK(live_two && two && outside == 0 && still && silent && live_hint && silent_hint,
+		"ALL's DAC row, right: the last sample's name cut to 23 letters and 2/4 in both views (%d, %d), nothing else there (%d px), a click on it switches nothing (%d); after the voices 0/4 in grey (%d); the footer names the count (%d, %d)",
+		live_two, two, outside, still, silent, live_hint, silent_hint);
+	// The longest sample the plugin takes: the row's time with its picture, against the live view.
+	memcpy(project, baseline, baseline_size);
+	project_size = baseline_size;
+	const test_sample longest = {60, "Longest", rom_image_room() & ~(uint32_t)(ROM_SAMPLE_BLOCK - 1), 100};
+	append_samples(&longest, 1);
+	CHECK(load_project(window), "a project with the longest sample (%u bytes) loads", longest.bytes);
+	send_midi(0x95, 60, 100);
+	run_ms(200);
+	capture(window);
+	const int long_px = count_color_in(242, 346, y + 3, y + 36, COLOR_DAC);
+	const double with_picture = capture_ms(window, 20);
+	click(window, 290, y + 20);
+	run_ms(60);
+	const double live = capture_ms(window, 20);
+	click(window, 290, y + 20);
+	run_ms(60);
+	send_midi(0x85, 60, 0);
+	run_ms(200);
+	printf("    the window with the DAC row's picture of the longest sample (%u bytes): %.2f ms, with the live view %.2f ms: draw_all_dac's picture %.2f ms a frame\n",
+		longest.bytes, with_picture, live, with_picture - live);
+	// The stage's rule: over 2 ms a frame, the columns would be worked out once a sample; the time is
+	// printed, not judged (it is the computer's).
+	CHECK(long_px > 200, "the longest sample's picture is drawn (%d px)", long_px);
+	memcpy(project, baseline, baseline_size);
+	project_size = baseline_size;
+	CHECK(load_project(window), "the project before stage 51's samples loads again");
 }
 
 int main(int argc, char **argv)
@@ -2865,35 +3060,37 @@ int main(int argc, char **argv)
 		send_midi(0x85, 38, 0);
 		send_midi(0xB5, 10, 64);
 		run_ms(100);
-		// Stage 39 (art-director): a click on the DAC's picture shows channel 6's live output, 20 ms at
-		// OUT_FULL; silence is the frame and the middle line; about half the voice's volume (velocity 64
-		// against 127: volume 8 against 15, D61) draws about half as high; a second click brings the sample back.
+		// Stage 39 (art-director): a click on the DAC's picture shows channel 6's live output, 20 ms;
+		// silence is the frame and the middle line; a second click brings the sample back. Its scale is
+		// stage 51's, checked below with samples of full and half swing.
 		{
-			const int mid = 244 + 19;
 			click(window, 290, 244 + 20);
 			run_ms(300);
 			capture(window);
 			const int silent = count_color_in(243, 345, 244 + 5, 244 + 34, COLOR_DAC);
-			int peaks[2] = {0, 0}, changed = 0;
-			static uint32_t last[WIDTH * HEIGHT];
-			for (int k = 0; k < 2; k++) {
-				send_midi(0x95, 38, k ? 64 : 127);
-				for (int t = 0; t < 60; t++) {
-					run_ms(5);
-					capture(window);
-					for (int y = 244 + 5; y <= 244 + 33; y++) {
-						if (count_color_in(243, 345, y, y + 1, COLOR_DAC) > 0) {
-							peaks[k] = abs(y - mid) > peaks[k] ? abs(y - mid) : peaks[k];
-						}
-					}
-					if (k == 0 && t > 0 && memcmp(last + (244 + 5) * WIDTH, pixels + (244 + 5) * WIDTH, 29 * WIDTH * sizeof(uint32_t))) {
-						changed++;
-					}
-					memcpy(last, pixels, sizeof(pixels));
+			int changed = 0, loudest = -1;
+			static uint32_t last[WIDTH * HEIGHT], clap[WIDTH * HEIGHT];
+			send_midi(0x95, 38, 127);
+			for (int t = 0; t < 60; t++) {
+				run_ms(5);
+				capture(window);
+				if (t > 0 && memcmp(last + (244 + 5) * WIDTH, pixels + (244 + 5) * WIDTH, 29 * WIDTH * sizeof(uint32_t))) {
+					changed++;
 				}
-				send_midi(0x85, 38, 0);
-				run_ms(300);
+				// Stage 51's frame for art-director: the clap at its loudest of the 60.
+				const int lit = count_color_in(243, 345, 244 + 5, 244 + 34, COLOR_DAC);
+				if (lit > loudest) {
+					loudest = lit;
+					memcpy(clap, pixels, sizeof(pixels));
+				}
+				memcpy(last, pixels, sizeof(pixels));
 			}
+			memcpy(last, pixels, sizeof(pixels));
+			memcpy(pixels, clap, sizeof(pixels));
+			save_bmp(argv[2], "all-dac-live-clap");
+			memcpy(pixels, last, sizeof(pixels));
+			send_midi(0x85, 38, 0);
+			run_ms(300);
 			save_bmp(argv[2], "all-dac-live");
 			// Only the sample view draws the rule at y + 36 (the live view is a box over the row).
 			const int rule_live = count_color_in(242, 346, 244 + 36, 244 + 37, COLOR_LINE);
@@ -2904,9 +3101,10 @@ int main(int argc, char **argv)
 			const int back = count_color_in(242, 346, 244 + 36, 244 + 37, COLOR_LINE);
 			send_midi(0x85, 38, 0);
 			run_ms(100);
-			CHECK(silent == 0 && changed > 3 && peaks[0] >= 6 && abs(peaks[1] * 15 - peaks[0] * 8) <= 15 && rule_live == 0 && back > 50,
-				"ALL's DAC live view: silent %d px, changes in %d frames, peaks %d and %d px for volume 15 and 8, no sample rule (%d px), the sample view back with its rule (%d px)", silent, changed, peaks[0], peaks[1], rule_live, back);
+			CHECK(silent == 0 && changed > 3 && rule_live == 0 && back > 50,
+				"ALL's DAC live view: silent %d px, changes in %d frames, no sample rule (%d px), the sample view back with its rule (%d px)", silent, changed, rule_live, back);
 		}
+		dac_right_and_scale(window, argv[2]);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		capture(window);
