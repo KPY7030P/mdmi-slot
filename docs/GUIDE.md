@@ -423,7 +423,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   box instead: its loop on grey, the bytes at the wave's height, a line per sounding voice, green with black sides
   on its key, grey on another. A click on the box (or a double click: two) switches; the squares and the name only
   select the channel. `dac_voices_read` reads D59's copy of the four voices once a frame (`patch_dac_voice_state`,
-  `patch_dac_voice_place`) for the squares, the lines and the footer. Footers: over the squares how many sound,
+  `patch_dac_voice_place`) for the squares and the lines; the footer over the squares reads it again, so for one
+  frame it can disagree with them (review 53, parked). Footers: over the squares how many sound,
   over the box what it shows and what a click does, over the name the key and the whole name. The picture's
   columns are worked out from the bytes each frame: on the longest sample the plugin takes (2289920 bytes)
   `gui_test` prints about 1.6 ms a frame, under the stage's 2 ms for keeping them. A project of 0.41-0.44 saved
