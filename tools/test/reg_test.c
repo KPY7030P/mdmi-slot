@@ -4104,6 +4104,65 @@ static void test_voice_waves(void)
 	mdmi_engine_watch_waves(engine, false);
 }
 
+static void first_frames_measure(void)
+{
+	mdmi_engine_watch_waves(engine, true);
+	// Stage 54, review: how long the window names a voice's player before that voice sounds the chord's
+	// note, as in bars 104-105 of the Live check: channels 1-4 and 6 strike a short note of their own
+	// sound (other programs than channel 5's), its tail still rings, then a chord of 6 on channel 5. The
+	// window reads the dealer at patch_flush; its waves end where the worker is, fill_target ahead of
+	// the host. Lockstep counts from the flush to the engine's owner change in samples of the host.
+	quiet();
+	static const uint8_t PROGRAMS[FM_CHANNELS] = {0, 16, 24, 32, 4, 40};
+	for (int ch = 0; ch < FM_CHANNELS; ch++) {
+		midi((uint8_t)(0xC0 | ch), PROGRAMS[ch], 0);
+	}
+	render(SETTLE_BLOCKS);
+	for (int ch = 0; ch < FM_CHANNELS; ch++) {
+		if (ch != 4) {
+			midi((uint8_t)(0x90 | ch), 60, 110);
+		}
+	}
+	render(20);
+	for (int ch = 0; ch < FM_CHANNELS; ch++) {
+		if (ch != 4) {
+			midi((uint8_t)(0x80 | ch), 60, 0);
+		}
+	}
+	render(20);
+	static const uint8_t SIX[6] = {48, 55, 60, 64, 67, 72};
+	for (int k = 0; k < 6; k++) {
+		midi(0x94, SIX[k], 110);
+	}
+	int named[FM_CHANNELS], switched[FM_CHANNELS];
+	for (int v = 0; v < FM_CHANNELS; v++) {
+		named[v] = patch_voice_player(patch, v) == 4 ? 0 : -1;
+		switched[v] = -1;
+	}
+	for (int at = 0; at < RATE / 5; at += 32) {
+		for (int v = 0; v < FM_CHANNELS; v++) {
+			named[v] = named[v] < 0 && patch_voice_player(patch, v) == 4 ? at : named[v];
+			switched[v] = switched[v] < 0 && mdmi_engine_test_owner(engine, v) == 4 ? at : switched[v];
+		}
+		tick(32);
+	}
+	const unsigned fill = mdmi_engine_get_stats(engine).fill_target;
+	double worst_ms = 0;
+	printf("    stage 54: chord of 6 on channel 5 after own tails, flush to owner change (host ms, fill_target %u):", fill);
+	for (int v = 0; v < FM_CHANNELS; v++) {
+		if (v != 4 && named[v] >= 0 && switched[v] >= 0) {
+			const double ms = (switched[v] - named[v]) * 1000.0 / RATE;
+			printf(" voice %d %.1f", v + 1, ms);
+			worst_ms = ms > worst_ms ? ms : worst_ms;
+		}
+	}
+	printf("; the window's waves lead the host by %.1f ms, so its old picture lasts about %.1f ms after the dealer names the voice\n", fill * 1000.0 / RATE, worst_ms - fill * 1000.0 / RATE);
+	for (int k = 0; k < 6; k++) {
+		midi(0x84, SIX[k], 0);
+	}
+	render(SETTLE_BLOCKS * 4);
+}
+
 static void test_outputs(void)
 {
 	quiet();
@@ -7687,6 +7746,14 @@ int main(int argc, char **argv)
 			mdmi_engine_test_take_run_times(engine, &worst_run, &worst_publish);
 			printf("    cost round %d: worst_run_ms %.3f, worst publish %.3f ms, %.1f ms of wall a second of sound\n", round, worst_run, worst_publish,
 				((double)GetTickCount64() - start) / seconds);
+		}
+		return 0;
+	}
+	if (argc == 3 && !strcmp(argv[2], "--first-frames")) {
+		// Stage 54, review: the window's old picture of a lent voice after a chord's Note On, three times.
+		full_velocity();
+		for (int i = 0; i < 3; i++) {
+			first_frames_measure();
 		}
 		return 0;
 	}

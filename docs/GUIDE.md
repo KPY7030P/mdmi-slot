@@ -439,7 +439,10 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   lent voice draws `C_PLAYING` over `C_PLAYING_DARK`; the footer says where it is heard
   (`VOICE 1 PLAYS CH5 E-3, HEARD ON CH5 OUT`). The player comes from the dealer, so for the first frame or two
   after a chord's Note On (until the ROM keys the voice on) the box shows the voice's ring as it was.
-  `reg_test --cost` prints the worker's worst run and worst copy with ALL watched on a busy clip.
+  `reg_test --cost` prints the worker's worst run and worst copy with ALL watched on a busy clip;
+  `reg_test --first-frames` how long after the dealer names a lent voice the engine's owner changes (~30 ms
+  as the window sees it). `clap_host` with `MDMI_TEST_WINDOW` opens each instance's window on ALL on a thread
+  of its own, so the realtime runs copy the waves and voices as a host with the plugin open does.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.

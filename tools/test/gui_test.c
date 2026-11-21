@@ -921,6 +921,8 @@ static bool dac_footer(HWND window, int x, int y, const char *text)
 
 // Stage 54 (D93, ui-concept.md): ALL's OUT box of FM row r (0-5), its 78 inner columns at x 533..610.
 #define COLOR_PLAYING_DARK 0x224400
+// Channel 5's knobs: 1500 + param (patch.h, PATCH_CHANNEL_ID): Algorithm 7, operator k's TL 11 + 11k, MUL 12 + 11k.
+#define PATCH_TEST_CH5 1500
 #define OUT_ROW_Y(r) (44 + 40 * (r))
 // Each column's top in color inside the box (y+5..y+33), -1 where none.
 static void out_tops(int row, uint32_t color, int tops[78])
@@ -1112,6 +1114,73 @@ static void lent_voice_boxes(HWND window, const char *dir)
 		CHECK(abs(alone - lent_height) <= 1, "stage 54: the same note alone on channel 5 is %d px high, lent on voice %d it was %d", alone, first + 1, lent_height);
 	} else {
 		CHECK(false, "stage 54: no footer named the first lent row's note, so the scale can't be compared");
+	}
+	// 2 periods of the voice's own note (review 54): channel 5 a near sine (ALG 7, operators 1-3 at TL
+	// 127, operator 4 at MUL 1), the chord again: each green box has exactly 2 crests 39 px apart (78
+	// columns / 2). The first run counted crests within 2 px of the top and split one in 1 of 2 runs. Drawn on the outputs' rate instead of the core's it would be 1.8 periods, 43 px.
+	{
+		const clap_id ALG = PATCH_TEST_CH5 + 7, MUL4 = PATCH_TEST_CH5 + 11 + 3 * 11 + 1;
+		clap_id ids[5] = {ALG, PATCH_TEST_CH5 + 11, PATCH_TEST_CH5 + 22, PATCH_TEST_CH5 + 33, MUL4};
+		const int sine[5] = {7, 127, 127, 127, 1};
+		int before[5];
+		for (int i = 0; i < 5; i++) {
+			before[i] = get_value(ids[i]);
+			set_param(ids[i], sine[i]);
+		}
+		run_ms(200);
+		for (int k = 0; k < 4; k++) {
+			send_midi(0x94, CHORD[k], 100);
+		}
+		run_ms(400);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		capture(window);
+		save_bmp(dir, "all-lent-sine");
+		int rows = 0, good = 0;
+		char report[128] = "";
+		for (int r = 0; r < 6; r++) {
+			if (r == 4 || out_kind(r) != OUT_LENT) {
+				continue;
+			}
+			rows++;
+			int t[78], highest = 9999;
+			out_tops(r, COLOR_PLAYING, t);
+			for (int x = 0; x < 78; x++) {
+				highest = t[x] >= 0 && t[x] < highest ? t[x] : highest;
+			}
+			// Crests: runs of 4 columns or more whose top is above half the trace's height over the middle
+			// line (a third of a period of a sine, about 13 px), their middles. Slivers at the edges don't count.
+			const int mid = OUT_ROW_Y(r) + 19, half = mid - (mid - highest) / 2;
+			int crests = 0;
+			double middle[4] = {0};
+			for (int x = 0; x < 78;) {
+				if (t[x] >= 0 && t[x] < half) {
+					int end = x;
+					while (end < 78 && t[end] >= 0 && t[end] < half) {
+						end++;
+					}
+					if (end - x >= 4) {
+						if (crests < 4) {
+							middle[crests] = (x + end - 1) / 2.0;
+						}
+						crests++;
+					}
+					x = end;
+				} else {
+					x++;
+				}
+			}
+			const double apart = crests == 2 ? middle[1] - middle[0] : 0;
+			good += crests == 2 && apart >= 37 && apart <= 41;
+			snprintf(report + strlen(report), sizeof(report) - strlen(report), " row %d: %d crests %.1f px apart;", r + 1, crests, apart);
+		}
+		for (int k = 0; k < 4; k++) {
+			send_midi(0x84, CHORD[k], 0);
+		}
+		for (int i = 0; i < 5; i++) {
+			set_param(ids[i], before[i]);
+		}
+		run_ms(300);
+		CHECK(rows == 3 && good == 3, "stage 54: a near sine on channel 5, each lent box shows exactly 2 periods of its voice's note (2 crests over half height, 37-41 px apart):%s", report);
 	}
 	// Ch3 Special and the DAC: voices 3 and 6 are never lent, so a chord of 6 on channel 5 greens
 	// neither row 3 nor row 6 (wave view).

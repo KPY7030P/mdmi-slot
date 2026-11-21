@@ -54,6 +54,96 @@ static const clap_host_t host = {
 	.request_callback = host_noop,
 };
 
+// MDMI_TEST_WINDOW (stage 54, review): each instance gets its window on ALL, on a thread of its own
+// that pumps its messages, so the window's timer draws ALL and the engines copy the waves and the voices
+// as they do in a host with the plugin open. The window's parent is never shown.
+typedef struct {
+	const clap_plugin_t **plugins;
+	int instances;
+	volatile LONG ready;
+	volatile LONG stop;
+	int opened;
+	// Captures of instance 0's window in which row 1's OUT box held a trace: proof that the waves came.
+	int traced;
+} window_thread;
+
+static bool row1_traced(HWND window)
+{
+	static uint32_t pixels[720 * 528];
+	HDC screen = GetDC(NULL);
+	BITMAPINFO info = {0};
+	info.bmiHeader.biSize = sizeof(info.bmiHeader);
+	info.bmiHeader.biWidth = 720;
+	info.bmiHeader.biHeight = -528;
+	info.bmiHeader.biPlanes = 1;
+	info.bmiHeader.biBitCount = 32;
+	void *bits = NULL;
+	HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, NULL, 0);
+	HDC dc = CreateCompatibleDC(screen);
+	HGDIOBJ old = SelectObject(dc, bitmap);
+	SendMessageA(window, WM_PRINTCLIENT, (WPARAM)dc, PRF_CLIENT);
+	GdiFlush();
+	memcpy(pixels, bits, sizeof(pixels));
+	SelectObject(dc, old);
+	DeleteObject(bitmap);
+	DeleteDC(dc);
+	ReleaseDC(NULL, screen);
+	int trace = 0;
+	for (int y = 49; y < 78; y++) {
+		for (int x = 533; x < 611; x++) {
+			trace += (pixels[y * 720 + x] & 0xFFFFFF) == 0x8888EE;
+		}
+	}
+	return trace > 0;
+}
+
+static DWORD WINAPI window_main(LPVOID param)
+{
+	window_thread *w = param;
+	HWND parents[MAX_INSTANCES] = {0};
+	for (int i = 0; i < w->instances; i++) {
+		const clap_plugin_t *p = w->plugins[i];
+		const clap_plugin_gui_t *gui = p->get_extension(p, CLAP_EXT_GUI);
+		if (!gui || !gui->create(p, CLAP_WINDOW_API_WIN32, false)) {
+			continue;
+		}
+		parents[i] = CreateWindowExA(0, "STATIC", "clap_host", WS_POPUP, 0, 0, 720, 528, NULL, NULL, NULL, NULL);
+		clap_window_t ref = {CLAP_WINDOW_API_WIN32, {.win32 = parents[i]}};
+		if (!gui->set_parent(p, &ref) || !gui->show(p)) {
+			continue;
+		}
+		HWND window = FindWindowExA(parents[i], NULL, "MDMIPluginWindow", NULL);
+		if (window) {
+			// The ALL button, as gui_test clicks it.
+			SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(88, 12));
+			SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(88, 12));
+			w->opened++;
+		}
+	}
+	InterlockedExchange(&w->ready, 1);
+	HWND first = parents[0] ? FindWindowExA(parents[0], NULL, "MDMIPluginWindow", NULL) : NULL;
+	DWORD next_capture = GetTickCount();
+	while (!w->stop) {
+		if (first && GetTickCount() - next_capture < 0x80000000u) {
+			w->traced += row1_traced(first);
+			next_capture = GetTickCount() + 100;
+		}
+		MSG message;
+		while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
+			DispatchMessageA(&message);
+		}
+		MsgWaitForMultipleObjects(0, NULL, FALSE, 5, QS_ALLINPUT);
+	}
+	for (int i = 0; i < w->instances; i++) {
+		const clap_plugin_gui_t *gui = w->plugins[i]->get_extension(w->plugins[i], CLAP_EXT_GUI);
+		if (parents[i]) {
+			gui->destroy(w->plugins[i]);
+			DestroyWindow(parents[i]);
+		}
+	}
+	return 0;
+}
+
 typedef struct {
 	clap_event_midi_t events[NUM_SCRIPT];
 	uint32_t count;
@@ -150,6 +240,15 @@ int main(int argc, char **argv)
 		latency = lat->get(plugins[i]);
 	}
 	printf("latency=%u\n", latency);
+	window_thread windows = {.plugins = plugins, .instances = instances};
+	HANDLE window_handle = NULL;
+	if (getenv("MDMI_TEST_WINDOW")) {
+		window_handle = CreateThread(NULL, 0, window_main, &windows, 0, NULL);
+		while (window_handle && !windows.ready) {
+			Sleep(1);
+		}
+		printf("windows on ALL=%d\n", windows.opened);
+	}
 
 	// Notes start after the engines have booted, so a slow boot does not skew timing checks.
 	uint32_t total = rate * SECONDS;
@@ -249,6 +348,12 @@ int main(int argc, char **argv)
 	QueryPerformanceCounter(&now);
 	printf("wall=%.3fs audio=%ds worst_process=%.3fms worst_host_late=%.2fms\n", (double)(now.QuadPart - start.QuadPart) / (double)freq.QuadPart, SECONDS, worst_process_ms, worst_late_ms);
 
+	if (window_handle) {
+		InterlockedExchange(&windows.stop, 1);
+		WaitForSingleObject(window_handle, INFINITE);
+		CloseHandle(window_handle);
+		printf("window_traced=%d\n", windows.traced);
+	}
 	for (int i = 0; i < instances; i++) {
 		plugins[i]->stop_processing(plugins[i]);
 		plugins[i]->deactivate(plugins[i]);
