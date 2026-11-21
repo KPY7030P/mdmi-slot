@@ -1473,9 +1473,11 @@ static void dac_row_stage53(HWND window, const char *dir)
 	{
 		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 		capture(window);
+		save_bmp(dir, "all-dac-held-loop");
 		const int held = filled_squares();
 		pump_ms(200);
 		capture(window);
+		save_bmp(dir, "all-dac-stopped-host");
 		const int stopped = filled_squares();
 		const bool stopped_hint = dac_footer(window, 290, y + 30, "CH6 DAC: NO VOICE SOUNDS");
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);

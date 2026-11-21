@@ -384,7 +384,8 @@ start = K0 + 4 * BAR
 # not take them. The automation switches the DAC on at 117; 117-118 the drums of 111. The owner stops
 # Play in 118 (squares go out) and closes and opens the window during 111-114 (no old wave blinks).
 F0 = start
-add_clip(lanes[5], '13 DAC выкл: FM6 играет две ноты', F0, 2 * BAR, [(50, 0, 3.5), (45, 4, 3.5)], 60)
+# The first FM note a 16th after the DAC goes off at 115, not on the switch's moment.
+add_clip(lanes[5], '13 DAC выкл: FM6 играет две ноты', F0, 2 * BAR, [(50, 0.25, 3.25), (45, 4, 3.5)], 60)
 # The drums of 117 start on its second beat: between the switch and the first drum the row names the
 # last drum of 114 (the closed hat), not the sample of the FM notes' keys (0.47 showed that).
 add_clip(lanes[5], '13 DAC вкл: барабаны со второй доли', F0 + 2 * BAR, BAR, [n for n in kit if n[1] >= 1], 60)
@@ -453,7 +454,7 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               Этап 56: во время 111-114 закройте окно плагина и откройте снова: в окошках OUT не должна
               мелькнуть старая волна, сразу пусто или то, что звучит сейчас.
   115-118 этап 56, строка DAC показывает то, что звучит. 115-116: DAC выключен, К6 играет две ноты
-              звуком FM (строка 6 на ALL обычная, FM). 117: автоматизация включает DAC, на К6 барабаны как
+              звуком FM (первая на шестнадцатую позже начала 115 такта; строка 6 на ALL обычная, FM). 117: автоматизация включает DAC, на К6 барабаны как
               в 111, но первый удар на второй доле. В начале 117, до первого удара, справа в строке 6 имя
               последнего барабана 114 такта (хет), а не сэмпла клавиш нот 115-116; картинка (щелчок по
               окошку OUT) тоже хет. Остановите Play в 118 (во время тарелки): квадратики гаснут.
