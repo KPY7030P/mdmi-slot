@@ -3508,6 +3508,12 @@ static void test_export(void)
 	CHECK(!strcmp(ascii, "Bas Zhirnyy.tfi"), "a Cyrillic name is transliterated: %s", ascii);
 	names_ascii("\xD0\xA9\xD1\x91\xD1\x82\xD0\xBA\xD0\xB0 \xE2\x80\x94 x\xD0", ascii, sizeof(ascii));
 	CHECK(!strcmp(ascii, "Shyotka ? x"), "two letters at most, other characters as ?, a cut letter dropped: %s", ascii);
+	// Stage 55: names_fit cuts by whole letters of the transliteration, no space left at the end.
+	char fit14[64], fit3[64], fit1[64];
+	names_fit("\xD0\x96\xD1\x83\xD0\xB6\xD0\xB6\xD0\xB0\xD1\x89\xD0\xB8\xD0\xB9 \xD1\x8F\xD1\x89\xD0\xB5\xD1\x80", fit14, sizeof(fit14), 14);
+	names_fit("Bo\xD1\x88", fit3, sizeof(fit3), 3);
+	names_fit("\xD0\xA8" "a", fit1, sizeof(fit1), 1);
+	CHECK(!strcmp(fit14, "Zhuzhzhashiy") && !strcmp(fit3, "Bo") && !fit1[0], "names_fit by whole letters: %s, %s, '%s'", fit14, fit3, fit1);
 	char cut[PATCH_NAME];
 	// 23 bytes of Cyrillic and ASCII, the last letter cut in half at 24.
 	snprintf(cut, sizeof(cut), "%s", "abcdefghijklmnopqrstuv\xD0\x96\xD0\x96");

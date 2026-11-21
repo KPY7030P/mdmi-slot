@@ -438,6 +438,10 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               Горят 2-3 квадратика, в 113 такте должны загореться все четыре. Щелчок по окошку OUT:
               картинка последнего сэмпла с линиями голосов, второй щелчок: снова волна.
 
+Этап 55, без тактов (руками, по docs/owner-check-55-56.md): рядом с проектом лежит «Большая бочка из игры.wav»
+(копия бочки ROM с длинным русским именем). Бросьте его из проводника на клавишу страницы DAC: имя в сетке,
+под нотой, в списке DAC на BANK и справа в строке 6 на ALL режется по целым буквам, без обломков.
+
 Стойка «Гласные CSM» (дорожка «MDMI гласные на макросах»):
   F1 рот, F2 язык   две главные крутилки: F1 открывает рот (И, У внизу, А вверху), F2 двигает язык (У внизу,
                     И вверху). Вдвоём они дают любую из пяти гласных и всё, что между ними.
@@ -454,4 +458,8 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
 '''
 with open(os.path.join(os.path.dirname(dst), 'КАК ПОЛЬЗОВАТЬСЯ.txt'), 'w', encoding='utf-8') as f:
     f.write(GUIDE_RU)
+# Stage 55: a sample with a long Russian name for the owner to drop on the DAC page himself.
+import shutil
+shutil.copyfile(os.path.join(REPO, 'third_party', 'mdmi', 'res', 'samples', 'StdKick.wav'),
+                os.path.join(os.path.dirname(dst), 'Большая бочка из игры.wav'))
 print('ok', len(data), 'end beat', start, 'next pointee', next_ptr)

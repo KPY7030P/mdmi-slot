@@ -303,7 +303,11 @@ struct mdmi_gui {
 	int copy_x, copy_y;
 	bool copy_moved;
 	bool drag_moved;
-	bool closing; // WM_DESTROY lets the press go: no click, no pair rule (review 49)
+	// Stage 55: after a modal dialog the button's hint waits until the mouse moves from where the last
+	// WM_MOUSEMOVE before it put it (raw client coordinates, before the scale).
+	bool hint_waits;
+	LPARAM hint_at;
+	LPARAM moved_at;
 	int drag_y;
 	// Parts of a wheel notch not yet spent on a cell (stage 22a), and the value the wheel last sent
 	// while the model hasn't taken it yet: edits reach the model through the writer's queue, so
@@ -548,15 +552,11 @@ static uint32_t on_fill(const mdmi_gui *g)
 	return g->sp ? C_BG : C_TEXT;
 }
 
-// Text ending at the right edge, cut to the room it has.
+// Text ending at the right edge, cut to the room it has by whole letters (names_fit, stage 55).
 static void text_right(mdmi_gui *g, int right, int y, const char *string, uint32_t color, int scale, int room)
 {
 	char cut[64];
-	names_ascii(string, cut, sizeof(cut));
-	int fit = room / (6 * scale);
-	if ((int)strlen(cut) > fit) {
-		cut[fit > 0 ? fit : 0] = 0;
-	}
+	names_fit(string, cut, sizeof(cut), room / (6 * scale));
 	text(g, right - (int)strlen(cut) * 6 * scale, y, cut, color, scale);
 }
 
@@ -2640,64 +2640,87 @@ static bool rom_has(int note)
 }
 
 
-// A file's name without its folder and .wav, cut to the room.
-static void sample_label(const char *path, char *out, size_t size, int chars)
+// A file's name without its folder and .wav, still UTF-8 and whole.
+static void sample_stem(const char *path, char *out, size_t size)
 {
 	const char *base = path;
 	for (const char *c = path; *c; c++) {
 		base = *c == '\\' || *c == '/' ? c + 1 : base;
 	}
 	snprintf(out, size, "%s", base);
+	names_cut_utf8(out);
 	char *dot = strrchr(out, '.');
 	if (dot && !_stricmp(dot, ".wav")) {
 		*dot = 0;
 	}
-	if ((int)strlen(out) > chars) {
-		out[chars] = 0;
-	}
+}
+
+// The same as the window draws it: transliterated and cut to chars by whole letters (stage 55).
+static void sample_label(const char *path, char *out, size_t size, int chars)
+{
+	char stem[MAX_PATH * 3];
+	sample_stem(path, stem, sizeof(stem));
+	names_fit(stem, out, size, chars);
+}
+
+static bool letter_start(char c)
+{
+	return ((unsigned char)c & 0xC0) != 0x80;
+}
+
+static bool name_separator(char c)
+{
+	return c == '_' || c == '-' || c == '.' || c == ' ';
 }
 
 // A name in a grid cell, 5 characters: whole if it fits, else the first letter of every word but the
 // last, then the last word. Words part at _ - . and spaces, and where a capital follows a small letter;
-// digits stay with the word before them.
+// digits stay with the word before them. Letters are UTF-8's, whole (Ш gives Sh), and the result is cut
+// to 5 by whole letters of the transliteration (stage 55).
 static void dac_short(const char *name, char *out, size_t size)
 {
-	char plain[64];
-	sample_label(name, plain, sizeof(plain), 63);
+	char plain[256];
+	sample_stem(name, plain, sizeof(plain));
 	const int length = (int)strlen(plain);
 	int starts[32], count = 0;
-	for (int i = 0; i < length && count < 32; i++) {
-		const char c = plain[i], before = i ? plain[i - 1] : ' ';
-		const bool separator = c == '_' || c == '-' || c == '.' || c == ' ';
-		const bool after_separator = before == '_' || before == '-' || before == '.' || before == ' ';
-		if (!separator && (after_separator || (c >= 'A' && c <= 'Z' && before >= 'a' && before <= 'z'))) {
+	for (int i = 0, before = -1; i < length; i++) {
+		if (!letter_start(plain[i])) {
+			continue;
+		}
+		const char c = plain[i], last = before < 0 ? ' ' : plain[before];
+		if (!name_separator(c) && count < 32 && (name_separator(last) || (c >= 'A' && c <= 'Z' && last >= 'a' && last <= 'z'))) {
 			starts[count++] = i;
 		}
+		before = i;
 	}
-	char joined[64];
+	char joined[256], shown[16];
 	int n = 0;
 	for (int i = 0; i < length; i++) {
-		if (plain[i] != '_' && plain[i] != '-' && plain[i] != '.' && plain[i] != ' ') {
+		if (!name_separator(plain[i])) {
 			joined[n++] = plain[i];
 		}
 	}
 	joined[n] = 0;
-	if (n <= 5 || count < 2) {
-		snprintf(out, size, "%.5s", joined);
+	names_ascii(joined, shown, sizeof(shown));
+	if ((int)strlen(shown) <= 5 || count < 2) {
+		names_fit(joined, out, size, 5);
 		return;
 	}
-	char shortened[64];
+	char shortened[256];
 	int k = 0;
 	for (int w = 0; w < count - 1; w++) {
-		shortened[k++] = plain[starts[w]];
+		int i = starts[w];
+		do {
+			shortened[k++] = plain[i++];
+		} while (i < length && !letter_start(plain[i]));
 	}
 	for (int i = starts[count - 1]; i < length; i++) {
-		if (plain[i] != '_' && plain[i] != '-' && plain[i] != '.' && plain[i] != ' ') {
+		if (!name_separator(plain[i])) {
 			shortened[k++] = plain[i];
 		}
 	}
 	shortened[k] = 0;
-	snprintf(out, size, "%.5s", shortened);
+	names_fit(shortened, out, size, 5);
 }
 
 #define GRID_CELL_X 242
@@ -4615,7 +4638,7 @@ static bool mono_hint(mdmi_gui *g, char *hint, size_t size)
 
 static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 {
-	const int action = g->file_over ? -1 : action_at(g, g->mouse_x, g->mouse_y);
+	const int action = g->file_over || g->hint_waits ? -1 : action_at(g, g->mouse_x, g->mouse_y);
 	const int channel = *g->source.channel;
 	const patch_values *values = patch_view(g->source.patch);
 	const char *undo = files_undo_text(g->source.files);
@@ -4664,7 +4687,37 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 	return true;
 }
 
-// The cell under the mouse against what the channel got: TL 57, FILE 34 (D31).
+// What a double click puts back (stage 55, D31): an FM voice's value goes back to the channel's base,
+// what it last got whole, its bank place or a dropped file; *from says which ("FILE", "ROM"). Where the
+// base holds nothing (VOL, PAN, TUNE and the rest, PSG, globals) the bank place's value, which is the
+// default there, or a global's default, and *from is NULL.
+static int reset_value(mdmi_gui *g, uint32_t id, const char **from)
+{
+	int channel, param;
+	patch_id_split(id, &channel, &param);
+	*from = NULL;
+	if (channel < 0) {
+		return patch_param(id)->default_value;
+	}
+	const patch_values *values = patch_view(g->source.patch);
+	const int base = patch_base_value(values, channel, param);
+	if (base >= 0) {
+		*from = plays_own_file(g, values, channel) ? "FILE" : "ROM";
+		return base;
+	}
+	return patch_preset_value(patch_bank_view(g->source.patch), channel, param, values->channels[channel][PARAM_PRESET]);
+}
+
+static void upper(char *text)
+{
+	for (; *text; text++) {
+		*text = (char)toupper((unsigned char)*text);
+	}
+}
+
+// The cell under the mouse against what a double click gives back (art-director, stage 55):
+// TL 49. DOUBLE CLICK: 39 FROM ROM 12, or FROM FILE; SSG's double click opens its choice, so there
+// only SSG ENV 3. ROM 12 HAS OFF.
 static bool base_hint(mdmi_gui *g, char *hint, size_t size)
 {
 	const int over = g->file_over ? -1 : hovered(g);
@@ -4684,16 +4737,29 @@ static bool base_hint(mdmi_gui *g, char *hint, size_t size)
 		snprintf(hint, size, "AR 31 IN CSM, THE VOICE KEEPS %s", kept);
 		return true;
 	}
-	const int base = patch_base_value(values, channel, param), value = value_of(g, values, c->id);
-	if (base < 0 || base == value) {
+	const char *from;
+	const int base = reset_value(g, c->id, &from), value = value_of(g, values, c->id);
+	if (!from || shown_value(c->id, base) == value) {
 		return false;
 	}
 	const patch_bank *bank = patch_bank_view(g->source.patch);
-	const char *from = plays_own_file(g, values, channel) ? "FILE" : "ROM";
-	char now[24], was[24];
+	char now[24], was[24], source[16];
 	patch_format(bank, c->id, value, now, sizeof(now));
 	patch_format(bank, c->id, base, was, sizeof(was));
-	snprintf(hint, size, "%s %s, %s %s", c->kind == CELL_CHOICE ? "ALG" : c->label, now, from, was);
+	upper(now);
+	upper(was);
+	if (!strcmp(from, "ROM")) {
+		snprintf(source, sizeof(source), "ROM %d", (values->channels[channel][PARAM_PRESET] & (PATCH_BANK_SIZE - 1)) + 1);
+	} else {
+		snprintf(source, sizeof(source), "%s", from);
+	}
+	const bool ssg = c->kind == CELL_SSG || c->look == LOOK_SHAPE;
+	const char *label = param == PARAM_ALGORITHM ? "ALG" : ssg ? "SSG" : c->label;
+	if (ssg) {
+		snprintf(hint, size, "%s %s. %s HAS %s", label, now, source, was);
+	} else {
+		snprintf(hint, size, "%s %s. DOUBLE CLICK: %s FROM %s", label, now, was, source);
+	}
 	return true;
 }
 
@@ -4842,7 +4908,7 @@ static int version_x(const mdmi_gui *g)
 static void footer_text(mdmi_gui *g, const char *message, uint32_t color)
 {
 	char cut[FILES_MESSAGE];
-	snprintf(cut, sizeof(cut), "%.*s", (version_x(g) - 16) / 12, message);
+	names_fit(message, cut, sizeof(cut), (version_x(g) - 16) / 12);
 	text(g, 8, FOOTER_Y + 4, cut, color, 2);
 }
 
@@ -6126,8 +6192,9 @@ static void draw_dac_name(mdmi_gui *g, int y, const dac_last_note *last)
 		text_right(g, PAGE_RIGHT - 2, y + 16, "---", C_LINE, 1, DAC_NAME_ROOM);
 		return;
 	}
-	char label[64];
-	sample_label(last->name ? last->name : "", label, sizeof(label), 63);
+	// The UTF-8 name itself: text_right cuts it by whole letters (stage 55).
+	char label[256];
+	sample_stem(last->name ? last->name : "", label, sizeof(label));
 	if (last->file) {
 		text_right(g, PAGE_RIGHT - 2, y + 6, "FILE", C_TEXT, 1, DAC_NAME_ROOM);
 	}
@@ -6205,8 +6272,8 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 		if (in_box(g->mouse_x, g->mouse_y, ALL_OUT_X + ALL_OUT_W, y, PAGE_RIGHT - ALL_OUT_X - ALL_OUT_W, ROW_H)) {
 			// Over the name: the key and the whole name.
 			if (last.shown) {
-				char label[64];
-				sample_label(last.name ? last.name : "", label, sizeof(label), 63);
+				char label[256];
+				sample_stem(last.name ? last.name : "", label, sizeof(label));
 				snprintf(hint, size, "CH6 %s: %s", key, label);
 			} else if (last.key >= 0) {
 				snprintf(hint, size, "CH6 %s: NO SAMPLE", key);
@@ -6806,19 +6873,31 @@ static void export_dialog(mdmi_gui *g)
 	say(g, message, !done ? C_ERROR : strstr(message, "not in ROM") ? C_AMBER : C_TEXT, done ? MESSAGE_TICKS : ERROR_TICKS);
 }
 
+// Stage 55: after a modal dialog the mouse still rests on the button, and its hint would cover the
+// fresh message until it moves.
+static void after_dialog(mdmi_gui *g)
+{
+	g->hint_waits = true;
+	g->hint_at = g->moved_at;
+}
+
 static void on_action(mdmi_gui *g, int action)
 {
 	char message[FILES_MESSAGE];
 	if (action == ACTION_LOAD) {
 		load_dialog(g, false);
+		after_dialog(g);
 	} else if (action == ACTION_ADD) {
 		if (files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE) {
 			load_dialog(g, true);
+			after_dialog(g);
 		}
 	} else if (action == ACTION_SAVE) {
 		save_dialog(g);
+		after_dialog(g);
 	} else if (action == ACTION_EXPORT) {
 		export_dialog(g);
+		after_dialog(g);
 	} else if (action == ACTION_STORE) {
 		// Off when the channel is its place as it is: the mouse does nothing there.
 		if (files_can_store(g->source.files, *g->source.channel) && files_store(g->source.files, *g->source.channel, message, sizeof(message))) {
@@ -7367,6 +7446,35 @@ static void pair_rule(mdmi_gui *g, uint32_t id, int value)
 	}
 }
 
+// Stage 55 (D94): a press lost other than by letting the button go (the window closed or hidden, the
+// mouse taken) is dropped: every press's state goes, nothing is written, no UNDO step; a cell's drag
+// only ends the host's gesture it began, at the value it reached. The mouse is let go only while it is
+// still this window's. Entered again (its own ReleaseCapture, DestroyWindow) it finds nothing.
+static void drop_press(mdmi_gui *g)
+{
+	const bool dragging = g->dragging;
+	const uint32_t id = g->drag_id;
+	g->dragging = g->drag_moved = false;
+	g->copy_from = -1;
+	g->copy_moved = false;
+	g->row_list = -1;
+	g->row_moved = false;
+	g->grid_from = -1;
+	g->grid_moved = false;
+	g->dac_drag = DACC_NONE;
+	g->dac_moved = false;
+	g->env_drag = ENV_NONE;
+	g->env_changed = false;
+	g->arp_drag = ARP_NONE;
+	g->arp_changed = false;
+	if (dragging) {
+		edit(g, GUI_EDIT_END, id, 0);
+	}
+	if (g->window && GetCapture() == g->window) {
+		ReleaseCapture();
+	}
+}
+
 static void on_up(mdmi_gui *g)
 {
 	if (g->copy_from >= 0) {
@@ -7478,16 +7586,14 @@ static void on_up(mdmi_gui *g)
 	edit(g, GUI_EDIT_END, g->drag_id, 0);
 	// A lit PORTA clicked while MONO is set turns PORTA off only, so this is for turning one on; a
 	// drag keeps the pair's rule as a click does (stage 49).
-	if (!g->closing) {
-		pair_rule(g, g->drag_id, g->drag_value);
-	}
+	pair_rule(g, g->drag_id, g->drag_value);
 	g->dragging = false;
 	if (GetCapture() == g->window) {
 		ReleaseCapture();
 	}
 }
 
-// Back to the value of the channel's preset, or the default for global knobs. The preset itself stays.
+// Back to the channel's base (reset_value), or the default for global knobs. The preset itself stays.
 // Stage 42 (wheel-double-click.md): a double click on a choice the first click set puts back the
 // preset's value, or a global's default. Windows takes a click on the next button, a few pixels on, as
 // the second of a double click: then it chooses that button, as a click.
@@ -7500,11 +7606,9 @@ static void choice_reset(mdmi_gui *g, int index, int x, int y)
 		return;
 	}
 	g->chosen = false;
-	int channel, param;
-	patch_id_split(id, &channel, &param);
-	const int value = channel < 0 ? patch_param(id)->default_value
-		: patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET)));
-	if (value != g->cells[index].choice) {
+	const char *from;
+	const int value = reset_value(g, id, &from);
+	if (shown_value(id, value) != shown_value(id, g->cells[index].choice)) {
 		edit_once(g, id, value);
 	}
 }
@@ -7563,14 +7667,15 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		on_down(g, x, y);
 		return;
 	}
-	// ALL's VOL takes a double click as on EDITOR, the preset's value (stage 24d, from stage 10's
-	// parking); on PAN the first click chose the side, and the second does nothing more.
+	// ALL's VOL takes a double click as on EDITOR (stage 24d, from stage 10's parking), PAN as a choice
+	// (stage 42); both go back by reset_value, to the default.
 	int index = *g->source.page == PAGE_EDITOR || *g->source.page == PAGE_ALL || globals ? hovered(g) : -1;
 	if (index >= 0 && *g->source.page == PAGE_ALL && !globals) {
 		int channel = -1, param = -1;
 		patch_id_split(g->cells[index].id, &channel, &param);
 		if (channel >= 0 && param == PARAM_VOLUME) {
-			edit_once(g, g->cells[index].id, patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET))));
+			const char *from;
+			edit_once(g, g->cells[index].id, reset_value(g, g->cells[index].id, &from));
 		} else if (g->cells[index].kind == CELL_CHOICE) {
 			choice_reset(g, index, x, y);
 		}
@@ -7590,7 +7695,7 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 	if (index < 0) {
 		return;
 	}
-	// Stage 42: PAN, ALG, DT, RS and the noise's choice go back to the preset's (or default) value.
+	// Stage 42: PAN, ALG, DT, RS and the noise's choice go back too; stage 55: to the base (reset_value).
 	if (g->cells[index].kind == CELL_CHOICE) {
 		choice_reset(g, index, x, y);
 		return;
@@ -7616,9 +7721,8 @@ static void on_double_click(mdmi_gui *g, int x, int y)
 		on_up(g);
 		return;
 	}
-	int value = channel < 0 ? patch_param(id)->default_value
-		: patch_preset_value(patch_bank_view(g->source.patch), channel, param, patch_get(g->source.patch, PATCH_CHANNEL_ID(channel, PARAM_PRESET)));
-	edit_once(g, id, value);
+	const char *from;
+	edit_once(g, id, reset_value(g, id, &from));
 }
 
 // Files dragged from Explorer (D13). The drop target lives as long as the window, so it counts no
@@ -8055,12 +8159,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		return 1;
 	case WM_DESTROY:
 		// Also reached when the host destroys our parent first. The next set_parent makes a new window.
-		// A press let go here is no click (stage 49): a row or a switch held stays as it was.
-		g->row_list = -1;
-		g->drag_moved = true;
-		g->closing = true;
-		on_up(g);
-		g->closing = false;
+		// A press held here is dropped, not let go (stage 55).
+		drop_press(g);
 		KillTimer(window, TIMER_ID);
 		if (g->drop_registered) {
 			RevokeDragDrop(window);
@@ -8076,6 +8176,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		on_down(g, x, y);
 		return 0;
 	case WM_MOUSEMOVE:
+		// Stage 55: a move to where the mouse already was (Windows sends one after a dialog) is no move.
+		if (g->hint_waits && lparam != g->hint_at) {
+			g->hint_waits = false;
+		}
+		g->moved_at = lparam;
 		if (!g->tracking) {
 			TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, window, 0};
 			g->tracking = TrackMouseEvent(&track) != 0;
@@ -8084,27 +8189,31 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 		return 0;
 	case WM_MOUSELEAVE:
 		g->tracking = false;
+		g->hint_waits = false;
 		if (!g->dragging && g->copy_from < 0) {
 			g->mouse_x = g->mouse_y = -1;
 		}
 		return 0;
 	case WM_CAPTURECHANGED:
+		// Stage 55: the mouse taken by another window (Windows does it too when it destroys ours) drops
+		// the press; as a copy's drag lost copied nothing since stage 43.
+		if ((HWND)lparam != window) {
+			drop_press(g);
+			refresh(g);
+		}
+		return 0;
 	case WM_RBUTTONDOWN:
-		// Stage 43: a copy's drag lost or cancelled by the right button copies nothing.
+		// Stage 43: a copy's drag cancelled by the right button copies nothing.
 		if (g->copy_from >= 0) {
 			g->copy_from = -1;
 			g->copy_moved = false;
-			if (message == WM_RBUTTONDOWN && GetCapture() == g->window) {
+			if (GetCapture() == g->window) {
 				ReleaseCapture();
 			}
 			refresh(g);
 			return 0;
 		}
-		if (message == WM_RBUTTONDOWN) {
-			return DefWindowProcA(window, message, wparam, lparam);
-		}
-		on_up(g);
-		return 0;
+		return DefWindowProcA(window, message, wparam, lparam);
 	case WM_LBUTTONUP:
 		on_up(g);
 		return 0;
@@ -8231,6 +8340,10 @@ bool gui_show(mdmi_gui *g, bool visible)
 {
 	if (!g->window) {
 		return false;
+	}
+	// Stage 55: a host that closes by hiding leaves the window holding the mouse: the press is dropped.
+	if (!visible) {
+		drop_press(g);
 	}
 	ShowWindow(g->window, visible ? SW_SHOWNA : SW_HIDE);
 	mdmi_engine_watch_frames(g->source.engine, visible);

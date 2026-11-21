@@ -51,6 +51,13 @@ Knob ids never change, because hosts store automation by id: a global's id is it
 1000 + channel * 100 + its place in `src/patch.h`, so 1411 is Op1 TL of channel 4. New knobs take the next free
 number. A project stores pairs of id and value, so a knob added later starts at its default in an older project.
 
+- Retrigger (D41, a global, the last of the strip): how an FM note starts while its voice still sounds the
+  release of the one before (back to back, after a pause shorter than the release, or overlapping). `Chip`
+  (default) as the chip does: the same voice, the attack from where the envelope is. `Free`: the note goes to a
+  free silent voice, its own voice taken off every channel meanwhile (SysEx remap to channel 0x7F). `Cut`: the
+  same voice at RR 15, the note 8 ms later, the tail cut. Both in the dealer (`patch.c`), not in the ROM; Porta
+  and Ch3 Special channels play one voice, so `Free` does nothing there; the DAC isn't touched. The plugin's
+  own: the console has no such knob (the window says so).
 - Voices (D20, D21): each FM channel plays on its own voice, and a chord borrows the voices of channels
   that are silent, nothing to set up. A channel always plays on its own voice: when a chord holds it,
   the chord's note there moves to a free voice and starts again, and is cut only if none is free (D22). A cut note that is still held starts again as soon as a voice comes free. Notes beyond the free
@@ -443,6 +450,18 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   `reg_test --first-frames` how long after the dealer names a lent voice the engine's owner changes (~30 ms
   as the window sees it). `clap_host` with `MDMI_TEST_WINDOW` opens each instance's window on ALL on a thread
   of its own, so the realtime runs copy the waves and voices as a host with the plugin open does.
+- Mouse and names (stage 55, ui-concept.md "Этап 55"). A double click goes back to `reset_value`: an FM voice's
+  value (from Algorithm on) to the channel's base (D31, `patch_base_value`), the place or the dropped file; the
+  rest to the bank place's value (their default) or a global's default. The footer over a tweaked voice cell says
+  what it gives back: `TL 49. DOUBLE CLICK: 39 FROM ROM 12` or `... FROM FILE` (SSG, whose double click opens its
+  choice: `SSG ENV 3. ROM 12 HAS OFF`). A press lost other than by letting the button go (`WM_DESTROY`,
+  `WM_CAPTURECHANGED` from another window, `gui_show(false)`) goes through `drop_press`: every press's state goes,
+  nothing is written, no UNDO step; a cell's drag only ends the host gesture it began. What a drawing handed
+  once a timer tick stays, with its step. After LOAD, ADD, SAVE or EXPORT (`after_dialog`) the button's hint
+  waits until a `WM_MOUSEMOVE` to another point than the last one before the dialog, so the fresh message shows.
+  Names are cut by `names_fit` (`names.c`): transliterated, then by whole letters (Ш's `Sh` whole or not at all),
+  trailing spaces off; `text_right`, `sample_label`, `dac_short` (whole UTF-8 letters for the initials) and the
+  footer use it.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.
@@ -569,6 +588,15 @@ sh tools/build_plugin.sh
 sh tools/test/run_tests.sh
 sh tools/install.sh <folder>
 ```
+
+Test files: the instruments from games in `tools/test/files` (TFI, VGI, TYI) are the owner's, given for stage 5
+on 2026-11-03 (the same files are in `refs/`, which is not in the repository); the EEF envelopes were made for
+stage 7; the `.bin` files are references of earlier versions' MIDI bytes and registers (stages 20-22, made by
+`gen_reference.c` and `reg_test` on the ROM of that version). `gui_test` prints its own run time
+(`gui_test_ms`). A footer it reads for a hint is captured right after the `WM_MOUSEMOVE`, with no `run_ms` in
+between: the window's `TrackMouseEvent` posts `WM_MOUSELEAVE` at once when the real cursor isn't over the test
+window (likely cause, stage 55), and pumping it moves the window's mouse off, so the footer falls back to the
+engine's numbers.
 
 `run_tests.sh` also runs the ROM's own tests in Docker with `--privileged`: the image's address
 sanitizer needs address randomization off. `fetch_deps.sh` clones `third_party/` (or unpacks `vendor/<name>-<commit>.tar.gz` where there is one, as in the source release) and applies `patches/`; it also puts the ROM's samples into `third_party/mdmi/res/samples`. The builds in Docker run without network. The build runs it too and refuses to start if

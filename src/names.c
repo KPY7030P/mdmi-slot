@@ -48,13 +48,14 @@ static int whole(const unsigned char *s, int n, unsigned *code)
 	return 1;
 }
 
-void names_ascii(const char *utf8, char *out, size_t size)
+// The transliteration, whole letters only while chars fit (stage 55); true when a letter didn't.
+static int fit(const char *utf8, char *out, size_t size, size_t chars)
 {
-	if (!size) {
-		return;
-	}
 	size_t at = 0;
 	const unsigned char *s = (const unsigned char *)utf8;
+	if (chars > size - 1) {
+		chars = size - 1;
+	}
 	while (*s) {
 		const int n = sequence_length(*s);
 		unsigned code;
@@ -78,11 +79,36 @@ void names_ascii(const char *utf8, char *out, size_t size)
 		} else {
 			shown[0] = '?';
 		}
-		for (const char *c = shown; *c && at + 1 < size; c++) {
-			out[at++] = *c;
+		const size_t length = strlen(shown);
+		if (at + length > chars) {
+			out[at] = 0;
+			return 1;
 		}
+		memcpy(out + at, shown, length);
+		at += length;
 	}
 	out[at] = 0;
+	return 0;
+}
+
+void names_ascii(const char *utf8, char *out, size_t size)
+{
+	if (size) {
+		fit(utf8, out, size, size - 1);
+	}
+}
+
+void names_fit(const char *utf8, char *out, size_t size, int chars)
+{
+	if (!size) {
+		return;
+	}
+	if (fit(utf8, out, size, chars > 0 ? (size_t)chars : 0)) {
+		// A cut name doesn't end on a space.
+		for (size_t at = strlen(out); at > 0 && out[at - 1] == ' '; at--) {
+			out[at - 1] = 0;
+		}
+	}
 }
 
 void names_cut_utf8(char *utf8)

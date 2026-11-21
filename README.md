@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.46.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.47.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -41,6 +41,11 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
 - Chords on ALL (0.46.0): while a channel's chord plays on other channels' voices (the green arrows on the left),
   each of those rows shows its voice's note in its OUT box in green, 2 periods of that note; the chord's own row
   keeps the whole chord. The footer over a green box says where the note is heard (the chord's output).
+- Mouse and names (0.47.0): a double click on a voice cell of a channel playing a dropped file (TFI, VGI, TYI)
+  gives back the file's value, not the bank place's; the footer over a changed cell says what it gives back
+  (`TL 49. DOUBLE CLICK: 39 FROM FILE`). Closing or hiding the plugin's window with the mouse button held
+  changes nothing; so does another window taking the mouse mid-press (Alt+Tab). After LOAD, SAVE or EXPORT the
+  footer shows what happened until the mouse moves. Russian sample names are cut by whole letters everywhere.
 - MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts
   its own attack, with no glide and no second voice; letting go of the top key strikes the one below again.
   MONO and PORTA are a pair in the channel's row, one click picks either; PORTA wins if both are on (from a

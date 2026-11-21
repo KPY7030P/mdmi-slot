@@ -1510,6 +1510,446 @@ static void dac_row_stage53(HWND window, const char *dir)
 	CHECK(load_project(window), "the project before stage 53's samples loads again");
 }
 
+// Stage 55 (ui-concept.md, "Этап 55"): a copy of the project as the state extension writes it now.
+static uint8_t *project_copy(size_t *size)
+{
+	save_project();
+	uint8_t *copy = malloc(project_size ? project_size : 1);
+	memcpy(copy, project, project_size);
+	*size = project_size;
+	return copy;
+}
+
+static bool project_is(const uint8_t *was, size_t size)
+{
+	size_t now_size;
+	uint8_t *now = project_copy(&now_size);
+	const bool same = now_size == size && !memcmp(was, now, size);
+	free(now);
+	return same;
+}
+
+static HWND open_window(const clap_plugin_gui_t *gui, HWND parent)
+{
+	clap_window_t ref = {CLAP_WINDOW_API_WIN32, {.win32 = parent}};
+	gui->create(plugin, CLAP_WINDOW_API_WIN32, false);
+	gui->set_parent(plugin, &ref);
+	gui->show(plugin);
+	HWND window = FindWindowExA(parent, NULL, "MDMIPluginWindow", NULL);
+	run_ms(300);
+	return window;
+}
+
+// The press at x, y, moved to to_x, to_y (if elsewhere), timers run; then how it ends: the window
+// closed as a host closes it (hide, destroy), hidden only and the button let go to the hidden window,
+// the mouse taken by the parent and the button let go, or let go as usual. True when the project is
+// byte for byte what it was before the end; the host's gestures stay balanced (*balanced).
+enum { END_CLOSE, END_HIDE, END_TAKEN, END_RELEASE };
+static bool press_ends(HWND *window, const clap_plugin_gui_t *gui, HWND parent, int x, int y, int to_x, int to_y, int end, bool *balanced)
+{
+	const int begins = pushed[0], ends = pushed[2];
+	SendMessageA(*window, WM_MOUSEMOVE, 0, MAKELPARAM(x, y));
+	SendMessageA(*window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+	for (int step = 1; step <= 4 && (to_x != x || to_y != y); step++) {
+		SendMessageA(*window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x + (to_x - x) * step / 4, y + (to_y - y) * step / 4));
+	}
+	run_ms(150);
+	size_t size;
+	uint8_t *before = project_copy(&size);
+	if (end == END_CLOSE) {
+		// Destroyed without hiding first: WM_CAPTURECHANGED and WM_DESTROY alone (hiding is END_HIDE).
+		gui->destroy(plugin);
+	} else if (end == END_HIDE) {
+		gui->hide(plugin);
+		SendMessageA(*window, WM_LBUTTONUP, 0, MAKELPARAM(to_x, to_y));
+		gui->show(plugin);
+	} else if (end == END_TAKEN) {
+		SetCapture(parent);
+		SendMessageA(*window, WM_LBUTTONUP, 0, MAKELPARAM(to_x, to_y));
+		ReleaseCapture();
+	} else {
+		SendMessageA(*window, WM_LBUTTONUP, 0, MAKELPARAM(to_x, to_y));
+	}
+	run_ms(150);
+	if (end == END_RELEASE) {
+		wait_applied(*window);
+		run_ms(300);
+	}
+	const bool same = project_is(before, size);
+	free(before);
+	if (end == END_CLOSE) {
+		*window = open_window(gui, parent);
+	}
+	*balanced = pushed[0] - begins == pushed[2] - ends;
+	SendMessageA(*window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	return same;
+}
+
+// A WAV under a UTF-8 name in the temp folder; its UTF-8 path.
+static void named_wav(const char *name, char *path, size_t size)
+{
+	char plain[MAX_PATH];
+	GetTempPathA(MAX_PATH, plain);
+	strcat(plain, "mdmi_gui_test_named.wav");
+	write_wav(plain, 22050, 4410);
+	wchar_t temp[MAX_PATH], wide_name[MAX_PATH], target[MAX_PATH], from[MAX_PATH];
+	GetTempPathW(MAX_PATH, temp);
+	MultiByteToWideChar(CP_UTF8, 0, name, -1, wide_name, MAX_PATH);
+	_snwprintf(target, MAX_PATH, L"%ls%ls.wav", temp, wide_name);
+	MultiByteToWideChar(CP_ACP, 0, plain, -1, from, MAX_PATH);
+	MoveFileExW(from, target, MOVEFILE_REPLACE_EXISTING);
+	WideCharToMultiByte(CP_UTF8, 0, target, -1, path, (int)size, NULL, NULL);
+}
+
+// The text padded with spaces to chars on the right (left: on the left), so says() also finds the rest
+// of its place empty.
+static void padded(const char *text, int chars, bool left, char *out)
+{
+	const int length = (int)strlen(text);
+	if (left) {
+		snprintf(out, 64, "%*s%s", chars - length > 0 ? chars - length : 0, "", text);
+	} else {
+		snprintf(out, 64, "%s%*s", text, chars - length > 0 ? chars - length : 0, "");
+	}
+}
+
+#define CH1_PRESET 1100
+#define CH1_ALG 1107
+#define CH1_TL 1111
+#define CH1_AR 1115
+#define CH2_TL 1211
+#define CH8_PRESET 1800
+#define GLOBAL_DAC_ID 5
+#define EXPORT_X (452 + 40)
+
+static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, const char *dir)
+{
+	(void)dir;
+	set_param(GLOBAL_DAC_ID, 0);
+	run_ms(1500);
+	click(window, BUTTON_EDITOR_X, BUTTON_Y);
+	// 1. A double click goes back to the channel's base (D31): the file on channel 1, the place on 2.
+	{
+		click(window, RAIL_X, RAIL_CH1_TOP + 10);
+		run_ms(100);
+		char tfi_path[MAX_PATH];
+		GetFullPathNameA("..\\..\\tools\\test\\files\\Turtles Brass 02.tfi", MAX_PATH, tfi_path, NULL);
+		uint8_t tfi[64];
+		const size_t tfi_size = read_file(tfi_path, tfi, sizeof(tfi));
+		// TFI: algorithm, feedback, then each operator MUL, DT, TL, RS, AR, ... (instrument.c).
+		const int file_alg = tfi[0], file_tl = tfi[2 + 2], file_ar = tfi[2 + 4];
+		// A place of the bank whose TL, AR and ALG all differ from the file's, or the check proves nothing.
+		int place_tl = -1, place_ar = -1, place_alg = -1;
+		for (int place = 0; place < 128; place++) {
+			set_param(CH1_PRESET, place);
+			run_ms(30);
+			place_tl = get_value(CH1_TL);
+			place_ar = get_value(CH1_AR);
+			place_alg = get_value(CH1_ALG);
+			if (place_tl != file_tl && place_ar != file_ar && place_alg != file_alg) {
+				break;
+			}
+		}
+		run_ms(200);
+		CHECK(tfi_size == 42 && file_tl != place_tl && file_ar != place_ar && file_alg != place_alg,
+			"stage 55: the TFI's TL %d, AR %d, ALG %d differ from channel 1's place (%d, %d, %d)", file_tl, file_ar, file_alg, place_tl, place_ar, place_alg);
+		drop_file(window, tfi_path, RAIL_X, RAIL_CH1_TOP + 10);
+		run_ms(300);
+		const bool dropped = get_value(CH1_TL) == file_tl && get_value(CH1_AR) == file_ar && get_value(CH1_ALG) == file_alg;
+		drag(window, OP1_TL_X, OP1_TL_Y, OP1_TL_Y - 40);
+		drag(window, OP1_TL_X, OP_AR_Y, OP_AR_Y + 40);
+		const int other = file_alg == 5 ? 6 : 5;
+		click(window, ALG_X0 + other * 22, ALG_Y);
+		run_ms(200);
+		const int tl_tweaked = get_value(CH1_TL), ar_tweaked = get_value(CH1_AR), alg_tweaked = get_value(CH1_ALG);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		wait_message_gone(window);
+		char expect[96];
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		capture(window);
+		snprintf(expect, sizeof(expect), "TL %d. DOUBLE CLICK: %d FROM FILE", tl_tweaked, file_tl);
+		const bool file_hint = footer_says(expect, COLOR_AMBER);
+		save_bmp(dir, "stage55-base-file");
+		double_click(window, OP1_TL_X, OP1_TL_Y);
+		double_click(window, OP1_TL_X, OP_AR_Y);
+		SendMessageA(window, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(ALG_X0 + other * 22, ALG_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(ALG_X0 + other * 22, ALG_Y));
+		run_ms(200);
+		CHECK(dropped && tl_tweaked != file_tl && ar_tweaked != file_ar && alg_tweaked == other
+			&& get_value(CH1_TL) == file_tl && get_value(CH1_AR) == file_ar && get_value(CH1_ALG) == file_alg,
+			"stage 55: on a dropped TFI tweaked by the mouse (TL %d, AR %d, ALG %d) a double click gives the file's TL %d (%d), AR %d (%d), ALG %d (%d)",
+			tl_tweaked, ar_tweaked, alg_tweaked, file_tl, get_value(CH1_TL), file_ar, get_value(CH1_AR), file_alg, get_value(CH1_ALG));
+		CHECK(file_hint, "stage 55: the footer over the tweaked TL says %s", expect);
+		// Channel 2 on a place: as in 0.46, and the footer names the place.
+		set_param(CH2_PRESET, 10);
+		run_ms(300);
+		click(window, RAIL_X, RAIL_CH2_Y);
+		run_ms(100);
+		const int place2 = get_value(CH2_TL);
+		drag(window, OP1_TL_X, OP1_TL_Y, OP1_TL_Y - 40);
+		run_ms(100);
+		const int tweaked2 = get_value(CH2_TL);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(OP1_TL_X, OP1_TL_Y));
+		capture(window);
+		snprintf(expect, sizeof(expect), "TL %d. DOUBLE CLICK: %d FROM ROM 11", tweaked2, place2);
+		const bool place_hint = footer_says(expect, COLOR_AMBER);
+		double_click(window, OP1_TL_X, OP1_TL_Y);
+		run_ms(200);
+		CHECK(tweaked2 != place2 && get_value(CH2_TL) == place2 && place_hint,
+			"stage 55: channel 2 on place 11, TL tweaked to %d: a double click gives the place's %d (%d); the footer said %s", tweaked2, place2, get_value(CH2_TL), expect);
+	}
+
+	// 4. Names: transliterated, then cut by whole letters, in every place a sample's name shows.
+	{
+		static const struct {
+			const char *name;
+			int note;
+			const char *grid, *label, *whole, *key;
+		} NAMES[4] = {
+			// A sample's name keeps 31 bytes (dac.h DAC_NAME): this one as Большая бочка из.
+			{"Большая бочка из игры", 36, "Bbiz", "Bolshaya bochk", "Bolshaya bochka iz", "C-2"},
+			{"Long Latin Sample Name 01", 37, "LLSN0", "Long Latin Sam", "Long Latin Sample Name 01", "C#2"},
+			{"Kick Бочка 01", 38, "KB01", "Kick Bochka 01", "Kick Bochka 01", "D-2"},
+			{"Жужжащий ящер", 39, "Zhya", "Zhuzhzhashiy", "Zhuzhzhashiy yasher", "D#2"},
+		};
+		set_param(GLOBAL_DAC_ID, 1);
+		run_ms(1500);
+		click(window, RAIL_X, RAIL_CH6_Y);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(200);
+		for (int i = 0; i < 4; i++) {
+			char path[MAX_PATH * 3];
+			named_wav(NAMES[i].name, path, sizeof(path));
+			const int x = 242 + NAMES[i].note % 12 * 38, y = 96 + NAMES[i].note / 12 * 18;
+			drop_file(window, path, x + 17, y + 8);
+			wait_applied(window);
+			run_ms(400);
+		}
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		wait_message_gone(window);
+		for (int i = 0; i < 4; i++) {
+			const int note = NAMES[i].note, x = 242 + note % 12 * 38, y = 96 + note / 12 * 18;
+			char text[64];
+			click(window, BUTTON_EDITOR_X, BUTTON_Y);
+			click(window, x + 17, y + 8);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+			run_ms(150);
+			capture(window);
+			padded(NAMES[i].grid, 5, false, text);
+			const bool grid = says(x + 3, y + 4, 1, text, 0x000000);
+			padded(NAMES[i].label, 14, false, text);
+			const bool panel = says(320, 358, 2, text, COLOR_TEXT);
+			if (i == 0) {
+				save_bmp(dir, "stage55-names-dac");
+			}
+			// ALL's DAC row after the note: the name right-aligned to 700 in 84 px, the footer over it whole.
+			send_midi(0x95, (uint8_t)note, 100);
+			run_ms(100);
+			send_midi(0x85, (uint8_t)note, 0);
+			click(window, BUTTON_ALL_X, BUTTON_Y);
+			run_ms(200);
+			capture(window);
+			padded(NAMES[i].label, 14, true, text);
+			const bool all = says(700 - 14 * 6, DAC_ROW_Y + 16, 1, text, COLOR_TEXT);
+			char hint[96];
+			snprintf(hint, sizeof(hint), "CH6 %s: %s", NAMES[i].key, NAMES[i].whole);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(660, DAC_ROW_Y + 16));
+			capture(window);
+			const bool footer = footer_says(hint, COLOR_LABEL);
+			if (i == 0) {
+				save_bmp(dir, "stage55-names-all");
+			}
+			// The DAC's list on BANK, scrolled until the note's row shows.
+			click(window, BUTTON_BANK_X, BUTTON_Y);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(400, 200));
+			wheel(window, 400, 200, 120 * 40);
+			bool list = false;
+			padded(NAMES[i].label, 14, false, text);
+			for (int turn = 0; turn < 40 && !list; turn++) {
+				run_ms(30);
+				capture(window);
+				for (int row = DAC_LIST_Y; row < DAC_LIST_BOTTOM && !list; row++) {
+					list = says(310, row + 3, 2, text, COLOR_TEXT);
+				}
+				wheel(window, 400, 200, -120);
+			}
+			CHECK(grid && panel && all && footer && list,
+				"stage 55: %s cut by whole letters: grid %s (%d), DAC page %s (%d), ALL %s (%d), the DAC list (%d), the footer %s (%d)",
+				NAMES[i].whole, NAMES[i].grid, grid, NAMES[i].label, panel, NAMES[i].label, all, list, hint, footer);
+		}
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(100);
+	}
+
+	// 2. A press dropped, not let go: closing, hiding or the mouse taken changes nothing, no UNDO step.
+	{
+		bool balanced, all_balanced = true;
+		// Channel 8 gets an arp row with steps first, so its switch is there.
+		click(window, RAIL_X, RAIL_CH8_Y);
+		run_ms(100);
+		click(window, PSG_COL(0) + 10, ARP_Y(ARP_PSG_LY, 5));
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(200);
+		capture(window);
+		int body_x = ENV_X + 10;
+		for (int x = ENV_X - 10; x < ENV_RIGHT; x++) {
+			if ((pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG) {
+				while ((pixels[ENV_LOOP_STRIP_Y * WIDTH + x] & 0xFFFFFF) == COLOR_PSG) {
+					x++;
+				}
+				body_x = x + 1;
+				break;
+			}
+		}
+		const int arp_x = ARP_PSG_RX + 26, arp_y = ARP_PSG_LY - 13 + 6;
+		// The mark: a Preset step of channel 4, which one UNDO after all the closes takes back.
+		const int ch4 = get_value(CH4_PRESET);
+		wheel(window, RAIL_X, RAIL_CH4_Y, ch4 < 127 ? -120 : 120);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(300);
+		const int marked = get_value(CH4_PRESET);
+		click(window, RAIL_X, RAIL_CH8_Y);
+		run_ms(100);
+		static const char *const WHAT[] = {"envelope loop strip", "ARP ON/OFF", "TL drag", "LFO ON switch", "rail row copy", "BANK row", "DAC grid move", "DAC trim tab"};
+		bool kept[8] = {0};
+		kept[0] = press_ends(&window, gui, parent, body_x, ENV_LOOP_STRIP_Y, body_x, ENV_LOOP_STRIP_Y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		kept[1] = press_ends(&window, gui, parent, arp_x, arp_y, arp_x, arp_y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		click(window, RAIL_X, RAIL_CH1_TOP + 10);
+		run_ms(100);
+		kept[2] = press_ends(&window, gui, parent, OP1_TL_X, OP1_TL_Y, OP1_TL_X, OP1_TL_Y - 30, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		kept[3] = press_ends(&window, gui, parent, LFO_ON_X, LFO_RATE_Y, LFO_ON_X, LFO_RATE_Y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		kept[4] = press_ends(&window, gui, parent, RAIL_X, RAIL_CH1_TOP + 10, RAIL_X, RAIL_CH2_Y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		click(window, BUTTON_BANK_X, BUTTON_Y);
+		run_ms(200);
+		kept[5] = press_ends(&window, gui, parent, BANK_ROW_X, BANK_ROW3_Y, BANK_ROW_X, BANK_ROW3_Y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		click(window, RAIL_X, RAIL_CH6_Y);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(200);
+		const int g36x = 242 + 36 % 12 * 38 + 17, g36y = 96 + 36 / 12 * 18 + 8, g40x = 242 + 40 % 12 * 38 + 17;
+		kept[6] = press_ends(&window, gui, parent, g36x, g36y, g40x, g36y, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		click(window, g36x, g36y);
+		run_ms(100);
+		kept[7] = press_ends(&window, gui, parent, 238, DAC_TRIM_Y + 7, 300, DAC_TRIM_Y + 7, END_CLOSE, &balanced);
+		all_balanced &= balanced;
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		click(window, RAIL_X, RAIL_CH1_TOP + 10);
+		run_ms(100);
+		const bool hidden = press_ends(&window, gui, parent, LFO_ON_X, LFO_RATE_Y, LFO_ON_X, LFO_RATE_Y, END_HIDE, &balanced);
+		all_balanced &= balanced;
+		const bool taken = press_ends(&window, gui, parent, LFO_ON_X, LFO_RATE_Y, LFO_ON_X, LFO_RATE_Y, END_TAKEN, &balanced);
+		all_balanced &= balanced;
+		char failed[256] = "";
+		for (int i = 0; i < 8; i++) {
+			if (!kept[i]) {
+				strcat(failed, " ");
+				strcat(failed, WHAT[i]);
+			}
+		}
+		CHECK(!failed[0] && hidden && taken && all_balanced,
+			"stage 55: closing the window with the button held changes nothing (changed:%s), nor hiding it (%d) or the mouse taken (%d); gestures balanced (%d)",
+			failed[0] ? failed : " none", hidden, taken, all_balanced);
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		run_ms(300);
+		CHECK(marked != ch4 && get_value(CH4_PRESET) == ch4, "stage 55: the closes made no UNDO step: one UNDO takes back the mark (%d, %d, now %d)", ch4, marked, get_value(CH4_PRESET));
+		// The same presses let go do act (or the checks above prove nothing).
+		bool acted[8] = {0};
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		click(window, RAIL_X, RAIL_CH8_Y);
+		run_ms(100);
+		acted[0] = !press_ends(&window, gui, parent, body_x, ENV_LOOP_STRIP_Y, body_x, ENV_LOOP_STRIP_Y, END_RELEASE, &balanced);
+		acted[1] = !press_ends(&window, gui, parent, arp_x, arp_y, arp_x, arp_y, END_RELEASE, &balanced);
+		click(window, RAIL_X, RAIL_CH1_TOP + 10);
+		run_ms(100);
+		// A drag's values reach the project while it lasts: its release has nothing left to change.
+		acted[2] = true;
+		acted[3] = !press_ends(&window, gui, parent, LFO_ON_X, LFO_RATE_Y, LFO_ON_X, LFO_RATE_Y, END_RELEASE, &balanced);
+		acted[4] = !press_ends(&window, gui, parent, RAIL_X, RAIL_CH1_TOP + 10, RAIL_X, RAIL_CH2_Y, END_RELEASE, &balanced);
+		click(window, RAIL_X, RAIL_CH1_TOP + 10);
+		click(window, BUTTON_BANK_X, BUTTON_Y);
+		run_ms(200);
+		acted[5] = !press_ends(&window, gui, parent, BANK_ROW_X, BANK_ROW3_Y, BANK_ROW_X, BANK_ROW3_Y, END_RELEASE, &balanced);
+		click(window, RAIL_X, RAIL_CH6_Y);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		run_ms(200);
+		acted[6] = !press_ends(&window, gui, parent, g36x, g36y, g40x, g36y, END_RELEASE, &balanced);
+		click(window, g40x, g36y);
+		run_ms(100);
+		acted[7] = !press_ends(&window, gui, parent, 238, DAC_TRIM_Y + 7, 300, DAC_TRIM_Y + 7, END_RELEASE, &balanced);
+		failed[0] = 0;
+		for (int i = 0; i < 8; i++) {
+			if (!acted[i]) {
+				strcat(failed, " ");
+				strcat(failed, WHAT[i]);
+			}
+		}
+		CHECK(!failed[0], "stage 55: the same presses let go do change the project (none:%s)", failed[0] ? failed : " none");
+		// A drawing handed while the press lasted stays, with its UNDO step.
+		click(window, RAIL_X, RAIL_CH8_Y);
+		run_ms(100);
+		size_t size;
+		uint8_t *undrawn = project_copy(&size);
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(ENV_X + 1, ENV_LOUD_Y + 60));
+		SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(ENV_X + 120, ENV_LOUD_Y + 60));
+		run_ms(300);
+		size_t drawn_size;
+		uint8_t *drawn = project_copy(&drawn_size);
+		gui->hide(plugin);
+		gui->destroy(plugin);
+		run_ms(150);
+		const bool stays = project_is(drawn, drawn_size);
+		window = open_window(gui, parent);
+		click(window, ACTION_UNDO_X, BUTTON_Y);
+		run_ms(300);
+		const bool undone = project_is(undrawn, size);
+		CHECK(!project_is(drawn, drawn_size) && stays && undone, "stage 55: a drawing handed during the press stays after the close (%d) and one UNDO takes it back (%d)", stays, undone);
+		free(undrawn);
+		free(drawn);
+	}
+
+	// 3. After a dialog the fresh message shows until the mouse moves (EXPORT through MDMI_TEST_EXPORT).
+	{
+		char export_path[MAX_PATH];
+		GetTempPathA(MAX_PATH, export_path);
+		strcat(export_path, "mdmi_gui_test_stage55.bin");
+		DeleteFileA(export_path);
+		SetEnvironmentVariableA("MDMI_TEST_EXPORT", export_path);
+		static char env_export[MAX_PATH + 24];
+		snprintf(env_export, sizeof(env_export), "MDMI_TEST_EXPORT=%s", export_path);
+		_putenv(env_export);
+		const char *hint = "EXPORT: bank, DAC, names to a ROM for SD";
+		click(window, BUTTON_ROM_X, BUTTON_Y);
+		run_ms(200);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(EXPORT_X, BUTTON_Y));
+		capture(window);
+		const bool hint_before = footer_says(hint, COLOR_LABEL);
+		SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(EXPORT_X, BUTTON_Y));
+		SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(EXPORT_X, BUTTON_Y));
+		capture(window);
+		const bool message = !footer_says(hint, COLOR_LABEL) && count_not_black_in(8, 540, FOOTER_TEXT_Y, FOOTER_TEXT_Y + 14) > 100;
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(EXPORT_X, BUTTON_Y));
+		capture(window);
+		const bool still = !footer_says(hint, COLOR_LABEL) && count_not_black_in(8, 540, FOOTER_TEXT_Y, FOOTER_TEXT_Y + 14) > 100;
+		save_bmp(dir, "stage55-after-dialog");
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(EXPORT_X + 1, BUTTON_Y));
+		capture(window);
+		const bool hint_after = footer_says(hint, COLOR_LABEL);
+		CHECK(hint_before && message && still && hint_after,
+			"stage 55: over EXPORT its hint (%d); after it the message (%d), also after a move to the same point (%d); a pixel on, the hint again (%d)",
+			hint_before, message, still, hint_after);
+		DeleteFileA(export_path);
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+	}
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	return window;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 3) {
@@ -1518,6 +1958,8 @@ int main(int argc, char **argv)
 	}
 	// A crash keeps the lines before it (stage 43).
 	setvbuf(stdout, NULL, _IONBF, 0);
+	// Stage 55 (review 51): the run's own time goes to the log, so its growth shows.
+	const DWORD run_start = GetTickCount();
 	const bool expect_crash = getenv("MDMI_TEST_CRASH") != NULL;
 	// Stage 22c: the libraries in a folder of the test's, gone before it starts.
 	snprintf(banks_dir, sizeof(banks_dir), "%s-banks", argv[2]);
@@ -3217,21 +3659,25 @@ int main(int argc, char **argv)
 				for (int k = 0; k < 8; k++) {
 					run_ms(60);
 					capture(window);
-					int left, right;
 					held_lit += editor_lit(ENV_X, ENV_RIGHT) > 0;
 					beyond += editor_lit(last + 2, ENV_RIGHT);
 				}
-				send_midi(0x87, 72, 0);
-				run_ms(150);
-				capture(window);
+				// Stage 55 (review 49): ALL is looked at during the tail, the first ~300 ms after Note Off where
+				// without stop the release would play, not once after it.
 				int left, right;
-				const int editor_after = editor_lit(ENV_X, ENV_RIGHT);
 				click(window, BUTTON_ALL_X, BUTTON_Y);
-				run_ms(150);
-				capture(window);
+				send_midi(0x87, 72, 0);
+				int all_after = 0;
+				for (int k = 0; k < 8; k++) {
+					run_ms(40);
+					capture(window);
+					all_after += lit_columns(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, &left, &right);
+				}
 				save_bmp(argv[2], "all-psg-stop");
-				const int all_after = lit_columns(ALL_SOUND_X - 48, ALL_SOUND_RIGHT, RAIL_CH8_Y - 10, RAIL_CH8_Y + 30, &left, &right);
 				click(window, BUTTON_EDITOR_X, BUTTON_Y);
+				run_ms(50);
+				capture(window);
+				const int editor_after = editor_lit(ENV_X, ENV_RIGHT);
 				click(window, last + 40, ENV_LOOP_STRIP_Y);
 				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
 				// With the release back the window reckons the note's release on from its Note Off (parked,
@@ -3244,7 +3690,7 @@ int main(int argc, char **argv)
 					}
 				}
 				CHECK(held_lit > 0 && beyond == 0 && editor_after == 0 && all_after == 0,
-					"PSG stop: the held note lights the loop (%d of 8 looks), never the release (%d); after Note Off nothing lit in the editor (%d) or on ALL (%d)",
+					"PSG stop: the held note lights the loop (%d of 8 looks), never the release (%d); after Note Off nothing lit in the editor (%d) or on ALL in 8 looks over its tail (%d)",
 					held_lit, beyond, editor_after, all_after);
 			}
 			// Stage 50: a double click on the end tab, on the strip after it (from stop: the release
@@ -3264,6 +3710,15 @@ int main(int argc, char **argv)
 				run_ms(200);
 				const bool body_one = one_undo_step(window, body_x, ENV_LOOP_STRIP_Y, ENV_X - 10, top, ENV_RIGHT + 10, ENV_LEVEL_BOTTOM, 100, 400, false, &changed, &differ);
 				CHECK(body_one, "PSG: a double click on the loop's body is one UNDO step (%d rows changed, %d differ)", changed, differ);
+				// Stage 55 (review 50): and OFF -> ON, a double click on the strip where the loop was.
+				click(window, body_x, ENV_LOOP_STRIP_Y);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+				run_ms(200);
+				const bool shadow_one = one_undo_step(window, body_x, ENV_LOOP_STRIP_Y, ENV_X - 10, top, ENV_RIGHT + 10, ENV_LEVEL_BOTTOM, 100, 400, false, &changed, &differ);
+				CHECK(shadow_one, "PSG: a double click on the strip of a loop switched off turns it on in one UNDO step (%d rows changed, %d differ)", changed, differ);
+				click(window, body_x, ENV_LOOP_STRIP_Y);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(100, 400));
+				run_ms(200);
 			}
 		}
 		// Stage 24d: a double click on a level column sets 0 dB (the top) in the first click's undo step.
@@ -3489,6 +3944,15 @@ int main(int argc, char **argv)
 				int changed, differ;
 				const bool one = one_undo_step(window, switch_x + 26, switch_y + 6, 242, ly - 15, 702, ly + 109, BUTTON_EDITOR_X, BUTTON_Y, false, &changed, &differ);
 				CHECK(one, "a double click on ARP ON is one UNDO step (%d rows changed, %d differ after UNDO)", changed, differ);
+				// Stage 55 (review 50): and on ARP OFF, which turns the row on.
+				click(window, switch_x + 26, switch_y + 6);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+				run_ms(200);
+				const bool off_one = one_undo_step(window, switch_x + 26, switch_y + 6, 242, ly - 15, 702, ly + 109, BUTTON_EDITOR_X, BUTTON_Y, false, &changed, &differ);
+				CHECK(off_one, "a double click on ARP OFF is one UNDO step (%d rows changed, %d differ after UNDO)", changed, differ);
+				click(window, switch_x + 26, switch_y + 6);
+				SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+				run_ms(200);
 			}
 			// An empty row has no switch: the length dragged to 0, ARP in grey, no frame; UNDO gives the steps back.
 			drag(window, ARP_PSG_LENGTH_X, ARP_LENGTH(ly), ARP_LENGTH(ly) + 60);
@@ -4094,6 +4558,8 @@ int main(int argc, char **argv)
 		send_midi(0xB0, 78, 0);
 		run_ms(800);
 
+		window = stage55(window, gui, parent, argv[2]);
+
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);
 		run_ms(100);
@@ -4116,6 +4582,7 @@ int main(int argc, char **argv)
 	plugin->destroy(plugin);
 	entry->deinit();
 	printf("clean_shutdown=1\n");
+	printf("gui_test_ms=%lu\n", (unsigned long)(GetTickCount() - run_start));
 	printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 	fflush(stdout);
 	return failures ? 1 : 0;
