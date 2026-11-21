@@ -249,6 +249,8 @@ typedef struct {
 	uint32_t arp_parts;
 	// Channels whose program number sync chooses again, as after a preset step (STORE).
 	uint32_t choose_again;
+	// Stage 56: a whole state (patch_load: a project or a snapshot), which forgets the last DAC note.
+	bool whole;
 	patch_arp arps[PATCH_NUM_CHANNELS];
 	patch_arp arp_bases[PATCH_NUM_CHANNELS];
 } patch_incoming;
@@ -294,6 +296,9 @@ typedef struct {
 	uint32_t dac_shown[PATCH_DAC_VOICES];
 	uint64_t dac_shown_start[PATCH_DAC_VOICES];
 	uint64_t dac_shown_note[PATCH_DAC_VOICES];
+	// Stage 56 (owner's answer 5): the last note channel 6 struck with the DAC on, as a GUI_NOTE_PACK
+	// would hold its key (bit 24 seen); 0 before any or after a whole state came in. The writer's.
+	uint32_t dac_last;
 	// Told whose note each FM voice starts; NULL when nobody listens.
 	patch_owner_fn owner;
 	// The dealer of FM voices: one for all receivers, so all get the same layout.
@@ -514,9 +519,14 @@ void patch_set_dac_note(mdmi_patch *patch, int note, uint32_t blocks, uint16_t l
 void patch_set_dac_image(mdmi_patch *patch, const uint8_t *image, size_t size);
 // Any thread: a DAC voice's state (PATCH_DAC_*) and key.
 int patch_dac_voice_state(const mdmi_patch *patch, int voice, int *key);
-// Any thread (stage 24e): where a sounding DAC voice is in its sample at the writer's clock `now` and
-// `rate`, as a share of the sample from its start, wrapped inside its loop; -1 for a free voice.
-double patch_dac_voice_place(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate);
+// Any thread (stage 24e, 56): a DAC voice's state and key from one read of its copy, and where a
+// sounding one is in its sample at the writer's clock `now` and `rate`, as a share of the sample from
+// its start, wrapped inside its loop; -1 for a free voice. The start and the sample are read after the
+// state and may be a strike newer (ui-concept.md, stage 56).
+int patch_dac_voice_look(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate, int *key, double *place);
+// Any thread (stage 56): the last key channel 6 struck with the DAC on, -1 before any since the last
+// whole state.
+int patch_dac_last(const mdmi_patch *patch);
 // Any thread: how many held notes of a channel don't sound.
 int patch_muted_notes(const mdmi_patch *patch, int channel);
 // Any thread: the channel playing on an FM voice, or -1, and the key it plays there.

@@ -1781,9 +1781,28 @@ int patch_dac_voice_state(const mdmi_patch *patch, int voice, int *key)
 	return (int)(shown >> 8);
 }
 
-double patch_dac_voice_place(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate)
+int patch_dac_last(const mdmi_patch *patch)
 {
-	if (patch_dac_voice_state(patch, voice, NULL) == PATCH_DAC_FREE || rate == 0) {
+	const uint32_t last = __atomic_load_n(&patch->dac_last, __ATOMIC_ACQUIRE);
+	return last >> 24 & 1 ? (int)(last & 0x7F) : -1;
+}
+
+static double dac_voice_place(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate);
+
+int patch_dac_voice_look(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate, int *key, double *place)
+{
+	*key = 0;
+	*place = -1;
+	const int state = patch_dac_voice_state(patch, voice, key);
+	if (state != PATCH_DAC_FREE) {
+		*place = dac_voice_place(patch, voice, now, rate);
+	}
+	return state;
+}
+
+static double dac_voice_place(const mdmi_patch *patch, int voice, uint64_t now, uint32_t rate)
+{
+	if (rate == 0) {
 		return -1;
 	}
 	const uint64_t start = __atomic_load_n(&patch->dac_shown_start[voice], __ATOMIC_RELAXED);
@@ -2468,6 +2487,8 @@ bool patch_midi(mdmi_patch *patch, const uint8_t *bytes, size_t length, patch_em
 	// D59: channel 6's notes with the DAC on, as the ROM gives them voices; its panic stops all four.
 	if (channel == PATCH_NUM_FM_CHANNELS - 1 && patch->model.globals[GLOBAL_DAC] && length >= 3) {
 		if (note && status == 0x90 && bytes[2]) {
+			// Stage 56: the DAC row's last sample, a key with none too.
+			__atomic_store_n(&patch->dac_last, (uint32_t)(bytes[1] & 0x7F) | 1u << 24, __ATOMIC_RELEASE);
 			dac_play(patch, bytes[1] & 0x7F);
 		} else if (note) {
 			dac_release(patch, bytes[1] & 0x7F);
@@ -2638,6 +2659,7 @@ static void begin_incoming(mdmi_patch *patch)
 			patch->incoming.parts = 0;
 			patch->incoming.arp_parts = 0;
 			patch->incoming.choose_again = 0;
+			patch->incoming.whole = false;
 			return;
 		}
 		expected = INCOMING_READY;
@@ -2727,6 +2749,7 @@ bool patch_load(mdmi_patch *patch, const void *buffer, size_t size, const char (
 	// A loaded state replaces voices and rows dropped before it.
 	patch->incoming.arp_parts = 0;
 	patch->incoming.parts = (patch->incoming.parts & PATCH_INCOMING_BANK) | PATCH_INCOMING_VALUES;
+	patch->incoming.whole = true;
 	patch->incoming.values = incoming;
 	end_incoming(patch);
 	return true;
@@ -2913,6 +2936,10 @@ bool patch_take_incoming(mdmi_patch *patch)
 	const patch_incoming *incoming = &patch->incoming;
 	if (incoming->parts & PATCH_INCOMING_VALUES) {
 		patch->model = incoming->values;
+	}
+	// Stage 56 (owner's answer 5): a project or a snapshot forgets the DAC row's last note.
+	if (incoming->whole) {
+		__atomic_store_n(&patch->dac_last, 0, __ATOMIC_RELEASE);
 	}
 	if (incoming->parts & PATCH_INCOMING_BANK) {
 		// A channel that plays its place as it is follows the place; one with tweaks or a file of its

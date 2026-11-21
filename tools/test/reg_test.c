@@ -4104,6 +4104,25 @@ static void test_voice_waves(void)
 	mdmi_engine_watch_waves(engine, false);
 }
 
+// Stage 56 (D94): a copy of the waves carries its showing's number; watching on again stays the same
+// showing, on after off starts the next. Last of all: blocks rendered earlier move the ROM's frame
+// phase under the screen's judges (E7).
+static void test_wave_show(void)
+{
+	const uint32_t show = mdmi_engine_watch_waves(engine, true);
+	render(SETTLE_BLOCKS);
+	const uint32_t first_copy = mdmi_engine_latest_waves(engine)->show, again = mdmi_engine_watch_waves(engine, true);
+	mdmi_engine_watch_waves(engine, false);
+	render(SETTLE_BLOCKS);
+	const uint32_t stale = mdmi_engine_latest_waves(engine)->show, next = mdmi_engine_watch_waves(engine, true);
+	render(SETTLE_BLOCKS);
+	const uint32_t fresh = mdmi_engine_latest_waves(engine)->show;
+	mdmi_engine_watch_waves(engine, false);
+	checkf(first_copy == show && again == show && next == show + 1 && stale == show && fresh == next,
+		"stage 56: the showing's number: copies carry %u (showing %u), watching on again keeps %u, a new showing after off is %u, its copies carry %u, the last copy before it %u",
+		first_copy, show, again, next, fresh, stale);
+}
+
 static void first_frames_measure(void)
 {
 	mdmi_engine_watch_waves(engine, true);
@@ -7931,6 +7950,7 @@ int main(int argc, char **argv)
 	// Stage 44 last, for the same reason.
 	test_env_speed();
 	test_reset();
+	test_wave_show();
 	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
 	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

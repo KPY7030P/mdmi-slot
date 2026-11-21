@@ -70,11 +70,13 @@ typedef struct {
 // Stage 54 (D93): beside them the FM voices 1-6 on their own, the louder side after each voice's DC
 // blocker, before any output or the resampler, at the core's rate voice_rate; voice_end counts the
 // core's frames up to the last one.
+// Stage 56 (D94): show is the number of the showing that copied them (mdmi_engine_watch_waves).
 #define MDMI_WAVE_FRAMES 8192
 #define MDMI_WAVE_VOICES 6
 typedef struct {
 	uint64_t end;
 	uint32_t count;
+	uint32_t show;
 	float samples[MDMI_OUTPUTS][MDMI_WAVE_FRAMES];
 	uint64_t voice_end;
 	uint32_t voice_count;
@@ -146,7 +148,9 @@ void mdmi_engine_test_ram_write(const mdmi_engine *e, uint32_t address, uint16_t
 void mdmi_engine_watch_frames(mdmi_engine *e, bool watching);
 const mdmi_frame *mdmi_engine_latest_frame(mdmi_engine *e);
 // Main thread (stage 24e): the outputs' last samples are only copied while someone watches them.
-void mdmi_engine_watch_waves(mdmi_engine *e, bool watching);
+// Stage 56: watching after not watching (or the first time) starts a new showing; the number of the
+// showing now, which each copy made from then on carries in `show`.
+uint32_t mdmi_engine_watch_waves(mdmi_engine *e, bool watching);
 const mdmi_waves *mdmi_engine_latest_waves(mdmi_engine *e);
 
 // Audio thread. Queue a block's MIDI first, then render that block.

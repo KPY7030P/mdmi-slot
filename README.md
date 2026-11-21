@@ -7,7 +7,7 @@ hear is the console's own YM2612 FM chip and SN76489 PSG, played from your MIDI 
 
 This is an **unofficial** project. It is not made or endorsed by the authors of MDMI or BlastEm, nor by Sega.
 
-**Status: preview (0.47.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
+**Status: preview (0.48.0).** It has been tested on one computer and in one host. Expect rough edges; see [Known issues](#known-issues).
 
 ## What you get
 
@@ -46,6 +46,12 @@ This is an **unofficial** project. It is not made or endorsed by the authors of 
   (`TL 49. DOUBLE CLICK: 39 FROM FILE`). Closing or hiding the plugin's window with the mouse button held
   changes nothing; so does another window taking the mouse mid-press (Alt+Tab). After LOAD, SAVE or EXPORT the
   footer shows what happened until the mouse moves. Russian sample names are cut by whole letters on the DAC page, in its list, on ALL and in the footer.
+- ALL shows what sounds now (0.48.0): opening ALL or the plugin's window again never shows a wave left from
+  before, not for one frame; when the host stops calling the plugin (its audio off), the OUT boxes go flat and
+  the DAC's squares go out within 100 ms. The footer over the squares and over an OUT box always says what that
+  frame drew. The DAC row's name and picture remember only notes played with the DAC on: FM6 notes before
+  the DAC was switched on no longer name a sample; loading a project (or a snapshot) forgets the last one,
+  stopping Live doesn't.
 - MONO on FM channels 1-6 (0.33.0): with MONO a note played over a held one sounds on the same voice and starts
   its own attack, with no glide and no second voice; letting go of the top key strikes the one below again.
   MONO and PORTA are a pair in the channel's row, one click picks either; PORTA wins if both are on (from a

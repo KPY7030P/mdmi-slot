@@ -147,9 +147,10 @@ A0, B0, C0, D0, E0 = 0, 8 * BAR, 12 * BAR, 20 * BAR, 28 * BAR   # section starts
 C, E, G = 48, 52, 55
 # DAC on/off while notes hold (bars 3, 5, 7), on again for the TV / DAC wave part
 # Stage 51: on again for the drums of bars 111-114 (K0 is where they start).
+# Stage 56: off for K6's FM notes of 115-116, on again for the drums of 117-118.
 K0 = 110 * BAR
 automate(mdmi_t, dac_ptr, [(A0 + 2 * BAR, 1), (A0 + 4 * BAR, 0), (A0 + 6 * BAR, 1), (B0, 0),
-                           (D0, 1), (E0, 0), (K0, 1), (K0 + 4 * BAR, 0)])
+                           (D0, 1), (E0, 0), (K0, 1), (K0 + 4 * BAR, 0), (K0 + 6 * BAR, 1), (K0 + 8 * BAR, 0)])
 automate(mdmi_t, mono_ptr, [(C0, 1), (D0, 0)])
 
 new_tracks = [mdmi_t]
@@ -378,6 +379,18 @@ add_clip(lanes[5], '12 DAC: и тарелка, четыре голоса', K0 + 
 add_clip(lanes[5], '12 DAC: снова без тарелки', K0 + 3 * BAR, BAR, kit, 60)
 start = K0 + 4 * BAR
 
+# --- stage 56: the DAC row shows what sounds now (bars 115-118) ---
+# DAC off: K6 plays two FM notes on keys the kit has samples on (50, then 45); the DAC row's name must
+# not take them. The automation switches the DAC on at 117; 117-118 the drums of 111. The owner stops
+# Play in 118 (squares go out) and closes and opens the window during 111-114 (no old wave blinks).
+F0 = start
+add_clip(lanes[5], '13 DAC выкл: FM6 играет две ноты', F0, 2 * BAR, [(50, 0, 3.5), (45, 4, 3.5)], 60)
+# The drums of 117 start on its second beat: between the switch and the first drum the row names the
+# last drum of 114 (the closed hat), not the sample of the FM notes' keys (0.47 showed that).
+add_clip(lanes[5], '13 DAC вкл: барабаны со второй доли', F0 + 2 * BAR, BAR, [n for n in kit if n[1] >= 1], 60)
+add_clip(lanes[5], '13 DAC вкл: остановите Play здесь', F0 + 3 * BAR, BAR, kit + [(48, 0, 4)], 60)
+start = F0 + 4 * BAR
+
 for t in all_tracks: tracks.remove(t)
 for t in new_tracks + returns: tracks.append(t)
 for sc in ls.find('Scenes'):
@@ -402,8 +415,8 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
   9-12   п.2  октава на К1, квинта на К2, DAC выключен. Окошки с волной на странице ALL не дёргаются.
   13-20  п.4  ноты внахлёст на К1, Mono CH1 включён автоматизацией. Одна нота, новая перебивает,
               после отпускания возвращается прежняя, без скольжения.
-  21-28  п.3, п.5  арпеджио на К1 и DAC на К6, DAC включён. Смотрите TV RGB/COMP на странице ROM
-              и на странице ALL в строке 6 смотрите живую волну DAC в окошке OUT.
+  21-28  этапы 36, 39  арпеджио на К1 и DAC на К6, DAC включён. Смотрите TV RGB/COMP на странице ROM
+              и на странице ALL в строке 6 живую волну DAC в окошке OUT.
   29-36  п.6  гласная А: ноты снизу вверх, потом низкая мелодия. Внизу слышна «а», вверху сливается.
   37-44       гласная О
   45-52       гласная У
@@ -437,6 +450,13 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               оранжевая нота; свободен: «---»), VOL и PAN, живая волна в окошке OUT, имя сэмпла справа.
               Горят 2-3 квадратика, в 113 такте должны загореться все четыре. Щелчок по окошку OUT:
               картинка последнего сэмпла с линиями голосов, второй щелчок: снова волна.
+              Этап 56: во время 111-114 закройте окно плагина и откройте снова: в окошках OUT не должна
+              мелькнуть старая волна, сразу пусто или то, что звучит сейчас.
+  115-118 этап 56, строка DAC показывает то, что звучит. 115-116: DAC выключен, К6 играет две ноты
+              звуком FM (строка 6 на ALL обычная, FM). 117: автоматизация включает DAC, на К6 барабаны как
+              в 111, но первый удар на второй доле. В начале 117, до первого удара, справа в строке 6 имя
+              последнего барабана 114 такта (хет), а не сэмпла клавиш нот 115-116; картинка (щелчок по
+              окошку OUT) тоже хет. Остановите Play в 118 (во время тарелки): квадратики гаснут.
 
 Этап 55, без тактов (руками, по docs/owner-check-55-56.md): рядом с проектом лежит «Большая бочка из игры.wav»
 (копия бочки ROM с длинным русским именем). Бросьте его из проводника на клавишу страницы DAC: имя в сетке,

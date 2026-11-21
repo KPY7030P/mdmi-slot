@@ -20,7 +20,8 @@
 #define TIMER_MS 33
 #define WINDOW_CLASS "MDMIPluginWindow"
 
-// The 16 colours of docs/design/ui-concept.md, all real CRAM values.
+// The window's colours (docs/design/ui-concept.md, "Визуальная система", stage 56): 19 real CRAM values,
+// with the DAC grid's two sharp shades below 21.
 #define C_BG 0x000000
 #define C_CELL 0x222222
 #define C_LINE 0x444444
@@ -274,8 +275,63 @@ typedef struct {
 	int look;
 } cell;
 
+// Stage 56 (D94, ui-concept.md "Этап 56"): what one frame knows of the engine, the DAC's voices and the
+// OUT boxes, read once at its start; the drawing and the footer of that frame take only this.
+// A DAC voice: sounds while it is not free and has a place on its sample (stage 51's rule); one that
+// doesn't but kept its key played out (a one-shot run out, a loop's release ended); key 0 is free.
+typedef struct {
+	bool sounds, done;
+	int state;
+	int key;
+	double place;
+} dac_voice_look;
+
+// The last note channel 6 struck with the DAC on (-1 before any since the last whole state) and its sample.
+typedef struct {
+	int key;
+	bool shown, file;
+	rom_sample sample;
+	const char *name;
+} dac_last_note;
+
+// What an OUT box draws (stage 54): samples at their rate, their end counted in that rate, the key
+// whose 2 periods it shows and the channel whose Fine Tune it plays at.
+typedef struct {
+	const float *s;
+	int count;
+	uint64_t end;
+	double rate;
+	int key;
+	int tuned_by;
+	bool lent;
+} out_source;
+
+typedef struct {
+	mdmi_engine_stats stats;
+	uint64_t now;
+	// ALL only, else NULL; fresh: drawn as they are, else as silence; still: their end stood over
+	// 100 ms, so the DAC's voices count as not sounding.
+	const mdmi_waves *waves;
+	bool fresh, still;
+	dac_voice_look dac[PATCH_DAC_VOICES];
+	int dac_sounding;
+	dac_last_note last;
+	// The DAC box's wave view: whether it draws, from where and how long.
+	bool dac_live;
+	double dac_start;
+	int dac_span;
+	out_source out[PATCH_NUM_CHANNELS];
+	bool out_has[PATCH_NUM_CHANNELS];
+} frame_look;
+
 struct mdmi_gui {
 	gui_source source;
+	// Stage 56: this frame's record; the showing of the waves it watches, the end last seen and when
+	// it last moved by the window's clock.
+	frame_look look;
+	uint32_t wave_show;
+	bool wave_showing, wave_end_seen;
+	uint64_t wave_end, wave_moved_ms;
 	HWND window;
 	HWND parent;
 	int scale;
@@ -860,8 +916,9 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 		// nor velocity here: the block only says a sample sounds, green while its key is held.
 		bool any_held = false, any_out = false;
 		for (int v = 0; v < PATCH_DAC_VOICES; v++) {
-			int key = 0;
-			const int state = patch_dac_voice_state(g->source.patch, v, &key);
+			// Stage 56: this frame's copy; with the waves' end standing a held voice shows let go.
+			const int key = g->look.dac[v].key;
+			const int state = g->look.still && g->look.dac[v].state == PATCH_DAC_HELD ? PATCH_DAC_OUT : g->look.dac[v].state;
 			column_note(g, y, v, state != PATCH_DAC_FREE, key, state == PATCH_DAC_HELD);
 			any_held = any_held || state == PATCH_DAC_HELD;
 			any_out = any_out || state == PATCH_DAC_OUT;
@@ -2320,7 +2377,7 @@ static void draw_envelope(mdmi_gui *g, const patch_values *values)
 	// never in a release not played.
 	patch_shape played;
 	played_shape(shape, stop, &played);
-	const int playing = envelope_frame(g, &played, psg, mdmi_engine_get_stats(g->source.engine).sample_rate);
+	const int playing = envelope_frame(g, &played, psg, g->look.stats.sample_rate);
 	for (int i = 0; i < count; i++) {
 		const int x = column_x(count, i), w = column_x(count, i + 1) - x;
 		const bool in_loop = loop && i >= shape->loop_start && i < end;
@@ -2519,7 +2576,7 @@ static void draw_curves(mdmi_gui *g, const patch_values *values, int channel, in
 static double fm_cursor_seconds(const mdmi_gui *g, int channel)
 {
 	const gui_psg_times *times = g->source.psg_times;
-	const unsigned rate = mdmi_engine_get_stats(g->source.engine).sample_rate;
+	const unsigned rate = g->look.stats.sample_rate;
 	if (!times || rate == 0 || channel < 0 || channel >= PATCH_NUM_FM_CHANNELS) {
 		return -1;
 	}
@@ -2597,7 +2654,13 @@ static const dac_set *dac_of(const mdmi_gui *g)
 	return g->source.files->host.view->dac;
 }
 
+// Drawing takes the frame's record (stage 56); a press or a drop asks the engine now, as before.
 static bool engine_booted(const mdmi_gui *g)
+{
+	return g->look.stats.booted;
+}
+
+static bool engine_booted_now(const mdmi_gui *g)
 {
 	return mdmi_engine_get_stats(g->source.engine).booted;
 }
@@ -2785,7 +2848,7 @@ static void draw_dac_top(mdmi_gui *g)
 	text_right(g, DAC_FREE_X + DAC_FREE_W - 4, 34, buffer, (room - used) * 10 < room ? C_AMBER : C_TEXT, 2, 84);
 	// A lamp, not a switch (stage 23, D74): lit while a track's audio reaches the DAC through DAC In,
 	// which plays together with the samples. This page shows only while the DAC is on.
-	const bool heard = mdmi_engine_get_stats(g->source.engine).input_signal;
+	const bool heard = g->look.stats.input_signal;
 	if (heard) {
 		fill(g, DAC_AUDIO_X, DAC_MODE_Y, DAC_AUDIO_W, DAC_MODE_H, C_DAC_DARK);
 	}
@@ -3376,7 +3439,7 @@ static bool dac_panel_down(mdmi_gui *g, int x, int y)
 	const int c = dac_control_at(g, x, y);
 	const dac_sample *own = panel_sample(g, g->dac_selected);
 	g->dac_tail_clicked = false;
-	if (c == DACC_NONE || !own || !engine_booted(g)) {
+	if (c == DACC_NONE || !own || !engine_booted_now(g)) {
 		return c != DACC_NONE;
 	}
 	dac_edit edit = own->edit;
@@ -3417,7 +3480,7 @@ static bool dac_panel_double_click(mdmi_gui *g, int x, int y)
 	if (c == DACC_NONE || !own) {
 		return false;
 	}
-	if (!engine_booted(g)) {
+	if (!engine_booted_now(g)) {
 		return true;
 	}
 	dac_edit edit = own->edit;
@@ -3865,7 +3928,7 @@ static bool dac_hint(mdmi_gui *g, char *out, size_t size)
 	const bool clear = grid && in_box(x, y, DAC_CLEAR_X, DAC_BUTTON_Y, DAC_BUTTON_W, DAC_BUTTON_H);
 	const bool wave = grid && in_box(x, y, WAVE_X, WAVE_Y, WAVE_W, WAVE_H);
 	if (in_box(x, y, DAC_AUDIO_X, DAC_MODE_Y, DAC_AUDIO_W, DAC_MODE_H)) {
-		snprintf(out, size, mdmi_engine_get_stats(g->source.engine).input_signal ? "AUDIO IN: A TRACK IN THE DAC. FILTER UP FOR ITS GRIT"
+		snprintf(out, size, g->look.stats.input_signal ? "AUDIO IN: A TRACK IN THE DAC. FILTER UP FOR ITS GRIT"
 			: "AUDIO IN: NO SIGNAL. LIVE: TRACK'S AUDIO TO DAC IN-MDMI");
 		return true;
 	}
@@ -4935,7 +4998,7 @@ static bool env_speed_hint(mdmi_gui *g, char *hint, size_t size)
 static void draw_footer(mdmi_gui *g)
 {
 	fill(g, 0, FOOTER_Y, GUI_WIDTH, GUI_HEIGHT - FOOTER_Y, C_BG);
-	mdmi_engine_stats stats = mdmi_engine_get_stats(g->source.engine);
+	mdmi_engine_stats stats = g->look.stats;
 	if (++g->ticks >= TIMER_PER_SECOND) {
 		g->ticks = 0;
 		g->underruns_per_second = stats.underruns - g->underruns_second_ago;
@@ -5853,35 +5916,29 @@ static int lowest_key(mdmi_gui *g, const patch_values *values, int channel)
 	return lowest;
 }
 
-// What an OUT box draws (stage 54): samples at their rate, their end counted in that rate, the key
-// whose 2 periods it shows and the channel whose Fine Tune it plays at.
-typedef struct {
-	const float *s;
-	int count;
-	uint64_t end;
-	double rate;
-	int key;
-	int tuned_by;
-	bool lent;
-} out_source;
+// Stage 56: waves not of this showing, or whose end stood, draw as these: silence.
+static const float silent_wave[MDMI_WAVE_FRAMES];
 
 // The row's own output while its channel sounds a note (lowest_key), else its voice while another
 // channel's chord plays on it, else nothing (ui-concept.md, stage 54, rule by rule).
-static bool out_source_of(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, unsigned rate, out_source *src)
+static bool out_source_of(mdmi_gui *g, const patch_values *values, int channel, const mdmi_waves *waves, bool fresh, unsigned rate, out_source *src)
 {
 	if (!waves) {
 		return false;
 	}
-	src->key = lowest_key(g, values, channel);
-	if (src->key >= 0) {
-		*src = (out_source){waves->samples[channel], (int)waves->count, waves->end, rate, src->key, channel, false};
+	const int key = lowest_key(g, values, channel);
+	if (key >= 0) {
+		*src = fresh ? (out_source){waves->samples[channel], (int)waves->count, waves->end, rate, key, channel, false}
+			: (out_source){silent_wave, MDMI_WAVE_FRAMES, MDMI_WAVE_FRAMES, rate, key, channel, false};
 		return true;
 	}
 	const int player = voice_lent_to(g, channel);
 	if (player < 0) {
 		return false;
 	}
-	*src = (out_source){waves->voices[channel], (int)waves->voice_count, waves->voice_end, waves->voice_rate, patch_voice_key(g->source.patch, channel), player, true};
+	const int lent_key = patch_voice_key(g->source.patch, channel);
+	*src = fresh ? (out_source){waves->voices[channel], (int)waves->voice_count, waves->voice_end, waves->voice_rate, lent_key, player, true}
+		: (out_source){silent_wave, MDMI_WAVE_FRAMES, MDMI_WAVE_FRAMES, rate, lent_key, player, true};
 	return true;
 }
 
@@ -5996,15 +6053,15 @@ static void draw_trace(mdmi_gui *g, int box_x, int box_w, int y, const float *s,
 	}
 }
 
-static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y, const mdmi_waves *waves, unsigned rate)
+static void draw_out(mdmi_gui *g, const patch_values *values, int channel, int y)
 {
 	fill(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_BG);
 	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
 	fill(g, ALL_OUT_X + 1, y + 19, ALL_OUT_W - 2, 1, C_CELL);
 	double start;
 	int span;
-	out_source src;
-	if (!out_source_of(g, values, channel, waves, rate, &src) || !out_span(values, channel, &src, &start, &span)) {
+	const out_source src = g->look.out[channel];
+	if (!g->look.out_has[channel] || !out_span(values, channel, &src, &start, &span)) {
 		return;
 	}
 	const bool fm = channel_is_fm(channel);
@@ -6058,45 +6115,25 @@ static uint64_t dac_now(const mdmi_gui *g)
 	return g->source.psg_times ? __atomic_load_n(&g->source.psg_times->clock, __ATOMIC_ACQUIRE) : 0;
 }
 
-// The four voices as one frame sees them (D59's copy, read once, so the squares, the picture's lines and
-// the footer agree): a voice sounds while it is not free and has a place on its sample (stage 51's
-// rule); one that doesn't but kept its key played out (a one-shot run out, a loop's release ended), as
-// the ROM screen's dim note; key 0 is free (never struck, or let go and freed).
-typedef struct {
-	bool sounds, done;
-	int key;
-	double place;
-} dac_voice_look;
-
-static int dac_voices_read(const mdmi_gui *g, dac_voice_look looks[PATCH_DAC_VOICES])
+// The four voices as one frame sees them (D59's copy, one call a voice, stage 56): with the waves'
+// end standing, every one counts as not sounding, as the ROM screen's dim note when it kept its key.
+static void dac_voices_read(mdmi_gui *g, frame_look *look)
 {
-	const uint64_t now = dac_now(g);
-	const unsigned rate = mdmi_engine_get_stats(g->source.engine).sample_rate;
-	int sounding = 0;
+	look->dac_sounding = 0;
 	for (int v = 0; v < PATCH_DAC_VOICES; v++) {
-		dac_voice_look *look = &looks[v];
-		const int state = patch_dac_voice_state(g->source.patch, v, &look->key);
-		look->place = state == PATCH_DAC_FREE ? -1 : patch_dac_voice_place(g->source.patch, v, now, rate);
-		look->sounds = look->place >= 0;
-		look->done = !look->sounds && look->key != 0;
-		sounding += look->sounds;
+		dac_voice_look *voice = &look->dac[v];
+		voice->state = patch_dac_voice_look(g->source.patch, v, look->now, look->stats.sample_rate, &voice->key, &voice->place);
+		voice->sounds = voice->place >= 0 && !look->still;
+		voice->done = !voice->sounds && voice->key != 0;
+		look->dac_sounding += voice->sounds;
 	}
-	return sounding;
 }
 
-// The last note struck on channel 6 (-1 before any since the plugin opened) and its sample, if it has one.
-typedef struct {
-	int key;
-	bool shown, file;
-	rom_sample sample;
-	const char *name;
-} dac_last_note;
-
+// Stage 56 (owner's answer 5): the last note struck on channel 6 with the DAC on, and its sample.
 static void dac_last(const mdmi_gui *g, dac_last_note *last)
 {
-	const uint32_t note = __atomic_load_n(&g->source.notes[PATCH_NUM_FM_CHANNELS - 1], __ATOMIC_ACQUIRE);
 	memset(last, 0, sizeof(*last));
-	last->key = GUI_NOTE_SEEN(note) ? (int)GUI_NOTE_KEY(note) : -1;
+	last->key = patch_dac_last(g->source.patch);
 	last->shown = last->key >= 0 && note_sample(g, last->key, &last->sample, &last->name, &last->file) && last->sample.length > 0;
 }
 
@@ -6123,13 +6160,12 @@ static void draw_dac_squares(mdmi_gui *g, int y, const dac_voice_look looks[PATC
 
 // The live output in the OUT box (stage 39's view, now in the box): the last 20 ms, no anchor (the DAC
 // has no pitch), at OUT_FULL_DAC (stage 51); silence is the frame and the middle line.
-static void draw_dac_wave(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned rate)
+static void draw_dac_wave(mdmi_gui *g, int y)
 {
 	fill(g, ALL_OUT_X + 1, y + 19, ALL_OUT_W - 2, 1, C_CELL);
-	double start;
-	int span;
-	if (dac_live_span(waves, rate, &start, &span)) {
-		draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)waves->count, start, span, OUT_FULL_DAC, C_DAC, C_DAC_DARK);
+	const frame_look *look = &g->look;
+	if (look->dac_live) {
+		draw_trace(g, ALL_OUT_X, ALL_OUT_W, y, look->waves->samples[PATCH_NUM_FM_CHANNELS - 1], (int)look->waves->count, look->dac_start, look->dac_span, OUT_FULL_DAC, C_DAC, C_DAC_DARK);
 	}
 }
 
@@ -6202,21 +6238,18 @@ static void draw_dac_name(mdmi_gui *g, int y, const dac_last_note *last)
 }
 
 // The DAC's row on ALL (stage 53).
-static void draw_all_dac(mdmi_gui *g, int y, const mdmi_waves *waves, unsigned rate)
+static void draw_all_dac(mdmi_gui *g, int y)
 {
-	dac_voice_look looks[PATCH_DAC_VOICES];
-	dac_voices_read(g, looks);
-	dac_last_note last;
-	dac_last(g, &last);
-	draw_dac_squares(g, y, looks);
+	const frame_look *look = &g->look;
+	draw_dac_squares(g, y, look->dac);
 	fill(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_BG);
 	frame(g, ALL_OUT_X, y + 4, ALL_OUT_W, ALL_OUT_H, C_CELL);
 	if (dac_picture(g)) {
-		draw_dac_picture(g, y, &last, looks);
+		draw_dac_picture(g, y, &look->last, look->dac);
 	} else {
-		draw_dac_wave(g, y, waves, rate);
+		draw_dac_wave(g, y);
 	}
-	draw_dac_name(g, y, &last);
+	draw_dac_name(g, y, &look->last);
 }
 
 // What the footer says over ALL's OUT box, and over the DAC's row (stage 24e, 53).
@@ -6237,9 +6270,8 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 	if (is_dac(values, channel)) {
 		const int y = row_y(channel);
 		if (in_box(g->mouse_x, g->mouse_y, ALL_SOUND_X, y, ALL_SOUND_W, ROW_H)) {
-			// Over the squares: how many sound (stage 51's count, named once).
-			dac_voice_look looks[PATCH_DAC_VOICES];
-			const int sounding = dac_voices_read(g, looks);
+			// Over the squares: how many sound (stage 51's count, named once), as this frame drew them.
+			const int sounding = g->look.dac_sounding;
 			if (sounding) {
 				snprintf(hint, size, "CH6 DAC: %d OF 4 VOICES SOUND", sounding);
 			} else {
@@ -6247,19 +6279,15 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 			}
 			return true;
 		}
-		dac_last_note last;
-		dac_last(g, &last);
+		const dac_last_note last = g->look.last;
 		char key[8] = "";
 		if (last.key >= 0) {
 			note_name(last.key, key, sizeof(key));
 		}
 		if (in_box(g->mouse_x, g->mouse_y, ALL_OUT_X, y, ALL_OUT_W, ROW_H)) {
 			// Stage 39's texts: what the box shows and what a click does.
-			double start;
-			int span;
 			if (!dac_picture(g)) {
-				snprintf(hint, size, dac_live_span(mdmi_engine_latest_waves(g->source.engine), mdmi_engine_get_stats(g->source.engine).sample_rate, &start, &span)
-					? "CH6 DAC OUT: LAST 20 MS. CLICK: SAMPLE" : "CH6 DAC OUT: SILENT. CLICK: SAMPLE");
+				snprintf(hint, size, g->look.dac_live ? "CH6 DAC OUT: LAST 20 MS. CLICK: SAMPLE" : "CH6 DAC OUT: SILENT. CLICK: SAMPLE");
 			} else if (last.shown) {
 				snprintf(hint, size, "CH6 DAC: LAST SAMPLE. CLICK: LIVE OUT");
 			} else if (last.key >= 0) {
@@ -6287,14 +6315,17 @@ static bool out_hint(mdmi_gui *g, char *hint, size_t size)
 	if (is_dac(values, channel) || !in_box(g->mouse_x, g->mouse_y, ALL_OUT_X, row_y(channel) + 4, ALL_OUT_W, ALL_OUT_H)) {
 		return false;
 	}
-	const int key = lowest_key(g, values, channel);
-	const int player = key < 0 ? voice_lent_to(g, channel) : -1;
+	// Stage 56: what this frame's box drew.
+	const out_source *src = &g->look.out[channel];
+	const bool has = g->look.out_has[channel];
+	const int key = has ? src->key : -1;
+	const int player = has && src->lent ? src->tuned_by : -1;
 	if (channel == PATCH_NUM_CHANNELS - 1) {
 		snprintf(hint, size, "CH10 OUT: LAST 5 MS");
 	} else if (player >= 0) {
 		// Stage 54 (art-director): where the note is heard, not CH1 OUT: it sounds on the chord's output (D46).
 		char name[8];
-		note_name(patch_voice_key(g->source.patch, channel), name, sizeof(name));
+		note_name(key, name, sizeof(name));
 		snprintf(hint, size, "VOICE %d PLAYS CH%d %s, HEARD ON CH%d OUT", channel + 1, player + 1, name, player + 1);
 	} else if (key >= 0) {
 		char name[8];
@@ -6332,7 +6363,7 @@ static void draw_all_more(mdmi_gui *g, const patch_values *values, int channel, 
 // The overview (stage 10): every channel's sound in small, VOL, PAN and source, on the rail's rows.
 static void draw_all(mdmi_gui *g, const patch_values *values)
 {
-	const unsigned rate = mdmi_engine_get_stats(g->source.engine).sample_rate;
+	const unsigned rate = g->look.stats.sample_rate;
 	fill(g, RAIL_W + 1, HEADER_H, GUI_WIDTH - RAIL_W - 1, GLOBALS_Y - HEADER_H, C_BG);
 	fill(g, RAIL_W + 1, HEADER_H, GUI_WIDTH - RAIL_W - 1, GROUP_H, C_CELL);
 	fill(g, RAIL_W + 1, RAIL_PSG_Y - GROUP_H, GUI_WIDTH - RAIL_W - 1, GROUP_H, C_CELL);
@@ -6343,17 +6374,16 @@ static void draw_all(mdmi_gui *g, const patch_values *values)
 	text_right(g, PAGE_RIGHT - 2, RAIL_PSG_Y - GROUP_H + 4, "SOURCE", C_HINT, 1, 60);
 	text(g, ALL_OUT_X, HEADER_H + 4, "OUT", C_HINT, 1);
 	text(g, ALL_OUT_X, RAIL_PSG_Y - GROUP_H + 4, "OUT", C_HINT, 1);
-	const mdmi_waves *waves = mdmi_engine_latest_waves(g->source.engine);
 	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
 		const int y = row_y(channel);
 		// Channel 3 in Ch3 Special in its pink (D62); draw_editor puts FM's colours back after the page.
 		g->sp = channel == 2 && is_special(values, 2);
 		fill(g, RAIL_W + 1, y + ROW_H - 1, GUI_WIDTH - RAIL_W - 1, 1, C_CELL);
 		if (is_dac(values, channel)) {
-			draw_all_dac(g, y, waves, rate);
+			draw_all_dac(g, y);
 			continue;
 		}
-		draw_out(g, values, channel, y, waves, rate);
+		draw_out(g, values, channel, y);
 		if (channel_is_fm(channel)) {
 			const int16_t *v = values->channels[channel];
 			// The diagram or, after a click on it, the four envelopes in small, each row its own.
@@ -6481,7 +6511,7 @@ static void draw_rom(mdmi_gui *g)
 
 static void draw_status(mdmi_gui *g)
 {
-	mdmi_engine_stats stats = mdmi_engine_get_stats(g->source.engine);
+	mdmi_engine_stats stats = g->look.stats;
 	// What failed is told in the footer.
 	if (stats.failed) {
 		text(g, STATUS_X, 7, "FAILED", C_ERROR, 2);
@@ -6562,8 +6592,53 @@ static bool tv_hint(mdmi_gui *g, char *hint, size_t size)
 	return true;
 }
 
+// Stage 56 (D94, ui-concept.md "Этап 56"): the frame's record. The waves are this showing's (the
+// number watch_waves gave) and their end moved within WAVE_STILL_MS by the window's clock, the
+// showing's start counting as a move; else they draw as silence, and once their end stood, the
+// DAC's voices count as not sounding.
+#define WAVE_STILL_MS 100
+static void look_frame(mdmi_gui *g, bool all)
+{
+	frame_look *look = &g->look;
+	const uint32_t show = mdmi_engine_watch_waves(g->source.engine, all);
+	look->stats = mdmi_engine_get_stats(g->source.engine);
+	look->now = dac_now(g);
+	const unsigned rate = look->stats.sample_rate;
+	look->waves = NULL;
+	look->fresh = look->still = false;
+	if (all) {
+		const uint64_t ms = GetTickCount64();
+		if (!g->wave_showing || show != g->wave_show) {
+			g->wave_showing = true;
+			g->wave_show = show;
+			g->wave_end_seen = false;
+			g->wave_moved_ms = ms;
+		}
+		const mdmi_waves *waves = mdmi_engine_latest_waves(g->source.engine);
+		const bool mine = waves->show == show;
+		if (mine && (!g->wave_end_seen || waves->end != g->wave_end)) {
+			g->wave_end_seen = true;
+			g->wave_end = waves->end;
+			g->wave_moved_ms = ms;
+		}
+		look->still = ms - g->wave_moved_ms > WAVE_STILL_MS;
+		look->fresh = mine && !look->still;
+		look->waves = waves;
+	} else {
+		g->wave_showing = false;
+	}
+	dac_voices_read(g, look);
+	dac_last(g, &look->last);
+	look->dac_live = look->fresh && dac_live_span(look->waves, rate, &look->dac_start, &look->dac_span);
+	const patch_values *values = patch_view(g->source.patch);
+	for (int channel = 0; channel < PATCH_NUM_CHANNELS; channel++) {
+		look->out_has[channel] = all && !is_dac(values, channel) && out_source_of(g, values, channel, look->waves, look->fresh, rate, &look->out[channel]);
+	}
+}
+
 static void render(mdmi_gui *g)
 {
+	look_frame(g, *g->source.page == PAGE_ALL);
 	fill(g, 0, 0, GUI_WIDTH, HEADER_H, C_BG);
 	fill(g, 0, HEADER_H - 1, GUI_WIDTH, 1, C_LINE);
 	text(g, 8, 7, "MDMI", C_TEXT, 2);
@@ -6583,8 +6658,7 @@ static void render(mdmi_gui *g)
 	if (shows_store(g)) {
 		action_button(g, ACTION_STORE, "STORE", files_can_store(g->source.files, *g->source.channel));
 	}
-	// Stage 24e: the outputs' last samples are copied only while ALL shows them.
-	mdmi_engine_watch_waves(g->source.engine, page == PAGE_ALL);
+	// Stage 24e: the outputs' last samples are copied only while ALL shows them (look_frame, stage 56).
 	if (rom) {
 		action_button(g, ACTION_EXPORT, "EXPORT", !g->exporting);
 		send_screen_names(g);
@@ -7258,7 +7332,7 @@ static void on_down(mdmi_gui *g, int x, int y)
 	}
 	if (dac_editor(g, patch_view(g->source.patch))) {
 		const int note = grid_note_at(x, y);
-		const bool booted = engine_booted(g);
+		const bool booted = engine_booted_now(g);
 		if (dac_panel_down(g, x, y)) {
 			refresh(g);
 			return;
@@ -7292,7 +7366,7 @@ static void on_down(mdmi_gui *g, int x, int y)
 	}
 	if (dac_bank(g, patch_view(g->source.patch))) {
 		const int note = dac_note_at(g, x, y);
-		if (note >= 0 && over_reset(g, note, x, y) && engine_booted(g)) {
+		if (note >= 0 && over_reset(g, note, x, y) && engine_booted_now(g)) {
 			char message[FILES_MESSAGE];
 			if (files_reset_sample(g->source.files, note, message, sizeof(message))) {
 				say(g, message, C_AMBER, MESSAGE_TICKS);
@@ -7835,7 +7909,7 @@ static bool aim_drop(mdmi_gui *g, POINTL point)
 		const int note = g->dac_drop_wave ? g->dac_selected : dac_editor(g, values) ? grid_note_at(x, y) : dac_bank(g, values) ? dac_note_at(g, x, y) : -1;
 		if (!dac_editor(g, values) && !dac_bank(g, values)) {
 			hint(g, C_LABEL, "WAV: open CH6 with DAC on");
-		} else if (!engine_booted(g)) {
+		} else if (!engine_booted_now(g)) {
 			hint(g, C_LABEL, "Wait: the engine is loading");
 		} else if (g->file_samples != g->file_count) {
 			hint(g, C_LABEL, "Only WAV files go to notes");

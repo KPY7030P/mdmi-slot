@@ -416,7 +416,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   voices from the dealer, or its PSG note) from the rising zero crossing nearest a grid of whole periods on the outputs' clock (the same crest each frame, a chord too), at one scale (`OUT_FULL`),
   the noise 5 ms. The source cell moved to x 620. The DAC's row has VOL (bar in the DAC's dark colour) and PAN,
   and `draw_all_dac` draws the last struck note's sample (`note_sample`) with its loop on grey and a line per
-  voice from `patch_dac_voice_place` (D59's copy; since stage 53 in the OUT box, below). Our ROM's `midi_dac_play` writes the voice's volume as
+  voice from `patch_dac_voice_look` (D59's copy; since stage 53 in the OUT box, below). Our ROM's `midi_dac_play` writes the voice's volume as
   velocity x (CC 7 + 1) >> 10 (`midi_dac_channel_volume`; `enable_dac` hands it channel 6's volume), not MDMI canon.
 - ALL's DAC row (stage 53, D92, art-director, ui-concept.md) reads as the other rows. Where FM has its diagram
   (x 242-345), four squares 23 x 20, square k voice k as the ROM screen's DAC table: lit `C_DAC` with the key in
@@ -425,13 +425,12 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   PAN; channel 6's live output in the OUT box (the last 20 ms, no anchor, `OUT_FULL_DAC` 0.168 from
   `reg_test --peaks`, so full swing at volume 15 comes to the box's edge; silence is the frame and the middle
   line); the last sample's name in the source column (`sample_label`, cut to 14 letters by `text_right`, `FILE`
-  above a file's, `---` before any note on MIDI 6 since the plugin opened or on a key with no sample). Bit 6 of
+  above a file's, `---` before any DAC note (stage 56: since the last whole state) or on a key with no sample). Bit 6 of
   the ALL mask (`DAC_PICTURE_BIT`, stage 39's switch; bits 0-5 are FM rows' envelopes) puts the last sample in the
   box instead: its loop on grey, the bytes at the wave's height, a line per sounding voice, green with black sides
   on its key, grey on another. A click on the box (or a double click: two) switches; the squares and the name only
-  select the channel. `dac_voices_read` reads D59's copy of the four voices once a frame (`patch_dac_voice_state`,
-  `patch_dac_voice_place`) for the squares and the lines; the footer over the squares reads it again, so for one
-  frame it can disagree with them (review 53, parked). Footers: over the squares how many sound,
+  select the channel. `dac_voices_read` reads D59's copy of the four voices once a frame (`patch_dac_voice_look`)
+  for the squares and the lines (since stage 56 the frame's record, below). Footers: over the squares how many sound,
   over the box what it shows and what a click does, over the name the key and the whole name. The picture's
   columns are worked out from the bytes each frame: on the longest sample the plugin takes (2289920 bytes)
   `gui_test` prints about 1.6 ms a frame, under the stage's 2 ms for keeping them. A project of 0.41-0.44 saved
@@ -462,6 +461,23 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   Names are cut by `names_fit` (`names.c`): transliterated, then by whole letters (Ш's `Sh` whole or not at all),
   trailing spaces off; `text_right`, `sample_label`, `dac_short` (whole UTF-8 letters for the initials) and the
   footer use it.
+- ALL shows what sounds now (stage 56, D94, D95, ui-concept.md "Этап 56"). Each frame starts with `look_frame`:
+  one record (`frame_look`, `g->look`) of the engine's stats (one `mdmi_engine_get_stats`), the waves, D59's
+  copy of the four DAC voices (`patch_dac_voice_look`, one call a voice: state and key from one word, the start
+  and sample from the next two, which may be a strike newer: a picture line one frame off, accepted), the last
+  DAC note and what each OUT box draws (its own note, a lent voice or nothing). Drawing, the rail's DAC column
+  and the footer take only the record, so the footer over the squares and the boxes says what that frame drew.
+  A press or a drop asks the engine whether it has booted now (`engine_booted_now`), as before. The engine counts showings:
+  `mdmi_engine_watch_waves(true)` after `false` starts a new number and returns it, `publish_waves` writes it
+  in each copy (`show`). The window draws a copy only of its own showing whose `end` moved within 100 ms
+  (`WAVE_STILL_MS`) by the window's clock (`GetTickCount64`), the showing's start counting as a move; else the
+  boxes draw zeros (`silent_wave`: a flat trace on a row with a note, the DAC box `SILENT`), and once the end
+  stood (`still`) the DAC's voices count as not sounding (squares out, `NO VOICE SOUNDS`, the rail's column
+  grey). Only the window's own clock is compared; the worker only writes the number. The last DAC note
+  (`patch_dac_last`) is kept by the dealer: `patch_midi`'s DAC branch (channel 6, the DAC on in the model,
+  Note On) stores the key before `dac_play`, a key with no sample too; `patch_load` marks a whole state
+  (a project or a `.mdsnap`, and their UNDO) and `patch_take_incoming` forgets the note when it takes one, on
+  the same thread that writes it. `notes[5]` stays FM6's and the rail's.
 - FM cursor (stage 24f): `time_psg_notes` in `plugin.c` also keeps each FM channel's last Note On and Note
   Off as sent (`fm_on`, `fm_off`, a chord's moved note too); `fm_cursor_seconds` gives the graph's time: held,
   up to Note Off at 1 s and parked there (OFF turns green); released, 1 s plus the time since; none from 2 s.

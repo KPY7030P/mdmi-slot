@@ -1211,6 +1211,10 @@ static void lent_voice_boxes(HWND window, const char *dir)
 	CHECK(row3 == 0 && row6 == 0 && others == 3, "stage 54: with Ch3 Special and the DAC on, a chord of 6 on channel 5 lends rows 1, 2, 4 (%d green) and never 3 or 6 (%d, %d px green)", others, row3, row6);
 }
 
+// Stage 56, below main's helpers' block.
+static int filled_squares(void);
+static void pump_ms(int ms);
+
 // Stage 53: before the DAC, on ALL, row 6 is FM6's as in 0.44 (diagram, OUT box, ROM N, none of the
 // DAC's squares); then the DAC switched on before any note on channel 6 since the plugin opened: four
 // free squares, the wave's empty box, the name `---`, and the footers saying so.
@@ -1228,6 +1232,12 @@ static void dac_row_off_and_before_note(HWND window, const char *dir)
 	const int rom_n = count_color_in(616, 702, y + 4, y + 26, COLOR_LABEL) + count_color_in(616, 702, y + 4, y + 26, COLOR_TEXT);
 	CHECK(diagram > 20 && dac_left == 0 && box_top == 80 && box_middle == 78 && rom_n > 30,
 		"ALL's row 6 without the DAC is FM6's: its diagram (%d px), no DAC square (%d px), the OUT box (%d, %d px), ROM N (%d px)", diagram, dac_left, box_top, box_middle, rom_n);
+	// Stage 56 (owner's answer 5): an FM note on channel 6 on a key the ROM has a sample on (38, Clap)
+	// is not the DAC row's last note: with the DAC on, the row is as before any note (0.47 showed Clap).
+	send_midi(0x95, 38, 100);
+	run_ms(100);
+	send_midi(0x85, 38, 0);
+	run_ms(100);
 	send_midi(0xB0, 78, 127);
 	run_ms(800);
 	wait_message_gone(window);
@@ -1250,7 +1260,7 @@ static void dac_row_off_and_before_note(HWND window, const char *dir)
 	run_ms(60);
 	capture(window);
 	CHECK(squares && name && wave && over_squares && over_box && over_name && picture_hint && picture && dac_wave_shown(),
-		"the DAC on before any note: four free squares (%d), the name --- (%d), the wave's empty box (%d), footers over the squares, box and name (%d, %d, %d); a click gives the empty picture (%d, %d), a second the wave",
+		"the DAC on before any note with it (an FM note on key 38 came before, stage 56): four free squares (%d), the name --- (%d), the wave's empty box (%d), footers over the squares, box and name (%d, %d, %d); a click gives the empty picture (%d, %d), a second the wave",
 		squares, name, wave, over_squares, over_box, over_name, picture_hint, picture);
 }
 
@@ -1317,8 +1327,15 @@ static void dac_row_stage53(HWND window, const char *dir)
 		{57, "Loop", 256 * 40, 30, SAMPLE_LOOP},
 	};
 	append_samples(samples, 5);
+	// Stage 56: the last DAC note before the load was 38 (Clap, the ROM's, the loaded project has it too).
 	CHECK(load_project(window), "a project with four squares loads");
 	run_ms(200);
+	{
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		capture(window);
+		const bool forgot = says(PAGE_RIGHT_X - 2 - 3 * 6, y + 16, 1, "---", COLOR_LINE) && dac_footer(window, 650, y + 20, "CH6 DAC: NO SAMPLE YET");
+		CHECK(forgot, "stage 56: loading a project forgets the DAC row's last note: the name --- and NO SAMPLE YET, not Clap (%d)", forgot);
+	}
 	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 	run_ms(30);
 	capture(window);
@@ -1451,6 +1468,31 @@ static void dac_row_stage53(HWND window, const char *dir)
 	// with black sides; the footer names the view.
 	send_midi(0x95, 57, 100);
 	run_ms(150);
+	// Stage 56: the host stops calling process with the loop held: after 100 ms its square counts as not
+	// sounding and the footer says so; so after EDITOR and ALL again; the blocks back, it is lit again.
+	{
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		capture(window);
+		const int held = filled_squares();
+		pump_ms(200);
+		capture(window);
+		const int stopped = filled_squares();
+		const bool stopped_hint = dac_footer(window, 290, y + 30, "CH6 DAC: NO VOICE SOUNDS");
+		click(window, BUTTON_EDITOR_X, BUTTON_Y);
+		click(window, BUTTON_ALL_X, BUTTON_Y);
+		pump_ms(200);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		capture(window);
+		const int again = filled_squares();
+		const bool again_hint = dac_footer(window, 290, y + 30, "CH6 DAC: NO VOICE SOUNDS");
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+		run_ms(150);
+		capture(window);
+		const int back = filled_squares();
+		CHECK(held == 1 && stopped == 0 && stopped_hint && again == 0 && again_hint && back == 1,
+			"stage 56: a held loop's square (%d lit) with the host stopped: none lit, NO VOICE SOUNDS (%d, %d); ALL again with the host stopped the same (%d, %d); the blocks back, lit (%d)",
+			held, stopped, stopped_hint, again, again_hint, back);
+	}
 	click(window, DAC_OUT_CLICK_X, y + 20);
 	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 	run_ms(20);
@@ -2004,6 +2046,217 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 	}
 	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 	return window;
+}
+
+// Stage 56 (ui-concept.md "Этап 56"): row 8's OUT box (y 340, under the PSG group's head): its cyan pixels more than 1 px
+// off the middle line (a wave), and on it (silence drawn as a flat trace).
+#define CH8_ROW_Y 340
+#define CH8_VOLUME 1801
+static int ch8_off_middle(void)
+{
+	const int mid = CH8_ROW_Y + 19;
+	return count_color_in(533, 611, CH8_ROW_Y + 5, mid - 1, COLOR_PSG) + count_color_in(533, 611, mid + 2, CH8_ROW_Y + 34, COLOR_PSG);
+}
+
+// The window's messages and timer for ms, with no block of sound: the host's audio stopped.
+static void pump_ms(int ms)
+{
+	const DWORD start = GetTickCount();
+	while (GetTickCount() - start < (DWORD)ms) {
+		MSG message;
+		while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
+			DispatchMessageA(&message);
+		}
+		Sleep(5);
+	}
+}
+
+// Stage 56: the waves are this showing's and fresh. Channel 8 holds a note on ALL (main, from the
+// check of its OUT box on): a stopped host draws it flat after 100 ms; ALL opened again, and the window closed and opened,
+// with the channel silent show no pixel of the wave before; hidden and shown keeps it.
+static void stage56_fresh(HWND *window, const clap_plugin_gui_t *gui, HWND parent, const char *dir)
+{
+	const DWORD took = GetTickCount();
+	// Struck again, so its envelope is at its start whatever came between.
+	send_midi(0x87, 72, 0);
+	send_midi(0x97, 72, 100);
+	SendMessageA(*window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(300);
+	capture(*window);
+	const int before = ch8_off_middle();
+	pump_ms(200);
+	capture(*window);
+	save_bmp(dir, "all-stopped-host");
+	const int stopped = ch8_off_middle(), flat = count_color_in(533, 611, CH8_ROW_Y + 18, CH8_ROW_Y + 21, COLOR_PSG);
+	run_ms(150);
+	capture(*window);
+	const int back = ch8_off_middle();
+	CHECK(before > 20 && stopped == 0 && flat > 60 && back > 20,
+		"stage 56: channel 8's wave (%d px off the middle line) draws flat 200 ms after the host stops calling process (%d off, %d on it), and comes back with the blocks (%d)", before, stopped, flat, back);
+	// ALL again: the copy kept from the last showing is not drawn.
+	const int volume = get_value(CH8_VOLUME);
+	click(*window, BUTTON_EDITOR_X, BUTTON_Y);
+	send_midi(0xB7, 7, 0);
+	run_ms(300);
+	click(*window, BUTTON_ALL_X, BUTTON_Y);
+	SendMessageA(*window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(*window);
+	save_bmp(dir, "all-again-first");
+	const int again = ch8_off_middle();
+	run_ms(150);
+	capture(*window);
+	const int again_later = ch8_off_middle();
+	set_param(CH8_VOLUME, volume);
+	run_ms(300);
+	capture(*window);
+	const int loud = ch8_off_middle();
+	CHECK(loud > 20 && again == 0 && again_later == 0,
+		"stage 56: ALL opened again with channel 8 silent: its first frame holds no pixel of the wave of the last showing (%d px, then %d), loud again %d", again, again_later, loud);
+	// The window destroyed and made again, channel 8 silent meanwhile.
+	gui->destroy(plugin);
+	send_midi(0xB7, 7, 0);
+	run_ms(300);
+	clap_window_t ref = {CLAP_WINDOW_API_WIN32, {.win32 = parent}};
+	gui->create(plugin, CLAP_WINDOW_API_WIN32, false);
+	gui->set_parent(plugin, &ref);
+	gui->show(plugin);
+	*window = FindWindowExA(parent, NULL, "MDMIPluginWindow", NULL);
+	SendMessageA(*window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(*window);
+	save_bmp(dir, "all-new-window-first");
+	const int reopened = ch8_off_middle();
+	set_param(CH8_VOLUME, volume);
+	run_ms(300);
+	capture(*window);
+	const int reopened_later = ch8_off_middle();
+	// Hidden and shown: the hidden window keeps drawing and watching, its waves stay fresh.
+	gui->hide(plugin);
+	run_ms(200);
+	gui->show(plugin);
+	capture(*window);
+	const int shown = ch8_off_middle();
+	CHECK(reopened == 0 && reopened_later > 20 && shown > 20,
+		"stage 56: the window closed and opened with channel 8 silent: no pixel of the old wave in its first frame (%d), the wave later (%d); hidden and shown it is there at once (%d)", reopened, reopened_later, shown);
+	printf("    stage 56's fresh waves took %lu ms\n", (unsigned long)(GetTickCount() - took));
+}
+
+// Stage 56: the squares' footer against the squares drawn, the box's footer against the box drawn, in
+// each of 50 frames of busy drums (ROM kit: hats 41, clap 38, kick 35, snare 37), ALL's wave view.
+static int filled_squares(void)
+{
+	int n = 0;
+	for (int k = 0; k < 4; k++) {
+		n += count_color_in(DAC_SQUARE_X(k), DAC_SQUARE_X(k) + 23, DAC_ROW_Y + 4, DAC_ROW_Y + 24, COLOR_DAC) > 300;
+	}
+	return n;
+}
+
+static void stage56_dac(HWND window)
+{
+	const DWORD took = GetTickCount();
+	const int y = DAC_ROW_Y;
+	click(window, BUTTON_ALL_X, BUTTON_Y);
+	run_ms(100);
+	capture(window);
+	if (!dac_wave_shown()) {
+		click(window, DAC_OUT_CLICK_X, y + 20);
+		run_ms(40);
+	}
+	// The last of the 50 is 38 (Clap, the ROM's): stage 53's load check counts on it.
+	static const uint8_t KIT[8] = {41, 38, 41, 37, 41, 35, 41, 37};
+	int squares_ok = 0, box_ok = 0, lit_frames = 0, live_frames = 0;
+	for (int k = 0; k < 50; k++) {
+		// One block a frame: a new drum each, the fifth takes the oldest voice; CC 123 after the 50.
+		send_midi(0x95, KIT[k % 8], 110);
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(290, y + 30));
+		capture(window);
+		const int lit = filled_squares();
+		char text[48];
+		if (lit) {
+			snprintf(text, sizeof(text), "CH6 DAC: %d OF 4 VOICES SOUND", lit);
+		} else {
+			snprintf(text, sizeof(text), "CH6 DAC: NO VOICE SOUNDS");
+		}
+		squares_ok += footer_says(text, COLOR_LABEL);
+		lit_frames += lit > 0;
+		SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(DAC_OUT_CLICK_X, y + 20));
+		capture(window);
+		const bool live = count_color_in(533, 611, y + 5, y + 34, COLOR_DAC) > 0;
+		box_ok += footer_says(live ? "CH6 DAC OUT: LAST 20 MS. CLICK: SAMPLE" : "CH6 DAC OUT: SILENT. CLICK: SAMPLE", COLOR_LABEL);
+		live_frames += live;
+	}
+	send_midi(0xB5, 123, 0);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(200);
+	CHECK(squares_ok == 50 && box_ok == 50 && lit_frames > 30 && live_frames > 30,
+		"stage 56: in 50 frames of drums the footer over the squares names as many as are drawn lit (%d of 50, %d frames lit), over the box what it draws (%d of 50, %d live)",
+		squares_ok, lit_frames, box_ok, live_frames);
+	printf("    stage 56's 50 frames took %lu ms\n", (unsigned long)(GetTickCount() - took));
+}
+
+// Stage 56: the picture of a real ROM sample with its loop on a part of it.
+static void stage56_crash(HWND window, const char *dir)
+{
+	const DWORD took = GetTickCount();
+	const int y = DAC_ROW_Y;
+
+	// A real ROM sample (Crsh1 on 48) with its loop on a part of it: on the DAC page the loop on, its end
+	// tab 150 px in, the body moved 100 px right; on ALL the picture's grey ground (row y + 5, where the
+	// bytes never reach) starts and ends where the body does, in shares of the page's wave, on 78 columns.
+	CHECK(save_project(), "stage 56: the project saves before the crash's loop");
+	static uint8_t kept[1 << 23];
+	const size_t kept_size = project_size;
+	memcpy(kept, project, project_size);
+	click(window, RAIL_X, RAIL_CH6_Y);
+	click(window, BUTTON_EDITOR_X, BUTTON_Y);
+	run_ms(100);
+	// Note 48 in the grid: row 4, column 0 (cells 38 x 18 from 242, 96).
+	click(window, 242 + 17, 96 + 4 * 18 + 8);
+	run_ms(100);
+	click(window, 400, DAC_LOOP_Y + 6);
+	run_ms(150);
+	capture(window);
+	const int row = DAC_LOOP_Y + 1;
+	int s0, s1;
+	const int l0 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s0);
+	drag_x(window, s0 + l0 + 5, DAC_LOOP_Y + 6, s0 + l0 + 5 - 150);
+	run_ms(150);
+	capture(window);
+	int l1 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s1);
+	drag_x(window, s1 + l1 / 2, DAC_LOOP_Y + 6, s1 + l1 / 2 + 100);
+	run_ms(150);
+	capture(window);
+	save_bmp(dir, "dac-crash-loop");
+	l1 = longest_run(row, 242, 712, COLOR_DAC_DARK, &s1);
+	// The body is drawn from the loop's start + 1 to its end - 1 (draw_loop_row) over the 460 columns of the wave at 242.
+	const double from = (s1 - 1 - 242) / 460.0, to = (s1 + l1 + 1 - 242) / 460.0;
+	click(window, BUTTON_ALL_X, BUTTON_Y);
+	send_midi(0x95, 48, 100);
+	run_ms(100);
+	send_midi(0x85, 48, 0);
+	send_midi(0xB5, 123, 0);
+	run_ms(300);
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	run_ms(40);
+	capture(window);
+	save_bmp(dir, "all-dac-crash-loop");
+	int ground_from = first_of(y + 5, 533, 611, COLOR_CELL), ground_to = -1;
+	for (int x = 533; x < 611; x++) {
+		ground_to = (pixels[(y + 5) * WIDTH + x] & 0xFFFFFF) == COLOR_CELL ? x + 1 : ground_to;
+	}
+	const double want_from = 533 + from * 78, want_to = 533 + to * 78;
+	click(window, DAC_OUT_CLICK_X, y + 20);
+	// Where it stands and how wide, each within 1 px (the stage's rule).
+	CHECK(s1 > s0 + 20 && s1 + l1 < s0 + l0 - 20 && ground_from >= 0 && fabs(ground_from - want_from) <= 1 && fabs((ground_to - ground_from) - (want_to - want_from)) <= 1,
+		"stage 56: the crash's loop on a part of it (page x %d-%d of %d-%d): on ALL its ground from x %d, %d px wide; the page's shares give %.1f, %.1f px (each ±1 px)",
+		s1, s1 + l1, s0, s0 + l0, ground_from, ground_to - ground_from, want_from, want_to - want_from);
+	memcpy(project, kept, kept_size);
+	project_size = kept_size;
+	CHECK(load_project(window), "stage 56: the project before the crash's loop loads again");
+	click(window, BUTTON_ALL_X, BUTTON_Y);
+	run_ms(100);
+	printf("    stage 56's crash loop took %lu ms\n", (unsigned long)(GetTickCount() - took));
 }
 
 int main(int argc, char **argv)
@@ -3233,10 +3486,28 @@ int main(int argc, char **argv)
 				"channel 8's OUT box draws 2 periods from a rising edge in 7 frames over 1 s (crests %d..%d, first crest x %d..%d)", crests_low, crests_high, first_low, first_high);
 		}
 		// A chord: the picture holds by its lowest note, C3 under C4. Each column's top in two frames 120 ms
-		// apart; the shift that matches them best is under 2 px (the sound decays, so tops move a little).
+		// apart; the shift that matches them best is under 2 px (channel 1: 1100 + param, operator k from 1111 + 11k:
+		// TL, MUL, DT, RS, AR, DR, SR).
+		// Stage 56 (item 5): on channel 1's preset (a piano) this gave 2 px now and then. The cause is the
+		// sound, not the anchor: a probe (build/stage56/probe-anchor*.log) shows the drawn span starting at
+		// the same phase of C3 frame after frame, while the piano's harmonics of C3 and C4 decay at their
+		// own rates, so the sum's shape and its tops move within 120 ms. The check now plays a sound that
+		// holds (ALG 7, one operator at MUL 1 with no decay): its shape stands, any shift is the anchor's.
 		{
-			send_midi(0x90, 48, 110);
-			send_midi(0x90, 60, 110);
+			const clap_id ALG1 = 1107, TL1 = 1111, TL2 = 1122, TL3 = 1133, MUL4 = 1145, DR4 = 1149, SR4 = 1150;
+			const clap_id held_ids[7] = {ALG1, TL1, TL2, TL3, MUL4, DR4, SR4};
+			const int held_values[7] = {7, 127, 127, 127, 1, 0, 0};
+			int held_before[7];
+			for (int i = 0; i < 7; i++) {
+				held_before[i] = get_value(held_ids[i]);
+				set_param(held_ids[i], held_values[i]);
+			}
+			run_ms(100);
+			// C3 loud, C4 soft: a near sine of C4 repeats every 19.5 px, half the picture, and one run of
+			// run_tests.sh matched it best a C4 period away (-20 px); with C3 leading the shape repeats
+			// only every 39 px.
+			send_midi(0x90, 48, 127);
+			send_midi(0x90, 60, 50);
 			run_ms(300);
 			int tops[2][78];
 			for (int k = 0; k < 2; k++) {
@@ -3251,6 +3522,9 @@ int main(int argc, char **argv)
 			}
 			send_midi(0x80, 48, 0);
 			send_midi(0x80, 60, 0);
+			for (int i = 0; i < 7; i++) {
+				set_param(held_ids[i], held_before[i]);
+			}
 			run_ms(100);
 			int best_shift = 99, best = 1 << 30, drawn = 0;
 			for (int x = 0; x < 78; x++) {
@@ -3270,9 +3544,16 @@ int main(int argc, char **argv)
 					best_shift = d;
 				}
 			}
-			CHECK(drawn > 60 && abs(best_shift) < 2, "a chord's OUT box holds by its lowest note: %d columns drawn, 120 ms later it matches best shifted by %d px", drawn, best_shift);
+			// A wave, not a flat line (a silent one matches at any shift).
+			int highest = 9999;
+			for (int x = 0; x < 78; x++) {
+				highest = tops[0][x] >= 0 && tops[0][x] < highest ? tops[0][x] : highest;
+			}
+			const int height = RAIL_CH1_TOP + 19 - highest;
+			CHECK(drawn > 60 && height >= 5 && abs(best_shift) < 2, "a chord's OUT box holds by its lowest note: %d columns drawn, %d px high, 120 ms later it matches best shifted by %d px", drawn, height, best_shift);
 		}
 		lent_voice_boxes(window, argv[2]);
+		stage56_fresh(&window, gui, parent, argv[2]);
 		save_bmp(argv[2], "all");
 		send_midi(0x87, 72, 0);
 		run_ms(200);
@@ -4152,7 +4433,9 @@ int main(int argc, char **argv)
 			CHECK(silent == 0 && changed > 3 && middle_wave == 78 && middle_picture >= 70,
 				"ALL's DAC wave: silent %d px, changes in %d frames, middle line grey (%d of 78 px); the picture's middle line the DAC's (%d of 78 px)", silent, changed, middle_wave, middle_picture);
 		}
+		stage56_dac(window);
 		dac_row_stage53(window, argv[2]);
+		stage56_crash(window, argv[2]);
 		click(window, BUTTON_EDITOR_X, BUTTON_Y);
 		run_ms(100);
 		capture(window);

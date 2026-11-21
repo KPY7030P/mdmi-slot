@@ -270,6 +270,8 @@ struct mdmi_engine {
 	uint32_t wave_front;
 	uint32_t wave_shared;
 	uint32_t waves_watched;
+	// Stage 56: the showing's number, written by the main thread only.
+	uint32_t wave_show;
 };
 
 #define FRAME_NEW 4
@@ -568,6 +570,7 @@ static void publish_waves(mdmi_engine *e)
 	count = end < count ? (uint32_t)end : count;
 	waves->end = end;
 	waves->count = count;
+	waves->show = __atomic_load_n(&e->wave_show, __ATOMIC_ACQUIRE);
 	for (int o = 0; o < MDMI_OUTPUTS; o++) {
 		const float *l = e->ring[2 + o * 2], *r = e->ring[3 + o * 2];
 		for (uint32_t i = 0; i < count; i++) {
@@ -1547,9 +1550,14 @@ void mdmi_engine_watch_frames(mdmi_engine *e, bool watching)
 	__atomic_store_n(&e->frames_watched, watching, __ATOMIC_RELEASE);
 }
 
-void mdmi_engine_watch_waves(mdmi_engine *e, bool watching)
+uint32_t mdmi_engine_watch_waves(mdmi_engine *e, bool watching)
 {
+	// The number before the flag: a copy of the new showing never carries the old number.
+	if (watching && !__atomic_load_n(&e->waves_watched, __ATOMIC_RELAXED)) {
+		__atomic_store_n(&e->wave_show, e->wave_show + 1, __ATOMIC_RELEASE);
+	}
 	__atomic_store_n(&e->waves_watched, watching, __ATOMIC_RELEASE);
+	return e->wave_show;
 }
 
 const mdmi_waves *mdmi_engine_latest_waves(mdmi_engine *e)
