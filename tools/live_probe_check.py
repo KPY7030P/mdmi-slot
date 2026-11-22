@@ -2,6 +2,8 @@
 
     python tools/live_probe_check.py [RUN ...]      (RUN: а б в г д е, the plan's names; all when none;
                                                      a part writes summary-part.txt, the full summaries stay)
+    python tools/live_probe_check.py --notes        (stage 58: bars 110-114 of the check set's events for
+                                                     reg_test --dac-loop, build/stage58/notes-110-114.txt)
 
 Runs the plan below one run at a time. Each run: build the probe set (tools/make_probe_set.py), play it with
 probe.py, then check what came back: Live opened, played to the end and closed by itself; the pulse track has a
@@ -129,29 +131,113 @@ def check_set(path):
 
 # ---------- the set: what should sound ----------
 
-def song_notes(ls):
-    """(start, end) beats of every note the set sends to "MDMI песня"."""
+def song_events(ls):
+    """Every Note On and Note Off the set sends to "MDMI песня" (stage 58): (beat, 'on'|'off', channel 1-16,
+    key, velocity, note number), sorted by beat; a note's off is at its end, cut at its clip's end. The channel
+    is the track's output, DeviceIn.3.{ch} -> ch + 1. The note number pairs an on with its off."""
     res = []
     for t in ls.find('Tracks'):
         o = t.find('DeviceChain/MidiOutputRouting/Target')
         if o is None or not o.get('Value', '').startswith(SONG_OUT):
             continue
+        m = re.search(r'DeviceIn\.\d+\.(\d+)$', o.get('Value'))
+        ch = int(m.group(1)) + 1 if m else 0
         for c in t.find('DeviceChain/MainSequencer/ClipTimeable/ArrangerAutomation/Events').iter('MidiClip'):
             if c.find('Disabled').get('Value') == 'true':
                 continue
             st, en = float(c.find('CurrentStart').get('Value')), float(c.find('CurrentEnd').get('Value'))
             ls0 = float(c.find('Loop/LoopStart').get('Value'))
-            for n in c.iter('MidiNoteEvent'):
-                if n.get('IsEnabled') == 'false':
-                    continue
-                s = st + float(n.get('Time')) - ls0
-                if st <= s < en:
-                    res.append((s, min(en, s + float(n.get('Duration')))))
-    return sorted(res)
+            for kt in c.iter('KeyTrack'):
+                key = int(kt.find('MidiKey').get('Value'))
+                for n in kt.iter('MidiNoteEvent'):
+                    if n.get('IsEnabled') == 'false':
+                        continue
+                    s = st + float(n.get('Time')) - ls0
+                    if st <= s < en:
+                        i = len(res) // 2
+                        res.append((s, 'on', ch, key, int(float(n.get('Velocity'))), i))
+                        res.append((min(en, s + float(n.get('Duration'))), 'off', ch, key,
+                                    int(float(n.get('OffVelocity', '64'))), i))
+    # at one beat offs first, as a sequencer ends a note before the next one on the same key
+    return sorted(res, key=lambda e: (e[0], e[1] == 'on', e[2], e[3]))
+
+
+def song_notes(ls):
+    """(start, end) beats of every note the set sends to "MDMI песня"."""
+    ev = song_events(ls)
+    on = {e[5]: e[0] for e in ev if e[1] == 'on'}
+    return sorted((on[e[5]], e[0]) for e in ev if e[1] == 'off')
 
 
 def tempo_of(ls):
     return float(ls.find('MainTrack/DeviceChain/Mixer/Tempo/Manual').get('Value'))
+
+
+# ---------- the notes for reg_test --dac-loop (stage 58) ----------
+
+CHECK_SET = os.path.join(REPO, 'build', 'live-check', 'MDMI check Project', 'MDMI check.als')
+STAGE58 = os.path.join(REPO, 'build', 'stage58')
+DAC_KEYS = (35, 37, 41, 48)                 # K6's kit in bars 111-114 (tools/make_live_check.py)
+
+
+def state_dac_block(ls):
+    """The DAC block (src/state.c, BLOCK_DAC 9) of "MDMI песня"'s state, and its notes: [(key, name, mode)]
+    with mode as dac_block_write writes it (0 cuts, 1 one-shot, 2 loop with release, 4 loop stopped)."""
+    t = next(t for t in ls.find('Tracks') if t.find('Name/EffectiveName').get('Value') == TRACK)
+    ps = next(t.iter('ProcessorState'))
+    raw = bytes.fromhex(''.join((ps.text or '').split()))
+    at = 4                                   # the state's version, then blocks of (type, length)
+    while at + 8 <= len(raw):
+        typ, n = int.from_bytes(raw[at:at + 4], 'little'), int.from_bytes(raw[at + 4:at + 8], 'little')
+        if typ == 9:
+            block, notes, i = raw[at + 8:at + 8 + n], [], 0
+            while i + 3 <= len(block):
+                hl = int.from_bytes(block[i + 1:i + 3], 'little')
+                h = block[i + 3:i + 3 + hl]
+                frames, length = int.from_bytes(h[36:40], 'little'), int.from_bytes(h[57:61], 'little')
+                notes.append((block[i], h[:32].split(b'\0')[0].decode('latin1'), h[54]))
+                i += 3 + hl + frames * 2 + length
+            return block, notes
+        at += 8 + n
+    return None, []
+
+
+def write_notes(bars=(110, 114), loop=(111, 114)):
+    """build/stage58/notes-110-114.txt: the check set's events of the bars, one a line, «beat on|off channel
+    key velocity»; notes held past the loop's end get their off there, as Live sends at the wrap. The
+    state's DAC block goes next to it when it has samples on the kit's keys (the header says which)."""
+    ls = ET.fromstring(gzip.open(CHECK_SET).read()).find('LiveSet')
+    a, b = (bars[0] - 1) * BB, bars[1] * BB
+    l0, l1 = (loop[0] - 1) * BB, loop[1] * BB
+    ev = song_events(ls)
+    on = {e[5]: e[0] for e in ev if e[1] == 'on'}
+    lines = []
+    for e in ev:
+        start = on[e[5]]
+        if not a <= start < b:
+            continue
+        beat = min(e[0], l1) if l0 <= start < l1 else e[0]
+        lines.append((beat, e[1] == 'on', e[2], e[3], f'{beat:g} {e[1]} {e[2]} {e[3]} {e[4]}'))
+    lines.sort(key=lambda x: x[:4])
+    block, samples = state_dac_block(ls)
+    own = [s for s in samples if s[0] in DAC_KEYS]
+    os.makedirs(STAGE58, exist_ok=True)
+    head = [f'# {os.path.relpath(CHECK_SET, REPO).replace(os.sep, '/')}, bars {bars[0]}-{bars[1]}, events to «{TRACK}»',
+            f'tempo {tempo_of(ls):g}',
+            f'loop {l0:g} {l1:g}',
+            f'# loop = bars {loop[0]}-{loop[1]}; beats from the set\'s start, 4 a bar']
+    for k in DAC_KEYS:
+        s = next((s for s in own if s[0] == k), None)
+        head.append(f'# key {k}: ' + (f'tst6 sample «{s[1]}», mode {s[2]} ({ {0: "Note Off cuts", 1: "one-shot", 2: "loop with release", 4: "loop, Note Off stops"}.get(s[2], "?")})'
+                                       if s else 'the ROM\'s sample'))
+    if own:
+        open(os.path.join(STAGE58, 'dac-block.bin'), 'wb').write(block)
+        head.append('dac dac-block.bin')
+        head.append('# dac-block.bin: the state\'s whole DAC block (' + ', '.join(f'{k} {n}' for k, n, _ in samples) + ')')
+    out = os.path.join(STAGE58, f'notes-{bars[0]}-{bars[1]}.txt')
+    open(out, 'w', encoding='utf-8', newline='\n').write('\n'.join(head + [x[4] for x in lines]) + '\n')
+    log(f'{out}: {len(lines)} events; ' + '; '.join(h[2:] for h in head if h.startswith('# key')))
+    return 0
 
 
 # ---------- the recording ----------
@@ -522,6 +608,8 @@ def loop_sound(run, lanes, sn, bad, facts):
 # ---------- the plan ----------
 
 def main():
+    if sys.argv[1:] == ['--notes']:
+        return write_notes()
     os.makedirs(OUT, exist_ok=True)
     only = sys.argv[1:]                        # run names to play, all when none
     full = os.path.join(OUT, 'summary.txt')

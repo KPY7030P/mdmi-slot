@@ -1697,6 +1697,451 @@ static void test_loop_sweep(void)
 	boot_image(rom, rom_size);
 }
 
+// Stage 58 (D98): the loop of bars 111-114 as Live plays it, from a file of the check set's events
+// (tools/live_probe_check.py --notes): «beat on|off channel key velocity» lines, «tempo», «loop FROM TO»
+// in beats, «dac FILE» a state's DAC block next to it. The lead (events before the loop) once, then the
+// loop DL_PASSES times, each event on its own sample. Seed 0 on the grid in the file's order; seeds 1..N
+// shift each event by a random +-25 ms to the sample (the Z80's phase to the note moves with it), a key's
+// events kept in their order, those of one moment in random order. Each ms the driver's bits (Z80 RAM)
+// and output 6's energy are kept; then each DAC Note On must find a voice the driver copied its sample to
+// (IWAVADR back at the sample's first block, STATUS set, COMMAND clear) within DL_TAKE_MS, each Note Off of
+// a key that isn't one-shot must leave its voice off the sample within DL_TAKE_MS, and each beat of a pass
+// (without its edges, as run е) must stay within 3 dB of pass 1, the kick of 113.3 within 1 dB.
+#define DL_PASSES 16
+#define DL_MAX_EVENTS 256
+#define DL_MS 140000
+#define DL_BEATS 300
+#define DL_TAKE_MS 50
+#define DL_EDGE 0.05
+#define DL_SHIFT_MS 25
+typedef struct {
+	double beat;
+	bool on;
+	uint8_t ch, key, vel;
+} dl_line;
+typedef struct {
+	int64_t t;
+	uint32_t tie;
+	int line, pass, voice, copy_voice, delay;
+	uint8_t busy_rom, busy_copy;
+} dl_event;
+typedef struct {
+	uint8_t command, status;
+	uint16_t wav[4], iwav[4], ilen[4];
+	float energy;
+} dl_ms;
+static dl_ms dl_rec[DL_MS];
+static uint64_t dl_now;
+static int dl_last_ms;
+static uint8_t dac_copy_bits(void);
+
+static uint16_t z80_16(uint16_t address)
+{
+	return (uint16_t)(mdmi_engine_test_z80(engine, address) | mdmi_engine_test_z80(engine, (uint16_t)(address + 1)) << 8);
+}
+
+// Renders to the seed's sample `to`, keeping the driver's bits and output 6's energy each ms.
+static void dl_advance(uint64_t to)
+{
+	static float energy;
+	while (dl_now < to) {
+		const uint64_t next_ms = (dl_now / 48 + 1) * 48;
+		const int step = (int)((to < next_ms ? to : next_ms) - dl_now);
+		tick(step);
+		for (int i = 0; i < step; i++) {
+			energy += (outputs[10][i] * outputs[10][i] + outputs[11][i] * outputs[11][i]) * 0.5f;
+		}
+		dl_now += (uint64_t)step;
+		if (dl_now % 48 == 0) {
+			const int m = (int)(dl_now / 48);
+			if (m < DL_MS) {
+				dl_ms *r = &dl_rec[m];
+				r->command = mdmi_engine_test_z80(engine, 0x100);
+				r->status = mdmi_engine_test_z80(engine, 0x102);
+				for (int v = 0; v < 4; v++) {
+					r->wav[v] = z80_16((uint16_t)(0x104 + 4 * v));
+					r->iwav[v] = z80_16((uint16_t)(0x114 + 4 * v));
+					r->ilen[v] = z80_16((uint16_t)(0x116 + 4 * v));
+				}
+				r->energy = energy;
+				dl_last_ms = m;
+			}
+			energy = 0;
+		}
+	}
+}
+
+static uint32_t dl_random(uint32_t *state)
+{
+	uint32_t x = *state;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	return *state = x;
+}
+
+static int dl_order(const void *a, const void *b)
+{
+	const dl_event *x = a, *y = b;
+	return x->t != y->t ? (x->t < y->t ? -1 : 1) : x->tie < y->tie ? -1 : x->tie > y->tie;
+}
+
+static void dl_bits(char *out, uint8_t bits)
+{
+	for (int v = 0; v < 4; v++) {
+		out[v] = bits >> v & 1 ? (char)('0' + v) : '.';
+	}
+	out[4] = 0;
+}
+
+static int dac_loop_experiment(const char *notes_path, int seeds, bool moment)
+{
+	FILE *f = fopen(notes_path, "r");
+	if (!f) {
+		printf("FAIL: no %s\n", notes_path);
+		return 1;
+	}
+	static dl_line lines[DL_MAX_EVENTS];
+	int count = 0;
+	double tempo = 120, loop_from = -1, loop_to = -1;
+	char dac_file[512] = "", text[512];
+	while (fgets(text, sizeof(text), f)) {
+		char word[8];
+		double beat;
+		int ch, key, vel;
+		if (text[0] == '#') {
+			continue;
+		} else if (sscanf(text, "tempo %lf", &tempo) == 1 || sscanf(text, "loop %lf %lf", &loop_from, &loop_to) == 2) {
+			continue;
+		} else if (!strncmp(text, "dac ", 4)) {
+			snprintf(dac_file, sizeof(dac_file), "%s", text + 4);
+			dac_file[strcspn(dac_file, "\r\n")] = 0;
+		} else if (sscanf(text, "%lf %7s %d %d %d", &beat, word, &ch, &key, &vel) == 5 && count < DL_MAX_EVENTS) {
+			lines[count++] = (dl_line){beat, !strcmp(word, "on"), (uint8_t)ch, (uint8_t)key, (uint8_t)vel};
+		}
+	}
+	fclose(f);
+	if (!count || loop_to <= loop_from) {
+		printf("FAIL: %s has no events or no loop\n", notes_path);
+		return 1;
+	}
+	// The state's samples, else the ROM's.
+	dac_set set = {0};
+	if (dac_file[0]) {
+		char path[1024];
+		const char *slash = strrchr(notes_path, '/'), *back = strrchr(notes_path, '\\');
+		slash = back > slash ? back : slash;
+		snprintf(path, sizeof(path), "%.*s%s", slash ? (int)(slash - notes_path + 1) : 0, notes_path, dac_file);
+		FILE *d = fopen(path, "rb");
+		static uint8_t block[16 << 20];
+		const size_t length = d ? fread(block, 1, sizeof(block), d) : 0;
+		if (d) {
+			fclose(d);
+		}
+		if (!length || !dac_block_read(&set, block, length)) {
+			printf("FAIL: the DAC block %s\n", path);
+			return 1;
+		}
+	}
+	size_t rom_size, image_size;
+	const uint8_t *rom = mdmi_engine_builtin_rom(&rom_size);
+	uint8_t *image = dac_image(&set, rom, rom_size, &image_size);
+	// Each key's sample in the image: its first block (what the ROM writes to WAVADR) and its end.
+	uint16_t first[128] = {0}, end[128] = {0};
+	bool one_shot[128] = {false};
+	for (int i = 0; i < count; i++) {
+		rom_sample s;
+		if (lines[i].ch == 6 && rom_image_sample(image, image_size, lines[i].key, &s)) {
+			const uint8_t k = lines[i].key;
+			first[k] = (uint16_t)(((const uint8_t *)s.bytes - image) >> 8);
+			end[k] = (uint16_t)(first[k] + (s.length >> 8));
+			one_shot[k] = s.flags & ROM_SAMPLE_ONE_SHOT;
+		}
+	}
+	for (int k = 0; k < 128; k++) {
+		if (first[k]) {
+			rom_sample s;
+			rom_image_sample(image, image_size, k, &s);
+			printf("    key %d: %s, %u bytes, blocks %u-%u, flags %d%s\n", k, set.notes[k] ? set.notes[k]->name : ROM_SAMPLE_NAMES[k], s.length,
+				first[k], end[k], s.flags, one_shot[k] ? " (one-shot)" : "");
+		}
+	}
+	boot_image(image, image_size);
+	free(image);
+	set_global(GLOBAL_DAC, 1);
+	sync_and_settle();
+	render(DAC_BLOCKS);
+	const uint16_t null_block = z80_16(0x128);
+	const double spb = 60.0 / tempo * RATE;
+	double lead_from = lines[0].beat;
+	lead_from = floor(lead_from / 4) * 4;
+	const int lead_beats = (int)(loop_from - lead_from), loop_beats = (int)(loop_to - loop_from);
+	const int64_t base = 2 * DL_SHIFT_MS * 48;
+	static dl_event events[DL_MAX_EVENTS * (DL_PASSES + 1)];
+	printf("    %d events, tempo %g, loop %g-%g, lead %d beats; %d passes; null block %u\n", count, tempo, loop_from, loop_to, lead_beats, DL_PASSES, null_block);
+	int delay_ms = -1;
+	int total_lost = 0, total_unstopped = 0, total_loud = 0, total_quiet = 0, total_mismatch = 0, worst_take = 0;
+	int take_hist[DL_TAKE_MS + 1] = {0};
+	for (int seed = 0; seed <= seeds; seed++) {
+		uint32_t rng = 0x9E3779B9u ^ (uint32_t)seed * 2654435761u;
+		int n = 0;
+		int64_t moment_t = -1, moment_shift = 0;
+		for (int p = -1; p < DL_PASSES; p++) {
+			for (int i = 0; i < count; i++) {
+				const bool in_loop = lines[i].beat >= loop_from;
+				if ((p < 0) == in_loop) {
+					continue;
+				}
+				const double at = p < 0 ? lines[i].beat - lead_from : lead_beats + p * loop_beats + lines[i].beat - loop_from;
+				int64_t t = base + (int64_t)llround(at * spb);
+				if (seed && moment) {
+					// One shift for all the events of a moment: drawn again whenever the moment changes.
+					if (t != moment_t) {
+						moment_t = t;
+						moment_shift = (int64_t)(dl_random(&rng) % (2 * DL_SHIFT_MS * 48 + 1)) - DL_SHIFT_MS * 48;
+					}
+					t += moment_shift;
+				} else if (seed) {
+					t += (int64_t)(dl_random(&rng) % (2 * DL_SHIFT_MS * 48 + 1)) - DL_SHIFT_MS * 48;
+				}
+				events[n] = (dl_event){t, seed ? dl_random(&rng) : (uint32_t)n, i, p, -1, -1, -1, 0, 0};
+				n++;
+			}
+		}
+		// A key's events stay in their order (on, off, on...): Live never swaps them.
+		{
+			static int64_t last[16][128];
+			for (int c = 0; c < 16; c++) {
+				for (int k = 0; k < 128; k++) {
+					last[c][k] = INT64_MIN;
+				}
+			}
+			for (int e = 0; e < n; e++) {
+				const dl_line *l = &lines[events[e].line];
+				int64_t *at = &last[(l->ch - 1) & 15][l->key];
+				if (events[e].t <= *at) {
+					events[e].t = *at + 1;
+				}
+				*at = events[e].t;
+			}
+		}
+		qsort(events, (size_t)n, sizeof(dl_event), dl_order);
+		dl_now = 0;
+		memset(dl_rec, 0, sizeof(dl_rec));
+		for (int e = 0; e < n; e++) {
+			dl_event *ev = &events[e];
+			const dl_line *l = &lines[ev->line];
+			dl_advance((uint64_t)ev->t);
+			if (l->ch == 6 && l->on) {
+				const dl_ms *r = &dl_rec[dl_now / 48];
+				ev->busy_rom = (r->command | r->status) & 0x0F;
+				ev->busy_copy = dac_copy_bits();
+			}
+			midi((uint8_t)((l->on ? 0x90 : 0x80) | ((l->ch - 1) & 15)), l->key, l->vel);
+			if (l->ch == 6 && l->on) {
+				for (int v = 0; v < PATCH_DAC_VOICES; v++) {
+					int key = -1;
+					if (patch_dac_voice_state(patch, v, &key) == PATCH_DAC_HELD && key == l->key) {
+						ev->copy_voice = v;
+					}
+				}
+			}
+		}
+		dl_advance(dl_now + (uint64_t)(spb * 2));
+		const int last_ms = dl_last_ms;
+		// Which voice each DAC Note On took in the driver.
+		for (int e = 0; e < n; e++) {
+			dl_event *ev = &events[e];
+			const dl_line *l = &lines[ev->line];
+			if (l->ch != 6 || !l->on || !first[l->key]) {
+				continue;
+			}
+			const int m0 = (int)((ev->t + 47) / 48);
+			const uint16_t b = first[l->key];
+			// Taken: WAVADR the sample's, COMMAND clear, STATUS set and IWAVADR at its first blocks, which the
+			// voice wasn't at the note's moment (that would be an earlier start).
+#define DL_TAKEN(r, v) ((r)->wav[v] == b && ((r)->status >> (v) & 1) && !((r)->command >> (v) & 1) && (r)->iwav[v] >= b && (r)->iwav[v] <= b + 2)
+			for (int u = m0 + 1; u <= m0 + DL_TAKE_MS && u <= last_ms && ev->voice < 0; u++) {
+				for (int v = 0; v < 4 && ev->voice < 0; v++) {
+					if (DL_TAKEN(&dl_rec[u], v) && !DL_TAKEN(&dl_rec[m0], v)) {
+						ev->voice = v;
+						ev->delay = u - m0;
+					}
+				}
+			}
+		}
+		if (seed == 0) {
+			// Where output 6 answers the first DAC note: the beats' windows move by that much.
+			for (int e = 0; e < n && delay_ms < 0; e++) {
+				if (lines[events[e].line].ch == 6 && lines[events[e].line].on) {
+					const int m0 = (int)(events[e].t / 48);
+					for (int u = m0; u < m0 + 200 && delay_ms < 0; u++) {
+						delay_ms = dl_rec[u].energy / 48 > 1e-6f ? u - m0 : -1;
+					}
+				}
+			}
+			if (delay_ms < 0) {
+				delay_ms = 0;
+			}
+			// Live compensates the plugin's latency in its recording: the beats' windows move by that, as in run е.
+			const int first_ms = delay_ms;
+			delay_ms = (int)lround(mdmi_engine_latency(engine) * 1000.0 / RATE);
+			printf("    output 6 answers the first DAC note %d ms after it; the plugin's latency %d ms moves the beats' windows\n", first_ms, delay_ms);
+		}
+		// Each beat's level, without its edges.
+		static double level[DL_BEATS];
+		const int beats = lead_beats + DL_PASSES * loop_beats;
+		for (int k = 0; k < beats && k < DL_BEATS; k++) {
+			const int a = (int)((base + (k + DL_EDGE) * spb) / 48) + delay_ms, z = (int)((base + (k + 1 - DL_EDGE) * spb) / 48) + delay_ms;
+			double sum = 0;
+			for (int u = a; u < z && u <= last_ms; u++) {
+				sum += dl_rec[u].energy;
+			}
+			const double mean = sum / ((z - a) * 48.0);
+			level[k] = mean > 1e-20 ? 10 * log10(mean) : -200;
+		}
+		int lost = 0, unstopped = 0, loud = 0, quiet = 0, mismatch = 0;
+		// (1) starts the driver didn't take.
+		for (int e = 0; e < n; e++) {
+			const dl_event *ev = &events[e];
+			const dl_line *l = &lines[ev->line];
+			if (l->ch != 6 || !l->on || !first[l->key]) {
+				continue;
+			}
+			if (ev->voice >= 0) {
+				take_hist[ev->delay]++;
+				worst_take = ev->delay > worst_take ? ev->delay : worst_take;
+				mismatch += ev->copy_voice != ev->voice;
+				continue;
+			}
+			lost++;
+			const int m0 = (int)(ev->t / 48);
+			const dl_ms *b = &dl_rec[m0], *a = &dl_rec[m0 + DL_TAKE_MS <= last_ms ? m0 + DL_TAKE_MS : last_ms];
+			char cb[5], sb[5], ca[5], sa[5];
+			dl_bits(cb, b->command), dl_bits(sb, b->status), dl_bits(ca, a->command), dl_bits(sa, a->status);
+			printf("    seed %d pass %d: (1) START LOST %g on key %d (%d ms): copy voice %d; before COMMAND %s STATUS %s, %d ms after COMMAND %s STATUS %s; WAVADR %u %u %u %u IWAVADR %u %u %u %u; nearby:",
+				seed, ev->pass + 1, l->beat, l->key, m0, ev->copy_voice, cb, sb, DL_TAKE_MS, ca, sa, a->wav[0], a->wav[1], a->wav[2], a->wav[3],
+				a->iwav[0], a->iwav[1], a->iwav[2], a->iwav[3]);
+			for (int o = 0; o < n; o++) {
+				if (o != e && llabs(events[o].t - ev->t) <= 2 * 48 && lines[events[o].line].ch == 6) {
+					printf(" %s %d at %+.1f ms (voice %d)", lines[events[o].line].on ? "on" : "off", lines[events[o].line].key, (double)(events[o].t - ev->t) / 48,
+						events[o].voice);
+				}
+			}
+			printf("\n");
+			// The driver's bits ms by ms from the note on, a line at each change: COMMAND, STATUS, which
+			// voices hold the sample's WAVADR, and each voice's IWAVADR.
+			for (int u = m0 - 1, shown = 0; u <= m0 + DL_TAKE_MS && u <= last_ms && shown < 24; u++) {
+				const dl_ms *r = &dl_rec[u], *q = &dl_rec[u - 1];
+				uint8_t wav = 0, wav_was = 0;
+				for (int v = 0; v < 4; v++) {
+					wav |= (uint8_t)((r->wav[v] == first[l->key]) << v);
+					wav_was |= (uint8_t)((q->wav[v] == first[l->key]) << v);
+				}
+				if (u > m0 - 1 && r->command == q->command && r->status == q->status && wav == wav_was && !memcmp(r->iwav, q->iwav, sizeof(r->iwav))) {
+					continue;
+				}
+				char c[5], s[5], w[5];
+				dl_bits(c, r->command), dl_bits(s, r->status), dl_bits(w, wav);
+				printf("        %+3d ms: COMMAND %s STATUS %s WAVADR=sample %s IWAVADR %u %u %u %u IWAVLEN %u %u %u %u\n", u - m0, c, s, w, r->iwav[0], r->iwav[1], r->iwav[2],
+					r->iwav[3], r->ilen[0], r->ilen[1], r->ilen[2], r->ilen[3]);
+				shown++;
+			}
+		}
+		// (2) Note Offs that left their voice on the sample.
+		for (int e = 0; e < n; e++) {
+			const dl_event *ev = &events[e];
+			const dl_line *l = &lines[ev->line];
+			if (l->ch != 6 || l->on || !first[l->key] || one_shot[l->key]) {
+				continue;
+			}
+			int on = -1;
+			for (int o = e - 1; o >= 0 && on < 0; o--) {
+				on = lines[events[o].line].ch == 6 && lines[events[o].line].on && lines[events[o].line].key == l->key ? o : -1;
+			}
+			if (on < 0 || events[on].voice < 0) {
+				continue;
+			}
+			const int v = events[on].voice;
+			bool retaken = false;
+			for (int o = on + 1; o < n && events[o].t < ev->t + DL_TAKE_MS * 48; o++) {
+				retaken = retaken || (events[o].voice == v && lines[events[o].line].on);
+			}
+			const int m0 = (int)(ev->t / 48), m1 = m0 + DL_TAKE_MS <= last_ms ? m0 + DL_TAKE_MS : last_ms;
+			const dl_ms *b = &dl_rec[m0], *a = &dl_rec[m1];
+			if (retaken || !(a->iwav[v] >= first[l->key] && a->iwav[v] < end[l->key])) {
+				continue;
+			}
+			unstopped++;
+			// How long it went on.
+			int until = m1;
+			while (until < last_ms && dl_rec[until].iwav[v] >= first[l->key] && dl_rec[until].iwav[v] < end[l->key]) {
+				until++;
+			}
+			printf("    seed %d pass %d: (2) NOT STOPPED off %g key %d on voice %d (%d ms): before IWAVADR %u IWAVLEN %u STATUS %d COMMAND %d; %d ms after IWAVADR %u IWAVLEN %u STATUS %d COMMAND %d; on the sample until %+d ms\n",
+				seed, ev->pass + 1, l->beat, l->key, v, m0, b->iwav[v], b->ilen[v], b->status >> v & 1, b->command >> v & 1, DL_TAKE_MS, a->iwav[v], a->ilen[v],
+				a->status >> v & 1, a->command >> v & 1, until - m0);
+		}
+		// (3) Each pass against pass 1.
+		for (int p = 0; p < DL_PASSES; p++) {
+			const int k0 = lead_beats + p * loop_beats, f0 = lead_beats;
+			double worst = 0;
+			int worst_at = 0;
+			for (int j = 0; j < loop_beats; j++) {
+				const double r0 = level[f0 + j], r = level[k0 + j];
+				if (r0 <= -90 && r <= -90) {
+					continue;
+				}
+				if (fabs(r - r0) > worst) {
+					worst = fabs(r - r0);
+					worst_at = j;
+				}
+				if (p && (r - r0 > 3 || (j == 10 && r - r0 < -1))) {
+					const double beat = loop_from + j;
+					printf("    seed %d pass %d: (3) beat %d.%d %.1f dB against %.1f in pass 1\n", seed, p + 1, (int)(beat / 4) + 1, (int)fmod(beat, 4) + 1, r, r0);
+					loud += r - r0 > 3;
+					quiet += j == 10 && r - r0 < -1;
+				}
+			}
+			// The notes of 113.3: busy voices before, the voice taken, by the driver and the window's copy.
+			char line_text[256] = "";
+			size_t used = 0;
+			for (int e = 0; e < n; e++) {
+				const dl_event *ev = &events[e];
+				const dl_line *l = &lines[ev->line];
+				if (ev->pass == p && l->ch == 6 && l->on && fabs(l->beat - (loop_from + 10)) < 1e-6 && used < sizeof(line_text) - 64) {
+					char br[5], bc[5];
+					dl_bits(br, ev->busy_rom), dl_bits(bc, ev->busy_copy);
+					used += (size_t)snprintf(line_text + used, sizeof(line_text) - used, "; key %d %+.1f ms busy %s/%s took v%d/v%d in %d ms", l->key,
+						(double)(ev->t - base - (int64_t)llround((lead_beats + p * loop_beats + 10) * spb)) / 48, br, bc, ev->voice, ev->copy_voice, ev->delay);
+				}
+			}
+			printf("    seed %d pass %2d: 113.3 %.1f dB, worst %.1f dB at %d.%d%s\n", seed, p + 1, level[k0 + 10], worst,
+				(int)((loop_from + worst_at) / 4) + 1, (int)fmod(loop_from + worst_at, 4) + 1, line_text);
+		}
+		printf("    seed %d: %d starts lost, %d Note Offs not stopped, %d beats louder than pass 1, %d kicks of 113.3 quieter; %d starts on another voice than the copy's\n",
+			seed, lost, unstopped, loud, quiet, mismatch);
+		total_lost += lost, total_unstopped += unstopped, total_loud += loud, total_quiet += quiet, total_mismatch += mismatch;
+		midi(0xB5, 123, 0);
+		for (int c = 0; c < 5; c++) {
+			midi((uint8_t)(0xB0 | c), 123, 0);
+		}
+		dl_advance(dl_now + (uint64_t)(spb * 4));
+	}
+	printf("    a start taken %d ms after its note at most; how many at each ms:", worst_take);
+	for (int d = 0; d <= DL_TAKE_MS; d++) {
+		if (take_hist[d]) {
+			printf(" %d:%d", d, take_hist[d]);
+		}
+	}
+	printf("\n");
+	const mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
+	printf("    all %d seeds: %d starts lost, %d Note Offs not stopped, %d beats louder, %d kicks of 113.3 quieter; %d starts on another voice than the copy's; dropped_midi %u\n",
+		seeds + 1, total_lost, total_unstopped, total_loud, total_quiet, total_mismatch, stats.dropped_midi);
+	dac_clear(&set);
+	return total_lost + total_unstopped + total_loud + total_quiet ? 1 : 0;
+}
+
 // Stage 19: PCM4's four voices. A kick keeps its level while a hat plays over it; four notes all
 // sound and a fifth takes the oldest's voice; CC 10 pans them all; the ROM's samples last as long
 // as in 0.18; how long a Note On and the DAC switch take.
@@ -7795,6 +8240,21 @@ int main(int argc, char **argv)
 		test_loop_pan();
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
+	}
+	if ((argc >= 4 && argc <= 6) && !strcmp(argv[2], "--dac-loop")) {
+		// Stage 58: the DAC loop of bars 111-114 from the check set's notes, N random seeds after the grid
+		// (20 when not given); «free» runs it without lockstep, as the plugin runs; «moment» shifts the events
+		// of one moment together (each event on its own otherwise); «free-moment» both.
+		if (argc == 6 && strstr(argv[5], "free")) {
+			mdmi_engine_test_lockstep(engine, false);
+			printf("    lockstep off\n");
+		}
+		full_velocity();
+		const bool moment = argc == 6 && strstr(argv[5], "moment");
+		if (moment) {
+			printf("    one shift for each moment's events\n");
+		}
+		return dac_loop_experiment(argv[3], argc >= 5 ? atoi(argv[4]) : 20, moment);
 	}
 	if (argc == 4 && !strcmp(argv[2], "--adjacent")) {
 		// D66: Retrigger Cut and its neighbours with the screen's test switch set (0 as is,

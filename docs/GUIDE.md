@@ -666,6 +666,25 @@ else's (exit 3, or Live running with the lock free): 2 minutes between tries, at
 ~15 s after play, and the actions fired late (the script fails a run whose action was sent more than 0.25 beat late).
 A failed run keeps its WAV, log and notes under a time stamp in `build/live-probe/`.
 
+The loop without Live (stage 58, D98): `song_events` in `live_probe_check.py` lists every Note On and Note Off the
+set sends to "MDMI песня" (beat, channel from the track's `DeviceIn.3.{ch}` output plus one, key, velocity);
+`song_notes` is built on it. `python tools/live_probe_check.py --notes` writes bars 110-114 of the check set to
+`build/stage58/notes-110-114.txt` (one event a line, «beat on|off channel key velocity», a header with the tempo and
+the loop in beats; notes held past the loop's end get their off there, as Live sends at the wrap) and, when the
+state has its own samples on the kit's keys (tst6: 37 StdSnr1 one-shot, 41 HiHatClosed), the state's DAC block as
+`dac-block.bin`, which the header names. `reg_test FILES --dac-loop NOTES [N] [moment|free|free-moment]`
+(`dac_loop_experiment`) boots that set, plays the lead once and the loop 16 times, each event on its own sample:
+seed 0 on the grid, seeds 1..N each event shifted by a random ±25 ms (`moment`: the events of one moment by one
+shift, in random order), `free` without lockstep. Each ms it keeps the driver's COMMAND, STATUS, WAVADR, IWAVADR and
+IWAVLEN and output 6's energy, then prints (1) every DAC start no voice took (sample's WAVADR, STATUS set, COMMAND
+clear, IWAVADR at its first blocks within 50 ms) with the bits ms by ms, (2) every Note Off of a key that isn't a
+one-shot after which its voice still plays the sample 50 ms on, (3) every beat more than 3 dB louder than pass 1
+and every kick of 113.3 more than 1 dB quieter (beats without 0.05 beat at each edge, moved by the plugin's
+latency as Live's recording is), and a line per pass with the voices busy before the notes of 113.3 and the voice
+each took, by the driver and by the window's copy (`dac_pick`). The beats' levels of the per-event seeds move by
+more than 3 dB on their own (an onset shifted 25 ms against its neighbours crosses a window's edge); the driver's
+lines (1) and (2) don't depend on that.
+
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
 is `git describe`, ending in `-dirty` for uncommitted code.
