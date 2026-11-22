@@ -642,15 +642,28 @@ copy's `Samples/Recorded`, at Live's rate (44.1 kHz here, `sample_rate` in `able
 What a run proves: Live opened the copy, played to the end of the range and closed by itself (no new folder in
 Live's `Preferences/Crash`, one window in the end PNG); the pulse has every beat (the recorded notes are Live's own,
 MDMI has no MIDI out, so they only say that Live did not stand); and the RMS of each beat of MDMI's sound is above
-`SOUND_DB` where the set has a note for "MDMI песня" and below `SILENCE_DB` where it has none for more than a beat.
-After `off` the beats from a beat after the act are silent; after `on` the first new note sounds; whether notes held
-through off come back is printed as an observation. A delete ends the WAV: Live stops recording a track whose source
-lost its instrument. Exceptions (a note with no sound by design) are listed by beat with a reason. What it does not
+`SOUND_DB` where the set has a note for "MDMI песня" and below `SILENCE_DB` where it has none for more than a beat
+(a silent beat is measured without its last 5 ms, `QUIET_TAIL`: a note may start a sample early). After `off`, the
+time from one beat after the device answered (`acted`) to the next `on` is cut into beat-long windows counted from
+that point, the last one shorter (run в has about one beat between off and on, off the grid), and each window must
+be below `SILENCE_DB`; windows under 0.1 beat are not measured. After `on` the first new note of a clip must sound
+within a beat; whether notes held through off come back is printed as an observation. After a delete nothing is
+measured per beat: Live stops recording "Rec Audio" when its source track loses its instrument, so the check is that
+the recording ends between the moment probe.py sent the delete and the device's answer plus 1.4 beats, and that the
+pulse and Live's closing are as in any run. In the loop, the first pass is held to the set's notes like a straight
+run and the other passes to the first, beat by beat within 3 dB (beats without 0.05 beat at each edge: onsets move
+by up to ±25 ms between passes). Until stage 58 the loop has a third outcome, «известный дефект (этап 58)», for
+exactly one signature (pass 7, beat 113.3 more than 3 dB below pass 1, all else within 3 dB; `KNOWN_LOOP`, D97); it
+counts as a pass in the repeat comparison, and the 113.3 level of every pass is printed. Any probe.py exit code other than 0 fails the run, and its old `notes.json` is
+removed first. `python tools/live_probe_check.py е` plays part of the plan: it writes `summary-part.txt` and compares
+with the same runs in the last full `summary.txt`, which stays. Exceptions (a note with no sound by design) are
+listed by beat with a reason. What it does not
 prove: anything about the plugin window (never opened), xruns (Live records from its graph; use `realtime-burst`,
 D85), the sound of the five other MDMIs (they only must not crash Live). The script waits while Live is someone
 else's (exit 3, or Live running with the lock free): 2 minutes between tries, at most an hour, then "не сыгран".
 `settle` 60 in `ableton-probe.json`: with the default 15, two of four runs had the device's positions stall for
-~15 s after play, and the actions fired late (the script fails a run whose action is more than 0.25 beat late). A failed run keeps its WAV, log and notes under a time stamp in `build/live-probe/`.
+~15 s after play, and the actions fired late (the script fails a run whose action was sent more than 0.25 beat late).
+A failed run keeps its WAV, log and notes under a time stamp in `build/live-probe/`.
 
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision

@@ -1,6 +1,7 @@
 """Live plays the check set: MDMI in real Ableton Live through the owner's ableton-probe (stage 57, D96).
 
-    python tools/live_probe_check.py [RUN ...]      (RUN: а б в г д е, the plan's names; all when none)
+    python tools/live_probe_check.py [RUN ...]      (RUN: а б в г д е, the plan's names; all when none;
+                                                     a part writes summary-part.txt, the full summaries stay)
 
 Runs the plan below one run at a time. Each run: build the probe set (tools/make_probe_set.py), play it with
 probe.py, then check what came back: Live opened, played to the end and closed by itself; the pulse track has a
@@ -49,7 +50,13 @@ PLAN = [
 # or below -108 dB. A silent beat is measured without its last 0.1 beat: a note on the next beat may start a
 # sample early (-0.5 ms at 87.1).
 SOUND_DB, SILENCE_DB = -70, -90
-QUIET_SPAN = 0.9
+QUIET_TAIL = 0.01            # beats (5 ms) left off the end of a silent window: a note starts a sample early
+# Run е's one known defect until stage 58 (D97): on pass 7 the kick at 113.3 is more than 3 dB below pass 1, every
+# other beat of every pass within 3 dB. Exactly that is «известный дефект (этап 58)»; anything else fails.
+# Do not add a second one: a new defect is a failure and new work.
+KNOWN_LOOP = (7, (113 - 1) * BB + 2)
+KNOWN = 'ИЗВЕСТНЫЙ ДЕФЕКТ (этап 58)'
+MIN_WINDOW = 0.1            # beats; a shorter silent window after off is not measured
 EDGE = 0.05                  # beats (25 ms) left off each side of a beat when loop passes are compared
 ACT_LATE = 0.25              # beats; probe.py sends an action 20-40 ms (<0.1 beat at 120) after the point
 # The device answers a delete up to ~0.45 beat after probe.py sent it (run д: sent 113.2.035, recording ended
@@ -271,8 +278,10 @@ def judge(run, code, out, crashes_before):
     files = {'png': pngs[0] if pngs else None}
     m = re.search(r'play с (\d+)\.(\d+\.\d+)', out)
     p0 = (int(m.group(1)) - 1) * BB + float(m.group(2)) - 1 if m else (a - 1) * BB
+    if code != 0:
+        bad.append(f'probe.py код {code}')
     if code is None or not os.path.exists(os.path.join(TOOL_OUT, 'notes.json')) or opened is None:
-        return False, bad or [f'probe.py код {code}'], facts, seen, files
+        return False, bad, facts, seen, files
     notes = json.load(open(os.path.join(TOOL_OUT, 'notes.json'), encoding='utf-8'))
     shutil.copy(os.path.join(TOOL_OUT, 'notes.json'), os.path.join(OUT, run['name'] + '-notes.json'))
     acts = notes.get('actions') or []
@@ -350,7 +359,7 @@ def judge(run, code, out, crashes_before):
         files['beats'] = beat_table(main, sn, (a - 1) * BB, b * BB + 2 * BB)
         return not bad, bad, facts, seen, files
     if run.get('loop'):
-        loop_sound(run, lanes, sn, bad, facts)
+        files['known'] = loop_sound(run, lanes, sn, bad, facts)
     else:
         line_sound(run, main, sn, acts, bad, facts, seen, files)
     return not bad, bad, facts, seen, files
@@ -399,21 +408,28 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
             quiet.append((t + LATE + 1, tail_end))
         else:
             on_at.append(t)
-    n_sound = n_quiet = 0
+    n_sound = n_quiet = n_off = 0
     wrong = []
+    # MDMI off or deleted: from a beat after the act to the next on, in beat-long windows from the act, the last
+    # one shorter (off-on in run в is about one beat and never on the grid). Past the end of a recording (Live
+    # stops recording at a delete) nothing is measured.
+    for q0, q1 in quiet:
+        w = q0
+        while q1 - w >= MIN_WINDOW:
+            w1 = min(w + 1, q1)
+            r = rms_at(takes, w, w1 - QUIET_TAIL)
+            if r is not None:
+                n_off += 1
+                if r > SILENCE_DB:
+                    wrong.append(f'{bar_beat(w)}-{bar_beat(w1)} звук {r:.0f} дБ после выкл')
+            w = w1
     for k in range(math.ceil(x0), int(tail_end)):
         r = rms_at(takes, k, k + 1)
         if r is None:
             continue
-        rq = rms_at(takes, k, k + QUIET_SPAN)
-        if any(q0 <= k and k + 1 <= q1 for q0, q1 in quiet):
-            r = rq
-            n_quiet += 1
-            if r > SILENCE_DB:
-                wrong.append(f'{bar_beat(k)} звук {r:.0f} дБ после выкл/удаления')
-            continue
+        rq = rms_at(takes, k, k + 1 - QUIET_TAIL)
         if any(q0 - 1 < k + 1 and k < q1 for q0, q1 in quiet):
-            continue                           # the beat the action lands in
+            continue                           # MDMI off or gone: judged above
         last_on = max([t for t in on_at if t <= k], default=None)
         c = cover(sn, k, k + 1, before=last_on)
         if c >= 0.1:
@@ -449,7 +465,8 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
     for x in acts:
         if x['action'] == 'delete':
             seen.append(f'удалено на {x["acted"]}')
-    facts.append(f'долей со звуком {n_sound}, тишины {n_quiet}, мимо {len(wrong)}')
+    facts.append(f'долей со звуком {n_sound}, тишины {n_quiet}' + (f', тишины после выкл {n_off}' if n_off else '')
+                 + f', мимо {len(wrong)}')
     if wrong:
         bad.append('звук: ' + '; '.join(wrong[:6]) + (f' (ещё {len(wrong) - 6})' if len(wrong) > 6 else ''))
 
@@ -464,8 +481,20 @@ def loop_sound(run, lanes, sn, bad, facts):
     # kick at 112.3: 8 ms early in pass 1, 15 ms late in pass 2), and 8 ms of a kick moved a beat's RMS by 3 dB.
     passes = [[rms_at(l, k + EDGE, k + 1 - EDGE) for k in range(l0, l1)] for l in full]
     first = passes[0]
+    # the first pass is held to the set's notes like a straight run, the others to the first pass
+    for k in range(l0, l1):
+        r = rms_at(full[0], k, k + 1)
+        if r is None:
+            bad.append(f'луп: проход 1 без записи на доле {bar_beat(k)}')
+        elif cover(sn, k, k + 1) >= 0.1 and bar_beat(k) not in EXCEPTIONS:
+            if r < SOUND_DB:
+                bad.append(f'луп: проход 1 доля {bar_beat(k)} тишина {r:.0f} дБ при ноте')
+        elif cover(sn, k - 1, k + 1) == 0:
+            r = rms_at(full[0], k, k + 1 - QUIET_TAIL)
+            if r > SILENCE_DB:
+                bad.append(f'луп: проход 1 доля {bar_beat(k)} звук {r:.0f} дБ без нот')
     worst = 0.0
-    off = []
+    off = []                                   # (pass, beat, text) more than 3 dB from pass 1
     for p, pr in enumerate(passes[1:], 2):
         for k, (r0, r) in enumerate(zip(first, pr)):
             if r0 is None or r is None:
@@ -475,22 +504,30 @@ def loop_sound(run, lanes, sn, bad, facts):
             d = abs(r - r0)
             worst = max(worst, d)
             if d > 3:
-                off.append(f'проход {p} доля {bar_beat(l0 + k)}: {r:.0f} против {r0:.0f} дБ')
-    facts.append(f'целых проходов {len(full)}, худшая разница с первым {worst:.1f} дБ')
-    if off:
-        bad.append('луп: ' + '; '.join(off[:6]) + (f' (ещё {len(off) - 6})' if len(off) > 6 else ''))
+                off.append((p, l0 + k, r < r0, f'проход {p} доля {bar_beat(l0 + k)}: {r:.0f} против {r0:.0f} дБ'))
+    kb = KNOWN_LOOP[1] - l0
+    facts.append(f'целых проходов {len(full)}, худшая разница с первым {worst:.1f} дБ; доля {bar_beat(KNOWN_LOOP[1])} '
+                 'по проходам: ' + ' '.join('?' if pr[kb] is None else f'{pr[kb]:.0f}' for pr in passes))
+    if not off:
+        return None
+    if not bad and len(off) == 1 and off[0][:3] == (KNOWN_LOOP[0], KNOWN_LOOP[1], True):
+        return f'{off[0][3]} (D97)'
+    bad.append('луп: ' + '; '.join(x[3] for x in off[:6]) + (f' (ещё {len(off) - 6})' if len(off) > 6 else ''))
+    return None
 
 
 # ---------- the plan ----------
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    summary = os.path.join(OUT, 'summary.txt')
-    prev = open(summary, encoding='utf-8').read() if os.path.exists(summary) else None
-    lines = [f'MDMI в Live (ableton-probe), {time.strftime("%Y-%m-%d %H:%M")}, '
-             f'установлено: {installed()}', '']
-    verdicts = []
     only = sys.argv[1:]                        # run names to play, all when none
+    full = os.path.join(OUT, 'summary.txt')
+    # a part of the plan writes its own file and is compared with the same runs of the last full summary
+    summary = os.path.join(OUT, 'summary-part.txt') if only else full
+    prev = open(full, encoding='utf-8').read() if os.path.exists(full) else None
+    lines = [f'MDMI в Live (ableton-probe), {time.strftime("%Y-%m-%d %H:%M")}, '
+             f'установлено: {installed()}' + (f', только {" ".join(only)}' if only else ''), '']
+    verdicts = []
     for run in PLAN:
         if only and run['name'] not in only:
             continue
@@ -502,6 +539,8 @@ def main():
             log('набор испорчен, Live не запускаю: ' + '; '.join(broken))
             return 2
         shutil.rmtree(os.path.join(PROJECT, 'Samples', 'Recorded'), ignore_errors=True)
+        if os.path.exists(os.path.join(TOOL_OUT, 'notes.json')):
+            os.remove(os.path.join(TOOL_OUT, 'notes.json'))   # a run that writes none must not pass on the last one
         crashes = set(os.listdir(CRASH)) if os.path.isdir(CRASH) else set()
         res = play(run)
         if res is None:
@@ -511,7 +550,7 @@ def main():
         code, out = res
         open(os.path.join(OUT, run['name'] + '.log'), 'w', encoding='utf-8').write(out)
         ok, bad, facts, seen, files = judge(run, code, out, crashes)
-        if not ok:                             # the next run overwrites <name>.wav: keep what failed
+        if not ok or files.get('known'):       # the next run overwrites <name>.wav: keep what failed
             stamp = time.strftime('%Y%m%d-%H%M%S')
             for ext in ('.wav', '.log', '-notes.json'):
                 src = os.path.join(OUT, run['name'] + ext)
@@ -520,7 +559,8 @@ def main():
             if files.get('wav'):
                 files['wav'] = os.path.join(OUT, f'{run["name"]}-{stamp}.wav')
         v = f'{run["name"]} {run["what"]} ({run["bars"][0]}-{run["bars"][1]}): ' + \
-            ('ПРОШЁЛ' if ok else 'ДЕФЕКТ: ' + '; '.join(bad))
+            (('ДЕФЕКТ: ' + '; '.join(bad)) if not ok else
+             f'{KNOWN}: {files["known"]}' if files.get('known') else 'ПРОШЁЛ')
         verdicts.append(v)
         m = re.search(r'Live открыл набор за (\d+) с', out)
         lines += [v, '   ' + '; '.join(facts)]
@@ -531,13 +571,22 @@ def main():
             json.dump(files['beats'], open(os.path.join(OUT, run['name'] + '-beats.json'), 'w'), indent=0)
             log('  пороги не выставлены: доли в', run['name'] + '-beats.json')
     if prev is not None:
-        old = [l for l in prev.split('\n') if re.match(r'^\S+ .*: (ПРОШЁЛ|ДЕФЕКТ|НЕ СЫГРАН)', l)]
-        same = old == verdicts
-        lines.append('С прошлым прогоном: ' + ('то же' if same else 'ИНАЧЕ, сравни с summary-prev.txt'))
-        open(os.path.join(OUT, 'summary-prev.txt'), 'w', encoding='utf-8').write(prev)
+        old = [l for l in prev.split('\n') if re.match(r'^\S+ .*: (ПРОШЁЛ|ДЕФЕКТ|НЕ СЫГРАН|ИЗВЕСТНЫЙ ДЕФЕКТ)', l)
+               and (not only or l.split(' ', 1)[0] in only)]
+        same = [outcome(v) for v in old] == [outcome(v) for v in verdicts]
+        lines.append('С прошлым полным прогоном: ' + ('то же' if same else
+                     'ИНАЧЕ, сравни с ' + ('summary.txt' if only else 'summary-prev.txt')))
+        if not only:
+            open(os.path.join(OUT, 'summary-prev.txt'), 'w', encoding='utf-8').write(prev)
     open(summary, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
     log('\n'.join(lines))
-    return 0 if all('ПРОШЁЛ' in v for v in verdicts) else 1
+    return 0 if all(outcome(v).endswith(': ПРОШЁЛ') for v in verdicts) else 1
+
+
+def outcome(verdict):
+    """A verdict line for the repeat comparison: the known defect counts as a pass (D97)."""
+    i = verdict.find(': ' + KNOWN)
+    return verdict[:i] + ': ПРОШЁЛ' if i >= 0 else verdict
 
 
 def installed():
