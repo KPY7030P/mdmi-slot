@@ -650,7 +650,8 @@ be below `SILENCE_DB`; windows under 0.1 beat are not measured. After `on` the f
 within a beat; whether notes held through off come back is printed as an observation. After a delete nothing is
 measured per beat: Live stops recording "Rec Audio" when its source track loses its instrument, so the check is that
 the recording ends between the moment probe.py sent the delete and the device's answer plus 1.4 beats, and that the
-pulse and Live's closing are as in any run. In the loop, the first pass is held to the set's notes like a straight
+pulse and Live's closing are as in any run. In the loop, there must be one whole take per pass (`--passes` of
+them; a missing beat in any pass fails), the first pass is held to the set's notes like a straight
 run and the other passes to the first, beat by beat within 3 dB (beats without 0.05 beat at each edge: onsets move
 by up to ±25 ms between passes). Until stage 58 the loop has a third outcome, «известный дефект (этап 58)», for
 exactly one signature (pass 7, beat 113.3 more than 3 dB below pass 1, all else within 3 dB; `KNOWN_LOOP`, D97); it

@@ -474,9 +474,11 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
 def loop_sound(run, lanes, sn, bad, facts):
     l0, l1 = (run['loop'][0] - 1) * BB, run['loop'][1] * BB
     full = [l for l in lanes if any(t.start <= l0 + 1e-6 and t.end >= l1 - 1e-6 for t in l)]
+    # one whole take per pass: --passes N returns give the first pass and N - 1 more, the last return only a tail
+    if len(full) != run['passes']:
+        bad.append(f'звук лупа: целых дублей {len(full)}, ждали {run["passes"]}')
     if len(full) < 2:
-        bad.append(f'звук лупа: целых дублей {len(full)}')
-        return
+        return None
     # Beats without their edges: an onset lands up to ~25 ms off the grid, differently on each pass (run е,
     # kick at 112.3: 8 ms early in pass 1, 15 ms late in pass 2), and 8 ms of a kick moved a beat's RMS by 3 dB.
     passes = [[rms_at(l, k + EDGE, k + 1 - EDGE) for k in range(l0, l1)] for l in full]
@@ -498,6 +500,7 @@ def loop_sound(run, lanes, sn, bad, facts):
     for p, pr in enumerate(passes[1:], 2):
         for k, (r0, r) in enumerate(zip(first, pr)):
             if r0 is None or r is None:
+                bad.append(f'луп: проход {1 if r0 is None else p} без записи на доле {bar_beat(l0 + k)}')
                 continue
             if r0 <= SILENCE_DB and r <= SILENCE_DB:
                 continue
