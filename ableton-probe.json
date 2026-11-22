@@ -7,5 +7,6 @@
   "sample_rate": 44100,
   "tail_bars": 2,
   "udp_in": 9100,
-  "udp_out": 9101
+  "udp_out": 9101,
+  "settle": 60
 }

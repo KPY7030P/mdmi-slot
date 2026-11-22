@@ -626,15 +626,31 @@ is how to tell what is installed.
 Project/`, from the owner's `ALS_tsts` set and `presets/vowels`: clips and automation on the arrangement, one
 part per checked item, and a Russian guide next to it. Stages add their parts to the script.
 
-A session can play bars of that set in Live itself with the owner's tool
-`D:/ALL/MUSIC/TECH/MYPLUGINS/ableton-probe` (its README). The tool records MIDI, not audio, so a run shows only
-three things: the set opens, it plays through without a crash, and what the Live window looks like. Sound is still
-judged with our own hosts. `python tools/make_probe_set.py [--from TRACK_ID]` builds a copy of the check set in
-`build/probe/` with a "Rec Out" track recording one clip track (default 31, channel 1; 35 is channel 6). The owner's
-set is not touched. The new track must go before the return tracks, or Live calls the set corrupt. Then, only while
-Live is closed (an open Live is the owner's or another project's run), run
-`python ../../../MYPLUGINS/ableton-probe/probe.py run --config ableton-probe.json --bars A-B`. Notes and a PNG
-land in `build/ableton-probe/`.
+`python tools/live_probe_check.py` plays the installed MDMI in real Live with the owner's tool
+`D:/ALL/MUSIC/TECH/MYPLUGINS/ableton-probe` (its README) and writes `build/live-probe/summary.txt` (D96). Every
+stage runs it before handing over. The plan is a list in the script: the whole set, MDMI off and on over a held
+chord and over DAC drums, MDMI deleted over each, a loop of bars 111-114 eight times. `python
+tools/live_probe_check.py б в` plays only those runs. Each run rebuilds the probe copy with
+`tools/make_probe_set.py` (the owner's set in `build/live-check` is not touched), checks it for what Live calls
+corrupt (clip slots of both sequencers against the scenes, sends against the return tracks: Live leaves a corrupt set
+on a dialog that `probe.py` cannot close), and calls `probe.py run`. The copy adds three tracks before the return
+tracks: "Pulse" (a note on every beat, output nowhere), "Rec Out" (the tool's record track, input Pulse) and "Rec
+Audio" (an audio track from Live's lesson set "Recording Audio.als", input "MDMI песня" Post FX, monitoring off,
+armed). The tool arms only its own track and leaves ours armed, so the take records MDMI's sound too: a WAV in the
+copy's `Samples/Recorded`, at Live's rate (44.1 kHz here, `sample_rate` in `ableton-probe.json`).
+
+What a run proves: Live opened the copy, played to the end of the range and closed by itself (no new folder in
+Live's `Preferences/Crash`, one window in the end PNG); the pulse has every beat (the recorded notes are Live's own,
+MDMI has no MIDI out, so they only say that Live did not stand); and the RMS of each beat of MDMI's sound is above
+`SOUND_DB` where the set has a note for "MDMI песня" and below `SILENCE_DB` where it has none for more than a beat.
+After `off` the beats from a beat after the act are silent; after `on` the first new note sounds; whether notes held
+through off come back is printed as an observation. A delete ends the WAV: Live stops recording a track whose source
+lost its instrument. Exceptions (a note with no sound by design) are listed by beat with a reason. What it does not
+prove: anything about the plugin window (never opened), xruns (Live records from its graph; use `realtime-burst`,
+D85), the sound of the five other MDMIs (they only must not crash Live). The script waits while Live is someone
+else's (exit 3, or Live running with the lock free): 2 minutes between tries, at most an hour, then "не сыгран".
+`settle` 60 in `ableton-probe.json`: with the default 15, two of four runs had the device's positions stall for
+~15 s after play, and the actions fired late (the script fails a run whose action is more than 0.25 beat late). A failed run keeps its WAV, log and notes under a time stamp in `build/live-probe/`.
 
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
