@@ -2011,13 +2011,13 @@ static void dl_trace(int from, int to, uint16_t mark)
 			wav_was |= (uint8_t)((q->wav[v] == mark) << v);
 		}
 		if (u > from && r->command == q->command && r->status == q->status && wav == wav_was && !memcmp(r->iwav, q->iwav, sizeof(r->iwav))
-			&& !memcmp(r->ilen, q->ilen, sizeof(r->ilen))) {
+			&& !memcmp(r->ilen, q->ilen, sizeof(r->ilen)) && !memcmp(r->wav, q->wav, sizeof(r->wav))) {
 			continue;
 		}
 		char c[5], s[5], w[5];
 		dl_bits(c, r->command), dl_bits(s, r->status), dl_bits(w, wav);
-		printf("        %+4d ms: COMMAND %s STATUS %s WAVADR=%u %s IWAVADR %u %u %u %u IWAVLEN %u %u %u %u\n", u - from, c, s, mark, w, r->iwav[0], r->iwav[1],
-			r->iwav[2], r->iwav[3], r->ilen[0], r->ilen[1], r->ilen[2], r->ilen[3]);
+		printf("        %+4d ms: COMMAND %s STATUS %s WAVADR=%u %s (WAVADR %u %u %u %u) IWAVADR %u %u %u %u IWAVLEN %u %u %u %u\n", u - from, c, s, mark, w, r->wav[0],
+			r->wav[1], r->wav[2], r->wav[3], r->iwav[0], r->iwav[1], r->iwav[2], r->iwav[3], r->ilen[0], r->ilen[1], r->ilen[2], r->ilen[3]);
 		shown++;
 	}
 }
@@ -2129,7 +2129,15 @@ static dl_counts dl_analyze(dl_event *events, int n, int seed, int *take_hist, i
 		int null_run = 0, foreign_run = 0;
 		for (int u = 1; u <= last_ms; u++) {
 			const dl_ms *r = &dl_rec[u], *q = &dl_rec[u - 1];
-			if (r->wav[v] != q->wav[v] || r->wlen[v] != q->wlen[v]) {
+			// A new start of the ROM, once it holds DL_HOLD_MS: an interrupt may stop the 68000 between the
+			// two byte writes of WAVADR for up to 3 ms, the Z80's bus held (seen: the hat's high byte with
+			// the null sample's low one); the driver never reads that.
+			bool held = r->wav[v] != q->wav[v] || r->wlen[v] != q->wlen[v];
+			for (int k = 1; k < DL_HOLD_MS && held; k++) {
+				const dl_ms *next = u + k <= last_ms ? &dl_rec[u + k] : r;
+				held = next->wav[v] == r->wav[v] && next->wlen[v] == r->wlen[v];
+			}
+			if (held && !(r->wav[v] == from[0] && (uint16_t)(r->wav[v] + r->wlen[v]) == to[0])) {
 				from[1] = from[0], to[1] = to[0];
 				from[0] = r->wav[v], to[0] = (uint16_t)(r->wav[v] + r->wlen[v]);
 			}
@@ -2148,13 +2156,13 @@ static dl_counts dl_analyze(dl_event *events, int n, int seed, int *take_hist, i
 				c.null_long++;
 				printf("    seed %d: (2) NULL WITH LENGTH voice %d at %d ms: IWAVADR %u IWAVLEN %u (null sample %u long); a second later IWAVLEN %u\n", seed, v, u - DL_HOLD_MS + 1, r->iwav[v],
 					r->ilen[v], dl_null_len, u + 999 <= last_ms ? dl_rec[u + 999].ilen[v] : 0);
-				dl_trace(u - 40, u + 10, from[0]);
+				dl_trace(u - 120, u + 10, from[0]);
 			}
 			if (foreign_run == DL_HOLD_MS) {
 				c.foreign++;
 				printf("    seed %d: (4) FOREIGN BLOCKS voice %d at %d ms: IWAVADR %u IWAVLEN %u, the voice's last starts %u-%u and %u-%u\n", seed, v, u - DL_HOLD_MS + 1, r->iwav[v],
 					r->ilen[v], from[0], to[0], from[1], to[1]);
-				dl_trace(u - 40, u + 10, from[0]);
+				dl_trace(u - 120, u + 10, from[0]);
 			}
 		}
 	}
@@ -2169,7 +2177,7 @@ static void dl_finish(const char *what)
 	dac_clear(&dl_set);
 }
 
-static int dac_loop_experiment(const char *notes_path, int seeds, bool moment, bool inject)
+static int dac_loop_experiment(const char *notes_path, int from, int seeds, bool moment, bool inject)
 {
 	if (!dl_load(notes_path)) {
 		return 1;
@@ -2186,7 +2194,8 @@ static int dac_loop_experiment(const char *notes_path, int seeds, bool moment, b
 	// --stop-inject: seed 0 twice, the second time with pass 2's crash put in the hanging state.
 	const int runs = inject ? 1 : seeds;
 	static double plain[DL_BEATS];
-	for (int seed = 0; seed <= runs; seed++) {
+	int audio_bad = 0;
+	for (int seed = from; seed <= runs; seed++) {
 		const int shift_seed = inject ? 0 : seed;
 		uint32_t rng = 0x9E3779B9u ^ (uint32_t)shift_seed * 2654435761u;
 		int n = 0;
@@ -2244,7 +2253,7 @@ static int dac_loop_experiment(const char *notes_path, int seeds, bool moment, b
 		dl_play(events, n, (uint64_t)(spb * 2));
 		const int last_ms = dl_last_ms;
 		const dl_counts c = dl_analyze(events, n, seed, take_hist, &worst_take);
-		if (seed == 0) {
+		if (seed == from) {
 			// Where output 6 answers the first DAC note; Live compensates the plugin's latency in its
 			// recording: the beats' windows move by that, as in run е.
 			for (int e = 0; e < n && delay_ms < 0; e++) {
@@ -2328,6 +2337,9 @@ static int dac_loop_experiment(const char *notes_path, int seeds, bool moment, b
 			seed, c.lost, c.unstopped, c.null_long, c.foreign, loud, quiet, c.mismatch);
 		total.lost += c.lost, total.unstopped += c.unstopped, total.null_long += c.null_long, total.foreign += c.foreign, total.mismatch += c.mismatch;
 		total_loud += loud, total_quiet += quiet;
+		// The beats' levels measure the sound only on the grid (D99 addendum): a shift of 25 ms moves an
+		// onset across a beat's edge.
+		audio_bad += seed == 0 ? loud + quiet : 0;
 		midi(0xB5, 123, 0);
 		for (int ch = 0; ch < 5; ch++) {
 			midi((uint8_t)(0xB0 | ch), 123, 0);
@@ -2348,7 +2360,8 @@ static int dac_loop_experiment(const char *notes_path, int seeds, bool moment, b
 	printf("    all %d seeds: %d starts lost, %d Note Offs not stopped, %d null with length, %d foreign blocks, %d beats louder, %d kicks of 113.3 quieter; %d starts on another voice than the copy's\n",
 		seeds + 1, total.lost, total.unstopped, total.null_long, total.foreign, total_loud, total_quiet, total.mismatch);
 	dl_finish("loop");
-	return total.lost + total.unstopped + total.null_long + total.foreign + total_loud + total_quiet ? 1 : 0;
+	printf("    verdict: %s (detectors (1), (2), (4) in every seed, the beats' levels of seed 0 only)\n", total.lost + total.unstopped + total.null_long + total.foreign + audio_bad ? "FAILED" : "PASSED");
+	return total.lost + total.unstopped + total.null_long + total.foreign + audio_bad ? 1 : 0;
 }
 
 // --stop-sweep (D99): the crash (key 48) alone, on, and its Note Off 2 s later + k samples, k = 0..767
@@ -8499,6 +8512,16 @@ int main(int argc, char **argv)
 		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
 		return failures;
 	}
+	if ((argc == 6 || argc == 7) && !strcmp(argv[2], "--dac-loop") && !strcmp(argv[4], "--seed")) {
+		// D99 addendum: the permanent check, one seed in a fresh process (lockstep), «moment» as below. Its
+		// print is the same to the byte in every fresh process; inside a longer run the seed has another
+		// history and does not repeat.
+		full_velocity();
+		const int k = atoi(argv[5]);
+		const bool moment = argc == 7 && !strcmp(argv[6], "moment");
+		printf("    seed %d alone%s\n", k, moment ? ", one shift for each moment's events" : "");
+		return dac_loop_experiment(argv[3], k, k, moment, false);
+	}
 	if ((argc >= 4 && argc <= 6) && !strcmp(argv[2], "--dac-loop")) {
 		// Stage 58: the DAC loop of bars 111-114 from the check set's notes, N random seeds after the grid
 		// (20 when not given); «free» runs it without lockstep, as the plugin runs; «moment» shifts the events
@@ -8513,7 +8536,7 @@ int main(int argc, char **argv)
 		if (moment) {
 			printf("    one shift for each moment's events\n");
 		}
-		return dac_loop_experiment(argv[3], argc >= 5 ? atoi(argv[4]) : 20, moment, false);
+		return dac_loop_experiment(argv[3], 0, argc >= 5 ? atoi(argv[4]) : 20, moment, false);
 	}
 	if ((argc == 4 || argc == 5) && !strcmp(argv[2], "--stop-sweep")) {
 		// D99: the crash's stop at every place of a pass; «free» without lockstep.
@@ -8528,7 +8551,7 @@ int main(int argc, char **argv)
 	if (argc == 4 && !strcmp(argv[2], "--stop-inject")) {
 		// D99: the grid's seed, then again with pass 2's crash put in the state IWAVADR null with its blocks left.
 		full_velocity();
-		return dac_loop_experiment(argv[3], 0, false, true);
+		return dac_loop_experiment(argv[3], 0, 0, false, true);
 	}
 	if (argc == 4 && !strcmp(argv[2], "--adjacent")) {
 		// D66: Retrigger Cut and its neighbours with the screen's test switch set (0 as is,
