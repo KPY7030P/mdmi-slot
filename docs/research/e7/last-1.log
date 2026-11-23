@@ -1,0 +1,979 @@
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+  ok  : a booted ROM holds the model's defaults, 0 of 6 voices differ
+  ok  : and its LFO and Ch3 mode, LFO register 8 model 8, Ch3 mode 0 model 0, DAC 0 model 0
+Without rows, as 0.19
+  ok  : PSG Organ.eef reads
+  ok  : held notes keep their pitch registers frame after frame: no row, no pitch write
+    87 bytes sent, 87 in 0.19's
+  ok  : the same MIDI bytes as 0.19, no 0A 02 or 0A 03 among them
+  ok  : channel 1, 0 of 128 presets differ
+  ok  : channel 2, 0 of 128 presets differ
+  ok  : channel 3, 0 of 128 presets differ
+  ok  : channel 4, 0 of 128 presets differ
+  ok  : channel 5, 0 of 128 presets differ
+  ok  : channel 6, 0 of 128 presets differ
+  ok  : every field of an operator at maximum, 0 of 1 voices differ
+  ok  : algorithm, feedback, AMS, FMS, 0 of 1 voices differ
+  ok  : SR by knob, above and below 16, on the chip's second part, 0 of 1 voices differ
+  ok  : TL and SR from a clip's CC, 0 of 1 voices differ
+  ok  : the same program from a clip wipes tweaks in the chip too, 0 of 1 voices differ
+  ok  : a lane repeating the preset keeps them, 0 of 1 voices differ
+  ok  : reset all controllers and a note leave the voice alone, 0 of 1 voices differ
+  ok  : LFO rate and Ch3 mode by knob, LFO register 13 model 13, Ch3 mode 64 model 64, DAC 0 model 0
+    reset seen, voices back after 250 ms
+  ok  : DAC on: the five FM voices come back, 0 of 5 voices differ
+  ok  : and the LFO and Ch3 mode, LFO register 13 model 13, Ch3 mode 64 model 64, DAC 128 model 128
+    reset seen, voices back after 133 ms
+  ok  : DAC off: all six come back, 0 of 6 voices differ
+  ok  : and the LFO and Ch3 mode, LFO register 13 model 13, Ch3 mode 64 model 64, DAC 0 model 0
+  ok  : LFO off and rate 3 by knob, LFO register 3 model 3, Ch3 mode 64 model 64, DAC 0 model 0
+  ok  : every channel keeps its own voice, 0 of 6 voices differ
+  ok  : DAC on: the same PSG notes sound as before
+  ok  : DAC off: the same PSG notes sound as before
+    PSG silent after 520 ms
+    key 33: 55.03 Hz, 6991/127 = 55.05 Hz, the note 55.00 Hz
+    key 36: 65.92 Hz, 6991/106 = 65.96 Hz, the note 65.41 Hz
+    key 45: 110.91 Hz, 6991/63 = 110.97 Hz, the note 110.00 Hz
+    key 57: 225.08 Hz, 6991/31 = 225.53 Hz, the note 220.00 Hz
+  ok  : periodic noise on tone 3 sounds at 6991/N Hz within 1%, at the note within 3% (a quarter tone)
+  ok  : a note on channel 9 writes nothing while the noise has its tone
+  ok  : after a fixed rate channel 9 plays again
+  ok  : at rate Kit each key sets the chip's noise to its drum's type on tone 3
+    low tom on key 41 99.87 Hz, on key 53 199.75 Hz
+  ok  : the low tom an octave up sounds an octave higher
+    DAC on: 1 messages from the plugin; held FM outputs 1-5 at 0.0879 0.069 0.399 0.0245 0.711 of before
+  ok  : DAC on: the plugin sends the switch alone, no voice, LFO or Ch3 mode
+  ok  : DAC on: the held FM notes on 1-5 sound on with their registers, and the PSG's, with no new note
+    DAC off: 1 messages from the plugin; held FM outputs 1-5 at 0.0815 0.0644 0.417 0.0224 0.707 of before
+  ok  : DAC off: the plugin sends the switch alone
+  ok  : DAC off: the held FM notes and the PSG's sound on with no new note
+  ok  : after the switches the LFO and Ch3 mode are the ROM's own, LFO register 11 model 11, Ch3 mode 0 model 0, DAC 0 model 0
+  ok  : the built-in image has the sample table the plugin was built for
+    note 40, rate byte 1: 15261 bytes a second, PCM4 15236
+  ok  : a sample in place of the ROM's plays its bytes at PCM4's rate
+    note 100, rate byte 0: 15247 bytes a second, PCM4 15236
+  ok  : a sample on a note the ROM has none for plays at PCM4's rate
+    note 101, rate byte 1: 15207 bytes a second, PCM4 15236
+  ok  : a sample on a note the ROM has none for plays at PCM4's rate
+    note 102, rate byte 2: 15262 bytes a second, PCM4 15236
+  ok  : a sample on a note the ROM has none for plays at PCM4's rate
+    note 103, rate byte 3: 15233 bytes a second, PCM4 15236
+  ok  : a sample on a note the ROM has none for plays at PCM4's rate
+    note 104, rate byte 4: 15205 bytes a second, PCM4 15236
+  ok  : a sample on a note the ROM has none for plays at PCM4's rate
+    note 105, rate byte 5: 15266 bytes a second, PCM4 15236
+  ok  : a sample on a note the ROM has none for plays at PCM4's rate
+  ok  : the ROM's own sample on the next note is not the ramp
+    reset seen, voices back after 138 ms
+  ok  : back on the built-in image every voice is as before, 0 of 6 voices differ
+    pitch +0 cents, rate 1: 441.1 Hz played, 440.0 wanted
+  ok  : a sample prepared with a pitch sounds at it
+    pitch +1200 cents, rate 1: 882.5 Hz played, 880.0 wanted
+  ok  : a sample prepared with a pitch sounds at it
+    pitch -700 cents, rate 1: 294.2 Hz played, 293.7 wanted
+  ok  : a sample prepared with a pitch sounds at it
+    pitch +2400 cents, rate 1: 1764.2 Hz played, 1760.0 wanted
+  ok  : a sample prepared with a pitch sounds at it
+    pitch -2400 cents, rate 1: 110.2 Hz played, 110.0 wanted
+  ok  : a sample prepared with a pitch sounds at it
+    pitch +0 cents, rate 4: 441.2 Hz played, 440.0 wanted
+  ok  : a rate by hand keeps the pitch
+    plain: loudest 0.001 from 100 to 200 ms after Note Off
+  ok  : a plain one stops at Note Off
+    one-shot: loudest 0.083 from 100 to 200 ms after Note Off
+  ok  : a one-shot sample plays on after Note Off
+    written into the running core in 7.6 ms; FM held note 0.136 before, 0.132 after
+  ok  : a new sample goes into the running core: no restart, a held FM note sounds on
+    note 50: 0.133 with the square, 0.000 with silence
+  ok  : the next DAC note plays the new bytes
+    a sample ending at the last 16 KB of 4 MB: 0.133, written in 7.2 ms
+  ok  : a sample near the end of 4 MB plays
+    one-shot 100 ms after Note Off: 0.133
+  ok  : with a sample added below, the one-shot above plays on after Note Off
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+  ok  : an image that differs outside the samples restarts the core
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+    LOOP held 500 ms: 0 of 496 1 ms windows quiet, weakest 0.125; output 6 L 25.7 dB, R -3.8 dB
+  ok  : a LOOP sample sounds through ten times its length, no 1 ms window quiet
+  ok  : CC 10 at 0: output 6 left sounds, right at least 20 dB down
+    after CC 10 at 127 mid-sample: output 6 L -7.0 dB, R 18.6 dB
+  ok  : CC 10 moves a sounding sample to the right
+    LOOP 50 to 150 ms after Note Off: loudest 0.0018
+  ok  : a LOOP sample stops at Note Off
+    voice 0: block 16.8 ms, intro 1, loop 2, release 2 blocks: ok
+    voice 3: block 16.8 ms, intro 1, loop 2, release 2 blocks: ok
+  ok  : a loop with the shortest intro goes back to the loop's start, no quiet window, on voices 0 and 3 at 6 places in the frame
+  ok  : Note Off plays the loop out, then the release, then silence
+  ok  : Note Off in the intro: the intro, the loop once, the release, silence
+    no release, 50 to 150 ms after Note Off: loudest 0.0008
+  ok  : marks without a release: Note Off cuts, as in 0.18
+    release: the loop sounds 112 ms after Note Off
+    release: 2560 bytes, after Note Off LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRRRRRRRRRRRRRR
+    stop: the loop sounds 47 ms after Note Off
+    stop: 1792 bytes, after Note Off LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ
+    release 51 ms of it; stop: 1792 bytes against 2560, from 60 ms after Note Off 0.00027 of 0.1628
+  ok  : release: after Note Off the loop's pass, then the release of 3 blocks
+  ok  : stop: the image is shorter by the release
+  ok  : stop: from 60 ms after Note Off under 0.01 as the 18b cut, short of the loop's pass, no release
+    the driver's stop: 8 places keep the loop bit, 0 still clear it
+  ok  : the ROM patched PCM4's stop: no place in the driver clears a loop bit (D70)
+    LOOP held at 48 places across a PCM4 pass: silent loops voice 0 plain 0, marked 0, one block 0; voice 3 plain 0, marked 0, one block 0; 0 releases lost; 288 of 288 sounded
+  ok  : a held LOOP sample never falls silent, one block long too, wherever the Note On falls in PCM4's pass (27, D70)
+  ok  : every start of the sweep sounds: no start lost to the driver's COMMAND or STATUS (27)
+  ok  : after Note Off a loop stops, or plays its release to silence, at every place (27)
+    kick at 119 Hz alone 0.02588, with the hat 0.02500 (-0.30 dB)
+  ok  : a hat over the kick leaves the kick's level within 1 dB
+    four voices: 119 Hz 0.02440
+    four voices: 159 Hz 0.02510
+    four voices: 238 Hz 0.02488
+    four voices: 317 Hz 0.02465
+  ok  : four samples at once all sound
+    a fifth note: the oldest 0.00070, the fifth 0.02337
+  ok  : a fifth note takes the oldest's voice, the other three sound on
+    two voices panned left: output 6 L 11.3 dB, R -15.0 dB
+  ok  : CC 10 at 0 with two voices: output 6 right at least 20 dB down
+    Note On to sound, plugin latency included: 34 to 50 ms
+  ok  : a DAC note sounds within 80 ms of its Note On
+    DAC Enable to the first sample sounding: 232 ms, to the driver ready (0x2B) 181 ms
+  ok  : after DAC Enable a note sounds
+    StdKick: 0.288 s in 0.18, 0.288 s now (-0.3%)
+    StdSnr1: 0.478 s in 0.18, 0.476 s now (-0.3%)
+    Clap: 0.391 s in 0.18, 0.390 s now (-0.3%)
+  ok  : the ROM's samples last as long as in 0.18, within 3%
+    the AUDIO IN lamp: silent 0, 0.3 steps 0, 3 steps 1
+  ok  : stage 23: the window's AUDIO IN lamp is lit only while the input reaches half a DAC step (D74)
+    at 1 kHz: no input 0.0000000, input of 0.3 steps 0.0000000, of 3 steps 0.00314
+  ok  : stage 23: the input goes through the DAC's 8-bit steps (0.3 of a step is no input)
+    input 1 kHz alone 0.01926, with the sample 0.01825 (-0.47 dB); the sample alone 0.02594, with the input 0.02590 (-0.01 dB)
+  ok  : stage 23: a track's audio on the input is heard on channel 6's output through the DAC
+  ok  : stage 23: the input mixes with a playing sample, each within 1 dB of its own level
+    in Main: input 0.01822, the sample 0.02551
+  ok  : stage 23: the input and the sample are both in the main mix
+    the sample under a full-scale input: 0.01166 (-6.9 dB)
+  ok  : stage 23: input and samples saturate at the DAC's top instead of overflowing
+    a pulse comes out after 15.52 ms, the reported latency is 15.27 ms
+  ok  : stage 23: the input comes out of the DAC at the reported latency, within 2 ms
+    with the DAC off: input 0.0000000
+  ok  : stage 23: with the DAC off the input is silent
+    DAC writes without their input: 0
+  ok  : stage 23: every DAC write found its input
+    4 s offline with the DAC on: 741 ms without the input, 762 ms with it (+2.9%)
+A 0.20 project with Ch3 Special off, as 0.20
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+    915 bytes sent besides 14 stage 21 controllers, 915 in 0.20's
+  ok  : from the boot to the clip's end the plugin sends 0.20's bytes besides stage 21's controllers
+  ok  : those are the 14, CC 81 and 82 and Semi, Fine, Fixed of four operators, no more
+  ok  : with the notes held and at the end every YM and PSG register is as 0.20's ROM left it
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+  ok  : back on the built-in image every voice is as before, 0 of 6 voices differ
+A 0.21 project with Ch3 Special and the DAC, as 0.21
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+  ok  : with the notes held and at the end every YM and PSG register is as 0.21's ROM left it
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+  ok  : back on the built-in image every voice is as before, 0 of 6 voices differ
+  ok  : a loaded state reaches the chip, 0 of 6 voices differ
+    ROM 2.0 MB: ...\Temp\mdmi-reg-export.bin
+  ok  : EXPORT writes the file; every channel plays a place of the bank as it is
+  ok  : the file is padded to a whole 512 KB
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 83d0d0321516016924f795ce34c1b25df53726f4
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+  ok  : exported ROM, by program change and notes alone: FM 1, a file with a row sounds as through the plugin
+  ok  : exported ROM, by program change and notes alone: FM 2 on 120 sounds as through the plugin
+  ok  : exported ROM, by program change and notes alone: FM 3, a row switched off sounds as through the plugin
+  ok  : exported ROM, by program change and notes alone: PSG 7, loop and release with a row sounds as through the plugin
+  ok  : exported ROM, by program change and notes alone: PSG 8 on 121, a loop that stops at Note Off sounds as through the plugin
+    file, note 100, the project's sample on a note the ROM has none for: held 233 and 227, after Note Off 39.7 and 36
+    file, note 40, a ROM sample made the project's: held 26.3 and 26.7, after Note Off 1.34 and 1.02
+    file, note 41, a ROM note removed: held 1.06e-10 and 8.24e-11, after Note Off 7.43e-19 and 5.81e-19
+    file, note 50, a loop with its release: held 96.6 and 94.4, after Note Off 76.8 and 79.1
+    file, note 52, a loop that stops at Note Off: held 93.3 and 95.1, after Note Off 8.34 and 10.7
+  ok  : the DAC's output 6 from the exported ROM as through the plugin: the project's sample, a ROM sample made the project's, a removed note, a loop with its release, a loop that stops
+    after the resets, note 100, the project's sample on a note the ROM has none for: held 233 and 228, after Note Off 39.7 and 36.7
+    after the resets, note 40, a ROM sample made the project's: held 26.3 and 26.9, after Note Off 1.34 and 1.07
+    after the resets, note 41, a ROM note removed: held 1.06e-10 and 1.04e-10, after Note Off 7.43e-19 and 7.35e-19
+    after the resets, note 50, a loop with its release: held 96.6 and 93.9, after Note Off 76.8 and 79.9
+    after the resets, note 52, a loop that stops at Note Off: held 93.3 and 94.7, after Note Off 8.34 and 11.3
+  ok  : after GM Reset and FF a program change plays the bank's voice, envelope and row again
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+    the driver's voice 1 ends at 93 ms: not in the copy
+    21 changes of the copy: 1 missing in the driver, delays -9-34 ms around 22, 0 more than 34 ms off; roll 1 voice(s) shown, 1 in the driver; five keys gave 4 others
+  FAIL: the window's DAC voices change as the driver's own, voice by voice, one delay within two ROM frames
+  ok  : a roll on one key keeps one voice, a fifth key takes the oldest's, a one-shot plays on released
+  by hand, a chord of 4 on channel 4 with 5 tweaks, the others on other presets
+    cold, one at a time: key ons at 0.00 9.58 19.17 28.83 ms, 84 bytes besides the notes (175 ms at 480 bytes/s)
+  ok  : the chord's voices hold channel 4, 0 of 4 voices differ
+  ok  : voices 1-3 hold their own channels again, 0 of 3 voices differ
+    cold, in one batch: key ons at 0.00 16.83 -1.00 19.25 ms, 50 bytes besides the notes (104 ms at 480 bytes/s)
+  ok  : the chord's voices hold channel 4, 0 of 4 voices differ
+    warm, voices home but still channel 4's, in one batch: key ons at 0.00 2.33 4.75 7.17 ms, 35 bytes besides the notes (73 ms at 480 bytes/s)
+  ok  : the chord's voices hold channel 4, 0 of 4 voices differ
+  ok  : voices 1-3 hold their own channels again, 0 of 3 voices differ
+  by hand, channels 2 and 4 on different presets
+  ok  : before: voice 2 holds channel 2, 0 of 1 voices differ
+  ok  : before: voice 4 holds channel 4, 0 of 1 voices differ
+  ok  : voice 2 lent to channel 4 holds channel 4, 0 of 1 voices differ
+  ok  : and voice 4 still does, 0 of 1 voices differ
+    transition key on 9.67 ms after a plain note, which takes 13.67 ms; 38 bytes, 79 ms at 480 bytes/s
+  ok  : home again, the voice keeps channel 4's sound until channel 2 plays, 0 of 1 voices differ
+  ok  : channel 2's first note: voice 2 holds channel 2, 0 of 1 voices differ
+  ok  : and voice 4 channel 4, 0 of 1 voices differ
+    at home, key on 7.33 ms after a plain note
+  by hand, both on preset 41 with different tweaks
+  ok  : before: voice 2 holds channel 2, 0 of 1 voices differ
+  ok  : before: voice 4 holds channel 4, 0 of 1 voices differ
+  ok  : voice 2 lent to channel 4 holds channel 4, 0 of 1 voices differ
+  ok  : and voice 4 still does, 0 of 1 voices differ
+    transition key on 7.33 ms after a plain note, which takes 14.67 ms; 41 bytes, 85 ms at 480 bytes/s
+  ok  : home again, the voice keeps channel 4's sound until channel 2 plays, 0 of 1 voices differ
+  ok  : channel 2's first note: voice 2 holds channel 2, 0 of 1 voices differ
+  ok  : and voice 4 channel 4, 0 of 1 voices differ
+    at home, key on 7.00 ms after a plain note
+    owner wait after voice_by_hand: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  the voice dealer
+  ok  : a chord of 4 on channel 4 with tweaks: four voices hold channel 4
+  ok  : the same chord again, its voices still channel 4's
+    the chord's last key on after a plain note: 19.17 ms cold, 7.25 ms again
+  ok  : cold under 25 ms, again under 10 ms
+  ok  : a tune whose voice a chord holds takes it back with its own sound
+  ok  : and the chord's note moves to the free voice, nothing cut
+  ok  : with no voice free, channel 2's note takes its own back with its own sound, 0 of 1 voices differ
+  ok  : and the rest of the chord is untouched, pitch too
+  ok  : the cut note is marked
+  ok  : no mark when the chord ends
+  ok  : a chord of 2 lends a voice
+  ok  : home again: its channel's first note on the same preset has that channel's sound, 0 of 1 voices differ
+  ok  : the 7th note doesn't sound, changes nothing and is marked
+  ok  : Porta On: channel 4 takes no other voice
+  ok  : and lends none
+  ok  : Ch3 Special: voice 3 stays, the 6th note is marked
+    reset seen, voices back after 186 ms
+  ok  : DAC: voice 6 stays, five notes sound, the 6th is marked
+    reset seen, voices back after 138 ms
+    owner wait after dealer: 35.4 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  instrument files
+  ok  : Duck Guitar.tfi on channel 1, 0 registers differ, key on 9.67 ms after a plain note, named "Duck Guitar"
+  ok  : Turtles Brass 02.tfi on channel 2, 0 registers differ, key on 9.67 ms after a plain note, named "Turtles Brass 02"
+  ok  : Turtles Guitar.tfi on channel 3, 0 registers differ, key on 9.67 ms after a plain note, named "Turtles Guitar"
+  ok  : BAS_Magical_Bass.vgi on channel 4, 0 registers differ, key on 7.00 ms after a plain note, named "BAS_Magical_Bass"
+  ok  : BAS_PSG2.vgi on channel 5, 0 registers differ, key on 9.33 ms after a plain note, named "BAS_PSG2"
+  ok  : DGL_4_o4a.vgi on channel 1, 0 registers differ, key on 9.67 ms after a plain note, named "DGL_4_o4a"
+  ok  : GTR_Dis._'94.vgi on channel 2, 0 registers differ, key on 9.67 ms after a plain note, named "GTR_Dis._'94"
+  ok  : GTR_New_Dis..vgi on channel 3, 0 registers differ, key on 9.67 ms after a plain note, named "GTR_New_Dis."
+  ok  : OTHER_chip2.vgi on channel 4, 0 registers differ, key on 9.67 ms after a plain note, named "OTHER_chip2"
+  ok  : 2019 Bass 02.tyi on channel 5, 0 registers differ, key on 9.67 ms after a plain note, named "2019 Bass 02"
+  ok  : Thunder Guitar 03.tyi on channel 1, 0 registers differ, key on 9.67 ms after a plain note, named "Thunder Guitar 03"
+  ok  : a dropped file reaches the ROM within 15 ms
+    slowest 9.67 ms
+    4 values changed: key on 5.00 ms after a plain note
+    8 values changed: key on 7.33 ms after a plain note
+    12 values changed: key on 9.67 ms after a plain note
+    16 values changed: key on 9.67 ms after a plain note
+  ok  : and the voice holds them, 0 of 1 voices differ
+  ok  : Duck Guitar holds the registers of the VGM it came from, every slot: operators 1, 3, 2, 4 and detune centred on 3
+  ok  : Thunder Guitar: SR 29 above 15 and raw detune 7 reach the chip
+  ok  : 2019 Bass: SR 18 on the chip's second part
+  ok  : a voice saved as VGI reads back the same
+  ok  : and an algorithm 4 voice from it reaches the chip, operators in their places, 0 of 1 voices differ
+  ok  : operator 3's TL in register slot 2, operator 2's in slot 3
+    owner wait after files: 15.1 ms
+  ok  : a file in place 21, by a clip's program on channel 1 and the Preset lane on channel 3
+  ok  : both channels take its name
+  ok  : a chord of 4 on channel 1 plays it on every voice it borrowed
+  ok  : a new file in the place channel 1 plays reaches it
+    owner wait after bank_place: 14.9 ms
+  ok  : a library's place tried on channel 2 reaches the chip as the dropped file does, the ROM bank stays
+    owner wait after library_try: 15.2 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  ok  : four envelopes on channels 7-10 sound at once, each its own
+  ok  : a preset step leaves the sounding note's envelope
+  ok  : and the next note plays the new place
+  ok  : two envelopes stored under a note on a stored one leave it as it was, the last under its number
+  ok  : the next note plays the last one
+  envelope of 124 steps stored with the note: 33.0 ms after it, a note without 13.3 ms, so 19.7 ms more
+  ok  : the note with the stored envelope sounds
+    owner wait after envelopes: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  ok  : a drawing under a held note: that note keeps its envelope, the next plays the drawing
+  ok  : no loop: Note Off cuts the note
+  ok  : a loop start alone: Note Off stops it at once
+  ok  : a loop with an end: held it loops, after Note Off the tail plays, then silence
+  ok  : a short note: Note Off in the intro, the loop plays once, the release, then silence
+  ok  : stop: the loop without its release is silent at Note Off, not after its pass
+  45 notes while drawing: worst 23.3 ms after the note, 49 without drawing 17.0 ms, so 6.3 ms more; stage 7 measured 19.7 ms
+  ok  : drawing delays notes no more than a stored envelope did in stage 7
+    owner wait after drawing: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  adjacent: a note reaches the chip 15 ms after it is sent, silence is 0.000 (PSG volumes 15 15 15 15)
+  adjacent: steady 0.166, alone 0.003 6-10 ms into it
+  adjacent: same voice after  0 ms, 0.156 6-10 ms into it
+  adjacent: same voice after  1 ms, 0.154 6-10 ms into it
+  adjacent: same voice after  2 ms, 0.142 6-10 ms into it
+  adjacent: same voice after 10 ms, 0.082 6-10 ms into it
+  adjacent: same voice after 20 ms, 0.049 6-10 ms into it
+  adjacent: same voice after 40 ms, 0.020 6-10 ms into it
+  adjacent: same voice after 80 ms, 0.004 6-10 ms into it
+  adjacent: played over, first note on voice 1, the next on voice 2
+  ok  : a note alone starts from silence
+  ok  : a note played over gets another voice
+  ok  : a note right after on the same voice starts its attack from the level the last one left, after a pause from 20 dB down at least (the chip)
+  retrigger Free: the next note on voice 2, the chip keyed F1, 0.095 6-10 ms into it
+  ok  : Retrigger Free: a note right after starts on a silent voice, the one the dealer chose, while the last one's tail plays on
+  ok  : Retrigger Free: the own voice comes back for the next note after silence
+  retrigger Cut: waits 1, RR 15 meanwhile 1, starts after 9 ms with 0.003 6-10 ms into it, RR 8 after; on the chip key-on 7 ms after RR 15
+  ok  : Retrigger Cut: the plugin holds the note 8 ms while the voice releases fast; on the chip the key-on follows the fast release (ROM loop jitter allowed) and starts from silence with its own release
+  ok  : Retrigger Cut: a Note Off before the note is due cancels it and gives the release back
+  ok  : Retrigger Cut: another channel's note doesn't wait, CC 123 ends the wait and gives the release back
+  ok  : Retrigger Free: a note 20 ms after the last, still in its release, takes a silent voice
+  ok  : Retrigger Free leaves Porta On as it is
+  ok  : Retrigger Cut: a note 20 ms after the last, still in its release, waits for silence
+  ok  : Retrigger Cut with Porta On: a note after the last one's end waits for silence, one played over glides
+  ok  : Retrigger Cut: a note after a pause longer than the release starts at once
+  ok  : Retrigger Cut: a note waits while a modulator still releases, its carrier silent
+  adjacent: RR 15 needs a pause of 6 ms (-35.2 dB), the dealer counts 4
+  adjacent: RR 14 needs a pause of 6 ms (-25.0 dB), the dealer counts 4
+  adjacent: RR 13 needs a pause of 6 ms (-34.0 dB), the dealer counts 4
+  adjacent: RR 12 needs a pause of 8 ms (-33.4 dB), the dealer counts 4
+  adjacent: RR 11 needs a pause of 8 ms (-21.6 dB), the dealer counts 8
+  adjacent: RR 10 needs a pause of 12 ms (-21.3 dB), the dealer counts 10
+  adjacent: RR  9 needs a pause of 20 ms (-20.6 dB), the dealer counts 20
+  adjacent: RR  8 needs a pause of 40 ms (-21.5 dB), the dealer counts 40
+  adjacent: RR  7 needs a pause of 80 ms (-22.4 dB), the dealer counts 80
+  adjacent: RR  6 needs a pause of 160 ms (-22.9 dB), the dealer counts 160
+  adjacent: RR  5 needs a pause of 320 ms (-23.1 dB), the dealer counts 320
+  adjacent: RR  4 needs a pause of 640 ms (-23.2 dB), the dealer counts 640
+  adjacent: RR  3 needs a pause of 1280 ms (-23.2 dB), the dealer counts 1280
+  adjacent: RR  2 needs a pause of 2560 ms (-23.2 dB), the dealer counts 3072
+  ok  : the dealer's release times (RELEASE_MS) hold for the chip, within one step of the pauses
+    owner wait after adjacent: 13.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  ok  : a chord of three on channel 1 borrows two voices
+  ok  : the whole chord plays into output 1 (outputs sounding: 1)
+    voice 2 came to output 2 after 4 blocks, 10.6 ms after its note reached the ROM; before it output 2 0, output 1 35.2
+  ok  : until its key-on the taken voice plays into output 1 and the new channel's output is silent
+  ok  : then the channel plays into its own output, the chord stays in output 1 (outputs sounding: 1 2)
+  ok  : a chord of six on channel 1 holds voice 6 too
+  ok  : Ch3 Special with MIDI 11-13: all in output 3 (outputs sounding: 3)
+    reset seen, voices back after 2133 ms
+  ok  : the DAC switched on gives voice 6 to channel 6 at once
+  ok  : a DAC sample plays into output 6 (outputs sounding: 6)
+    reset seen, voices back after 2133 ms
+  ok  : PSG tone 1 plays into output 7 (outputs sounding: 7)
+  ok  : noise on tone 3 plays into output 10, output 9 is silent (outputs sounding: 10)
+  ok  : a Kit drum plays into output 10, output 9 is silent (outputs sounding: 10)
+    owner wait after outputs: 21.5 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  ok  : stage 54: a note on voice 2 peaks 0.1179 in its voice's ring and 0.1180 in output 2 (within 5%); the ring holds 8192 frames at 53267 Hz
+  ok  : stage 54: a chord of three on channel 5 lends 2 voices, 2 of them sound in their rings and not in their own outputs
+    owner wait after voice_waves: 10.6 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+    against BlastEm's mix: PSG tone +3.041 dB, noise +3.332 dB, FM +0.000 dB; the voices as the core made them +0.041, +0.332, +0.000 dB
+    BlastEm's mix RMS: tone 969.8, noise 67.9 steps of 16 bits
+  ok  : the PSG's tones and noise play 3.00 dB above the voices the core made
+  ok  : an FM note plays as the core made it
+  ok  : a PSG tone is 3 dB above BlastEm's mix and FM at it, within 0.1 dB
+  ok  : the PSG noise is 3 dB above BlastEm's mix, within 0.5 dB
+    owner wait after psg_level: 1.3 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  arp rows
+  ok  : FM channel 1: C4 with the row plays C4, D#4, E4, G4, C5 a frame each, round again
+  ok  : PSG channel 7: C4 with the row plays C4, D#4, E4, G4, C5 a frame each, round again
+    the chord took 3 voices, 3 of them step
+  ok  : a chord of three on borrowed voices: all three step from their own notes
+    owner wait after arp: 12.6 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  channel 3 by operators
+    Ops: 0x28 12 92 82 02
+  ok  : Ops: MIDI 11 on 0x12, MIDI 3 on 0x92, MIDI 11 off 0x82, MIDI 3 off 0x02
+  ok  : Ch3 Notes changed while operators 1 and 2 are held (0x32): 0x28 0x02, all released
+  ok  : One Note: MIDI 3 on 0xF2, a MIDI 11 note writes neither 0x28 nor A9/AD, off 0x02
+  ok  : Ch3 Special off: a MIDI 11 note writes neither 0x28 nor A9
+    held -35.7 -35.9 -35.6 -35.6 dB, 100 ms after MIDI 12's Note Off -35.5 -70.7 -35.6 -35.6 dB
+  ok  : algorithm 7: after MIDI 12's Note Off its E4 falls 34.8 dB within RR, C4, G4, C5 stay within 1 dB, all in output 3
+    One Note on C4: +0.50 -2.25 -0.75 +0.50 cents from C4 E4 G4 C5; bent +2: +0.50 -2.75 -4.25 -3.75 from C4 F#4 A4 D5
+  ok  : One Note: four partials on their intervals within 5 cents; a bend of +2 moves three, the Fixed one stays
+    owner wait after ch3_keys: 3.5 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+    LFO Reset 1: 17 windows of 5 periods over 200 ms, the notes differ by 0.14 cents at most; the vibrato spans -78.7 to +75.8 cents
+    LFO Reset 0: 17 windows of 5 periods over 200 ms, the notes differ by 160.43 cents at most; the vibrato spans -84.8 to +75.7 cents
+  ok  : LFO Reset 1: five notes at random moments start the same vibrato within 2 cents (0.14)
+  ok  : without it they differ by more than 20 cents (160.4)
+    owner wait after lfo_reset: 3.5 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  CSM
+  ok  : CSM without a note: 0x27 = 0x40, mode 01 and timer A stopped
+    note 84: NA 973, 1044.45 Hz, -3.4 cents from the note
+    note 96: NA 999, 2130.68 Hz, +30.9 cents from the note
+    notes 45-71: 5.35 cents at most from the note; timer A's clock from A4: 53267.0 Hz
+  ok  : each note writes NA = 1024 - round(53267 / f), 0x27 = 0x81 under it and 0x40 after it
+  ok  : notes 45-71 (110-494 Hz) sound within 8 cents of the note (5.35)
+  ok  : timer A runs at 53267 Hz within 0.1% (53267.0)
+  ok  : CSM sounds on output 3 alone and writes no 0x28
+    200 Note Offs on note 96: 0 left output 3 above -60 dB, the loudest 72.8 dB under the note
+  ok  : after each of 200 Note Offs at random moments output 3 falls 60 dB below the note
+    under A4: CC 80 off 95.3 dB, DAC on 203.9 dB, DAC off 203.9 dB below it; the next notes -0.0, -0.0, -0.0 dB; 0x27 00 raw 8B DAC 4A 8B 4A
+  ok  : CC 80 off, DAC on and DAC off silence a sounding CSM note
+  ok  : and the next CSM note sounds each time, within 6 dB
+  ok  : 0x27: 00 with Ch3 Special off; a raw 0x0A under a note gives 8B and keeps bits 1-3 through both driver loads (4A); a raw 00 clears them
+  ok  : an arp row 0 +3 +4 +7 +12 on C4 steps NA through the five notes
+    owner wait after csm: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  portamento in CSM
+    CSM: NA 540 to 782 in 26 steps (notes 45 and 57: 540, 782); at 200 ms NA 674, output 3 at 151.3 Hz
+  ok  : CSM, Porta On: NA climbs frame by frame from note 45's 540 to note 57's 782 and stays (26 steps)
+  ok  : and during the glide 0x27 and 0x28 stay, the Fixed formants keep their pitch
+  ok  : the fundamental of output 3 at 200 ms lies between the two notes (151.3 Hz)
+    ONE NOTE: operator 4 from 4324 to 8648 (x2.000) in 26 steps; at 200 ms 148.5 Hz; rising throughout 1, 0x28 kept 1
+  ok  : ONE NOTE, Porta On (the control): operator 4 glides an octave frame by frame, 0x28 stays, the middle lies between the notes
+    owner wait after csm_portamento: 3.1 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  AR 31 in CSM
+    output 3 RMS, legato: 0.0816 0.0794 0.0770 0.0765 0.0735 0.0725 0.0676 0.0662; separate: 0.0817 0.0796 0.0787 0.0768 0.0735 0.0728 0.0718 0.0663; the quietest 0.81 of the loudest
+  ok  : CSM on the default voice (an AR below 31): channel 3's four AR registers hold 31 with the voice's RS
+  ok  : with Porta On every note of an 8-note legato glide and 8 separate notes sounds at 0.8 of the loudest or more (0.81)
+  ok  : leaving CSM writes the voice's AR back
+    owner wait after csm_attack: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+screen (stage 24a)
+    calibration: 1000 volatile increments took 104 lines
+      before the clip        update   0 lines, drawing 249, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 32
+      chord of 6             update 170 lines, drawing 162, 0 frames missed, lag 1
+        parts: 0 0 0 0 0 0 0 0 0 0 32
+  ok  : busy clip, chord of 6: update 170 lines (at most 217), drawing 162 (at most 250, D67), lag 1 (at most 3)
+      all ten                update 340 lines, drawing 156, 2 frames missed, lag 3
+        parts: 0 0 0 0 0 0 0 0 0 0 23
+  ok  : busy clip, all ten: update 340 lines (at most 345), drawing 156 (at most 250, D67), lag 3 (at most 3)
+      program change on all  update 211 lines, drawing 203, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 27
+  ok  : busy clip, program change on all: update 211 lines (at most 266), drawing 203 (at most 250, D67), lag 0 (at most 3)
+      all notes off          update 143 lines, drawing 134, 0 frames missed, lag 1
+        parts: 0 0 0 0 0 0 0 0 0 0 31
+  ok  : busy clip, all notes off: update 143 lines (at most 190), drawing 134 (at most 250, D67), lag 1 (at most 3)
+      DAC on                 update 121 lines, drawing 112, 3 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 28
+  ok  : busy clip, DAC on: update 121 lines (at most 139), drawing 112 (at most 250, D67), lag 0 (at most 3)
+      4 DAC voices           update  93 lines, drawing  84, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 15
+  ok  : busy clip, 4 DAC voices: update 93 lines (at most 252), drawing 84 (at most 250, D67), lag 0 (at most 3)
+      DAC off                update 115 lines, drawing 106, 2 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 29
+  ok  : busy clip, DAC off: update 115 lines (at most 117), drawing 106 (at most 250, D67), lag 0 (at most 3)
+      Ch3 Special on         update  81 lines, drawing  73, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 5
+  ok  : busy clip, Ch3 Special on: update 81 lines (at most 253), drawing 73 (at most 250, D67), lag 0 (at most 3)
+      Ch3 OPS notes          update  79 lines, drawing  71, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 0
+  ok  : busy clip, Ch3 OPS notes: update 79 lines (at most 95), drawing 71 (at most 250, D67), lag 0 (at most 3)
+      Ch3 Special off        update  93 lines, drawing  85, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 18
+  ok  : busy clip, Ch3 Special off: update 93 lines (at most 106), drawing 85 (at most 250, D67), lag 0 (at most 3)
+      PSG porta on           update  81 lines, drawing  72, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 0
+  ok  : busy clip, PSG porta on: update 81 lines (at most 95), drawing 72 (at most 250, D67), lag 0 (at most 3)
+      PSG portamento C3-C6   update 136 lines, drawing 128, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 28
+  ok  : busy clip, PSG portamento C3-C6: update 136 lines (at most 271), drawing 128 (at most 250, D67), lag 0 (at most 3)
+      PSG porta off          update  59 lines, drawing  51, 0 frames missed, lag 0
+        parts: 0 0 0 0 0 0 0 0 0 0 3
+  ok  : busy clip, PSG porta off: update 59 lines (at most 95), drawing 51 (at most 250, D67), lag 0 (at most 3)
+      CC 83 on               update 453 lines, drawing  84, 0 frames missed, lag 15
+        parts: 0 0 0 0 0 0 0 0 0 0 32
+  ok  : busy clip, CC 83 on: update 453 lines (at most 603), drawing 84 (at most 250, D67), lag 15 (at most 40)
+      CC 83 off              update 122 lines, drawing 113, 0 frames missed, lag 27
+        parts: 0 0 0 0 0 0 0 0 0 0 32
+  ok  : busy clip, CC 83 off: update 122 lines (at most 125), drawing 113 (at most 250, D67), lag 27 (at most 40)
+    busy clip: update at most 0 lines, 155 ambiguous stamps, 276 frames, 0 missed; at most 32 words, lag 0, late notes 0
+  ok  : the screen's frame handler ran through the busy clip
+    plane A against the shadow: 0 cells differ; 0 tiles changed; VInt at most 31 words, 9 lines, 0 writes outside VBlank, 12 taken late and left; curve and bar rebuilds at most 119 frames (N)
+    VInts by lines 0-11+: 0 4 15583 5743 2332 432 200 72 79 12 0 0
+  ok  : screen: after the busy clip plane A is the ROM's shadow and the tiles are as loaded
+  ok  : screen: the VInt writes at most 40 words in at most 10 lines, all in VBlank (D67)
+  ok  : screen: the curves and bars are rebuilt within 119 frames, at most 170 (N, D67)
+    the screen was whole 0 blocks later
+    idle: drawing 19.9 lines a frame on average over 96 frames
+  ok  : screen: idle drawing 19.9 lines a frame, at most 20.5 (D67)
+      idle                   update  93 lines, drawing  85, 0 frames missed, lag 30
+        parts: 0 0 0 0 0 0 0 0 0 0 32
+    the stamps alone: 1.0 lines a frame
+    idle without 24a2's elements (switch 5): 16.5 lines a frame
+      idle, by parts         update  38 lines, drawing  29, 0 frames missed, lag 0
+        parts: 6 8 10 11 12 16 19 20 21 28 1
+      idle parts on average over 31 frames: 7.2 2.2 2.0 1.0 1.8 3.9 3.1 1.3 0.9 1.6
+      without 24a2's elements:      idle parts on average over 32 frames: 7.0 1.5 0.8 1.0 2.0 3.5 2.5 1.8 0.5 2.2
+      before one note        update  40 lines, drawing  31, 0 frames missed, lag 0
+        parts: 6 10 16 17 19 23 26 27 28 30 1
+      one note on            update  54 lines, drawing  45, 0 frames missed, lag 0
+        parts: 8 9 10 11 13 16 19 21 21 23 6
+      its release            update  48 lines, drawing  39, 0 frames missed, lag 0
+        parts: 8 9 10 11 13 16 19 21 21 23 2
+  ok  : screen: one note's frames draw in 45 and 39 lines, at most 46 each (D67)
+      before the steady chord update 182 lines, drawing 174, 1 frames missed, lag 1
+        parts: 8 9 10 11 13 16 19 21 21 23 31
+      a chord held 2 s       update  56 lines, drawing  47, 0 frames missed, lag 0
+        parts: 8 9 10 11 13 16 19 21 21 23 7
+      steady chord parts on average over 64 frames: 12.9 1.6 3.5 0.9 4.8 6.0 2.8 1.3 0.7 2.5
+    steady chord of 6: 32.5 lines a frame on average, 47 at worst, 2.1 a voice over idle
+  ok  : screen: a steady chord of 6 draws in 47 lines at worst (at most 95) and 32.5 on average (at most 46, D67)
+    the screen's cells
+  ok  : screen: FM's label and bracket on the left
+  ok  : screen: a note shows its name and its owner on its row
+      a chord of 6 on MIDI 1: 5 of 5 lent rows show MIDI 1's owner and stripe, 5 back to their own after
+  ok  : screen: a lent voice shows its lender's owner and stripe, and its own again after
+      level cells lit: velocity 30 2, 127 4, 127 with CC 7 64 3
+  ok  : screen: FM's level follows velocity and CC 7 (2, 4 and 3 cells)
+      note 0 shows glyphs 12 18 18, note 13 12 17 0
+  ok  : screen: notes of octave -1 are named in 3 glyphs, C-- (30), and C#0 as before
+      a note shorter than a frame shows glyphs 12 18 5
+  ok  : screen: a note shorter than a frame names its cell, C-5 after C#0 (37, D82)
+      FM6's level in the 40 frames after DAC notes and DAC Off: at most 0 stripes, in 39 frames that show its bar
+  ok  : screen: FM6's level bar stays dark after the DAC's notes and DAC Off (37)
+      the window names 0, 13, 61, 127: C-- C#0 C#4 G-9
+  ok  : window: every note's name is 3 characters, octave -1 is C-- (30)
+      stripes at the top: velocity 127 16, 100 15, 64 12, 30 7; 127 with CC 7 100 15, 64 12
+  ok  : screen: FM's level in dB, velocity 127, 100, 64, 30 give 16, 15, 12, 7 stripes; 100 and 127 differ (29)
+  ok  : screen: CC 7 100 and 64 give 15 and 12 stripes, as the chip attenuates (29)
+      a note let go at once: velocity 127 16 stripes, 100 15
+  ok  : screen: a note shorter than a frame shows its velocity as the peak, 16 and 15 stripes (29)
+      velocity 30 then 127 back to back: 4 cells after 6 frames, 4 at most after a 127 of one frame
+  ok  : screen: a note's velocity reaches FM's level also back to back and when let go at once (24a4, 29)
+  ok  : screen: the footer's %, CPU and MDMI version where rom-screen.md puts them
+      DAC: label 1, 4 of 4 voices free before, 4 lit, 4 dim or free after
+  ok  : screen: DAC on names channel 6's row DAC; four voices free, lit while playing, dim or free after
+      Ch3 squares: 4 lit at most, the fills changed in 4 of 60 frames, free after the release 1
+  ok  : screen: Ch3 Special's squares fill by their operators' envelopes and are free after the release
+  ok  : screen: channel 3 draws squares in Ch3 Special and its level bar outside it
+      PSG wave: flat 1, louder taller 1, bent 1, flat again 1, glide A2-C6 in 14 steps
+  ok  : screen: the PSG wave is flat when silent, changes with loudness and bend
+  ok  : screen: a PSG glide from A2 to C6 steps the wave through 8 classes or more
+      PSG wave at A5, C6, D#6: three different
+  ok  : screen: the PSG wave differs at A5, C6 and D#6
+      PSG vibrato on 3 channels: channel 7's wave changed 23 times in 60 bends, at most 17 words a frame
+  ok  : screen: vibrato by bend on three PSG channels changes the wave in at most 12 words a frame, with 3 ribbon cells and 9 cells of the envelope bars' cursor (D67)
+  ok  : screen: the CC 83 view draws its algorithm as plane A tiles
+      CC 83: a program change during the view changes 2 name cells after it, 0 differ once it is back
+  ok  : screen: a program change during the CC 83 view shows its name after the view
+  ok  : screen: the bank's signature is drawn again when the names change
+      CC 83: the view changed 590 cells, 0 differ after it
+  ok  : screen: the CC 83 view takes the rows and the status screen comes back whole
+    the ribbon, the note flash and the noise
+      scroll 40 points in 40 frames; ribbon row 1 holds 0 hit or hold cells after a silence
+  ok  : screen: plane B scrolls a point a frame, the ribbon is a bare line in silence
+      held: the strike's cell is pattern 64 of the held set, the next cell the hold tile
+  ok  : screen: the hold line starts at the strike, in the strike's own cell (30)
+      hit: 1 bars, in column 1, leading 1; live cell EEE 1 frames after its bar, then E88 held, 822 released; 4 hold cells; note kept 1
+  ok  : screen: a hit puts a bar in the channel's leading ribbon cell, the note white by the next frame
+  ok  : screen: a held note lays the hold tile on the ribbon
+  ok  : screen: the note cell is white on the hit, bright FM while held, dim after the release and still shows the note
+      two notes shorter than a frame: 3 bars on the ribbon, 2 without a hold line
+  ok  : screen: a note shorter than a frame and its repeat each put a bar on the ribbon
+  ok  : screen: a note let go in its cell draws no hold line after its strike (30)
+      after 520 frames: 0 hit or hold cells left on row 1
+  ok  : screen: the leading cell writes over the ribbon's old cells 64 columns later
+      held PSG 8 and 9 after a noise beat: live cells EEA EEA, hold cells 5 5
+  ok  : screen: held PSG notes after a noise beat are bright and hold their ribbons
+      dot: Y 0 before, 137 with the note at X 394 then 396, 0 after the release; 8 curve cells
+  ok  : screen: an FM note's dot comes with it, runs along its curve and is hidden after the release
+      dot at the Note Off: Y 137 held, 137 two frames into the release
+  ok  : screen: the release starts where the dot is, without a jump
+      dot and the CC 83 view: Y 137 before, 0 during, 138 after
+  ok  : screen: the dots hide while the CC 83 view is on and come back after it
+      curves: an AR CC changed 43 words of channel 1's curve tiles in 6 frames; a program change on all, 34 frames
+  ok  : screen: a curve follows its carrier's AR within 30 frames, all curves and bars a program change within 120 (N, D67)
+      PSG bars: 2 of 2 rows in the bar tiles, the cursor moved in 16 of 60 frames
+  ok  : screen: a PSG note shows its envelope as 12 bars and the playing bar moves
+      DAC: 4 bars for 4 voice starts; Ch3 OPS: 4 bars for channel 3 and its 3 operators, 4 pink
+  ok  : screen: the DAC's voice starts and Ch3 Special's operators each put a bar on their row's ribbon
+      noise: texture 1, cells turned 18 times in 20 frames, brightest 24 quiet and 42 loud
+  ok  : screen: the noise's texture turns while channel 10 sounds and its brightness follows the loudness
+    the FM level bar frame by frame (30)
+    program 0, held 60 frames:
+        0  0:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0
+       20  15:0 15:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 13:0 13:0 13:0 13:0 13:0 13:0 13:0 13:0 13:0
+       40  13:0 13:0 13:0 13:0 13:0 13:0 13:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0
+       60  12:0 11:0 11:0 11:0 11:0 10:0 10:0 10:0 10:0 10:0 9:0 9:0 9:0 9:0 8:0 8:0 8:0 8:0 8:0 7:0
+       80  7:0 7:0 7:0 7:0 7:0 7:0 7:0 6:0 6:0 6:0 6:0 6:0 6:0 5:0 5:0 5:0 5:0 5:0 5:0 5:0
+      100  5:0 5:0 5:0 4:0 4:0 4:0 4:0 4:0 4:0 4:0 4:0 4:0 4:0 3:0 3:0 3:0 3:0 3:0 3:0 3:0
+      120  3:0 3:0 3:0 3:0 3:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0 2:0
+      140  1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0 1:0
+      160  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      180  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      159 frames lit, 18 changes of the drawn bar, 0 frames the peak alone, 0 frames a peak above the level over 0.5 s after the last rise, 0 frames held after a rise, a fall of 1 stripes at most a frame
+    program 4, held 50 frames:
+        0  0:0 0:0 0:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 16:0 15:0
+       20  15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 15:0 14:0 14:0 14:0 14:0
+       40  14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 14:0 12:0 12:0 10:0 10:0 10:0 8:0 8:0 7:0
+       60  6:0 6:0 6:0 5:0 4:0 4:0 3:0 3:0 3:0 3:0 2:0 2:0 2:0 2:0 1:0 1:0 1:0 1:0 1:0 1:0
+       80  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      100  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      120  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      140  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      77 frames lit, 15 changes of the drawn bar, 0 frames the peak alone, 0 frames a peak above the level over 0.5 s after the last rise, 0 frames held after a rise, a fall of 2 stripes at most a frame
+    program 48, held 90 frames:
+        0  2:0 2:0 5:0 5:0 16:0 16:0 16:0 16:0 15:0 15:0 14:0 14:0 14:0 14:0 14:0 13:0 13:0 13:0 12:0 12:0
+       20  12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0
+       40  12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0
+       60  12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0
+       80  12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 12:0 11:0 10:0 10:0 9:0 9:0 8:0 8:0 7:0 7:0
+      100  7:0 6:0 5:0 5:0 5:0 5:0 5:0 4:0 3:0 3:0 3:0 3:0 2:0 2:0 2:0 2:0 2:0 2:0 1:0 1:0
+      120  1:0 1:0 1:0 1:0 1:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      140  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      160  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      180  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      125 frames lit, 19 changes of the drawn bar, 0 frames the peak alone, 0 frames a peak above the level over 0.5 s after the last rise, 0 frames held after a rise, a fall of 1 stripes at most a frame
+    program 16, held 6 frames:
+        0  0:0 16:0 16:0 16:0 16:0 15:0 15:0 13:0 13:0 11:0 11:0 9:0 9:0 7:0 7:0 5:0 5:0 3:0 3:0 3:0
+       20  1:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+       40  0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0 0:0
+      20 frames lit, 11 changes of the drawn bar, 0 frames the peak alone, 0 frames a peak above the level over 0.5 s after the last rise, 0 frames held after a rise, a fall of 2 stripes at most a frame
+  ok  : screen: the level falls at most 2 stripes a look, an organ's staccato drains over 11 steps (30)
+  ok  : screen: on a decay the level and its peak reach 0 together, no stripe left alone (30)
+  ok  : screen: the peak does not trail a falling level past its hold (30)
+    the ribbon in the owner's hue (31)
+      channels 1-4 held: strike cells in their own set 1 1 1 1, in the chip's 0 0 0, with the hold from the strike 1 1 1 1
+  ok  : screen: a channel's strikes are drawn in its owner's hue, k = 0 in the chip's set as before (31)
+  ok  : screen: in every hue the hold line starts at the strike (30, 31)
+      a chord on MIDI 2: 2 lent rows got cells in its hue; channel 1 again: 2 cells in the chip's set
+  ok  : screen: a voice lent to a chord draws new cells in the chord channel's hue (31)
+      24 notes a second on MIDI 2: 1 comb cells of 9 in hue 1
+  ok  : screen: a cell of 4 or more strikes in a hue draws a comb, not 3 strikes (31)
+      MIDI 8 on PSG: 1 cells in hue 3
+  ok  : screen: PSG rows take the owner's hue too, the same tiles in PSG's palette (31)
+    curves before: 3F
+    after chord on 1 and a note on 4: curves 3F
+    after chord on 5 and a note on 2: curves 3F
+    after chord on 3 and a note on 4: curves 33
+    after chord on 1 and a note on 2: curves 33
+    after chord on 5 and a note on 4: curves 3F
+    after chord on 3 and a note on 2: curves 3B
+    530 ms later: curves 3F, dirty lag 0
+  ok  : screen: after chords lend voices, every FM row shows its curve again (D67, check of 0.26.0)
+    the busy clip with the screen off:
+      before the clip        update   0 lines, drawing 228, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      chord of 6             update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      all ten                update   0 lines, drawing   0, 1 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      program change on all  update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      all notes off          update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      DAC on                 update   0 lines, drawing   0, 3 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      4 DAC voices           update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      DAC off                update   0 lines, drawing   0, 2 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      Ch3 Special on         update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      Ch3 OPS notes          update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      Ch3 Special off        update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      PSG porta on           update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      PSG portamento C3-C6   update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      PSG porta off          update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      CC 83 on               update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+      CC 83 off              update   0 lines, drawing   0, 0 frames missed, lag 0
+        parts: 12 13 15 16 21 26 29 30 31 33 32
+    owner wait after screen: 31.7 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  Porta channels lend
+    owner wait after porta_lend, the sines: 0.0 ms
+    owner wait after porta_lend, chord of four: 20.0 ms
+    owner wait after porta_lend, the chord's release: 0.0 ms
+    chord note on voice 1 1C39; channel 1's note after it 3284 at 30 ms, 3284 at 630 ms
+  ok  : Porta On on channel 1, channels 2 and 3 playing: a chord of four on channel 5 takes channel 1's voice last, no note cut (28)
+  ok  : channel 1's next note sounds at its own pitch at once, no glide from the chord's note (28)
+  ok  : after its voice was lent, channel 1's own legato still glides (28)
+    owner wait after porta_lend, lending: 4.4 ms
+    owner wait after porta_lend, before the take-back: 0.0 ms
+    Porta On, Cut: chord on voice 1 1, back 1 (voice 1 dealt to 0, the core's owner 0), moved 1
+    owner wait after porta_lend, take-back under Retrigger Cut: 16.4 ms
+  ok  : Retrigger Cut: channel 1's note takes its voice back, the chord's note moves to voice 2 (28)
+    owner wait after porta_lend, before the take-back: 0.0 ms
+    Porta On, Free: chord on voice 1 1, back 1 (voice 1 dealt to 0, the core's owner 0), moved 1
+    owner wait after porta_lend, take-back under Retrigger Free: 16.7 ms
+  ok  : Retrigger Free: channel 1's note takes its voice back, the chord's note moves to voice 2 (28)
+    owner wait after porta_lend: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+    a note over a held C4 of a piano: without MONO 2 voice(s), energy x2.80 after it; MONO 1 voice(s), x2.35; the raise back to C4 x2.69
+  ok  : without MONO a note over takes a second voice (a chord); with MONO it stays on channel 1's own (38)
+  ok  : with MONO the note over and the return to the key below start their attack again, louder than the decayed note (38)
+    MONO with Porta On: 1 voice(s), energy x0.94
+  ok  : MONO with Porta On: one voice, no new attack (38)
+    owner wait after mono: 15.0 ms
+    the chord of 6's owners waited 50.0 ms at most (not judged)
+    a chord of 6 on MIDI 2 with channel 1 MONO and silent: voice 1 played MIDI 2; output 2 36.7, output 1 0
+  ok  : a chord of another channel takes the silent MONO channel's voice and sounds in its own output (38)
+    owner wait after mono: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+    vowel A note 45: CSM on, NA 540; operators 700 1200 2500 3502 Hz (worst +0.7 cents); the burst's peaks F1 at 691 Hz, F2 at 1203 Hz
+    vowel A note 57: CSM on, NA 782; operators 700 1200 2500 3502 Hz (worst +0.7 cents); the burst's peaks F1 at 671 Hz, F2 at 1208 Hz
+    vowel O note 45: CSM on, NA 540; operators 500 850 2500 3401 Hz (worst -0.5 cents); the burst's peaks F1 at 492 Hz, F2 at 867 Hz
+    vowel O note 57: CSM on, NA 782; operators 500 850 2500 3401 Hz (worst -0.5 cents); the burst's peaks F1 at 482 Hz, F2 at 852 Hz
+    vowel U note 45: CSM on, NA 540; operators 300 650 2399 3300 Hz (worst +0.6 cents); the burst's peaks F1 at 298 Hz, F2 at 678 Hz
+    vowel U note 57: CSM on, NA 782; operators 300 650 2399 3300 Hz (worst +0.6 cents); the burst's peaks F1 none, near 0 Hz, F2 none, near 0 Hz
+    vowel I note 45: CSM on, NA 540; operators 250 2250 3001 3599 Hz (worst +0.5 cents); the burst's peaks F1 at 246 Hz, F2 at 2249 Hz
+    vowel I note 57: CSM on, NA 782; operators 250 2250 3001 3599 Hz (worst +0.5 cents); the burst's peaks F1 at 246 Hz, F2 at 2284 Hz
+    vowel E note 45: CSM on, NA 540; operators 450 1800 2549 3502 Hz (worst +0.7 cents); the burst's peaks F1 at 445 Hz, F2 at 1799 Hz
+    vowel E note 57: CSM on, NA 782; operators 450 1800 2549 3502 Hz (worst +0.7 cents); the burst's peaks F1 at 460 Hz, F2 at 1709 Hz
+  ok  : each CSM vowel plays in CSM, timer A at the note's rate, on notes 45 and 57 (40)
+  ok  : each CSM vowel puts its four formants on channel 3's operators within 3 cents (40)
+  ok  : the vowels' F2 come in the order I > E > A > O > U (40)
+    vowels heard (F1 and F2 peaks in one burst): note 45 5 of 5 (missed:), note 57 4 of 5 (missed: U)
+  ok  : on note 45 one burst of each vowel peaks within a semitone of its F1 and F2 (40)
+  ok  : on note 57 А, О, И, Э still peak at F1 and F2; У does not, its limit in the guide (40)
+    owner wait after vowels: 0.0 ms
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+PSG envelope speed
+    CC 9 = 0 (x0.06): 14 steps in 3740.3 ms, 3738.3 expected
+    CC 9 = 48 (x0.50): 14 steps in 479.3 ms, 467.3 expected
+    CC 9 = 64 (x1.00): 14 steps in 244.0 ms, 233.6 expected
+    CC 9 = 95 (x1.98): 14 steps in 145.3 ms, 118.2 expected
+    CC 9 = 127 (x4.00): 14 steps in 78.0 ms, 58.4 expected
+  ok  : PSG envelope speed: 14 steps take 14 steps' time at x1/16, x1/2, x1, x2 and x4, within two frames
+  ok  : the ROM's reset: every voice comes back, 0 of 6 voices differ
+  ok  : stage 56: the showing's number: copies carry 2 (showing 2), watching on again keeps 2, a new showing after off is 3, its copies carry 3, the last copy before it 2
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: 4daaf2015871778ba05063082c6c6f6ff0a5a706
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+system_dir: (null)
+Product ID: GM 00000000
+SHA1: e70eea21c0d4ee3d2ef7294b1575d156d5ae39cb
+Not found in ROM DB, examining header
+
+IO port 1 connected to gamepad #1 with type '6-button gamepad'
+IO port 2 connected to gamepad #2 with type '6-button gamepad'
+IO port EXT connected to device 'None'
+    20 restarts: boot 604 ms on average, slowest 629 ms; private memory +9.1 MB over the last 18
+  ok  : with the DAC on, after every restart the FM voices and PSG notes, one with its own envelope, are as before
+  ok  : and the LFO, Ch3 mode and DAC, LFO register 14 model 14, Ch3 mode 0 model 0, DAC 128 model 128
+  ok  : after the restarts and Note Off every PSG channel is silent
+  ok  : a restart leaves under 1 MB behind
+    E7 mode: last
+    voices against the core's mix: 12.97 steps of 16 bits at most; Main against the outputs' sum: 0
+  ok  : over every test the chip's voices add up to the core's mix within 16 steps of 16 bits after the DC blocker
+  ok  : Main is the sum of the ten outputs
+    an owner waited for its key-on 244.7 ms at most, 244.7 ms in the tests without a restart
+  FAIL: without a restart every owner met its key-on within 40 ms (chords, Retrigger, revive, Porta)
+  ok  : every owner found a key-on on its voice within a second
+  ok  : every batch of the mix came with its voices
+FAILED: 2 failed

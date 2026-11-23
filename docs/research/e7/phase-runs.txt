@@ -1,0 +1,10 @@
+== phase 1 21:34:05 others: 3
+   exit 0 21:38:56 PASSED: 0 failed
+== phase 2 21:38:56 others: 3
+   exit 0 21:43:36 PASSED: 0 failed
+== phase 3 21:43:36 others: 3
+   exit 0 21:48:29 PASSED: 0 failed
+== phase 4 21:48:29 others: 3
+   exit 2 21:53:10 FAILED: 2 failed
+== phase 5 21:53:10 others: 3
+   exit 0 21:57:49 PASSED: 0 failed

@@ -135,35 +135,6 @@ static void owner_wait_after(const char *name)
 	owner_wait_max = wait > owner_wait_max ? wait : owner_wait_max;
 }
 
-// E7: a boot ends on the block in which the core finished, and which block that is depends on the
-// wall clock (offline, render waits for the core). MDMI_E7=free keeps that; MDMI_E7=last also runs
-// test_restart last; otherwise every boot is followed by samples one at a time up to the ROM's next
-// frame and then a fixed number, so the ROM's frame phase against the test's MIDI is the same in every run.
-static const char *e7_mode(void)
-{
-	const char *mode = getenv("MDMI_E7");
-	return mode ? mode : "";
-}
-
-static void boot_phase(void)
-{
-	if (!strcmp(e7_mode(), "free") || !strcmp(e7_mode(), "last")) {
-		return;
-	}
-	const uint16_t from = mdmi_engine_test_ram(engine, ROM_UI_STAT_FRAMES);
-	for (int i = 0; i < RATE / 10 && mdmi_engine_test_ram(engine, ROM_UI_STAT_FRAMES) == from; i++) {
-		tick(1);
-	}
-}
-
-static void wait_boot(uint32_t boots)
-{
-	while (mdmi_engine_boots(engine) == boots) {
-		render(1);
-	}
-	boot_phase();
-}
-
 static void sync_and_settle(void)
 {
 	patch_sync(patch, &patch->rom, emit, NULL);
@@ -768,7 +739,9 @@ static void test_restart(void)
 		const uint32_t boots = mdmi_engine_boots(engine);
 		mdmi_engine_set_rom(engine, i % 2 ? rom : other, rom_size);
 		// Offline, render waits for the core, so one block spans the whole boot.
-		wait_boot(boots);
+		while (mdmi_engine_boots(engine) == boots) {
+			render(1);
+		}
 		patch_rom_booted(patch, emit, NULL);
 		render(SETTLE_BLOCKS);
 		full_velocity();
@@ -832,7 +805,6 @@ static void boot_image(const uint8_t *image, size_t size)
 		now = mdmi_engine_get_stats(engine);
 	} while (now.boots == before.boots && now.patches == before.patches);
 	if (now.boots != before.boots) {
-		boot_phase();
 		patch_rom_booted(patch, emit, NULL);
 		render(SETTLE_BLOCKS);
 		full_velocity();
@@ -1086,9 +1058,6 @@ static bool take_set(const dac_set *set, double *ms)
 		render(1);
 		now = mdmi_engine_get_stats(engine);
 	} while (now.patches == before.patches && now.boots == before.boots);
-	if (now.boots != before.boots) {
-		boot_phase();
-	}
 	*ms = now.last_patch_ms;
 	return now.boots == before.boots;
 }
@@ -3124,7 +3093,9 @@ static bool ch3_off_run(const uint8_t *image, size_t size)
 	patch = &ch3_model;
 	const uint32_t boots = mdmi_engine_boots(engine);
 	mdmi_engine_set_rom(engine, image, size);
-	wait_boot(boots);
+	while (mdmi_engine_boots(engine) == boots) {
+		render(1);
+	}
 	// gen_reference's clock: the same, so the dealer sees the same moments.
 	if (clock_samples < CH3_OFF_CLOCK_START) {
 		clock_samples = CH3_OFF_CLOCK_START;
@@ -6463,7 +6434,9 @@ static void test_export(void)
 	export_raw = true;
 	const mdmi_engine_stats before = mdmi_engine_get_stats(engine);
 	mdmi_engine_set_rom(engine, exported, exported_size);
-	wait_boot(before.boots);
+	while (mdmi_engine_get_stats(engine).boots == before.boots) {
+		render(1);
+	}
 	render(SETTLE_BLOCKS);
 	for (int i = 0; i < 5; i++) {
 		export_midi((uint8_t)(0xC0 | EXPORT_CHANNELS[i]), (uint8_t)EXPORT_PLACES[i], 0);
@@ -8368,7 +8341,6 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	render(SETTLE_BLOCKS);
-	boot_phase();
 	{
 		const char *value = getenv("MDMI_SCREEN_SWITCH");
 		screen_switch = value ? atoi(value) : -1;
@@ -8652,9 +8624,7 @@ int main(int argc, char **argv)
 	test_dac();
 	test_dac_psg();
 	test_noise();
-	if (strcmp(e7_mode(), "last")) {
-		test_restart();
-	}
+	test_restart();
 	test_dac_held();
 	test_samples();
 	test_shaping();
@@ -8738,10 +8708,6 @@ int main(int argc, char **argv)
 	test_env_speed();
 	test_reset();
 	test_wave_show();
-	if (!strcmp(e7_mode(), "last")) {
-		test_restart();
-	}
-	printf("    E7 mode: %s\n", *e7_mode() ? e7_mode() : "boot phase");
 	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
 	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);
