@@ -465,19 +465,31 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
     tail_end = end + 2 * BB
     set_end = max(e for s, e in sn)
     quiet = []                                 # [from, to): MDMI off or gone, silence after one beat
-    # an action the device did not answer has already failed the run (judge); there is no beat to measure from
-    acts = [x for x in acts if x.get('acted_beat') is not None]
+    # An action the device did not answer has already failed the run (judge). MDMI's state is unknown from it to
+    # the next answered on (stage 59): those beats are not judged either way, and the count says so.
+    unknown = []
+    for i, x in enumerate(acts):
+        if x.get('acted_beat') is None:
+            nxt = next((y['acted_beat'] for y in acts[i + 1:] if y['action'] == 'on'
+                        and y.get('acted_beat') is not None), tail_end)
+            unknown.append((x['beat'], tail_end if x['action'] == 'delete' else nxt))
 
     on_at = []
     for i, x in enumerate(acts):
-        t = x['acted_beat']
+        t = x.get('acted_beat')
+        if t is None:
+            continue
         if x['action'] == 'off':
-            nxt = next((y['acted_beat'] for y in acts[i + 1:] if y['action'] == 'on'), tail_end)
+            # up to the next on, answered or not: an unanswered one starts an unknown span above
+            nxt = next((y['acted_beat'] if y.get('acted_beat') is not None else y['beat']
+                        for y in acts[i + 1:] if y['action'] == 'on'), tail_end)
             quiet.append((t + 1, nxt))
         elif x['action'] == 'delete':
             quiet.append((t + LATE + 1, tail_end))
         else:
             on_at.append(t)
+    quiet = [(q0, min([q1] + [u0 for u0, u1 in unknown if q0 <= u0 < q1])) for q0, q1 in quiet]
+    n_unknown = 0
     n_sound = n_quiet = n_off = 0
     wrong = []
     # MDMI off or deleted: from a beat after the act to the next on, in beat-long windows from the act, the last
@@ -498,6 +510,9 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
         if r is None:
             continue
         rq = rms_at(takes, k, k + 1 - QUIET_TAIL)
+        if any(u0 < k + 1 and k < u1 for u0, u1 in unknown):
+            n_unknown += 1
+            continue                           # MDMI's state unknown: an action without an answer
         if any(q0 - 1 < k + 1 and k < q1 for q0, q1 in quiet):
             continue                           # MDMI off or gone: judged above
         last_on = max([t for t in on_at if t <= k], default=None)
@@ -518,7 +533,7 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
                                                                      if k >= set_end else ''))
     for t in on_at:
         nxt = next((s for s, e in sn if s >= t and s < tail_end), None)
-        stop = min([q0 - 1 for q0, q1 in quiet if q0 - 1 > t] + [tail_end])
+        stop = min([q0 - 1 for q0, q1 in quiet if q0 - 1 > t] + [u0 for u0, u1 in unknown if u0 > t] + [tail_end])
         if nxt is not None and nxt + 1 <= stop:
             r = rms_at(takes, nxt, nxt + 1)
             if r is not None and r < SOUND_DB:
@@ -533,9 +548,10 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
                          ('звучат' if r >= SOUND_DB else 'молчат') + f' ({r:.0f} дБ, '
                          f'{bar_beat(t + 0.1)}-{bar_beat(w1)})'))
     for x in acts:
-        if x['action'] == 'delete':
+        if x['action'] == 'delete' and x.get('acted_beat') is not None:
             seen.append(f'удалено на {x["acted"]}')
     facts.append(f'долей со звуком {n_sound}, тишины {n_quiet}' + (f', тишины после выкл {n_off}' if n_off else '')
+                 + (f', не проверено {n_unknown} (нет ответа устройства)' if n_unknown else '')
                  + f', мимо {len(wrong)}')
     if wrong:
         bad.append('звук: ' + '; '.join(wrong[:6]) + (f' (ещё {len(wrong) - 6})' if len(wrong) > 6 else ''))
