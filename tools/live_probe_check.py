@@ -338,15 +338,16 @@ def rms_at(takes, x0, x1):
 # ---------- one run ----------
 
 def judge(run, code, out, crashes_before):
-    """Verdict of one run: (passed, [problems], [facts], [observations], files)."""
+    """Verdict of one run: (passed, [problems], [facts], [observations], files). files['tool'] lists what the
+    ableton-probe side did not do (D100): the run is «не в счёт» when that is all that went wrong."""
     a, b = run['bars']
-    bad, facts, seen = [], [], []
+    bad, facts, seen, tool = [], [], [], []
     m = re.search(r'Live открыл набор за (\d+) с', out)
     opened = int(m.group(1)) if m else None
     if opened is None:
         bad.append('Live не открыл копию')
     if 'стоп по таймеру' in out:
-        bad.append('стоп по таймеру (позиция не дошла до конца)')
+        tool.append('стоп по таймеру (позиция не дошла до конца)')
     if 'Live не закрылся' in out:
         bad.append('Live не закрылся сам за 30 с')
         probe('close', '--config', CFG)
@@ -361,7 +362,7 @@ def judge(run, code, out, crashes_before):
     pngs = [p.strip() for p in m.group(1).split(',')] if m else []
     if len(pngs) != 1:
         bad.append(f'снимок конца прогона: {len(pngs)} окон Live (диалог?)')
-    files = {'png': pngs[0] if pngs else None}
+    files = {'png': pngs[0] if pngs else None, 'tool': tool}
     m = re.search(r'play с (\d+)\.(\d+\.\d+)', out)
     p0 = (int(m.group(1)) - 1) * BB + float(m.group(2)) - 1 if m else (a - 1) * BB
     if code != 0:
@@ -377,30 +378,12 @@ def judge(run, code, out, crashes_before):
         elif x['sent_beat'] - x['beat'] > ACT_LATE:
             # probe.py fires an action on the first position the device reports past the point: a late one
             # means positions stopped coming, and the run did not test what it should (not MDMI's fault)
-            bad.append(f'{x["action"]} задан на {x["at"]}, послан на {bar_beat(x["sent_beat"])}: позиция от устройства '
-                       f'ableton-probe пришла поздно, прогон не проверил своё')
+            tool.append(f'{x["action"]} задан на {x["at"]}, послан на {bar_beat(x["sent_beat"])}: позиция от устройства '
+                        f'ableton-probe пришла поздно, прогон не проверил своё')
 
     # pulse: one note per beat, from where play really started
     if run.get('loop'):
-        l0, l1 = (run['loop'][0] - 1) * BB, run['loop'][1] * BB
-        full = [k for k in range(l0, l1)]
-        by_take = {}
-        for n in notes['take_notes']:
-            by_take.setdefault(n['take'], []).append(n['time_beats'])
-        holes = 0
-        whole = 0
-        for tk, ts in sorted(by_take.items()):
-            got = [k for k in full if any(abs(t - k) < 0.1 for t in ts)]
-            if len(got) == len(full):
-                whole += 1
-            elif tk not in (min(by_take), max(by_take)):
-                holes += len(full) - len(got)
-        wraps = len(re.findall(r'луп: возврат', out))
-        facts.append(f'возвратов лупа {wraps}, дублей пульса {len(by_take)}, целых {whole}')
-        if wraps != run['passes']:
-            bad.append(f'возвратов лупа {wraps}, ждали {run["passes"]}')
-        if holes or whole < run['passes'] - 1:
-            bad.append(f'пульс в дублях с дырами ({holes} долей), целых проходов {whole}')
+        loop_pulse(run, notes, out, bad, tool, facts)
     else:
         want = list(range((a - 1) * BB, b * BB))
         ts = [n['time_beats'] for n in notes['notes'] if n['key'] == 60]
@@ -445,7 +428,7 @@ def judge(run, code, out, crashes_before):
         files['beats'] = beat_table(main, sn, (a - 1) * BB, b * BB + 2 * BB)
         return not bad, bad, facts, seen, files
     if run.get('loop'):
-        loop_sound(run, lanes, sn, bad, facts)
+        loop_sound(run, lanes, sn, bad, tool, facts)
     else:
         line_sound(run, main, sn, acts, bad, facts, seen, files)
     return not bad, bad, facts, seen, files
@@ -557,13 +540,41 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
         bad.append('звук: ' + '; '.join(wrong[:6]) + (f' (ещё {len(wrong) - 6})' if len(wrong) > 6 else ''))
 
 
-def loop_sound(run, lanes, sn, bad, facts):
+def loop_pulse(run, notes, out, bad, tool, facts):
+    """The pulse of a loop run: a hole in a take is «упал»; wraps or whole takes other than `passes` are the
+    tool's (D100)."""
+    l0, l1 = (run['loop'][0] - 1) * BB, run['loop'][1] * BB
+    full = [k for k in range(l0, l1)]
+    by_take = {}
+    for n in notes['take_notes']:
+        by_take.setdefault(n['take'], []).append(n['time_beats'])
+    holes = 0
+    whole = 0
+    for tk, ts in sorted(by_take.items()):
+        got = [k for k in full if any(abs(t - k) < 0.1 for t in ts)]
+        if len(got) == len(full):
+            whole += 1
+        elif tk not in (min(by_take), max(by_take)):
+            holes += len(full) - len(got)
+    wraps = len(re.findall(r'луп: возврат', out))
+    facts.append(f'возвратов лупа {wraps}, дублей пульса {len(by_take)}, целых {whole}')
+    if wraps != run['passes']:
+        tool.append(f'возвратов лупа {wraps}, ждали {run["passes"]}')
+    if holes:
+        bad.append(f'пульс в дублях с дырами ({holes} долей), целых проходов {whole}')
+    if whole != run['passes']:
+        tool.append(f'целых дублей пульса {whole}, ждали {run["passes"]}')
+
+
+def loop_sound(run, lanes, sn, bad, tool, facts):
+    """Every whole take against pass 1, the extra ones too (D100)."""
     l0, l1 = (run['loop'][0] - 1) * BB, run['loop'][1] * BB
     full = [l for l in lanes if any(t.start <= l0 + 1e-6 and t.end >= l1 - 1e-6 for t in l)]
     # one whole take per pass: --passes N returns give the first pass and N - 1 more, the last return only a tail
     if len(full) != run['passes']:
-        bad.append(f'звук лупа: целых дублей {len(full)}, ждали {run["passes"]}')
+        tool.append(f'звук лупа: целых дублей {len(full)}, ждали {run["passes"]}')
     if len(full) < 2:
+        tool.append(f'звук лупа: целых дублей {len(full)}, меньше двух, сравнивать не с чем')
         return None
     # Beats without their edges: an onset lands up to ~25 ms off the grid, differently on each pass (run е,
     # kick at 112.3: 8 ms early in pass 1, 15 ms late in pass 2), and 8 ms of a kick moved a beat's RMS by 3 dB.
@@ -639,7 +650,8 @@ def main():
         code, out = res
         open(os.path.join(OUT, run['name'] + '.log'), 'w', encoding='utf-8').write(out)
         ok, bad, facts, seen, files = judge(run, code, out, crashes)
-        if not ok:                             # the next run overwrites <name>.wav: keep what failed
+        tool = files.get('tool') or []
+        if not ok or tool:                     # the next run overwrites <name>.wav: keep what failed
             stamp = time.strftime('%Y%m%d-%H%M%S')
             for ext in ('.wav', '.log', '-notes.json'):
                 src = os.path.join(OUT, run['name'] + ext)
@@ -648,7 +660,8 @@ def main():
             if files.get('wav'):
                 files['wav'] = os.path.join(OUT, f'{run["name"]}-{stamp}.wav')
         v = f'{run["name"]} {run["what"]} ({run["bars"][0]}-{run["bars"][1]}): ' + \
-            (('ДЕФЕКТ: ' + '; '.join(bad)) if not ok else 'ПРОШЁЛ')
+            (('ДЕФЕКТ: ' + '; '.join(bad)) if not ok else
+             ('НЕ В СЧЁТ: ' + '; '.join(tool)) if tool else 'ПРОШЁЛ')
         verdicts.append(v)
         m = re.search(r'Live открыл набор за (\d+) с', out)
         lines += [v, '   ' + '; '.join(facts)]
@@ -658,8 +671,12 @@ def main():
         if 'beats' in files:
             json.dump(files['beats'], open(os.path.join(OUT, run['name'] + '-beats.json'), 'w'), indent=0)
             log('  пороги не выставлены: доли в', run['name'] + '-beats.json')
+    # D100: «не в счёт» is a run the tool did not carry through, the sound clean on every whole take.
+    counts = [sum(1 for v in verdicts if f': {w}' in v) for w in ('ПРОШЁЛ', 'НЕ В СЧЁТ', 'ДЕФЕКТ', 'НЕ СЫГРАН')]
+    lines.append(f'Итого: прошёл {counts[0]}, не в счёт {counts[1]}, упал {counts[2]}' +
+                 (f', не сыгран {counts[3]}' if counts[3] else ''))
     if prev is not None:
-        old = [l for l in prev.split('\n') if re.match(r'^\S+ .*: (ПРОШЁЛ|ДЕФЕКТ|НЕ СЫГРАН|ИЗВЕСТНЫЙ ДЕФЕКТ)', l)
+        old = [l for l in prev.split('\n') if re.match(r'^\S+ .*: (ПРОШЁЛ|ДЕФЕКТ|НЕ СЫГРАН|НЕ В СЧЁТ|ИЗВЕСТНЫЙ ДЕФЕКТ)', l)
                and (not only or l.split(' ', 1)[0] in only)]
         same = [outcome(v) for v in old] == [outcome(v) for v in verdicts]
         lines.append('С прошлым полным прогоном: ' + ('то же' if same else
@@ -668,7 +685,10 @@ def main():
             open(os.path.join(OUT, 'summary-prev.txt'), 'w', encoding='utf-8').write(prev)
     open(summary, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
     log('\n'.join(lines))
-    return 0 if all(outcome(v).endswith(': ПРОШЁЛ') for v in verdicts) else 1
+    # 0 all passed, 1 a run failed or was not played, 4 only «не в счёт» besides passes (D100).
+    if all(outcome(v).endswith(': ПРОШЁЛ') for v in verdicts):
+        return 0
+    return 1 if counts[2] or counts[3] else 4
 
 
 def outcome(verdict):
