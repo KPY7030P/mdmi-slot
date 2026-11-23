@@ -124,10 +124,10 @@ index 3472c7f..0dd8344 100644
 +}
 diff --git a/mdmi_bridge.c b/mdmi_bridge.c
 new file mode 100644
-index 0000000..ab37820
+index 0000000..cab4896
 --- /dev/null
 +++ b/mdmi_bridge.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,214 @@
 +#include <stddef.h>
 +#include "mdmi_bridge.h"
 +#include "libretro.h"
@@ -232,6 +232,13 @@ index 0000000..ab37820
 +{
 +	extern system_header *current_system;
 +	return ((genesis_context *)current_system)->zram[address & 0x1FFF];
++}
++
++//Host API: writes a byte of the Z80's RAM, for tests that force a driver state (MDMI plugin, stage 58)
++RETRO_API void mdmi_test_z80_write(uint16_t address, uint8_t value)
++{
++	extern system_header *current_system;
++	((genesis_context *)current_system)->zram[address & 0x1FFF] = value;
 +}
 +
 +//Host API: a word of the VDP's memory, for tests of the ROM's screen (MDMI plugin, stage 24a):

@@ -136,6 +136,8 @@ uint8_t mdmi_engine_test_psg_volume(const mdmi_engine *e, uint8_t channel);
 uint16_t mdmi_engine_test_psg_tone(const mdmi_engine *e, uint8_t channel);
 // A byte of the Z80's RAM, for tests (stage 24c: PCM4's STATUS at 0x102, D6).
 uint8_t mdmi_engine_test_z80(const mdmi_engine *e, uint16_t address);
+// Writes a byte there, for tests that force a driver state (stage 58).
+void mdmi_engine_test_z80_write(const mdmi_engine *e, uint16_t address, uint8_t value);
 // A word of the VDP's memory, for tests of the ROM's screen (stage 24a, D6): space 0 VRAM by byte
 // address, 1 CRAM and 2 VSRAM by word index.
 uint16_t mdmi_engine_test_vdp(const mdmi_engine *e, uint8_t space, uint32_t address);
