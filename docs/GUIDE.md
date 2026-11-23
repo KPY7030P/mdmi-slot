@@ -628,9 +628,12 @@ part per checked item, and a Russian guide next to it. Stages add their parts to
 
 `python tools/live_probe_check.py` plays the installed MDMI in real Live with the owner's tool
 `D:/ALL/MUSIC/TECH/MYPLUGINS/ableton-probe` (its README) and writes `build/live-probe/summary.txt` (D96). Every
-stage runs it before handing over. The plan is a list in the script: the whole set, MDMI off and on over a held
-chord and over DAC drums, MDMI deleted over each, a loop of bars 111-114 eight times. `python
-tools/live_probe_check.py б в` plays only those runs. Each run rebuilds the probe copy with
+stage runs it before handing over. The plan is a list in the script, four runs, four Live launches (stage 59,
+D101): а the whole set with MDMI switched off and on over a held chord (bars 2-6) and over DAC drums (112-113), г
+and д MDMI deleted over each (a run of their own: the recording ends with MDMI), е a loop of bars 111-114 eight
+times. `python tools/live_probe_check.py г д` plays only those runs; a name not in the plan is an error. The
+comparison with the last summary needs the same runs (name, what, bars); with another plan it says «план другой,
+сравнения нет». Each run rebuilds the probe copy with
 `tools/make_probe_set.py` (the owner's set in `build/live-check` is not touched), checks it for what Live calls
 corrupt (clip slots of both sequencers against the scenes, sends against the return tracks: Live leaves a corrupt set
 on a dialog that `probe.py` cannot close), and calls `probe.py run`. The copy adds three tracks before the return
@@ -645,7 +648,7 @@ MDMI has no MIDI out, so they only say that Live did not stand); and the RMS of 
 `SOUND_DB` where the set has a note for "MDMI песня" and below `SILENCE_DB` where it has none for more than a beat
 (a silent beat is measured without its last 5 ms, `QUIET_TAIL`: a note may start a sample early). After `off`, the
 time from one beat after the device answered (`acted`) to the next `on` is cut into beat-long windows counted from
-that point, the last one shorter (run в has about one beat between off and on, off the grid), and each window must
+that point, the last one shorter (the DAC off-on in run а has about one beat between off and on, off the grid), and each window must
 be below `SILENCE_DB`; windows under 0.1 beat are not measured. After `on` the first new note of a clip must sound
 within a beat; whether notes held through off come back is printed as an observation. After a delete nothing is
 measured per beat: Live stops recording "Rec Audio" when its source track loses its instrument, so the check is that

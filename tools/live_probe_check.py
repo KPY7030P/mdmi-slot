@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROBE = os.path.normpath(os.path.join(REPO, '..', '..', '..', 'MYPLUGINS', 'ableton-probe', 'probe.py'))
+PROBE = r'D:\ALL\MUSIC\TECH\MYPLUGINS\ableton-probe\probe.py'   # the owner's tool, the same from any worktree
 CFG = os.path.join(REPO, 'ableton-probe.json')
 PROJECT = os.path.join(REPO, 'build', 'probe', 'MDMI Test Project')
 COPY = os.path.join(PROJECT, 'MDMI Auto.als')
@@ -35,13 +35,12 @@ BB = 4                       # beats in a bar
 LATE = 0.4                   # play from the middle of a set starts ~0.4 beat late; delete acts ~0.4 beat late
 WAIT_STEP, WAIT_MAX = 120, 3600
 
-# The plan (stage 57, item 4). Order matters: the whole set first as the base, then the actions.
+# The plan (stage 57, item 4). Order matters: the whole set first as the base, then the actions. Since stage 59
+# (D101) the off/on of the old runs б (held chord) and в (DAC drums) go inside а: each launch costs ~60 s of Live
+# for 14-20 s of play. Deletes stay runs of their own: the recording ends with MDMI (D96).
 PLAN = [
-    dict(name='а', what='весь набор', bars=(1, 118)),
-    dict(name='б', what='выкл/вкл на держащемся аккорде', bars=(1, 8),
-         at=['2.3:off', '3.3:on', '4.3:off', '6.3:on']),
-    dict(name='в', what='выкл/вкл на барабанах DAC', bars=(110, 114),
-         at=['112.1:off', '112.3:on', '113.2:off', '113.4:on']),
+    dict(name='а', what='весь набор, выкл/вкл на аккорде и на DAC', bars=(1, 118),
+         at=['2.3:off', '3.3:on', '4.3:off', '6.3:on', '112.1:off', '112.3:on', '113.2:off', '113.4:on']),
     dict(name='г', what='удаление на аккорде при DAC', bars=(1, 6), at=['3.3:delete']),
     dict(name='д', what='удаление посреди барабанов DAC', bars=(110, 114), at=['113.2:delete']),
     dict(name='е', what='луп 111-114 x8', bars=(110, 114), loop=(111, 114), passes=8),
@@ -466,6 +465,8 @@ def line_sound(run, takes, sn, acts, bad, facts, seen, files):
     tail_end = end + 2 * BB
     set_end = max(e for s, e in sn)
     quiet = []                                 # [from, to): MDMI off or gone, silence after one beat
+    # an action the device did not answer has already failed the run (judge); there is no beat to measure from
+    acts = [x for x in acts if x.get('acted_beat') is not None]
 
     on_at = []
     for i, x in enumerate(acts):
@@ -624,6 +625,11 @@ def main():
         return write_notes()
     os.makedirs(OUT, exist_ok=True)
     only = sys.argv[1:]                        # run names to play, all when none
+    names = [r['name'] for r in PLAN]
+    if any(n not in names for n in only):
+        log(f'нет такого прогона: {" ".join(n for n in only if n not in names)}; в плане: {" ".join(names)}'
+            ' (б и в с этапа 59 внутри а)')
+        return 2
     full = os.path.join(OUT, 'summary.txt')
     # a part of the plan writes its own file and is compared with the same runs of the last full summary
     summary = os.path.join(OUT, 'summary-part.txt') if only else full
@@ -682,8 +688,11 @@ def main():
         old = [l for l in prev.split('\n') if re.match(r'^\S+ .*: (ПРОШЁЛ|ДЕФЕКТ|НЕ СЫГРАН|НЕ В СЧЁТ|ИЗВЕСТНЫЙ ДЕФЕКТ)', l)
                and (not only or l.split(' ', 1)[0] in only)]
         same = [outcome(v) for v in old] == [outcome(v) for v in verdicts]
-        lines.append('С прошлым полным прогоном: ' + ('то же' if same else
-                     'ИНАЧЕ, сравни с ' + ('summary.txt' if only else 'summary-prev.txt')))
+        # the runs themselves (name, what, bars: the text before the first ': ') must match, or there is nothing
+        # to compare with (stage 59 changed the plan)
+        plan_same = [v.split(': ', 1)[0] for v in old] == [v.split(': ', 1)[0] for v in verdicts]
+        lines.append('С прошлым полным прогоном: ' + ('план другой, сравнения нет' if not plan_same else
+                     'то же' if same else 'ИНАЧЕ, сравни с ' + ('summary.txt' if only else 'summary-prev.txt')))
         if not only:
             open(os.path.join(OUT, 'summary-prev.txt'), 'w', encoding='utf-8').write(prev)
     open(summary, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
