@@ -573,9 +573,12 @@ def loop_sound(run, lanes, sn, bad, tool, facts):
     # one whole take per pass: --passes N returns give the first pass and N - 1 more, the last return only a tail
     if len(full) != run['passes']:
         tool.append(f'звук лупа: целых дублей {len(full)}, ждали {run["passes"]}')
-    if len(full) < 2:
-        tool.append(f'звук лупа: целых дублей {len(full)}, меньше двух, сравнивать не с чем')
+    if not full:
+        tool.append('звук лупа: ни одного целого дубля, сравнивать не с чем')
         return None
+    if len(full) < 2:
+        # pass 1 is still held to the set's notes below: «не в счёт» never comes with no sound checked (D100)
+        tool.append(f'звук лупа: целых дублей {len(full)}, меньше двух, проходы не сравнить')
     # Beats without their edges: an onset lands up to ~25 ms off the grid, differently on each pass (run е,
     # kick at 112.3: 8 ms early in pass 1, 15 ms late in pass 2), and 8 ms of a kick moved a beat's RMS by 3 dB.
     passes = [[rms_at(l, k + EDGE, k + 1 - EDGE) for k in range(l0, l1)] for l in full]

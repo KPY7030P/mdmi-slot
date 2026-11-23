@@ -706,7 +706,9 @@ and its print is the same to the byte in every fresh process (inside a longer ru
 `run_tests.sh` runs `live_probe_check.py --notes` and then nine seeds, each in its own process: 0 (the grid, the
 beats' levels count), event 2, 7, 16 and moment 1 (each lost a start alone on 0.48.0), event 8, 18 and moment 6, 10
 (each left IWAVADR null with a length alone on 0.49.0 before the stop by command). The verdict line counts (1), (2)
-and (4) in every seed and the beats' levels of seed 0 only.
+and (4) in every seed and the beats' levels of seed 0 only. The seeds were chosen on the notes and samples of the check set as it is now (bars 110-114, K6's samples
+from tst6): if `make_live_check.py` changes those bars or the samples, the seeds no longer carry the proof (each failed
+on its old build) and must be chosen again the same way (each seed alone on the old builds, `build/stage58/seeds.sh`).
 
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
