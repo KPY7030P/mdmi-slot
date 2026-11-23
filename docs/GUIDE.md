@@ -683,7 +683,20 @@ and every kick of 113.3 more than 1 dB quieter (beats without 0.05 beat at each 
 latency as Live's recording is), and a line per pass with the voices busy before the notes of 113.3 and the voice
 each took, by the driver and by the window's copy (`dac_pick`). The beats' levels of the per-event seeds move by
 more than 3 dB on their own (an onset shifted 25 ms against its neighbours crosses a window's edge); the driver's
-lines (1) and (2) don't depend on that.
+lines (1) and (2) don't depend on that. Since D99 (2) also flags a voice on the null sample with a length past it
+(IWAVADR null, IWAVLEN large: a stop the driver's block update undid) and (4) a voice playing blocks of neither the
+null sample nor its last two starts (a torn copy); both count a state held 5 ms (the ROM holds the bus up to 3 ms, and
+a bus taken between the driver's two writes stops the sound too). The commands are read from each voice's own byte
+once the driver's code shows it, and the shared $0100 must stay zero. `--stop-sweep NOTES [free]` plays the crash
+alone with its Note Off at 768 places of a pass; `--stop-inject NOTES` plays the grid twice, the second time with pass
+2's crash put in the state IWAVADR null with its blocks left, and prints the beats from 114.2 to the next 113.1
+(they match the 20:26 recording to 0.2 dB). `mdmi_engine_test_z80_write` (bridge `mdmi_test_z80_write`) is the test
+hook for that.
+
+D99 in the ROM: `pcm_driver_own_commands` (after `pcm_driver_keep_loop_bits`) points each voice's `LD HL,COMMAND`
+before its `BIT`/`RES` at its own byte `COMMAND_V(v)` = $0130 + v (free RAM, the driver's `BLOCK $0200-$`); the ROM
+writes the byte whole. Every start waits in `VOICE_WAIT_COPY` until `midi_dac_tick` sees STATUS (or two frames with
+neither bit), so a voice mid-take is busy.
 
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision

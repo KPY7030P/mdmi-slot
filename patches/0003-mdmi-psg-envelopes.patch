@@ -1020,10 +1020,10 @@ index 731aa8c..98a60ce 100644
  void midi_note_off(u8 chan, u8 pitch);
  void midi_pitch_bend(u8 chan, u16 bend);
 diff --git a/src/midi_dac.c b/src/midi_dac.c
-index 33ac142..2857679 100644
+index 33ac142..5b5fcb3 100644
 --- a/src/midi_dac.c
 +++ b/src/midi_dac.c
-@@ -1,40 +1,299 @@
+@@ -1,40 +1,324 @@
  #include "midi_dac.h"
  #include "pcm_sample.h"
 +#include "synth.h"
@@ -1051,6 +1051,8 @@ index 33ac142..2857679 100644
 +    u16 loopStart;
 +    u16 loopEnd;
 +    u16 end;
++    // Frames a WAIT_COPY voice showed neither its command nor playing (stage 58, D99).
++    u8 idle;
 +} Voice;
 +
 +static Voice voices[PCM_DRV_VOICES];
@@ -1077,6 +1079,18 @@ index 33ac142..2857679 100644
 +    pcm_driver_write(address, on ? was | (1 << v) : was & ~(1 << v));
 +}
 +
++// Bus held: a voice's start, in its own byte (pcm_driver_own_commands, D99). The byte is written whole,
++// never read and written back: no other voice's start lives in it.
++static bool command_of(u8 v)
++{
++    return pcm_driver_read(PCM_DRV_COMMAND_V(v)) & (1 << v);
++}
++
++static void set_command(u8 v, bool on)
++{
++    pcm_driver_write(PCM_DRV_COMMAND_V(v), on ? 1 << v : 0);
++}
++
 +static bool has_release(const Voice* voice)
 +{
 +    return voice->end > voice->loopEnd;
@@ -1085,7 +1099,7 @@ index 33ac142..2857679 100644
 +// Bus held: the voice sounds, or its start is still to be taken.
 +static bool voice_busy(u8 v)
 +{
-+    return voices[v].state == VOICE_WAIT_COPY || ((pcm_driver_read(PCM_DRV_STATUS) | pcm_driver_read(PCM_DRV_COMMAND)) & (1 << v));
++    return voices[v].state == VOICE_WAIT_COPY || (pcm_driver_read(PCM_DRV_STATUS) & (1 << v)) || command_of(v);
 +}
 +
 +// Bus held: the key's own voice while it sounds, else a free one, else the oldest start.
@@ -1113,7 +1127,7 @@ index 33ac142..2857679 100644
 +// Bus held: the voice plays nothing, its start untaken is dropped.
 +static void voice_stop(u8 v)
 +{
-+    set_bit(PCM_DRV_COMMAND, v, false);
++    set_command(v, false);
 +    write16(PCM_DRV_IWAVADR(v), read16(PCM_DRV_NULLWAVADR));
 +    write16(PCM_DRV_IWAVLEN(v), read16(PCM_DRV_NULLWAVLEN));
 +    set_bit(PCM_DRV_STATUS, v, false);
@@ -1162,16 +1176,21 @@ index 33ac142..2857679 100644
 +    // its null pass every pass; the copy comes within a pass.
 +    write16(PCM_DRV_IWAVLEN(v), 2);
 +    set_bit(PCM_DRV_LOOP, v, sample->flags & (PCM_LOOP | PCM_MARKS));
-+    set_bit(PCM_DRV_COMMAND, v, true);
++    set_command(v, true);
 +    pcm_driver_give();
-+    voice->state = voice->loopStart != voice->start ? VOICE_WAIT_COPY
-+        : sample->flags & (PCM_LOOP | PCM_MARKS)       ? VOICE_LOOPING
-+                                                       : VOICE_PLAYING;
-+}
-+
-+// Each frame, for the voices whose start's copy is awaited: then the loop alone becomes their params.
++    // Every start waits for its copy (stage 58, D99): while the driver takes the command, between its RES
++    // of the command and its SET of playing, the voice shows neither bit, and a start picked then would
++    // land on it mid-copy. WAIT_COPY keeps it busy until midi_dac_tick sees it played.
++    voice->state = VOICE_WAIT_COPY;
++    voice->idle = 0;
+ }
+ 
+-void midi_dac_reset(void)
++// Each frame, for the voices whose start's copy is awaited (D99): command still set, wait; taken and
++// playing, copied: a start with marks gets the loop alone as its params, and the voice loops or plays;
++// neither on two frames, it played out within a frame or its start was lost: free.
 +void midi_dac_tick(void)
-+{
+ {
 +    bool waiting = false;
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        waiting = waiting || voices[v].state == VOICE_WAIT_COPY;
@@ -1180,19 +1199,25 @@ index 33ac142..2857679 100644
 +        return;
 +    }
 +    pcm_driver_take();
-+    const u8 command = pcm_driver_read(PCM_DRV_COMMAND), status = pcm_driver_read(PCM_DRV_STATUS);
++    const u8 status = pcm_driver_read(PCM_DRV_STATUS);
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        Voice* voice = &voices[v];
-+        if (voice->state == VOICE_WAIT_COPY && !(command & (1 << v)) && (status & (1 << v))) {
-+            write16(PCM_DRV_WAVADR(v), voice->loopStart);
-+            write16(PCM_DRV_WAVLEN(v), voice->loopEnd - voice->loopStart);
-+            voice->state = VOICE_LOOPING;
++        if (voice->state != VOICE_WAIT_COPY || command_of(v)) {
++            continue;
++        }
++        if (status & (1 << v)) {
++            if (voice->loopStart != voice->start) {
++                write16(PCM_DRV_WAVADR(v), voice->loopStart);
++                write16(PCM_DRV_WAVLEN(v), voice->loopEnd - voice->loopStart);
++            }
++            voice->state = voice->sample->flags & (PCM_LOOP | PCM_MARKS) ? VOICE_LOOPING : VOICE_PLAYING;
++        } else if (++voice->idle >= 2) {
++            voice->state = VOICE_FREE;
 +        }
 +    }
 +    pcm_driver_give();
- }
- 
--void midi_dac_reset(void)
++}
++
 +// The driver ends the pass it plays at IWAVADR + IWAVLEN: with that moved to the release's end and
 +// the loop bit off it plays on into the release and stops. Its block update may overwrite the
 +// length (about 0.07% of Note Offs): checked once the update is surely over, and put right.
@@ -1201,7 +1226,7 @@ index 33ac142..2857679 100644
 +    Voice* voice = &voices[v];
 +    voice->state = VOICE_RELEASE;
 +    pcm_driver_take();
-+    if (pcm_driver_read(PCM_DRV_COMMAND) & (1 << v)) {
++    if (command_of(v)) {
 +        // Not taken yet: it copies these, the intro, the loop once and the release. Waiting for
 +        // the copy here could take a whole block (review of 18b).
 +        write16(PCM_DRV_WAVLEN(v), voice->end - voice->start);
@@ -1233,7 +1258,7 @@ index 33ac142..2857679 100644
 +            write16(PCM_DRV_WAVADR(v), voice->loopEnd);
 +            write16(PCM_DRV_WAVLEN(v), voice->end - voice->loopEnd);
 +            set_bit(PCM_DRV_STATUS, v, false);
-+            set_bit(PCM_DRV_COMMAND, v, true);
++            set_command(v, true);
 +        } else {
 +            write16(PCM_DRV_IWAVLEN(v), voice->end - at);
 +        }
@@ -1244,7 +1269,7 @@ index 33ac142..2857679 100644
 +// The key's voice, if another key hasn't taken it: a one-shot plays on, a loop with a release
 +// plays out into it, anything else stops.
 +void midi_dac_release(u8 key)
- {
++{
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        Voice* voice = &voices[v];
 +        if (voice->key != key || voice->state == VOICE_FREE) {
@@ -1273,8 +1298,8 @@ index 33ac142..2857679 100644
  {
 -    SND_PCM_stopPlay();
 +    midi_dac_release(pitch);
- }
- 
++}
++
 +// The DAC switched: the driver starts afresh, nothing of a sample is awaited any more. enable_dac then
 +// hands it channel 6's volume (D61).
 +void midi_dac_reset(void)
@@ -1284,8 +1309,8 @@ index 33ac142..2857679 100644
 +        voices[v].state = VOICE_FREE;
 +        voices[v].key = NO_KEY;
 +    }
-+}
-+
+ }
+ 
 +// Not MDMI canon (D61): see channelVolume.
  void midi_dac_channel_volume(u8 chan, u8 volume)
  {
@@ -2204,10 +2229,10 @@ index 56d03c4..db0dfba 100644
  u8 note_priority_count(NotePriorityStack* notePriority);
 diff --git a/src/pcm_driver.c b/src/pcm_driver.c
 new file mode 100644
-index 0000000..3539540
+index 0000000..e8d3acd
 --- /dev/null
 +++ b/src/pcm_driver.c
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,92 @@
 +#include "pcm_driver.h"
 +#include "genesis.h"
 +
@@ -2264,16 +2289,48 @@ index 0000000..3539540
 +    return loopClearCount;
 +}
 +
++// The driver's handlePlayCommand reads and clears a voice's start with `LD HL,COMMAND / BIT v,(HL)` and
++// `LD HL,COMMAND / RES v,(HL)` (21 00 01 CB 46+8v, 21 00 01 CB 86+8v): RES is a read-modify-write of the
++// byte all four voices share, and a bus taken by the 68000 inside it loses the bit it set for another
++// voice (stage 58: a start never taken). Each place gets its voice's own byte, `LD HL,COMMAND_V(v)`: one
++// operand byte changed, the same bytes and cycles, so the slots keep their timing. MDMI plugin fork, D99.
++static u16 commandPlaces[8];
++static u8 commandPlaceCount = 0xFF;
++
++u8 pcm_driver_own_commands(void)
++{
++    if (commandPlaceCount == 0xFF) {
++        commandPlaceCount = 0;
++        for (u16 at = 0; (u32)at + 5 <= sizeof(drv_pcm4) && commandPlaceCount < 8; at++) {
++            const u8 op = drv_pcm4[at + 4] & 0xC7, v = (drv_pcm4[at + 4] >> 3) & 7;
++            if (drv_pcm4[at] == 0x21 && drv_pcm4[at + 1] == 0x00 && drv_pcm4[at + 2] == 0x01 && drv_pcm4[at + 3] == 0xCB
++                && (op == 0x46 || op == 0x86) && v < PCM_DRV_VOICES) {
++                commandPlaces[commandPlaceCount++] = at;
++            }
++        }
++    }
++    pcm_driver_take();
++    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++        pcm_driver_write(PCM_DRV_COMMAND_V(v), 0);
++    }
++    for (u8 i = 0; i < commandPlaceCount; i++) {
++        const u8 v = (drv_pcm4[commandPlaces[i] + 4] >> 3) & 7;
++        pcm_driver_write(commandPlaces[i] + 1, (u8)PCM_DRV_COMMAND_V(v));
++    }
++    pcm_driver_give();
++    return commandPlaceCount;
++}
++
 +void pcm_driver_wait_us(u16 us)
 +{
 +    waitSubTick(((u32)us * SUBTICKPERSECOND + 999999) / 1000000);
 +}
 diff --git a/src/pcm_driver.h b/src/pcm_driver.h
 new file mode 100644
-index 0000000..75d2f39
+index 0000000..c65be21
 --- /dev/null
 +++ b/src/pcm_driver.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,37 @@
 +#pragma once
 +#include "types.h"
 +
@@ -2284,6 +2341,9 @@ index 0000000..75d2f39
 +// these functions.
 +#define PCM_DRV_VOICES 4
 +#define PCM_DRV_COMMAND 0x0100
++// Each voice's own command byte once pcm_driver_own_commands ran (MDMI plugin, stage 58, D99): bit v of
++// byte v, the rest zero. Free RAM: the driver's code jumps over $0130-$01FF (`BLOCK $0200-$`).
++#define PCM_DRV_COMMAND_V(v) (0x0130 + (v))
 +#define PCM_DRV_STATUS 0x0102
 +#define PCM_DRV_LOOP 0x0103
 +#define PCM_DRV_WAVADR(v) (0x0104 + 4 * (v))
@@ -2304,6 +2364,10 @@ index 0000000..75d2f39
 +// Once the driver is loaded: its stop no longer clears a voice's loop bit (stage 27, D70), so the
 +// 68000 is that byte's only writer. Says how many places it changed.
 +u8 pcm_driver_keep_loop_bits(void);
++// Once the driver is loaded: each voice's command code reads and clears COMMAND_V(v) instead of the shared
++// COMMAND (stage 58, D99), so no RES of one voice writes back a bit the 68000 set for another. Says how
++// many places it changed (8: a BIT and a RES per voice).
++u8 pcm_driver_own_commands(void);
 diff --git a/src/pcm_sample.c b/src/pcm_sample.c
 index 46e6069..3fa0ada 100644
 --- a/src/pcm_sample.c
@@ -2579,7 +2643,7 @@ index b128177..34caeec 100644
      }
  
 diff --git a/src/synth.c b/src/synth.c
-index eec5dcc..5b2dca7 100644
+index eec5dcc..394893f 100644
 --- a/src/synth.c
 +++ b/src/synth.c
 @@ -1,10 +1,26 @@
@@ -2824,7 +2888,7 @@ index eec5dcc..5b2dca7 100644
      other_parameter_updated(0, SpecialMode);
  }
  
-@@ -463,21 +615,62 @@ void synth_special_mode_volume(u8 operator, u8 volume)
+@@ -463,21 +615,63 @@ void synth_special_mode_volume(u8 operator, u8 volume)
          effective_total_level(CH3_SPECIAL_MODE, operator, newTotalLevel));
  }
  
@@ -2854,6 +2918,7 @@ index eec5dcc..5b2dca7 100644
 +        // Four voices of samples (stage 19, D49).
 +        Z80_loadDriver(Z80_DRIVER_PCM4, true);
 +        pcm_driver_keep_loop_bits();
++        pcm_driver_own_commands();
      } else if (!enable) {
          Z80_loadDriver(Z80_DRIVER_NULL, FALSE);
          Z80_requestBus(TRUE);
@@ -2920,10 +2985,10 @@ index 222a443..28df429 100644
  void synth_enable_dac(bool enable);
 +void synth_restore_chip(void);
 diff --git a/src/ui.c b/src/ui.c
-index 66cd230..07d00d3 100644
+index 66cd230..1c49c24 100644
 --- a/src/ui.c
 +++ b/src/ui.c
-@@ -2,552 +2,2640 @@
+@@ -2,552 +2,2641 @@
  #include "comm/comm.h"
  #include "comm/comm_everdrive.h"
  #include "comm/comm_everdrive_pro.h"
@@ -3714,7 +3779,8 @@ index 66cd230..07d00d3 100644
 +            continue;
 +        }
 +        if (view.state == MIDI_DAC_VOICE_PLAYING) {
-+            if (view.order != dacOrder[v]) {
++            // Every start comes through WAIT_COPY since stage 58 (D99): its end is reckoned when it plays.
++            if (view.order != dacOrder[v] || dacState[v] == MIDI_DAC_VOICE_WAIT_COPY) {
 +                dacEnd[v] = uiFrame + view.blocks;
 +            }
 +        } else if (view.state == MIDI_DAC_VOICE_RELEASE) {
@@ -7679,7 +7745,7 @@ index 9919ce7..8db9e5b 100644
  #define YM_KEY_ON_OFF 0x28
  #define YM_DAC_DATA 0x2A
 diff --git a/tests/Makefile b/tests/Makefile
-index b428e59..5b298c6 100644
+index b428e59..97a5784 100644
 --- a/tests/Makefile
 +++ b/tests/Makefile
 @@ -80,8 +80,17 @@ MOCKS=midi_process \
@@ -7700,7 +7766,7 @@ index b428e59..5b298c6 100644
  	synth_extract_preset \
  	midi_note_off \
  	midi_note_on \
-@@ -114,6 +123,13 @@ MOCKS=midi_process \
+@@ -114,6 +123,14 @@ MOCKS=midi_process \
  	comm_megawifi_send
  
  MD_MOCKS=SYS_setVIntCallback \
@@ -7710,11 +7776,12 @@ index b428e59..5b298c6 100644
 +	pcm_driver_give \
 +	pcm_driver_wait_us \
 +	pcm_driver_keep_loop_bits \
++	pcm_driver_own_commands \
 +	waitSubTick \
  	VDP_setTextPalette \
  	YM2612_writeReg \
  	YM2612_write \
-@@ -124,6 +140,7 @@ MD_MOCKS=SYS_setVIntCallback \
+@@ -124,6 +141,7 @@ MD_MOCKS=SYS_setVIntCallback \
  	PAL_setColors \
  	PSG_setEnvelope \
  	PSG_setTone \
@@ -7724,10 +7791,10 @@ index b428e59..5b298c6 100644
  	SYS_disableInts \
 diff --git a/tests/mocks/mock_pcm_driver.c b/tests/mocks/mock_pcm_driver.c
 new file mode 100644
-index 0000000..451a682
+index 0000000..ce27203
 --- /dev/null
 +++ b/tests/mocks/mock_pcm_driver.c
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,92 @@
 +#include "mock_pcm_driver.h"
 +#include "pcm_driver.h"
 +
@@ -7756,6 +7823,22 @@ index 0000000..451a682
 +{
 +    mock_pcm_ram[address] = value;
 +    mock_pcm_ram[address + 1] = value >> 8;
++}
++
++u8 mock_pcm_commands(void)
++{
++    u8 bits = 0;
++    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++        bits |= mock_pcm_ram[PCM_DRV_COMMAND_V(v)] & (1 << v);
++    }
++    return bits;
++}
++
++void mock_pcm_set_commands(u8 bits)
++{
++    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
++        mock_pcm_ram[PCM_DRV_COMMAND_V(v)] = bits & (1 << v);
++    }
 +}
 +
 +u8 __wrap_pcm_driver_read(u16 address)
@@ -7787,6 +7870,12 @@ index 0000000..451a682
 +{
 +}
 +
++// Nor its command code: the tests' driver reads each voice's own byte, as the patched one does (D99).
++u8 __wrap_pcm_driver_own_commands(void)
++{
++    return 8;
++}
++
 +void __wrap_pcm_driver_wait_us(u16 us)
 +{
 +    mock_pcm_waited_us += us;
@@ -7800,10 +7889,10 @@ index 0000000..451a682
 +}
 diff --git a/tests/mocks/mock_pcm_driver.h b/tests/mocks/mock_pcm_driver.h
 new file mode 100644
-index 0000000..36a5b36
+index 0000000..2eaf9d9
 --- /dev/null
 +++ b/tests/mocks/mock_pcm_driver.h
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,15 @@
 +#pragma once
 +#include "types.h"
 +
@@ -7816,6 +7905,9 @@ index 0000000..36a5b36
 +void mock_pcm_write16(u16 address, u16 value);
 +// Called at each wait, as if the driver ran meanwhile; NULL for none.
 +extern void (*mock_pcm_on_wait)(void);
++// The voices' starts as bits, from and to each voice's own command byte (D99).
++u8 mock_pcm_commands(void);
++void mock_pcm_set_commands(u8 bits);
 diff --git a/tests/mocks/mock_psg.c b/tests/mocks/mock_psg.c
 index 9d0e017..4441831 100644
 --- a/tests/mocks/mock_psg.c
@@ -8090,7 +8182,7 @@ index 8dd9ef6..b196d60 100644
          e2e_test(test_plays_pcm_sample),
          e2e_test(test_midi_last_note_played_priority_respected_on_fm),
 diff --git a/tests/system/test_e2e.c b/tests/system/test_e2e.c
-index d9cce30..714c042 100644
+index d9cce30..ba2c08e 100644
 --- a/tests/system/test_e2e.c
 +++ b/tests/system/test_e2e.c
 @@ -1,4 +1,5 @@
@@ -8430,7 +8522,7 @@ index d9cce30..714c042 100644
      expect_value(__wrap_Z80_loadDriver, waitReady, true);
      expect_value(__wrap_Z80_getAndRequestBus, wait, TRUE);
      will_return(__wrap_Z80_getAndRequestBus, false);
-@@ -264,15 +505,49 @@ void test_plays_pcm_sample(void** state)
+@@ -264,15 +505,50 @@ void test_plays_pcm_sample(void** state)
      expect_value(__wrap_YM2612_write, port, 0);
      expect_value(__wrap_YM2612_write, data, YM_DAC_DATA);
      expect_function_call(__wrap_Z80_releaseBus);
@@ -8479,7 +8571,8 @@ index d9cce30..714c042 100644
 -    expect_value(__wrap_SND_PCM_startPlay, pan, 0xC0);
 -    expect_value(__wrap_SND_PCM_startPlay, loop, 0);
      midi_rx_read();
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 1);
++    // In voice 0's own command byte (stage 58, D99).
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND_V(0)], 1);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_VOLUME(0)], 15);
 +    assert_true(mock_pcm_read16(PCM_DRV_WAVLEN(0)) > 0);
  }
@@ -8501,7 +8594,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..aa7a2b2 100644
+index d2449c4..e5ea67e 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -8573,7 +8666,7 @@ index d2449c4..aa7a2b2 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +252,51 @@ int main(void)
+@@ -226,10 +252,54 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -8623,11 +8716,14 @@ index d2449c4..aa7a2b2 100644
 +        midi_dac_test(test_midi_dac_marks_lost_start_does_not_hang),
 +        midi_dac_test(test_midi_dac_repeated_enable_keeps_voices),
 +        midi_dac_test(test_midi_dac_voice_view_reads_a_start),
++        midi_dac_test(test_midi_dac_start_writes_own_command_byte),
++        midi_dac_test(test_midi_dac_every_start_waits_for_copy),
++        midi_dac_test(test_midi_dac_wait_copy_frees_after_two_idle_frames),
 +        midi_test(test_midi_dac_pan_before_enable_applies),
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +316,9 @@ int main(void)
+@@ -249,6 +319,9 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -8637,7 +8733,7 @@ index d2449c4..aa7a2b2 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,7 +382,22 @@ int main(void)
+@@ -312,7 +385,22 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -8660,7 +8756,7 @@ index d2449c4..aa7a2b2 100644
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
          comm_test(test_comm_reads_from_serial_when_ready),
-@@ -380,8 +465,10 @@ int main(void)
+@@ -380,8 +468,10 @@ int main(void)
          dynamic_midi_test(test_midi_static_mode_plays_correct_note_off_after_multiple_notes_played),
  
          log_test(test_log_info_writes_to_log_buffer),
@@ -8671,7 +8767,7 @@ index d2449c4..aa7a2b2 100644
          log_test(test_log_stores_multiple_logs_and_overwrites_older),
          log_test(
              test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
-@@ -440,6 +527,69 @@ int main(void)
+@@ -440,6 +530,69 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
@@ -10043,7 +10139,7 @@ index 0000000..779ee17
 +void test_midi_ch3_csm_portamento_moves_timer_a(UNUSED void** state);
 +void test_midi_ch3_one_note_portamento(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac.c b/tests/unit/test_midi_dac.c
-index 9650279..550e6dc 100644
+index 9650279..89fc03f 100644
 --- a/tests/unit/test_midi_dac.c
 +++ b/tests/unit/test_midi_dac.c
 @@ -1,8 +1,12 @@
@@ -10080,7 +10176,7 @@ index 9650279..550e6dc 100644
  
      __real_midi_cc(0, 78, 0x7F);
  }
-@@ -28,37 +37,405 @@ void test_midi_enables_dac(UNUSED void** state)
+@@ -28,37 +37,462 @@ void test_midi_enables_dac(UNUSED void** state)
  void test_midi_disables_dac(UNUSED void** state)
  {
      expect_value(__wrap_synth_enable_dac, enable, false);
@@ -10250,7 +10346,7 @@ index 9650279..550e6dc 100644
 +// The driver takes every start: clears the commands, copies, sets playing.
 +static void driver_takes(void)
 +{
-+    const u8 command = mock_pcm_ram[PCM_DRV_COMMAND];
++    const u8 command = mock_pcm_commands();
 +    for (u8 v = 0; v < PCM_DRV_VOICES; v++) {
 +        if (command & (1 << v)) {
 +            mock_pcm_write16(PCM_DRV_IWAVADR(v), mock_pcm_read16(PCM_DRV_WAVADR(v)));
@@ -10258,7 +10354,9 @@ index 9650279..550e6dc 100644
 +        }
 +    }
 +    mock_pcm_ram[PCM_DRV_STATUS] |= command;
-+    mock_pcm_ram[PCM_DRV_COMMAND] = 0;
++    mock_pcm_set_commands(0);
++    // The ROM's next frame sees the copies (D99).
++    midi_dac_tick();
 +}
 +
 +static int voice_of(u8 i)
@@ -10277,7 +10375,7 @@ index 9650279..550e6dc 100644
 +    __real_midi_note_on(dacFmChannel, keys[0], 127);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), block_of(0));
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 1);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 1);
++    assert_int_equal(mock_pcm_commands(), 1);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 0);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_VOLUME(0)], 15);
 +    put_back();
@@ -10286,7 +10384,7 @@ index 9650279..550e6dc 100644
  void test_midi_dac_does_not_play_null_sample(UNUSED void** state)
  {
      __real_midi_note_on(dacFmChannel, nullNoteKey, 100);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
++    assert_int_equal(mock_pcm_commands(), 0);
  }
  
 -void test_midi_dac_stops_note(UNUSED void** state)
@@ -10338,7 +10436,7 @@ index 9650279..550e6dc 100644
 +    assert_int_equal(voice_of(0), -1);
 +    put_back();
 +}
-+
+ 
 +// The same key again restarts its own voice: a roll of hats keeps to one voice.
 +void test_midi_dac_same_key_restarts_its_voice(UNUSED void** state)
 +{
@@ -10348,7 +10446,7 @@ index 9650279..550e6dc 100644
 +    __real_midi_note_on(dacFmChannel, keys[1], 100);
 +    driver_takes();
 +    __real_midi_note_on(dacFmChannel, keys[0], 100);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 1);
++    assert_int_equal(mock_pcm_commands(), 1);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 3, 2);
 +    put_back();
 +}
@@ -10367,7 +10465,7 @@ index 9650279..550e6dc 100644
 +    assert_int_equal(voice_of(2), 0);
 +    put_back();
 +}
- 
++
 +// Note Off of the earlier of two held keys stops only its voice; releasing the later key doesn't
 +// start the earlier one again.
 +void test_midi_dac_note_off_stops_only_its_voice(UNUSED void** state)
@@ -10383,7 +10481,7 @@ index 9650279..550e6dc 100644
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 3, 2);
 +    __real_midi_note_off(dacFmChannel, keys[1]);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_IWAVADR(1)), 0x77);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
++    assert_int_equal(mock_pcm_commands(), 0);
 +    put_back();
 +}
 +
@@ -10428,7 +10526,7 @@ index 9650279..550e6dc 100644
 +        }
 +        __real_midi_cc(dacFmChannel, cc, 0);
 +        assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 15, 0);
-+        assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
++        assert_int_equal(mock_pcm_commands(), 0);
 +    }
 +    put_back();
 +}
@@ -10491,20 +10589,75 @@ index 9650279..550e6dc 100644
 +    __real_midi_note_on(dacFmChannel, keys[0], 100);
 +    midi_dac_voice_view(0, &view);
 +    assert_int_equal(view.key, keys[0]);
-+    assert_int_equal(view.state, MIDI_DAC_VOICE_PLAYING);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_WAIT_COPY);
 +    assert_int_not_equal(view.order, before.order);
 +    driver_takes();
++    midi_dac_voice_view(0, &view);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_PLAYING);
 +    __real_midi_note_on(dacFmChannel, keys[0], 100);
 +    MidiDacVoiceView again;
 +    midi_dac_voice_view(0, &again);
 +    assert_int_not_equal(again.order, view.order);
 +    put_back();
++}
++
++// Stage 58 (D99): a start is written in its voice's own command byte, the shared one untouched.
++void test_midi_dac_start_writes_own_command_byte(UNUSED void** state)
++{
++    use_samples();
++    __real_midi_note_on(dacFmChannel, keys[0], 100);
++    __real_midi_note_on(dacFmChannel, keys[1], 100);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND_V(0)], 1);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND_V(1)], 2);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND_V(2)], 0);
++    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND], 0);
++    put_back();
++}
++
++// Every start waits for its copy, the plain one too: until then its voice is busy, also while the driver
++// takes the command and shows neither bit; it plays once the driver set playing.
++void test_midi_dac_every_start_waits_for_copy(UNUSED void** state)
++{
++    use_samples();
++    MidiDacVoiceView view;
++    __real_midi_note_on(dacFmChannel, keys[0], 100);
++    midi_dac_voice_view(0, &view);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_WAIT_COPY);
++    // The driver's take window: the command cleared, playing not yet set.
++    mock_pcm_set_commands(0);
++    __real_midi_note_on(dacFmChannel, keys[1], 100);
++    assert_int_equal(voice_of(0), 0);
++    assert_int_equal(voice_of(1), 1);
++    mock_pcm_ram[PCM_DRV_STATUS] |= 1;
++    midi_dac_tick();
++    midi_dac_voice_view(0, &view);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_PLAYING);
++    put_back();
++}
++
++// A start whose voice shows neither its command nor playing on two frames running is free: it played out
++// within a frame, or its start was lost. One such frame is not enough (the take window).
++void test_midi_dac_wait_copy_frees_after_two_idle_frames(UNUSED void** state)
++{
++    use_samples();
++    MidiDacVoiceView view;
++    __real_midi_note_on(dacFmChannel, keys[0], 100);
++    mock_pcm_set_commands(0);
++    midi_dac_tick();
++    midi_dac_voice_view(0, &view);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_WAIT_COPY);
++    midi_dac_tick();
++    midi_dac_voice_view(0, &view);
++    assert_int_equal(view.state, MIDI_DAC_VOICE_FREE);
++    __real_midi_note_on(dacFmChannel, keys[1], 100);
++    assert_int_equal(voice_of(1), 0);
++    put_back();
  }
 diff --git a/tests/unit/test_midi_dac.h b/tests/unit/test_midi_dac.h
-index 5e63f7b..99fcdeb 100644
+index 5e63f7b..1bfb8fc 100644
 --- a/tests/unit/test_midi_dac.h
 +++ b/tests/unit/test_midi_dac.h
-@@ -1,8 +1,26 @@
+@@ -1,8 +1,29 @@
  #include "cmocka_inc.h"
 -
  int test_midi_dac_setup(UNUSED void** state);
@@ -10534,12 +10687,15 @@ index 5e63f7b..99fcdeb 100644
 +void test_midi_dac_repeated_enable_keeps_voices(UNUSED void** state);
 +
 +void test_midi_dac_voice_view_reads_a_start(UNUSED void** state);
++void test_midi_dac_start_writes_own_command_byte(UNUSED void** state);
++void test_midi_dac_every_start_waits_for_copy(UNUSED void** state);
++void test_midi_dac_wait_copy_frees_after_two_idle_frames(UNUSED void** state);
 diff --git a/tests/unit/test_midi_dac_marks.c b/tests/unit/test_midi_dac_marks.c
 new file mode 100644
-index 0000000..ac8d524
+index 0000000..85a0429
 --- /dev/null
 +++ b/tests/unit/test_midi_dac_marks.c
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,352 @@
 +#include "test_midi_dac_marks.h"
 +#include "test_midi.h"
 +#include "mocks/mock_midi.h"
@@ -10578,7 +10734,7 @@ index 0000000..ac8d524
 +// The driver takes the command: clears it, copies the params, sets playing.
 +static void driver_copies(void)
 +{
-+    mock_pcm_ram[PCM_DRV_COMMAND] &= ~1;
++    mock_pcm_set_commands(mock_pcm_commands() & ~1);
 +    mock_pcm_write16(PCM_DRV_IWAVADR(0), mock_pcm_read16(PCM_DRV_WAVADR(0)));
 +    mock_pcm_write16(PCM_DRV_IWAVLEN(0), mock_pcm_read16(PCM_DRV_WAVLEN(0)));
 +    mock_pcm_ram[PCM_DRV_STATUS] |= 1;
@@ -10599,7 +10755,7 @@ index 0000000..ac8d524
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 6);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_VOLUME(0)], 12);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 1);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND] & 1, 1);
++    assert_int_equal(mock_pcm_commands() & 1, 1);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS], 0x80);
 +    // Not taken yet: the params stay, next frame again.
 +    midi_dac_tick();
@@ -10617,6 +10773,12 @@ index 0000000..ac8d524
 +    static const PcmMarked noIntro = { { markedData, sizeof(markedData), 1, PCM_LOOP | PCM_MARKS }, 0, 6 };
 +    use_marked(&noIntro);
 +    __real_midi_note_on(dacChannel, key, 100);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 6);
++    // Every start waits for its copy (D99), but without an intro the copy changes no params.
++    midi_dac_tick();
++    driver_copies();
++    midi_dac_tick();
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), BLOCK0);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 6);
 +    assert_tick_idle();
 +    done();
@@ -10719,7 +10881,7 @@ index 0000000..ac8d524
 +    __real_midi_note_off(dacChannel, key);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), BLOCK0 + 6);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 2);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND] & 1, 1);
++    assert_int_equal(mock_pcm_commands() & 1, 1);
 +    done();
 +}
 +
@@ -10757,7 +10919,7 @@ index 0000000..ac8d524
 +    __real_midi_note_on(dacChannel, key, 100);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), BLOCK0);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 6);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND] & 0x0f, 1);
++    assert_int_equal(mock_pcm_commands() & 0x0f, 1);
 +    driver_copies();
 +    midi_dac_tick();
 +    __real_midi_cc(dacChannel, 123, 0);
@@ -10786,13 +10948,13 @@ index 0000000..ac8d524
 +    __real_midi_note_off(dacChannel, key);
 +    for (u8 k = 1; k <= 3; k++) {
 +        __real_midi_note_on(dacChannel, key + k, 100);
-+        mock_pcm_ram[PCM_DRV_COMMAND] &= ~(1 << k);
++        mock_pcm_set_commands(mock_pcm_commands() & ~(1 << k));
 +        mock_pcm_ram[PCM_DRV_STATUS] |= 1 << k;
 +    }
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_STATUS] & 0x0f, 0x0f);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 1);
 +    __real_midi_note_on(dacChannel, key + 4, 100);
-+    assert_int_equal(mock_pcm_ram[PCM_DRV_COMMAND] & 0x0f, 1);
++    assert_int_equal(mock_pcm_commands() & 0x0f, 1);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), (u16)((u32)(long)otherData >> 8));
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 0);
 +    expect_value(__wrap_synth_enable_dac, enable, false);
@@ -10817,6 +10979,9 @@ index 0000000..ac8d524
 +    __real_midi_note_off(dacChannel, key);
 +    assert_int_equal(mock_pcm_takes, takes);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP] & 1, 1);
++    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 8);
++    // The frame that sees the copy (D99), then nothing more to do.
++    midi_dac_tick();
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 8);
 +    assert_tick_idle();
 +    done();
@@ -10852,17 +11017,17 @@ index 0000000..ac8d524
 +    const PcmSample* was = percussionPcmSample[key + 1];
 +    percussionPcmSample[key + 1] = &second.sample;
 +    // Voices 0-2 busy with starts not yet taken.
-+    mock_pcm_ram[PCM_DRV_COMMAND] = 7;
++    mock_pcm_set_commands(7);
 +    __real_midi_note_on(dacChannel, key, 100);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(3)), BLOCK0);
 +    assert_int_equal(mock_pcm_ram[PCM_DRV_LOOP], 8);
-+    mock_pcm_ram[PCM_DRV_COMMAND] &= ~8;
++    mock_pcm_set_commands(mock_pcm_commands() & ~8);
 +    mock_pcm_ram[PCM_DRV_STATUS] |= 8;
 +    midi_dac_tick();
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(3)), BLOCK0 + 2);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(3)), 4);
 +    // Voice 0 frees: the second marked sample takes it, voice 3 keeps its loop.
-+    mock_pcm_ram[PCM_DRV_COMMAND] = 0;
++    mock_pcm_set_commands(0);
 +    __real_midi_note_on(dacChannel, key + 1, 100);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVADR(0)), (u16)((u32)(long)other >> 8));
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_WAVLEN(0)), 5);
@@ -10877,7 +11042,7 @@ index 0000000..ac8d524
 +    use_marked(&marked);
 +    mock_pcm_write16(PCM_DRV_NULLWAVADR, 0x77);
 +    __real_midi_note_on(dacChannel, key, 100);
-+    mock_pcm_ram[PCM_DRV_COMMAND] = 0;
++    mock_pcm_set_commands(0);
 +    __real_midi_note_off(dacChannel, key);
 +    assert_int_equal(mock_pcm_read16(PCM_DRV_IWAVADR(0)), 0x77);
 +    assert_int_equal(mock_pcm_waited_us, 4 * 130);
