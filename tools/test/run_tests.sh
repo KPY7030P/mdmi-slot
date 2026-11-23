@@ -115,6 +115,23 @@ code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "reg_test: exit $code"
 
+# Stage 58 (D99): the DAC loop of bars 111-114, one seed per fresh process (inside the run above a seed has
+# another history and does not repeat). The notes and the state's samples come from the owner's check set.
+# Seed 0 is the grid (the beats' levels); event 2, 7, 16 and moment 1 lost a start on 0.48.0; event 8, 18 and
+# moment 6, 10 played on after a stop on 0.49.0 before fix (C).
+echo "=== DAC loop seeds"
+if python -I "$WIN_ROOT/tools/live_probe_check.py" --notes > "$OUT/dac_loop_notes.log" 2>&1; then
+  for seed in "0" "2" "7" "16" "1 moment" "8" "18" "6 moment" "10 moment"; do
+    log="$OUT/dac_loop_$(echo "$seed" | tr ' ' '_').log"
+    timeout 120 ./reg_test.exe "$WIN_ROOT/tools/test/files" --dac-loop "$WIN_ROOT/build/stage58/notes-110-114.txt" --seed $seed > "$log" 2>&1
+    code=$?
+    grep -E "verdict" "$log"
+    [ "$code" = 0 ] || fail "DAC loop seed $seed: exit $code"
+  done
+else
+  fail "DAC loop: no notes from the check set (python tools/make_live_check.py first)"
+fi
+
 echo "=== knobs"
 log="$OUT/param_test.log"
 timeout 600 ./param_test.exe "MDMI Slot.clap" > "$log" 2>&1

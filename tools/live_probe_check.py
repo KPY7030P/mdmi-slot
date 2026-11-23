@@ -53,11 +53,11 @@ PLAN = [
 # sample early (-0.5 ms at 87.1).
 SOUND_DB, SILENCE_DB = -70, -90
 QUIET_TAIL = 0.01            # beats (5 ms) left off the end of a silent window: a note starts a sample early
-# Run е's one known defect until stage 58 (D97): on pass 7 the kick at 113.3 is more than 3 dB below pass 1, every
-# other beat of every pass within 3 dB. Exactly that is «известный дефект (этап 58)»; anything else fails.
-# Do not add a second one: a new defect is a failure and new work.
-KNOWN_LOOP = (7, (113 - 1) * BB + 2)
-KNOWN = 'ИЗВЕСТНЫЙ ДЕФЕКТ (этап 58)'
+# Run е prints the kick of 113.3 in every pass. Until stage 58 a lost kick there was a third outcome (D97); its
+# cause was MDMI's (D99), fixed in 0.49.0, so run е only passes or fails. A summary written before that may still
+# hold the old outcome, read as a pass when the verdicts are compared.
+KICK_BEAT = (113 - 1) * BB + 2
+OLD_KNOWN = 'ИЗВЕСТНЫЙ ДЕФЕКТ (этап 58)'
 MIN_WINDOW = 0.1            # beats; a shorter silent window after off is not measured
 EDGE = 0.05                  # beats (25 ms) left off each side of a beat when loop passes are compared
 ACT_LATE = 0.25              # beats; probe.py sends an action 20-40 ms (<0.1 beat at 120) after the point
@@ -445,7 +445,7 @@ def judge(run, code, out, crashes_before):
         files['beats'] = beat_table(main, sn, (a - 1) * BB, b * BB + 2 * BB)
         return not bad, bad, facts, seen, files
     if run.get('loop'):
-        files['known'] = loop_sound(run, lanes, sn, bad, facts)
+        loop_sound(run, lanes, sn, bad, facts)
     else:
         line_sound(run, main, sn, acts, bad, facts, seen, files)
     return not bad, bad, facts, seen, files
@@ -594,13 +594,11 @@ def loop_sound(run, lanes, sn, bad, facts):
             worst = max(worst, d)
             if d > 3:
                 off.append((p, l0 + k, r < r0, f'проход {p} доля {bar_beat(l0 + k)}: {r:.0f} против {r0:.0f} дБ'))
-    kb = KNOWN_LOOP[1] - l0
-    facts.append(f'целых проходов {len(full)}, худшая разница с первым {worst:.1f} дБ; доля {bar_beat(KNOWN_LOOP[1])} '
+    kb = KICK_BEAT - l0
+    facts.append(f'целых проходов {len(full)}, худшая разница с первым {worst:.1f} дБ; доля {bar_beat(KICK_BEAT)} '
                  'по проходам: ' + ' '.join('?' if pr[kb] is None else f'{pr[kb]:.0f}' for pr in passes))
     if not off:
         return None
-    if not bad and len(off) == 1 and off[0][:3] == (KNOWN_LOOP[0], KNOWN_LOOP[1], True):
-        return f'{off[0][3]} (D97)'
     bad.append('луп: ' + '; '.join(x[3] for x in off[:6]) + (f' (ещё {len(off) - 6})' if len(off) > 6 else ''))
     return None
 
@@ -641,7 +639,7 @@ def main():
         code, out = res
         open(os.path.join(OUT, run['name'] + '.log'), 'w', encoding='utf-8').write(out)
         ok, bad, facts, seen, files = judge(run, code, out, crashes)
-        if not ok or files.get('known'):       # the next run overwrites <name>.wav: keep what failed
+        if not ok:                             # the next run overwrites <name>.wav: keep what failed
             stamp = time.strftime('%Y%m%d-%H%M%S')
             for ext in ('.wav', '.log', '-notes.json'):
                 src = os.path.join(OUT, run['name'] + ext)
@@ -650,8 +648,7 @@ def main():
             if files.get('wav'):
                 files['wav'] = os.path.join(OUT, f'{run["name"]}-{stamp}.wav')
         v = f'{run["name"]} {run["what"]} ({run["bars"][0]}-{run["bars"][1]}): ' + \
-            (('ДЕФЕКТ: ' + '; '.join(bad)) if not ok else
-             f'{KNOWN}: {files["known"]}' if files.get('known') else 'ПРОШЁЛ')
+            (('ДЕФЕКТ: ' + '; '.join(bad)) if not ok else 'ПРОШЁЛ')
         verdicts.append(v)
         m = re.search(r'Live открыл набор за (\d+) с', out)
         lines += [v, '   ' + '; '.join(facts)]
@@ -675,8 +672,8 @@ def main():
 
 
 def outcome(verdict):
-    """A verdict line for the repeat comparison: the known defect counts as a pass (D97)."""
-    i = verdict.find(': ' + KNOWN)
+    """A verdict line for the repeat comparison: the old known defect of a summary before 0.49.0 counts as a pass."""
+    i = verdict.find(': ' + OLD_KNOWN)
     return verdict[:i] + ': ПРОШЁЛ' if i >= 0 else verdict
 
 

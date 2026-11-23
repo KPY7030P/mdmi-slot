@@ -653,9 +653,9 @@ the recording ends between the moment probe.py sent the delete and the device's 
 pulse and Live's closing are as in any run. In the loop, there must be one whole take per pass (`--passes` of
 them; a missing beat in any pass fails), the first pass is held to the set's notes like a straight
 run and the other passes to the first, beat by beat within 3 dB (beats without 0.05 beat at each edge: onsets move
-by up to ±25 ms between passes). Until stage 58 the loop has a third outcome, «известный дефект (этап 58)», for
-exactly one signature (pass 7, beat 113.3 more than 3 dB below pass 1, all else within 3 dB; `KNOWN_LOOP`, D97); it
-counts as a pass in the repeat comparison, and the 113.3 level of every pass is printed. Any probe.py exit code other than 0 fails the run, and its old `notes.json` is
+by up to ±25 ms between passes). The 113.3 level of every pass is printed. The third outcome of stages 57-58
+(«известный дефект», D97) is gone since 0.49.0 (D99); an older summary's line with it still counts as a pass when
+verdicts are compared. Any probe.py exit code other than 0 fails the run, and its old `notes.json` is
 removed first. `python tools/live_probe_check.py е` plays part of the plan: it writes `summary-part.txt` and compares
 with the same runs in the last full `summary.txt`, which stays. Exceptions (a note with no sound by design) are
 listed by beat with a reason. What it does not
@@ -696,7 +696,17 @@ hook for that.
 D99 in the ROM: `pcm_driver_own_commands` (after `pcm_driver_keep_loop_bits`) points each voice's `LD HL,COMMAND`
 before its `BIT`/`RES` at its own byte `COMMAND_V(v)` = $0130 + v (free RAM, the driver's `BLOCK $0200-$`); the ROM
 writes the byte whole. Every start waits in `VOICE_WAIT_COPY` until `midi_dac_tick` sees STATUS (or two frames with
-neither bit), so a voice mid-take is busy.
+neither bit), so a voice mid-take is busy. `voice_stop` stops by command: the null sample in WAVADR/WAVLEN, the loop
+bit off, `COMMAND_V(v)` set; it never writes the live IWAVADR, IWAVLEN or STATUS (the driver's block update writes them
+around a taken bus: a stop written there left IWAVADR null with the crash's 398 blocks, the 20:26 hang). A stop sounds
+up to a pass (16 ms) later.
+
+The permanent check (D99 addendum): `reg_test FILES --dac-loop NOTES --seed K [moment]` runs one seed, lockstep,
+and its print is the same to the byte in every fresh process (inside a longer run the seed has another history).
+`run_tests.sh` runs `live_probe_check.py --notes` and then nine seeds, each in its own process: 0 (the grid, the
+beats' levels count), event 2, 7, 16 and moment 1 (each lost a start alone on 0.48.0), event 8, 18 and moment 6, 10
+(each left IWAVADR null with a length alone on 0.49.0 before the stop by command). The verdict line counts (1), (2)
+and (4) in every seed and the beats' levels of seed 0 only.
 
 The version is `0.N.M+revision`. Up to 0.24.8, N was the stage in `docs/ROADMAP.md` and M the delivery; from
 stage 27 on, each stage simply takes the next version (0.24.9, 0.25.0, ...), not tied to its number. The revision
