@@ -616,7 +616,7 @@ engine's numbers.
 
 `run_tests.sh` also runs the ROM's own tests in Docker with `--privileged`: the image's address
 sanitizer needs address randomization off. `fetch_deps.sh` clones `third_party/` (or unpacks `vendor/<name>-<commit>.tar.gz` where there is one, as in the source release) and applies `patches/`; it also puts the ROM's samples into `third_party/mdmi/res/samples`. The builds in Docker run without network. The build runs it too and refuses to start if
-`third_party/` differs from `patches/`, so after changing code there, run `tools/save_patches.sh`. `run_tests.sh` exits with the number of failed checks. Plugins land in `build/cmake/out`.
+`third_party/` differs from `patches/`, so after changing code there, run `tools/save_patches.sh`. `run_tests.sh` exits with the number of failed checks. With arguments it runs only those groups (`rom hosts vst3 model registers dacloop knobs window`), for example `sh tools/test/run_tests.sh window`. A stage tests what it changed (owner, 2026-11-26): while working, the one test or `reg_test` flag that covers the change; at the end, once, the groups of the files it touched; the whole suite only when the engine, the ROM or code shared by several groups changed; nothing after a docs-only fix. Repeated runs (E7's five) only when the stage changes what they judge, compared against numbers already recorded rather than by re-running the old build. Plugins land in `build/cmake/out`.
 
 `install.sh` copies them to the folder you name, checks the hashes, and writes
 `BUILD.txt` there. It fails if Ableton Live has the VST3 locked. Live does not show plugin versions, so `BUILD.txt`

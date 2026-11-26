@@ -1,6 +1,8 @@
 #!/bin/sh
 # Runs the plugin through the headless hosts across rates, block sizes, modes and instance counts,
 # then the knob test. Exits with the number of failed checks, so 0 means everything passed.
+# Groups: rom hosts vst3 model registers dacloop knobs window. No arguments runs all of them;
+# `run_tests.sh window model` runs only those (CLAUDE.md: test what the stage changed).
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WIN_ROOT="$(cygpath -m "$ROOT")"
 OUT="$ROOT/build/test"
@@ -9,6 +11,8 @@ mkdir -p "$OUT"
 cp "$ROOT/build/cmake/out/CLAP/MDMI Slot.clap" "$ROOT/build/cmake/" && cd "$ROOT/build/cmake" || exit 1
 export MDMI_PLUGIN_STATS=1
 failures=0
+TEST_GROUPS="$*"
+want() { [ -z "$TEST_GROUPS" ] && return 0; case " $TEST_GROUPS " in *" $1 "*) return 0;; esac; return 1; }
 
 fail() {
   echo "FAIL: $*"
@@ -58,13 +62,16 @@ run() {
 
 # The ROM's own tests, with patches/0003 (D28). ASan of the image's gcc loops forever on today's
 # kernels unless address randomization is off, and setarch needs --privileged for that.
+if want rom; then
 echo "=== rom"
 log="$OUT/rom_test.log"
 MSYS_NO_PATHCONV=1 docker run --privileged --rm -v "$WIN_ROOT/third_party/mdmi:/app" -w /app mdmi-rom-build sh -c 'mkdir -p tests/bin && setarch x86_64 -R make test' > "$log" 2>&1
 code=$?
 grep -E "^\[  (PASSED|FAILED)" "$log"
 [ "$code" = 0 ] || fail "rom: make test exit $code"
+fi
 
+if want hosts; then
 run offline-48k 48000 128 offline 1
 run offline-44k 44100 512 offline 1
 run offline-96k 96000 256 offline 1
@@ -84,7 +91,9 @@ export MDMI_TEST_REACTIVATE=1; run reactivate 48000 128 realtime 1; unset MDMI_T
 export MDMI_TEST_CRASH=fatal; run crash-fatal 48000 128 realtime 1 dead
 export MDMI_TEST_CRASH=segv; run crash-segv 48000 128 realtime 1 dead
 export MDMI_TEST_CRASH=freeze; run crash-freeze 48000 128 realtime 1; unset MDMI_TEST_CRASH
+fi
 
+if want vst3; then
 echo "=== vst3"
 log="$OUT/vst3.log"
 timeout 60 ./vst3_host.exe "out/VST3/MDMI Slot.vst3" "$WIN_OUT/vst3" 48000 128 realtime > "$log" 2>&1
@@ -100,25 +109,31 @@ python -I "$WIN_ROOT/tools/test/check_wav.py" "$WIN_OUT/vst3.log" "$WIN_OUT/vst3
 echo "=== vst3 input"
 MDMI_TEST_INPUT=stereo timeout 60 ./vst3_host.exe "out/VST3/MDMI Slot.vst3" "$WIN_OUT/vst3-input" 48000 512 offline > "$OUT/vst3-input.log" 2>&1 || fail "vst3 input: host exit $?"
 python -I "$WIN_ROOT/tools/test/check_input.py" "$WIN_OUT/vst3-input-0.wav" || fail "vst3 input: the input bus doesn't reach the DAC"
+fi
 
+if want model; then
 echo "=== model"
 log="$OUT/patch_test.log"
 timeout 60 ./patch_test.exe "$WIN_ROOT/tools/test/files" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "patch_test: exit $code"
+fi
 
+if want registers; then
 echo "=== registers"
 log="$OUT/reg_test.log"
 timeout 600 ./reg_test.exe "$WIN_ROOT/tools/test/files" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "reg_test: exit $code"
+fi
 
 # Stage 58 (D99): the DAC loop of bars 111-114, one seed per fresh process (inside the run above a seed has
 # another history and does not repeat). The notes and the state's samples come from the owner's check set.
 # Seed 0 is the grid (the beats' levels); event 2, 7, 16 and moment 1 lost a start on 0.48.0; event 8, 18 and
 # moment 6, 10 played on after a stop on 0.49.0 before fix (C).
+if want dacloop; then
 echo "=== DAC loop seeds"
 if python -I "$WIN_ROOT/tools/live_probe_check.py" --notes > "$OUT/dac_loop_notes.log" 2>&1; then
   for seed in "0" "2" "7" "16" "1 moment" "8" "18" "6 moment" "10 moment"; do
@@ -131,14 +146,18 @@ if python -I "$WIN_ROOT/tools/live_probe_check.py" --notes > "$OUT/dac_loop_note
 else
   fail "DAC loop: no notes from the check set (python tools/make_live_check.py first)"
 fi
+fi
 
+if want knobs; then
 echo "=== knobs"
 log="$OUT/param_test.log"
 timeout 600 ./param_test.exe "MDMI Slot.clap" > "$log" 2>&1
 code=$?
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "param_test: exit $code"
+fi
 
+if want window; then
 echo "=== window"
 log="$OUT/gui.log"
 timeout 240 ./gui_test.exe "MDMI Slot.clap" "$WIN_OUT/gui" > "$log" 2>&1
@@ -154,6 +173,7 @@ code=$?
 unset MDMI_TEST_CRASH
 grep -E "FAIL|PASSED|FAILED" "$log"
 [ "$code" = 0 ] || fail "gui_test with a dead engine: exit $code"
+fi
 
 if [ "$failures" = 0 ]; then
   echo "ALL PASSED"
