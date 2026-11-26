@@ -8313,6 +8313,152 @@ static void undo_jump_experiment(void)
 	}
 }
 
+// Stage 62: the ROM holds the pitch that bend, Fine Tune and the arpeggio step move within the voice's
+// keys, once (midi.c): FM 11-106, a PSG tone 45-127, the noise on tone 3 0-79 (it writes the tone of
+// key + 48). A key the voice plays, moved past its keys, sounds on the edge key; a key outside them
+// stays silent as before. Bend Range is 2 here (the default), so a full bend is two keys.
+static void bend_to(int channel, int value)
+{
+	midi((uint8_t)(0xE0 | channel), (uint8_t)(value & 0x7F), (uint8_t)(value >> 7));
+}
+
+// A note held on an FM channel: the pitch register of its voice and whether it sounds.
+static uint16_t held_fm(int channel, int key, bool *sounds)
+{
+	midi((uint8_t)(0x90 | channel), (uint8_t)key, 127);
+	render(SETTLE_BLOCKS);
+	int voices[FM_CHANNELS];
+	const uint16_t pitch = pitch_of(voices_of(channel, voices) ? voices[0] : channel);
+	*sounds = loudest(4) > 0.05f;
+	midi((uint8_t)(0x80 | channel), (uint8_t)key, 0);
+	render(SETTLE_BLOCKS);
+	return pitch;
+}
+
+// A note held on a PSG channel: the tone of chip channel tone, and whether chip channel level sounds.
+static uint16_t held_psg(int channel, int key, int tone, int level, bool *sounds)
+{
+	midi((uint8_t)(0x90 | channel), (uint8_t)key, 127);
+	render(SETTLE_BLOCKS);
+	const uint16_t pitch = mdmi_engine_test_psg_tone(engine, (uint8_t)tone);
+	*sounds = mdmi_engine_test_psg_volume(engine, (uint8_t)level) < 15;
+	midi((uint8_t)(0x80 | channel), (uint8_t)key, 0);
+	render(SETTLE_BLOCKS);
+	return pitch;
+}
+
+static void test_pitch_edges(void)
+{
+	printf("  pitch at the keyboard's edges\n");
+	const int fm = 0, psg = FM_CHANNELS, noise = PATCH_NUM_CHANNELS - 1;
+	const int UP = 0x3FFF, DOWN = 0, CENTRE = 0x2000;
+	bool s1, s2, s3, s4;
+
+	// FM without a row: 106 and 12 bent past 11-106 play 106 and 11; 105 bent up while it sounds too.
+	static const int LOUD[4] = {10, 10, 10, 10};
+	sine_voice(fm, LOUD, 15, 0);
+	set_on(fm, PARAM_PORTA_ON, 0);
+	const uint16_t top = held_fm(fm, 106, &s1), bottom = held_fm(fm, 11, &s2);
+	bend_to(fm, UP);
+	const uint16_t up = held_fm(fm, 106, &s3);
+	bend_to(fm, DOWN);
+	const uint16_t down = held_fm(fm, 12, &s4);
+	bend_to(fm, CENTRE);
+	midi(0x90, 105, 127);
+	render(SETTLE_BLOCKS);
+	bend_to(fm, UP);
+	render(SETTLE_BLOCKS);
+	int voices[FM_CHANNELS];
+	const uint16_t moved = pitch_of(voices_of(fm, voices) ? voices[0] : fm);
+	const bool moved_sounds = loudest(4) > 0.05f;
+	midi(0x80, 105, 0);
+	render(SETTLE_BLOCKS);
+	printf("    FM: 106 %04X, 11 %04X; bent: 106 up %04X, 12 down %04X, 105 up while held %04X\n", top, bottom, up, down, moved);
+	checkf(s1 && s2 && s3 && s4 && moved_sounds && up == top && down == bottom && moved == top,
+		"FM without a row: 106 bent up and 105 bent up while it sounds play 106, 12 bent down plays 11, all sound");
+	// Keys 0-1 bent down: outside FM's keys, silent, as unbent.
+	bend_to(fm, DOWN);
+	held_fm(fm, 1, &s1);
+	held_fm(fm, 0, &s2);
+	bend_to(fm, CENTRE);
+	check(!s1 && !s2, "FM keys 0 and 1 bent down stay silent");
+
+	// PSG tone: key 46 bent down plays the lowest key, 45; key 1 bent down stays silent (the sum once
+	// passed under 0 and wrapped to the highest tone).
+	patch_envelope plain;
+	steady(&plain, 0, 2);
+	draw_on(psg, &plain);
+	draw_on(noise, &plain);
+	render(SETTLE_BLOCKS);
+	const uint16_t lowest = held_psg(psg, 45, 0, 0, &s1);
+	bend_to(psg, DOWN);
+	const uint16_t floor46 = held_psg(psg, 46, 0, 0, &s2);
+	held_psg(psg, 1, 0, 0, &s3);
+	held_psg(psg, 0, 0, 0, &s4);
+	bend_to(psg, CENTRE);
+	printf("    PSG 7: 45 tone %d; bent down: 46 tone %d%s, keys 0-1 %s\n", lowest, floor46, s2 ? "" : " silent", s3 || s4 ? "sound" : "silent");
+	check(s1 && s2 && floor46 == lowest && !s3 && !s4, "PSG tone: 46 bent down plays 45, keys 0 and 1 bent down stay silent");
+
+	// An arpeggio step below the floor: 50 with the row -12, 0 plays 45 and 50 by turns, and sounds.
+	const uint16_t key50 = plain_pitch(psg, 50);
+	patch_arp row = PATCH_ARP_EMPTY;
+	row.count = 2;
+	row.loop = 0;
+	row.steps[0] = -12;
+	row.steps[1] = 0;
+	patch_load_arp(patch, psg, &row, NULL);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	render(SETTLE_BLOCKS);
+	midi((uint8_t)(0x90 | psg), 50, 127);
+	render(4);
+	int on45 = 0, on50 = 0, silent = 0;
+	for (int t = 0; t < 48; t++) {
+		tick(200);
+		const uint16_t tone = mdmi_engine_test_psg_tone(engine, 0);
+		on45 += tone == lowest;
+		on50 += tone == key50;
+		silent += mdmi_engine_test_psg_volume(engine, 0) == 15;
+	}
+	midi((uint8_t)(0x80 | psg), 50, 0);
+	render(SETTLE_BLOCKS);
+	patch_load_arp(patch, psg, &PATCH_ARP_EMPTY, NULL);
+	patch_take_incoming(patch);
+	patch_sync(patch, &patch->rom, emit, NULL);
+	render(SETTLE_BLOCKS);
+	printf("    PSG 7, 50 with the row -12, 0 over 12 frames: 45 in %d, 50 in %d, silent in %d of 48 looks\n", on45, on50, silent);
+	check(on45 >= 16 && on50 >= 16 && silent == 0, "PSG tone: an arpeggio step under 45 plays 45, the note sounds throughout");
+
+	// The noise on tone 3: 78 and 79 bent up play 79, 0 and 1 bent down play 0, all sound. A bend after
+	// Note Off and a key the noise refuses (80) then write no tone.
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_PERIODIC);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_TONE3);
+	sync_and_settle();
+	const uint16_t n79 = held_psg(noise, 79, 2, 3, &s1), n0 = held_psg(noise, 0, 2, 3, &s2);
+	bend_to(noise, UP);
+	const uint16_t u78 = held_psg(noise, 78, 2, 3, &s3), u79 = held_psg(noise, 79, 2, 3, &s4);
+	printf("    noise on tone 3: 79 tone %d, 0 tone %d; bent up: 78 %d%s, 79 %d%s\n", n79, n0, u78, s3 ? "" : " silent", u79, s4 ? "" : " silent");
+	check(s1 && s2 && s3 && s4 && u78 == n79 && u79 == n79, "noise on tone 3: 78 and 79 bent up sound on 79");
+	bend_to(noise, DOWN);
+	const uint16_t d0 = held_psg(noise, 0, 2, 3, &s1), d1 = held_psg(noise, 1, 2, 3, &s2);
+	printf("    bent down: 0 %d%s, 1 %d%s\n", d0, s1 ? "" : " silent", d1, s2 ? "" : " silent");
+	check(s1 && s2 && d0 == n0 && d1 == n0, "noise on tone 3: 0 and 1 bent down sound on 0");
+	// Key 0 unbent leaves tone 855 behind, which the tone of 80 bent up (key 127's) would change.
+	bend_to(noise, CENTRE);
+	held_psg(noise, 0, 2, 3, &s1);
+	const uint16_t before = mdmi_engine_test_psg_tone(engine, 2);
+	bend_to(noise, UP);
+	render(SETTLE_BLOCKS);
+	held_psg(noise, 80, 2, 3, &s1);
+	const uint16_t after = mdmi_engine_test_psg_tone(engine, 2);
+	printf("    after Note Off: tone %d, after a bend and key 80 %d%s\n", before, after, s1 ? ", 80 sounds" : "");
+	check(!s1 && after == before, "noise on tone 3: a bend after Note Off and the refused key 80 write no tone");
+	bend_to(noise, CENTRE);
+	set_global(GLOBAL_NOISE_TYPE, PATCH_NOISE_WHITE);
+	set_global(GLOBAL_NOISE_RATE, PATCH_NOISE_RATE_HIGH);
+	sync_and_settle();
+}
+
 int main(int argc, char **argv)
 {
 	if (argc > 1) {
@@ -8607,6 +8753,14 @@ int main(int argc, char **argv)
 		meter_measure();
 		return 0;
 	}
+	if (argc == 3 && !strcmp(argv[2], "--edges")) {
+		// Stage 62: the pitch at the keyboard's edges, alone.
+		full_velocity();
+		test_reset();
+		test_pitch_edges();
+		printf("%s: %d failed\n", failures ? "FAILED" : "PASSED", failures);
+		return failures;
+	}
 	if (argc == 3 && !strcmp(argv[2], "--screen")) {
 		// Stage 24a: the screen's test alone, while its timing is worked on.
 		test_screen();
@@ -8708,6 +8862,9 @@ int main(int argc, char **argv)
 	test_env_speed();
 	test_reset();
 	test_wave_show();
+	// Stage 62 after the last: its blocks come after every judge and every test of history.
+	test_reset();
+	test_pitch_edges();
 	const float wait_last = mdmi_engine_test_take_owner_wait(engine);
 	const float wait_no_restart = wait_last > owner_wait_max ? wait_last : owner_wait_max;
 	mdmi_engine_stats stats = mdmi_engine_get_stats(engine);

@@ -92,6 +92,27 @@ def add_clip(t, name, start, length, notes, color, program=-1):
         ET.SubElement(kt, 'MidiKey', Value=str(pitch))
     c.find('Notes/NoteIdGenerator/NextId').set('Value', str(nid))
     events.append(c)
+    return c
+
+def bend_clip(t, c, points):
+    """Stage 62: a clip envelope of the track's pitch bend (ControllerTargets.0), Live's -8192..8191;
+    points: (time from clip start, value), straight lines between them."""
+    target = t.find('DeviceChain/MainSequencer/MidiControllers/ControllerTargets.0').get('Id')
+    envs = c.find('Envelopes/Envelopes')
+    env = ET.SubElement(envs, 'ClipEnvelope', Id=str(len(envs)))
+    ET.SubElement(ET.SubElement(env, 'EnvelopeTarget'), 'PointeeId', Value=target)
+    auto = ET.SubElement(env, 'Automation')
+    ev = ET.SubElement(auto, 'Events')
+    ET.SubElement(ev, 'FloatEvent', Id='0', Time='-63072000', Value=str(points[0][1]))
+    for n, (time, value) in enumerate(points, 1):
+        ET.SubElement(ev, 'FloatEvent', Id=str(n), Time=repr(float(time)), Value=str(value))
+    tv = ET.SubElement(auto, 'AutomationTransformViewState')
+    ET.SubElement(tv, 'IsTransformPending', Value='false')
+    ET.SubElement(tv, 'TimeAndValueTransforms')
+    ET.SubElement(ET.SubElement(env, 'LoopSlot'), 'Value')
+    st = ET.SubElement(env, 'ScrollerTimePreserver')
+    ET.SubElement(st, 'LeftTime', Value='0')
+    ET.SubElement(st, 'RightTime', Value='0')
 
 def configure_param(t, slot, name, pid, visual):
     p = t.findall('DeviceChain/DeviceChain/Devices/PluginDevice/ParameterList/PluginFloatParameter')[slot]
@@ -392,6 +413,32 @@ add_clip(lanes[5], '13 DAC вкл: барабаны со второй доли',
 add_clip(lanes[5], '13 DAC вкл: остановите Play здесь', F0 + 3 * BAR, BAR, kit + [(48, 0, 4)], 60)
 start = F0 + 4 * BAR
 
+# --- stage 62: the pitch at the keyboard's edges, one clamp in the ROM (bars 121-124) ---
+# Bars 119-120 stay empty: run а of tools/live_probe_check.py plays 1-118 and judges two bars of tail
+# after it as silence.
+# Bend Range 2 (the default): a full bend is two keys. Each bent note gets its bend just before it and
+# the bend goes back to the middle before the clip ends, so nothing stays bent for the rest of the set.
+# 121 K1 FM: 106 plain; 106 bent up (0.50 silent); 105 bent up while it sounds (0.50 jumped to a wrong,
+# low note). 122 K7 PSG: 45 plain; 46 bent down plays 45 (0.50 silent); 1 bent down stays silent (0.50
+# squealed on the highest tone). 123-124 K10 noise on tone 3, periodic (automation): 79 plain; 79 and
+# 78 bent up play 79 (0.50: 79 silent); 80 silent as before; 0 plain; 0 and 1 bent down play 0 (0.50 silent).
+P0 = start + 2 * BAR
+UP, DOWN = 8191, -8192
+c = add_clip(lanes[0], '14 FM край 106: изгиб вверх', P0, BAR, [(106, 0, 0.9), (106, 1, 0.9), (105, 2, 1.9)], 26)
+bend_clip(lanes[0], c, [(0, 0), (0.95, 0), (0.95, UP), (1.95, UP), (1.95, 0), (2.2, 0), (3.2, UP), (3.95, UP), (3.95, 0)])
+c = add_clip(psg[6], '14 PSG край 45: изгиб вниз', P0 + BAR, BAR, [(45, 0, 0.9), (46, 1, 0.9), (1, 2, 0.9)], 21)
+bend_clip(psg[6], c, [(0, 0), (0.95, 0), (0.95, DOWN), (2.95, DOWN), (2.95, 0)])
+c = add_clip(psg[9], '14 шум от тона 3: край 79 вверх', P0 + 2 * BAR, BAR, [(79, 0, 0.9), (79, 1, 0.9), (78, 2, 0.9), (80, 3, 0.9)], 23)
+bend_clip(psg[9], c, [(0, 0), (0.95, 0), (0.95, UP), (2.95, UP), (2.95, 0)])
+c = add_clip(psg[9], '14 шум от тона 3: край 0 вниз', P0 + 3 * BAR, BAR, [(0, 0, 0.9), (0, 1, 0.9), (1, 2, 0.9)], 23)
+bend_clip(psg[9], c, [(0, 0), (0.95, 0), (0.95, DOWN), (2.95, DOWN), (2.95, 0)])
+# The noise periodic on tone 3 for 123-124, white at the top rate (the defaults) before and after.
+nt = configure_param(mdmi_t, 6, 'Noise Type', 7, 5)
+nr = configure_param(mdmi_t, 7, 'Noise Rate', 8, 6)
+automate_points(mdmi_t, nt, [(0, 1.0), (P0 + 2 * BAR, 1.0), (P0 + 2 * BAR, 0.0), (P0 + 4 * BAR, 0.0), (P0 + 4 * BAR, 1.0)])
+automate_points(mdmi_t, nr, [(0, 0.0), (P0 + 2 * BAR, 0.0), (P0 + 2 * BAR, 0.75), (P0 + 4 * BAR, 0.75), (P0 + 4 * BAR, 0.0)])
+start = P0 + 4 * BAR
+
 for t in all_tracks: tracks.remove(t)
 for t in new_tracks + returns: tracks.append(t)
 for sc in ls.find('Scenes'):
@@ -458,6 +505,18 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               в 111, но первый удар на второй доле. В начале 117, до первого удара, справа в строке 6 имя
               последнего барабана 114 такта (хет), а не сэмпла клавиш нот 115-116; картинка (щелчок по
               окошку OUT) тоже хет. Остановите Play в 118 (во время тарелки): квадратики гаснут.
+  119-120     пусто: хвост проверки Live (tools/live_probe_check.py), тишина.
+  121-124 этап 62, высота на краях клавиатуры. Изгиб (pitch bend) нарисован в клипах, Bend Range 2:
+              полный изгиб это две клавиши. Нота, сдвинутая за край, звучит на краю; клавиша за краем молчит.
+              121 К1 FM: 1-я доля самая высокая нота FM (106, A#7), 2-я та же с изгибом вверх: звучит так же
+              (в 0.50 молчала). 3-4 доли нота 105 плавно изгибается вверх и встаёт на 106 (в 0.50 в конце
+              прыгала на чужую низкую ноту).
+              122 К7 PSG: 1-я доля самая низкая нота PSG (45, A2), 2-я нота 46 с изгибом вниз: звучит как 45
+              (в 0.50 молчала). 3-я доля клавиша 1 с изгибом вниз: тишина (в 0.50 визжал самый высокий тон).
+              123-124 К10 шум, автоматизация ставит Noise Type Periodic и Rate Tone 3: шум звучит нотой.
+              123: 1-я доля 79 (верх шума от тона 3), 2-я 79 с изгибом вверх и 3-я 78 с изгибом вверх звучат
+              как 1-я (в 0.50 2-я молчала); 4-я доля 80: тишина, так и было. 124: 1-я доля 0 (низ),
+              2-я 0 и 3-я 1 с изгибом вниз звучат как 1-я (в 0.50 молчали). После 124 шум снова белый.
 
 Этап 55, без тактов (руками, по docs/owner-check-55-56.md): рядом с проектом лежит «Большая бочка из игры.wav»
 (копия бочки ROM с длинным русским именем). Бросьте его из проводника на клавишу страницы DAC: имя в сетке,

@@ -234,7 +234,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..849095b 100644
+index 5145b6a..25593f1 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -1,3 +1,4 @@
@@ -335,7 +335,7 @@ index 5145b6a..849095b 100644
  }
  
  static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
-@@ -401,12 +432,50 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+@@ -401,12 +432,73 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
      return findFreeChannel(midiChan);
  }
  
@@ -350,25 +350,29 @@ index 5145b6a..849095b 100644
 +    return devChan->ops == &PSG_VTable && !midi_psg_plays_key(devChan->num);
 +}
 +
-+// The row's step is added after bend and fine tune. FM is held within the keys it can play; PSG
-+// holds the tone itself, it only has to stay within a key byte.
-+static PitchCents arp_shift(DeviceChannel* devChan, PitchCents pc)
++// MDMI plugin fork, stage 62: the keys a voice sounds. FM plays 11-106, a PSG channel says its own.
++// False for the DAC, whose key picks the sample, and for channel 3's operators in OPS, which hold
++// their note plus Semi and Fine within 11-106 themselves.
++static bool key_range(DeviceChannel* devChan, u8* min, u8* max)
 +{
-+    const s16 MAX_PSG_PITCH_CENTS = 127 * 100;
++    if (devChan->ops == &FM_VTable) {
++        *min = MIN_MIDI_PITCH;
++        *max = MAX_MIDI_PITCH;
++        return true;
++    }
++    if (devChan->ops == &PSG_VTable) {
++        midi_psg_key_range(devChan->num, min, max);
++        return true;
++    }
++    return false;
++}
 +
-+    if (devChan->arp.count == 0 || !arp_applies(devChan)) {
-+        return pc;
-+    }
-+    bool fm = devChan->ops == &FM_VTable;
-+    s16 min = fm ? MIN_MIDI_PITCH * 100 : 0;
-+    s16 max = fm ? MAX_MIDI_PITCH * 100 : MAX_PSG_PITCH_CENTS;
-+    s16 total = pc.pitch * 100 + pc.cents + devChan->arp.steps[devChan->arpStep] * 100;
-+    if (total < min) {
-+        total = min;
-+    } else if (total > max) {
-+        total = max;
-+    }
-+    return (PitchCents) { .pitch = total / 100, .cents = total % 100 };
++// Whether the key played lies within the voice's keys. A voice refuses a key outside them, whatever
++// bend, fine tune or the arpeggio step would move it to (stage 62).
++static bool key_in_range(DeviceChannel* devChan)
++{
++    u8 min, max;
++    return !key_range(devChan, &min, &max) || (devChan->pitch >= min && devChan->pitch <= max);
 +}
 +
  static PitchCents effectivePitchCents(DeviceChannel* devChan)
@@ -380,14 +384,35 @@ index 5145b6a..849095b 100644
 +        return key;
 +    }
      MidiChannel* midiChannel = &midiChannels[devChan->midiChannel];
-     PitchCents pc
-         = pc_bend(devChan->pitch, devChan->cents, devChan->pitchBend, midiChannel->pitchBendRange);
+-    PitchCents pc
+-        = pc_bend(devChan->pitch, devChan->cents, devChan->pitchBend, midiChannel->pitchBendRange);
 -    return pc_shift(pc, midiChannel->fineTune);
-+    return arp_shift(devChan, pc_shift(pc, midiChannel->fineTune));
++    u8 min, max;
++    if (!key_range(devChan, &min, &max)) {
++        PitchCents pc = pc_bend(
++            devChan->pitch, devChan->cents, devChan->pitchBend, midiChannel->pitchBendRange);
++        return pc_shift(pc, midiChannel->fineTune);
++    }
++    // Stage 62: bend, fine tune and the arpeggio step (stage 20) add up in cents, and the sum is held
++    // within the voice's keys once, here. In cents of s32: the three can pass 32767 together.
++    PitchCents range = midiChannel->pitchBendRange;
++    s32 total = devChan->pitch * 100 + devChan->cents
++        + ((s32)(devChan->pitchBend - MIDI_PITCH_BEND_CENTRE) * (range.pitch * 100 + range.cents))
++            / 8192
++        + midiChannel->fineTune;
++    if (devChan->arp.count != 0 && arp_applies(devChan)) {
++        total += devChan->arp.steps[devChan->arpStep] * 100;
++    }
++    if (total < min * 100) {
++        total = min * 100;
++    } else if (total > max * 100) {
++        total = max * 100;
++    }
++    return (PitchCents) { .pitch = total / 100, .cents = total % 100 };
  }
  
  static void set_downstream_pitch(DeviceChannel* devChan)
-@@ -415,8 +484,28 @@ static void set_downstream_pitch(DeviceChannel* devChan)
+@@ -415,9 +507,33 @@ static void set_downstream_pitch(DeviceChannel* devChan)
      devChan->ops->pitch(devChan->num, pc.pitch, pc.cents);
  }
  
@@ -408,15 +433,21 @@ index 5145b6a..849095b 100644
 +
  static void set_downstream_note_on(DeviceChannel* devChan, u8 velocity)
  {
+-    PitchCents pc = effectivePitchCents(devChan);
 +    arp_start(devChan);
 +    // Stage 21: every new attack of the chosen channel resets the LFO before its key goes on.
 +    if (devChan->ops == &FM_VTable && devChan->midiChannel + 1 == lfoResetChannel) {
 +        synth_reset_lfo();
 +    }
-     PitchCents pc = effectivePitchCents(devChan);
++    // Stage 62: the key played decides whether the voice sounds; a key outside its keys goes down
++    // unmoved, and the voice refuses it as it always did.
++    PitchCents pc = key_in_range(devChan)
++        ? effectivePitchCents(devChan)
++        : (PitchCents) { .pitch = devChan->pitch, .cents = devChan->cents };
      devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
  }
-@@ -446,7 +535,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+ 
+@@ -446,7 +562,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -440,7 +471,7 @@ index 5145b6a..849095b 100644
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
              return;
-@@ -462,14 +567,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -462,14 +594,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      reapply_program_if_channel_was_formerly_percussive(devChan, midiChan);
@@ -469,7 +500,7 @@ index 5145b6a..849095b 100644
  static bool is_single_voice_channel(u8 midiChan, bool playing)
  {
      u8 count = 0;
-@@ -483,20 +602,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,20 +629,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -515,7 +546,7 @@ index 5145b6a..849095b 100644
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
                  handledRetrigger = true;
-@@ -510,6 +651,8 @@ void midi_note_off(u8 chan, u8 pitch)
+@@ -510,6 +678,8 @@ void midi_note_off(u8 chan, u8 pitch)
  static void dev_chan_note_on(DeviceChannel* devChan, u8 pitch, u8 velocity)
  {
      devChan->noteOn = true;
@@ -524,7 +555,7 @@ index 5145b6a..849095b 100644
      devChan->cents = 0;
      devChan->pitch = pitch;
      set_downstream_note_on(devChan, velocity);
-@@ -519,6 +662,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
+@@ -519,6 +689,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
  {
      devChan->noteOn = false;
      devChan->pitch = 0;
@@ -534,7 +565,7 @@ index 5145b6a..849095b 100644
      devChan->ops->noteOff(devChan->num, pitch);
  }
  
-@@ -606,9 +752,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +779,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -547,7 +578,7 @@ index 5145b6a..849095b 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +798,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +825,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -626,7 +657,7 @@ index 5145b6a..849095b 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -675,7 +889,7 @@ static void store_program(const u8* data, u16 length)
+@@ -675,7 +916,7 @@ static void store_program(const u8* data, u16 length)
              fmPreset.operators[i].ssgEg = data[16 + i * 11];
          }
          midi_fm_store_preset(program, &fmPreset);
@@ -635,7 +666,7 @@ index 5145b6a..849095b 100644
          break;
      }
      default:
-@@ -692,7 +906,7 @@ static void clear_program(const u8* data, u16 length)
+@@ -692,7 +933,7 @@ static void clear_program(const u8* data, u16 length)
      switch (type) {
      case STORE_PROGRAM_TYPE_FM:
          midi_fm_clear_preset(program);
@@ -644,7 +675,7 @@ index 5145b6a..849095b 100644
          break;
      default:
          log_warn("Invalid clear program type: %d", type);
-@@ -811,9 +1025,9 @@ static void dump_preset_request(const u8* data, u16 length)
+@@ -811,9 +1052,9 @@ static void dump_preset_request(const u8* data, u16 length)
          const FmPreset* preset = midi_fm_get_stored_preset(program);
          if (preset != NULL) {
              send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
@@ -656,7 +687,7 @@ index 5145b6a..849095b 100644
          }
          break;
      }
-@@ -841,7 +1055,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1082,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -665,7 +696,7 @@ index 5145b6a..849095b 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1212,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1239,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -774,7 +805,7 @@ index 5145b6a..849095b 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1531,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1558,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -783,7 +814,7 @@ index 5145b6a..849095b 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1558,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1585,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -815,7 +846,7 @@ index 5145b6a..849095b 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1265,6 +1596,18 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1265,6 +1623,18 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_PORTAMENTO_ENABLE:
          set_portamento_mode(chan, RANGE(value, 2));
          break;
@@ -834,7 +865,7 @@ index 5145b6a..849095b 100644
      case CC_FINE_TUNE:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1654,12 @@ void midi_reset(void)
+@@ -1311,11 +1681,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -849,15 +880,14 @@ index 5145b6a..849095b 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1683,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1710,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;
 -    set_downstream_pitch(chan);
 +    return true;
- }
- 
--static void process_portamento(void)
++}
++
 +// MDMI plugin fork, stage 20: one step of the row per frame while the key is held. True when the
 +// shift changed.
 +static bool process_channel_arp(DeviceChannel* chan)
@@ -876,8 +906,9 @@ index 5145b6a..849095b 100644
 +    s8 before = arp->steps[chan->arpStep];
 +    chan->arpStep = next;
 +    return arp->steps[next] != before;
-+}
-+
+ }
+ 
+-static void process_portamento(void)
 +// Portamento and the arpeggio row write a voice's pitch at most once per frame between them.
 +static void process_pitch(void)
  {
@@ -1734,7 +1765,7 @@ index c1b1091..b1e782e 100644
  void midi_fm_sm_program(u8 chan, u8 program);
 -void midi_fm_sm_all_notes_off(u8 chan);
 diff --git a/src/midi_psg.c b/src/midi_psg.c
-index 82a5655..9313278 100644
+index 82a5655..e515542 100644
 --- a/src/midi_psg.c
 +++ b/src/midi_psg.c
 @@ -1,6 +1,7 @@
@@ -2070,7 +2101,7 @@ index 82a5655..9313278 100644
  static u16 tone_for_midi_key(u8 midiKey)
  {
      const u16* tones = SYS_isPAL() ? TONES_PAL : TONES_NTSC;
-@@ -310,6 +492,53 @@ static MidiPsgChannel* psg_channel(u8 chan)
+@@ -310,10 +492,96 @@ static MidiPsgChannel* psg_channel(u8 chan)
      return &psgChannels[chan];
  }
  
@@ -2121,10 +2152,22 @@ index 82a5655..9313278 100644
 +    set_noise(noiseType, rate > NOISE_RATE_KIT ? NOISE_RATE_KIT : rate);
 +}
 +
++// MDMI plugin fork, stage 62: the keys a channel sounds now; midi.c holds a note moved by bend, fine
++// tune or the arpeggio step within them. The noise on tone 3 writes the tone of key + 48, so up to 79.
++void midi_psg_key_range(u8 chan, u8* min, u8* max)
++{
++    *min = chan == NOISE_CHAN ? 0 : MIN_MIDI_KEY;
++    *max = chan == NOISE_CHAN && noiseRate == PSG_NOISE_FREQ_TONE3 ? MAX_NOISE_TONE3_KEY : MAX_MIDI_KEY;
++}
++
  void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
  {
      MidiPsgChannel* psgChan = psg_channel(chan);
-@@ -317,3 +546,30 @@ void midi_psg_pitch(u8 chan, u8 pitch, s8 cents)
++    // Stage 62: a channel that sounds no note writes no tone; its next note writes its own.
++    if (!psgChan->noteOn) {
++        return;
++    }
+     psgChan->pitch = pitch;
      psgChan->cents = cents;
      apply_tone(psgChan, envelope_tone(psgChan));
  }
@@ -2156,7 +2199,7 @@ index 82a5655..9313278 100644
 +    return psgChannels[chan].noteOn ? psgChannels[chan].envelopeStep : NULL;
 +}
 diff --git a/src/midi_psg.h b/src/midi_psg.h
-index e5bb02e..81fbffa 100644
+index e5bb02e..2d6bb22 100644
 --- a/src/midi_psg.h
 +++ b/src/midi_psg.h
 @@ -9,6 +9,8 @@
@@ -2176,7 +2219,7 @@ index e5bb02e..81fbffa 100644
  void midi_psg_note_on(u8 chan, u8 pitch, s8 cents, u8 velocity);
  void midi_psg_note_off(u8 chan, u8 pitch);
  void midi_psg_all_notes_off(u8 chan);
-@@ -23,5 +26,20 @@ void midi_psg_channel_volume(u8 chan, u8 volume);
+@@ -23,5 +26,22 @@ void midi_psg_channel_volume(u8 chan, u8 volume);
  void midi_psg_program(u8 chan, u8 program);
  void midi_psg_pan(u8 chan, u8 pan);
  void midi_psg_tick(u16 delta);
@@ -2188,6 +2231,8 @@ index e5bb02e..81fbffa 100644
 +void midi_psg_noise_type(u8 white);
 +void midi_psg_noise_rate(u8 rate);
 +bool midi_psg_plays_key(u8 chan);
++// MDMI plugin fork, stage 62: the keys a channel sounds now, for midi.c's one clamp of the pitch.
++void midi_psg_key_range(u8 chan, u8* min, u8* max);
 +// MDMI plugin fork, stage 24a: the attenuation and tone period written to a channel, for the screen.
 +u8 midi_psg_attenuation(u8 chan);
 +u16 midi_psg_tone(u8 chan);
@@ -8597,7 +8642,7 @@ index 63c9e86..4025683 100644
  void test_dump_preset_to_callee(void** state);
  void test_dump_channel_parameters_to_callee(void** state);
 diff --git a/tests/unit/main.c b/tests/unit/main.c
-index d2449c4..899bdc5 100644
+index d2449c4..cafd964 100644
 --- a/tests/unit/main.c
 +++ b/tests/unit/main.c
 @@ -5,7 +5,10 @@
@@ -8669,7 +8714,7 @@ index d2449c4..899bdc5 100644
          midi_test(test_midi_sysex_inverts_total_level_values),
          midi_test(test_midi_sysex_sets_original_total_level_values),
          midi_test(test_midi_sysex_writes_directly_to_ym2612_regs_part_0),
-@@ -226,10 +252,55 @@ int main(void)
+@@ -226,10 +252,57 @@ int main(void)
          midi_test(test_midi_sets_pitch_bend_sensitivity_with_odd_ordering),
          midi_test(test_midi_logs_invalid_rpn_upon_data_entry),
          midi_test(test_midi_psg_supports_extreme_pitch_bend_sensitivity),
@@ -8677,6 +8722,8 @@ index d2449c4..899bdc5 100644
 +        midi_test(test_midi_psg_noise_starts_white_at_the_highest_rate),
 +        midi_test(test_midi_psg_noise_mode_only_on_midi_10),
 +        midi_test(test_midi_psg_noise_on_tone3_plays_the_note),
++        midi_test(test_midi_psg_noise_on_tone3_bent_at_the_edges),
++        midi_test(test_midi_psg_bent_keys_at_the_floor),
 +        midi_test(test_midi_psg_noise_on_tone3_keeps_channel_3),
 +        midi_test(test_midi_psg_noise_switched_to_tone3_while_sounding),
 +        midi_test(test_midi_psg_noise_envelope_pitch_goes_through_tone3),
@@ -8727,7 +8774,7 @@ index d2449c4..899bdc5 100644
  
          pitchcents_test(test_pitchcents_shift_extreme_up),
          pitchcents_test(test_pitchcents_bend_nil),
-@@ -249,6 +320,9 @@ int main(void)
+@@ -249,6 +322,9 @@ int main(void)
  
          midi_pcm_test(test_midi_enables_dac),
          midi_pcm_test(test_midi_disables_dac),
@@ -8737,7 +8784,7 @@ index d2449c4..899bdc5 100644
  
          synth_test(test_synth_init_sets_initial_registers),
          synth_test(test_synth_sets_note_on_fm_reg_chan_0_to_2),
-@@ -312,7 +386,22 @@ int main(void)
+@@ -312,7 +388,22 @@ int main(void)
              test_synth_sets_ch3_special_mode_op_tl_only_if_output_operator, INT_PTR(7)),
          synth_test(test_synth_enables_dac),
          synth_test(test_synth_disables_dac),
@@ -8760,7 +8807,7 @@ index d2449c4..899bdc5 100644
          synth_test(test_releases_Z80_bus_per_write_when_pcm_driver_loaded),
  
          comm_test(test_comm_reads_from_serial_when_ready),
-@@ -380,8 +469,10 @@ int main(void)
+@@ -380,8 +471,10 @@ int main(void)
          dynamic_midi_test(test_midi_static_mode_plays_correct_note_off_after_multiple_notes_played),
  
          log_test(test_log_info_writes_to_log_buffer),
@@ -8771,7 +8818,7 @@ index d2449c4..899bdc5 100644
          log_test(test_log_stores_multiple_logs_and_overwrites_older),
          log_test(
              test_log_returns_null_when_no_more_logs_are_available_to_be_dequeued),
-@@ -440,6 +531,69 @@ int main(void)
+@@ -440,6 +533,69 @@ int main(void)
          midi_portamento_test(test_midi_portamento_sets_portamento_time_to_maximum),
          midi_portamento_test(test_midi_portamento_default_portamento_time_set),
          midi_portamento_test(test_midi_portamento_glides_with_fine_tune),
@@ -11617,7 +11664,7 @@ index 892e0c2..d6704b4 100644
 +void test_midi_note_stack_keeps_a_held_note_after_another_raised(UNUSED void** state);
 +void test_midi_portamento_keeps_a_held_note_after_another_raised(UNUSED void** state);
 diff --git a/tests/unit/test_midi_psg.c b/tests/unit/test_midi_psg.c
-index affbb29..fcdd57b 100644
+index affbb29..10c3eb7 100644
 --- a/tests/unit/test_midi_psg.c
 +++ b/tests/unit/test_midi_psg.c
 @@ -1,7 +1,15 @@
@@ -11803,7 +11850,7 @@ index affbb29..fcdd57b 100644
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state)
  {
      const u8 chan = MIN_PSG_CHAN;
-@@ -428,4 +520,348 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
+@@ -428,4 +520,386 @@ void test_midi_psg_supports_extreme_pitch_bend_sensitivity(UNUSED void** state)
  
      expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
      __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
@@ -11888,6 +11935,44 @@ index affbb29..fcdd57b 100644
 +    __real_midi_note_off(NOISE_MIDI_CHAN, 36);
 +
 +    __real_midi_note_on(NOISE_MIDI_CHAN, 80, MAX_MIDI_VOLUME);
++}
++
++// Stage 62: the bent pitch is held within the keys the channel sounds, once in midi.c. On tone 3 key
++// 79 bent up plays key 79 (the tone of key 127), key 0 bent down key 0 (the tone of key 48).
++void test_midi_psg_noise_on_tone3_bent_at_the_edges(UNUSED void** state)
++{
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    __real_midi_cc(NOISE_MIDI_CHAN, CC_NOISE_RATE, 96);
++
++    __real_midi_pitch_bend(NOISE_MIDI_CHAN, MIDI_PITCH_BEND_MAX);
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    expect_psg_tone(PSG_CH3, 8);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, 79, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(NOISE_MIDI_CHAN, 79);
++
++    // A bend after Note Off writes no tone; the next note writes its own.
++    __real_midi_pitch_bend(NOISE_MIDI_CHAN, MIDI_PITCH_BEND_MIN);
++    expect_psg_noise(PSG_NOISE_TYPE_WHITE, PSG_NOISE_FREQ_TONE3);
++    expect_psg_tone(PSG_CH3, 855);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(NOISE_MIDI_CHAN, 0, MAX_MIDI_VOLUME);
++    expect_psg_attenuation(PSG_NOISE_CH4, PSG_ATTENUATION_SILENCE);
++    __real_midi_note_off(NOISE_MIDI_CHAN, 0);
++}
++
++// Stage 62: the key played decides whether a tone channel sounds. Key 1 bent down stays silent (the
++// sum once passed under 0 and played the highest tone); key 46 bent down plays the lowest key, 45.
++void test_midi_psg_bent_keys_at_the_floor(UNUSED void** state)
++{
++    __real_midi_pitch_bend(MIDI_CHANNEL_7, MIDI_PITCH_BEND_MIN);
++    __real_midi_note_on(MIDI_CHANNEL_7, 1, MAX_MIDI_VOLUME);
++    __real_midi_note_off(MIDI_CHANNEL_7, 1);
++
++    expect_psg_tone(PSG_CH1, TONE_NTSC_A2);
++    expect_psg_attenuation(PSG_CH1, PSG_ATTENUATION_LOUDEST);
++    __real_midi_note_on(MIDI_CHANNEL_7, 46, MAX_MIDI_VOLUME);
 +}
 +
 +void test_midi_psg_noise_on_tone3_keeps_channel_3(UNUSED void** state)
@@ -12155,7 +12240,7 @@ index affbb29..fcdd57b 100644
 +    __real_midi_psg_tick();
 +}
 diff --git a/tests/unit/test_midi_psg.h b/tests/unit/test_midi_psg.h
-index bfb01a6..1e95a6e 100644
+index bfb01a6..073ed41 100644
 --- a/tests/unit/test_midi_psg.h
 +++ b/tests/unit/test_midi_psg.h
 @@ -18,6 +18,13 @@ void test_midi_psg_pitch_bend_persists_after_tick(UNUSED void** state);
@@ -12172,7 +12257,7 @@ index bfb01a6..1e95a6e 100644
  void test_midi_psg_envelope_with_only_end_flag_is_silent(UNUSED void** state);
  void test_midi_psg_envelope_with_loop_end_continues_playing_after_note_off(UNUSED void** state);
  void test_midi_psg_envelope_with_loop_end_resets_release_note_after_note_silenced(
-@@ -26,4 +33,22 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
+@@ -26,4 +33,24 @@ void test_midi_shifts_semitone_in_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_upper_limit_psg_envelope(UNUSED void** state);
  void test_midi_pitch_shift_handles_lower_limit_psg_envelope(UNUSED void** state);
  void test_midi_loads_psg_envelope(UNUSED void** state);
@@ -12187,6 +12272,8 @@ index bfb01a6..1e95a6e 100644
 +void test_midi_psg_noise_starts_white_at_the_highest_rate(UNUSED void** state);
 +void test_midi_psg_noise_mode_only_on_midi_10(UNUSED void** state);
 +void test_midi_psg_noise_on_tone3_plays_the_note(UNUSED void** state);
++void test_midi_psg_noise_on_tone3_bent_at_the_edges(UNUSED void** state);
++void test_midi_psg_bent_keys_at_the_floor(UNUSED void** state);
 +void test_midi_psg_noise_on_tone3_keeps_channel_3(UNUSED void** state);
 +void test_midi_psg_noise_switched_to_tone3_while_sounding(UNUSED void** state);
 +void test_midi_psg_noise_envelope_pitch_goes_through_tone3(UNUSED void** state);
