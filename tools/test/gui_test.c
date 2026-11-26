@@ -2186,19 +2186,25 @@ static void stage61(HWND window, const char *dir)
 	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 	capture(window);
 	bool library_name = false;
+	int library_y = 0;
 	for (int row = 0; row < 18 && !library_name; row++) {
-		library_name = says(250, 92 + row * 20 + 3, 2, "Biblioteka zvukov dlya igry pro kos", COLOR_TEXT) && !says(250, 92 + row * 20 + 3, 2, "Biblioteka zvukov dlya igry pro kosm", COLOR_TEXT);
+		library_y = 92 + row * 20;
+		library_name = says(250, library_y + 3, 2, "Biblioteka zvukov dlya igry pro kos", COLOR_TEXT) && !says(250, library_y + 3, 2, "Biblioteka zvukov dlya igry pro kosm", COLOR_TEXT);
 	}
 	save_bmp(dir, "stage61-library-list");
-	// A click outside the choice closes it.
-	click(window, 120, 470);
+	// Chosen, it opens in list B: its bar holds 12 characters (was Biblio, 12 bytes).
+	click(window, 400, library_y + 10);
 	run_ms(50);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	const bool library_bar = library_name && says(530, 59, 2, "Biblioteka z", COLOR_TEXT);
+	save_bmp(dir, "stage61-library-bar");
 	click(window, BUTTON_EDITOR_X, BUTTON_Y);
 	run_ms(50);
 	delete_utf8_file(library);
-	CHECK(copy_hint && place_name && rail_name && library_name,
-		"stage 61: a Russian name by whole letters: the copy hint whole (%d), the BANK place at 13 (%d), the rail at 13 (%d), the library choice at 35 (%d)",
-		copy_hint, place_name, rail_name, library_name);
+	CHECK(copy_hint && place_name && rail_name && library_name && library_bar,
+		"stage 61: a Russian name by whole letters: the copy hint whole (%d), the BANK place at 13 (%d), the rail at 13 (%d), the library choice at 35 (%d), its bar at 12 (%d)",
+		copy_hint, place_name, rail_name, library_name, library_bar);
 
 	// 4. LOAD closed by Cancel: its hint at once, the mouse where it was.
 	SetEnvironmentVariableA("MDMI_TEST_LOAD", "cancel");

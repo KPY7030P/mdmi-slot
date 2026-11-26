@@ -5362,7 +5362,8 @@ static void draw_list_bar(mdmi_gui *g, int list, bool envelopes)
 		fill(g, x, BANK_BAR_Y, w, BANK_BAR_H, C_CELL);
 	}
 	char label[64];
-	snprintf(label, sizeof(label), "%.*s", (w - 30) / 12, rom ? "ROM BANK" : shows_new(g, list) ? "NO LIBRARY" : l->name);
+	// Stage 61: by whole letters, not bytes.
+	fit_text(rom ? "ROM BANK" : shows_new(g, list) ? "NO LIBRARY" : l->name, label, sizeof(label), w - 30, 2);
 	text(g, x + 10, BANK_BAR_Y + 3, label, open ? C_BG : shows_new(g, list) ? C_LABEL : C_TEXT, 2);
 	if (rom && !open) {
 		text_right(g, right - 22, BANK_BAR_Y + 7, "PLAYS", envelopes ? C_PSG : C_FM_LIGHT, 1, 60);
@@ -5544,7 +5545,7 @@ static void draw_library_list(mdmi_gui *g, const patch_values *values, int list,
 		}
 		fill(g, x, y + BANK_ROW_H - 1, right - x, 1, C_CELL);
 		const int room = hover == place ? (right - 44 - x - 12) / 12 : chars;
-		snprintf(buffer, sizeof(buffer), "%.*s", room < chars ? room : chars, place_name(&l->bank, envelopes, place));
+		fit_text(place_name(&l->bank, envelopes, place), buffer, sizeof(buffer), (room < chars ? room : chars) * 12, 2);
 		text(g, x + 8, y + 3, buffer, C_TEXT, 2);
 		if (flash && g->flash_color == C_ERROR) {
 			frame(g, x, y, right - x, BANK_ROW_H - 1, C_ERROR);
