@@ -3377,6 +3377,42 @@ static void test_libraries(void)
 		}
 	}
 
+	// Stage 61: a full library's message fits the footer whole at its two widths (44, 42 with -dirty):
+	// the Russian name gives way, the end stays.
+	{
+		char full[LIBRARY_PATH];
+		library_path(folder, "\xD0\x91\xD0\xB8\xD0\xB1\xD0\xBB\xD0\xB8\xD0\xBE\xD1\x82\xD0\xB5\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB2\xD1\x83\xD0\xBA\xD0\xBE\xD0\xB2 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xBF\xD1\x80\xD0\xBE \xD0\xBA\xD0\xBE\xD1\x81\xD0\xBC\xD0\xBE\xD1\x81 \xD0\xB8 \xD0\xBC\xD0\xBE\xD1\x80\xD0\xB5.mdbank", full, sizeof(full));
+		static patch_bank packed;
+		patch_bank_rom(&packed);
+		for (int place = 0; place < PATCH_BANK_SIZE; place++) {
+			packed.place_arps[place].count = 1;
+		}
+		size_t full_size;
+		uint8_t *full_bytes = state_bank_build(&packed, &full_size);
+		wchar_t wide_full[LIBRARY_PATH];
+		MultiByteToWideChar(CP_UTF8, 0, full, -1, wide_full, LIBRARY_PATH);
+		FILE *f = _wfopen(wide_full, L"wb");
+		const bool written = f && fwrite(full_bytes, 1, full_size, f) == full_size;
+		if (f) {
+			fclose(f);
+		}
+		free(full_bytes);
+		static const char END[] = "clear a sound first";
+		bool fits = written;
+		char said[2][FILES_MESSAGE] = {"", ""};
+		const int widths[2] = {44, 42};
+		for (int i = 0; i < 2; i++) {
+			files.message_chars = widths[i];
+			files_spot from = {NULL, 0}, to = {full, -1};
+			const bool refused = !files_copy_place(&files, false, &from, &to, NULL, said[i], sizeof(said[i]));
+			const size_t length = strlen(said[i]);
+			fits = fits && refused && (int)length <= widths[i] && length > strlen(END) && !strcmp(said[i] + length - strlen(END), END);
+		}
+		files.message_chars = 0;
+		CHECK(fits, "stage 61: a full library's message fits 44 and 42 characters whole: \"%s\" / \"%s\"", said[0], said[1]);
+		DeleteFileW(wide_full);
+	}
+
 	// The ROM bank's place into a library: the bank and the channels stay.
 	CHECK(open_file(&files, files_dir, "Thunder Guitar 03.tyi", 0, 9, message), "a TYI in place 10: %s", message);
 	const patch_arp row = {.count = 2, .loop = -1, .steps = {0, 7}};

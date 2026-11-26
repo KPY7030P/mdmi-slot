@@ -158,6 +158,7 @@
 #define ARP_SWITCH_X 676
 #define ARP_SWITCH_Y 92
 #define ACTION_STORE_X 500
+#define ACTION_LOAD_X 536
 #define COLOR_LINE 0x444444
 #define COLOR_HINT 0x666666
 // Stage 21 (docs/design/ch3-ops.md): LFO and LFO RESET in the strip, the segments of CH3 NOTES,
@@ -2076,6 +2077,178 @@ static void pump_ms(int ms)
 // Stage 56: the waves are this showing's and fresh. Channel 8 holds a note on ALL (main, from the
 // check of its OUT box on): a stopped host draws it flat after 100 ms; ALL opened again, and the window closed and opened,
 // with the channel silent show no pixel of the wave before; hidden and shown keeps it.
+// Stage 61: a UTF-8 path's file with these bytes.
+static void write_utf8_file(const char *path, const uint8_t *bytes, size_t size)
+{
+	wchar_t wide[MAX_PATH];
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH);
+	FILE *f = _wfopen(wide, L"wb");
+	if (f) {
+		fwrite(bytes, 1, size, f);
+		fclose(f);
+	}
+}
+
+static void delete_utf8_file(const char *path)
+{
+	wchar_t wide[MAX_PATH];
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH);
+	DeleteFileW(wide);
+}
+
+// Stage 61: a file held over a point of the window, not let go: whether the footer says text then.
+static bool hover_says(HWND window, const char *path, int x, int y, const char *text, uint32_t color, const char *dir, const char *frame)
+{
+	wchar_t wide[MAX_PATH];
+	const int chars = MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH);
+	test_data data = {{&data_vtable}, GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DROPFILES) + (chars + 1) * sizeof(wchar_t))};
+	DROPFILES *files = GlobalLock(data.files);
+	files->pFiles = sizeof(DROPFILES);
+	files->fWide = TRUE;
+	memcpy((uint8_t *)files + sizeof(DROPFILES), wide, chars * sizeof(wchar_t));
+	GlobalUnlock(data.files);
+	IDropTarget *target = GetPropA(window, "OleDropTargetInterface");
+	POINT screen = {x, y};
+	ClientToScreen(window, &screen);
+	const POINTL point = {screen.x, screen.y};
+	DWORD effect = DROPEFFECT_COPY;
+	bool said = false;
+	if (target) {
+		target->lpVtbl->DragEnter(target, &data.iface, MK_LBUTTON, point, &effect);
+		effect = DROPEFFECT_COPY;
+		target->lpVtbl->DragOver(target, MK_LBUTTON, point, &effect);
+		capture(window);
+		said = footer_says(text, color);
+		save_bmp(dir, frame);
+		target->lpVtbl->DragLeave(target);
+	}
+	GlobalFree(data.files);
+	return said;
+}
+
+// Stage 61 (ROADMAP "Этап 61"): Russian names cut by whole letters to the room in pixels, a cancelled
+// LOAD gives the hint back at once, a long .tyi name with a dot inside keeps its whole stem.
+static void stage61(HWND window, const char *dir)
+{
+	char temp[MAX_PATH];
+	GetTempPathA(MAX_PATH, temp);
+	click(window, BUTTON_EDITOR_X, BUTTON_Y);
+	run_ms(100);
+	// Шумящий жук.tfi (11 letters, Shumyashiy zhuk) on channel 2.
+	char tfi[MAX_PATH];
+	snprintf(tfi, sizeof(tfi), "%s\xD0\xA8\xD1\x83\xD0\xBC\xD1\x8F\xD1\x89\xD0\xB8\xD0\xB9 \xD0\xB6\xD1\x83\xD0\xBA.tfi", temp);
+	static const uint8_t tfi_bytes[42] = {4, 0};
+	write_utf8_file(tfi, tfi_bytes, sizeof(tfi_bytes));
+	drop_file(window, tfi, RAIL_X, RAIL_CH2_Y);
+	run_ms(200);
+	// 1. Channel 1's row held over channel 2: the hint names what it replaces whole (was Shumyashi).
+	const int ch1_y = RAIL_CH1_TOP + 20;
+	SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(RAIL_X, ch1_y));
+	SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, ch1_y + 20));
+	SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, RAIL_CH2_Y));
+	capture(window);
+	const bool copy_hint = footer_says("COPY CH1 TO CH2, REPLACES Shumyashiy zhuk", COLOR_AMBER);
+	save_bmp(dir, "stage61-copy-hint");
+	// Let go on channel 1 itself: nothing is copied.
+	SendMessageA(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(RAIL_X, ch1_y));
+	SendMessageA(window, WM_LBUTTONUP, 0, MAKELPARAM(RAIL_X, ch1_y));
+	run_ms(50);
+	// 2. Channel 2 stored into its place: list A of BANK cuts the name on a letter at 13 (was Shumyashi).
+	click(window, RAIL_X, RAIL_CH2_Y);
+	run_ms(50);
+	click(window, ACTION_STORE_X, BUTTON_Y);
+	run_ms(100);
+	click(window, BUTTON_BANK_X, BUTTON_Y);
+	run_ms(150);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	bool place_name = false;
+	for (int row = 0; row < 18 && !place_name; row++) {
+		place_name = says(290, 92 + row * 20 + 3, 2, "Shumyashiy zh", COLOR_TEXT);
+	}
+	// The rail's row 2 too (13 characters, it was Shumyashi as well).
+	const bool rail_name = says(54, RAIL_CH1_TOP + ROW_H + 5, 2, "Shumyashiy zh", COLOR_TEXT);
+	save_bmp(dir, "stage61-place-name");
+	click(window, ACTION_UNDO_X, BUTTON_Y);
+	run_ms(100);
+	// 3. A library named in Russian (37 letters), open in no list: the choice of list B shows 35 characters.
+	char library[MAX_PATH];
+	snprintf(library, sizeof(library), "%s\\\xD0\x91\xD0\xB8\xD0\xB1\xD0\xBB\xD0\xB8\xD0\xBE\xD1\x82\xD0\xB5\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB2\xD1\x83\xD0\xBA\xD0\xBE\xD0\xB2 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xBF\xD1\x80\xD0\xBE \xD0\xBA\xD0\xBE\xD1\x81\xD0\xBC\xD0\xBE\xD1\x81.mdbank", banks_dir);
+	// A library of its own first: NEW in list B's choice writes First.mdbank (MDMI_TEST_NEW), its bytes
+	// copied under the Russian name, whatever the steps before left in the folder.
+	click(window, BUTTON_BANK_X, BUTTON_Y);
+	run_ms(100);
+	click(window, 600, 66);
+	run_ms(50);
+	click(window, 270, 92 + 10);
+	run_ms(100);
+	static uint8_t bank_bytes[1 << 17];
+	const size_t bank_size = read_file(new_bank, bank_bytes, sizeof(bank_bytes));
+	write_utf8_file(library, bank_bytes, bank_size);
+	wchar_t wide_library[MAX_PATH];
+	MultiByteToWideChar(CP_UTF8, 0, library, -1, wide_library, MAX_PATH);
+	printf("    stage 61: First.mdbank %zu bytes, the Russian copy %s\n", bank_size, GetFileAttributesW(wide_library) != INVALID_FILE_ATTRIBUTES ? "written" : "missing");
+	click(window, 600, 66);
+	run_ms(50);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	bool library_name = false;
+	int library_y = 0;
+	for (int row = 0; row < 18 && !library_name; row++) {
+		library_y = 92 + row * 20;
+		library_name = says(250, library_y + 3, 2, "Biblioteka zvukov dlya igry pro kos", COLOR_TEXT) && !says(250, library_y + 3, 2, "Biblioteka zvukov dlya igry pro kosm", COLOR_TEXT);
+	}
+	save_bmp(dir, "stage61-library-list");
+	// Chosen, it opens in list B: its bar holds 12 characters (was Biblio, 12 bytes).
+	click(window, 400, library_y + 10);
+	run_ms(50);
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	capture(window);
+	const bool library_bar = library_name && says(530, 59, 2, "Biblioteka z", COLOR_TEXT);
+	save_bmp(dir, "stage61-library-bar");
+	click(window, BUTTON_EDITOR_X, BUTTON_Y);
+	run_ms(50);
+	delete_utf8_file(library);
+	CHECK(copy_hint && place_name && rail_name && library_name && library_bar,
+		"stage 61: a Russian name by whole letters: the copy hint whole (%d), the BANK place at 13 (%d), the rail at 13 (%d), the library choice at 35 (%d), its bar at 12 (%d)",
+		copy_hint, place_name, rail_name, library_name, library_bar);
+
+	// 4. LOAD closed by Cancel: its hint at once, the mouse where it was.
+	SetEnvironmentVariableA("MDMI_TEST_LOAD", "cancel");
+	_putenv("MDMI_TEST_LOAD=cancel");
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ACTION_LOAD_X + 20, BUTTON_Y));
+	click(window, ACTION_LOAD_X + 20, BUTTON_Y);
+	SetEnvironmentVariableA("MDMI_TEST_LOAD", NULL);
+	_putenv("MDMI_TEST_LOAD=");
+	capture(window);
+	const bool load_hint = footer_says("LOAD: file to CH", COLOR_LABEL);
+	save_bmp(dir, "stage61-load-cancelled");
+	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
+	CHECK(load_hint, "stage 61: after a cancelled LOAD the footer gives LOAD's hint without a move of the mouse");
+
+	// 5. Бас v1.2 and 40 letters .tyi over channel 3: the hint keeps v1.2 (was Bas v1 > CH3); dropped, it loads.
+	char tyi_from[MAX_PATH], tyi[MAX_PATH];
+	GetFullPathNameA("..\\..\\tools\\test\\files\\Thunder Guitar 03.tyi", MAX_PATH, tyi_from, NULL);
+	static uint8_t tyi_bytes[4096];
+	const size_t tyi_size = read_file(tyi_from, tyi_bytes, sizeof(tyi_bytes));
+	int at = snprintf(tyi, sizeof(tyi), "%s\xD0\x91\xD0\xB0\xD1\x81 v1.2 ", temp);
+	for (int i = 0; i < 8; i++) {
+		at += snprintf(tyi + at, sizeof(tyi) - (size_t)at, "\xD0\xB0\xD0\xB1\xD0\xB2\xD0\xB3\xD0\xB4");
+	}
+	snprintf(tyi + at, sizeof(tyi) - (size_t)at, ".tyi");
+	write_utf8_file(tyi, tyi_bytes, tyi_size);
+	const int ch3_y = RAIL_CH3_TOP + 20;
+	const bool tyi_hint = hover_says(window, tyi, RAIL_X, ch3_y, "Bas v1.2 abvgd", COLOR_AMBER, dir, "stage61-tyi-hint");
+	drop_file(window, tyi, RAIL_X, ch3_y);
+	run_ms(200);
+	capture(window);
+	const bool tyi_loaded = footer_says("Loaded Bas v1.2 ", COLOR_TEXT);
+	save_bmp(dir, "stage61-tyi-loaded");
+	delete_utf8_file(tyi);
+	delete_utf8_file(tfi);
+	CHECK(tyi_size > 0 && tyi_hint && tyi_loaded, "stage 61: a .tyi of 40 Russian letters and a dot inside: the hint keeps Bas v1.2 (%d), it loads (%d)", tyi_hint, tyi_loaded);
+}
+
 static void stage56_fresh(HWND *window, const clap_plugin_gui_t *gui, HWND parent, const char *dir)
 {
 	const DWORD took = GetTickCount();
@@ -4923,6 +5096,7 @@ int main(int argc, char **argv)
 		run_ms(800);
 
 		window = stage55(window, gui, parent, argv[2]);
+		stage61(window, argv[2]);
 
 		// A host may destroy our parent before telling us, then attach the same view again.
 		DestroyWindow(parent);

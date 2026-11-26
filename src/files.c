@@ -128,6 +128,29 @@ static const char *letters(const char *name, char *out, size_t size, int chars)
 	return out;
 }
 
+// Stage 61: the letters a name gets in a message whose other text takes rest characters: what the
+// footer's width leaves (message_chars, from the window), at least 4; without a window the fallback.
+// The DAC's sample messages keep 40 and 30: their names are stage 63's.
+static int name_room(const mdmi_files *files, int rest, int fallback)
+{
+	if (files->message_chars <= 0) {
+		return fallback;
+	}
+	const int room = files->message_chars - rest;
+	return room < 4 ? 4 : room;
+}
+
+// How many characters a name takes in the footer: its transliteration's (stage 61).
+static int shown_length(const char *name)
+{
+	char shown[FILES_MESSAGE * 2];
+	names_ascii(name, shown, sizeof(shown));
+	return (int)strlen(shown);
+}
+
+// What an undo step's text has before it in the footer: "Undone: ", "Redone: " (files_undo, files_redo).
+#define STEP_PREFIX 8
+
 static const char *base_of(const char *path)
 {
 	const char *base = path;
@@ -1073,7 +1096,7 @@ static bool read_spot(mdmi_files *files, bool envelopes, const files_spot *spot,
 // place had. Nothing changes if the file can't be read as a bank or written.
 // *place < 0: the first empty place of the fresh file where the sound doesn't read as empty (a GM
 // sound on its own GM place would), set to where it went.
-static bool write_library_place(const char *path, bool envelopes, int *place, const place_sound *sound, place_sound *before, bool *was_empty, char *message, size_t size)
+static bool write_library_place(const mdmi_files *files, const char *path, bool envelopes, int *place, const place_sound *sound, place_sound *before, bool *was_empty, char *message, size_t size)
 {
 	char name[LIBRARY_NAME];
 	library_name(path, name, sizeof(name));
@@ -1096,7 +1119,7 @@ static bool write_library_place(const char *path, bool envelopes, int *place, co
 	}
 	if (*place < 0) {
 		char shown[48];
-		snprintf(message, size, "%s is full to 128: clear a sound first", letters(name, shown, sizeof(shown), 40));
+		snprintf(message, size, "%s is full to 128: clear a sound first", letters(name, shown, sizeof(shown), name_room(files, (int)strlen(" is full to 128: clear a sound first"), 40)));
 		free(bank);
 		return false;
 	}
@@ -1121,7 +1144,9 @@ static void remember_library(mdmi_files *files, bool envelopes, const char *path
 	library_name(path, name, sizeof(name));
 	// Stage 37: a place that was empty goes back to empty, not to the GM sound it holds then (22c).
 	char shown[48];
-	snprintf(files->now.text, sizeof(files->now.text), "%s %d back to %s", letters(name, shown, sizeof(shown), 40), place + 1, was_empty ? "empty" : sound_name(before, envelopes));
+	const char *back = was_empty ? "empty" : sound_name(before, envelopes);
+	const int rest = STEP_PREFIX + snprintf(NULL, 0, " %d back to ", place + 1) + shown_length(back);
+	snprintf(files->now.text, sizeof(files->now.text), "%s %d back to %s", letters(name, shown, sizeof(shown), name_room(files, rest, 40)), place + 1, back);
 }
 
 // A sound into a place of the ROM bank or of a library, with its undo step.
@@ -1139,20 +1164,21 @@ static bool put_spot(mdmi_files *files, bool envelopes, const files_spot *to, co
 	}
 	place_sound before;
 	bool was_empty;
-	if (!write_library_place(to->library, envelopes, landed, sound, &before, &was_empty, message, size)) {
+	if (!write_library_place(files, to->library, envelopes, landed, sound, &before, &was_empty, message, size)) {
 		return false;
 	}
 	remember_library(files, envelopes, to->library, *landed, &before, was_empty);
 	return true;
 }
 
-static void spot_name(const files_spot *spot, char *out, size_t size)
+// The place's name in a message whose other text takes rest characters (stage 61).
+static void spot_name(const mdmi_files *files, const files_spot *spot, int rest, char *out, size_t size)
 {
 	char name[LIBRARY_NAME];
 	if (spot->library) {
 		library_name(spot->library, name, sizeof(name));
 		char shown[48];
-		snprintf(out, size, "%s %d", letters(name, shown, sizeof(shown), 40), spot->place + 1);
+		snprintf(out, size, "%s %d", letters(name, shown, sizeof(shown), name_room(files, rest + snprintf(NULL, 0, " %d", spot->place + 1), 40)), spot->place + 1);
 	} else {
 		snprintf(out, size, "bank %d", spot->place + 1);
 	}
@@ -1266,7 +1292,7 @@ bool files_copy_place(mdmi_files *files, bool envelopes, const files_spot *from,
 	}
 	char where[64];
 	const files_spot there = {to->library, went};
-	spot_name(&there, where, sizeof(where));
+	spot_name(files, &there, shown_length(sound_name(&sound, envelopes)) + (int)strlen(" to "), where, sizeof(where));
 	snprintf(message, size, "%s to %s", sound_name(&sound, envelopes), where);
 	return true;
 }
@@ -1289,7 +1315,7 @@ bool files_clear_place(mdmi_files *files, bool envelopes, const files_spot *spot
 		return false;
 	}
 	char where[64];
-	spot_name(spot, where, sizeof(where));
+	spot_name(files, spot, (int)strlen(" emptied"), where, sizeof(where));
 	snprintf(message, size, "%s emptied", where);
 	return true;
 }
@@ -1415,14 +1441,14 @@ static bool apply_step(mdmi_files *files, char *message, size_t size)
 		char why[FILES_MESSAGE];
 		int place = target;
 		bool now_empty;
-		if (!write_library_place(path, envelopes, &place, &back, &now, &now_empty, why, sizeof(why))) {
+		if (!write_library_place(files, path, envelopes, &place, &back, &now, &now_empty, why, sizeof(why))) {
 			char name[LIBRARY_NAME];
 			library_name(path, name, sizeof(name));
 			wchar_t wide[LIBRARY_PATH];
 			const bool gone = MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, LIBRARY_PATH) && GetFileAttributesW(wide) == INVALID_FILE_ATTRIBUTES;
 			if (gone) {
 				char shown[48];
-				snprintf(message, size, "Can't undo: %s is gone", letters(name, shown, sizeof(shown), 40));
+				snprintf(message, size, "Can't undo: %s is gone", letters(name, shown, sizeof(shown), name_room(files, (int)strlen("Can't undo:  is gone"), 40)));
 			} else {
 				snprintf(message, size, "Can't undo: %s", why);
 			}
