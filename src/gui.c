@@ -131,6 +131,8 @@ static const int GRID_X[4] = {242, 358, 474, 590};
 #define BANK_ROWS 18
 #define BANK_BOTTOM (BANK_Y + BANK_ROWS * BANK_ROW_H)
 #define BANK_RIGHT 692
+// A dragged row's or channel's name at the mouse: 13 characters of size 2 (stage 61).
+#define LABEL_ROOM (13 * 12)
 #define LIST_A_RIGHT 504
 #define LIST_A_SCROLL 506
 #define LIST_A_BAR_RIGHT 512
@@ -471,7 +473,8 @@ struct mdmi_gui {
 	bool dac_drop_wave;
 	bool drop_envelopes;
 	char file_paths[PATCH_BANK_SIZE][MAX_PATH * 3];
-	char file_name[64];
+	// The first named file's name in its path (stage 61: never cut before its extension is seen).
+	const char *file_name;
 	char file_stem[64];
 	int drop_channel;
 	int drop_place;
@@ -608,12 +611,20 @@ static uint32_t on_fill(const mdmi_gui *g)
 	return g->sp ? C_BG : C_TEXT;
 }
 
+// Text as the window draws it, cut to room pixels at a scale by whole letters of its transliteration
+// (names_fit; stage 61: every place the window cuts a name, never by bytes); its width in pixels.
+static int fit_text(const char *utf8, char *out, size_t size, int room, int scale)
+{
+	names_fit(utf8, out, size, room / (6 * scale));
+	return (int)strlen(out) * 6 * scale;
+}
+
 // Text ending at the right edge, cut to the room it has by whole letters (names_fit, stage 55).
 static void text_right(mdmi_gui *g, int right, int y, const char *string, uint32_t color, int scale, int room)
 {
 	char cut[64];
-	names_fit(string, cut, sizeof(cut), room / (6 * scale));
-	text(g, right - (int)strlen(cut) * 6 * scale, y, cut, color, scale);
+	const int width = fit_text(string, cut, sizeof(cut), room, scale);
+	text(g, right - width, y, cut, color, scale);
 }
 
 static void button(mdmi_gui *g, int x, int w, const char *label, bool on)
@@ -867,7 +878,9 @@ static void draw_row(mdmi_gui *g, const patch_values *values, int channel)
 	if (dac) {
 		text(g, BAR_X, y + 5, "DAC Samples", INK(C_TEXT), 2);
 	} else {
-		snprintf(buffer, sizeof(buffer), "%.*s%s", special && patch_ch3_ops(values) ? SPECIAL_NAME_CHARS : 13, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
+		// Stage 61: by whole letters, not bytes; the * after it.
+		const int width = fit_text(sound_name(values, channel), buffer, sizeof(buffer) - 1, (special && patch_ch3_ops(values) ? SPECIAL_NAME_CHARS : 13) * 12, 2);
+		snprintf(buffer + width / 12, sizeof(buffer) - (size_t)(width / 12), "%s", sound_changed(g, values, channel) ? "*" : "");
 		text(g, BAR_X, y + 5, buffer, INK(taken ? C_HINT : C_TEXT), 2);
 	}
 #undef INK
@@ -1757,7 +1770,8 @@ static void draw_page_top(mdmi_gui *g, const patch_values *values)
 	// Channel 3 in Ch3 Special Mode has its number light FM, as in the rail.
 	text(g, PAGE_X, 30, buffer, is_special(values, channel) ? C_FM_LIGHT : noise_takes(values, channel) ? C_LINE : C_TEXT, 3);
 	if (takes_files(values, channel)) {
-		snprintf(buffer, sizeof(buffer), "%.*s%s", NAME_CHARS, sound_name(values, channel), sound_changed(g, values, channel) ? "*" : "");
+		const int width = fit_text(sound_name(values, channel), buffer, sizeof(buffer) - 1, NAME_CHARS * 12, 2);
+		snprintf(buffer + width / 12, sizeof(buffer) - (size_t)(width / 12), "%s", sound_changed(g, values, channel) ? "*" : "");
 		text(g, NAME_X, 34, buffer, C_TEXT, 2);
 	}
 }
@@ -5030,7 +5044,9 @@ static void draw_footer(mdmi_gui *g)
 		const int to = copy_target(g), over = row_at(g, g->mouse_x, g->mouse_y);
 		const bool fm = channel_is_fm(g->copy_from);
 		if (to >= 0) {
-			snprintf(buffer, sizeof(buffer), "COPY CH%d TO CH%d, REPLACES %.13s", g->copy_from + 1, to + 1, sound_name(patch_view(g->source.patch), to));
+			// Stage 61: the name gets what the footer leaves after the words, by whole letters.
+			const int at = snprintf(buffer, sizeof(buffer), "COPY CH%d TO CH%d, REPLACES ", g->copy_from + 1, to + 1);
+			fit_text(sound_name(patch_view(g->source.patch), to), buffer + at, sizeof(buffer) - (size_t)at, (footer_chars(g) - at) * 12, 2);
 			footer_text(g, buffer, C_AMBER);
 		} else if (over == g->copy_from) {
 			footer_text(g, fm ? "DROP ON ANOTHER FM ROW" : "DROP ON ANOTHER PSG ROW", C_LABEL);
@@ -5437,7 +5453,8 @@ static void draw_rom_list(mdmi_gui *g, const patch_values *values, bool envelope
 		fill(g, BANK_X, y + BANK_ROW_H - 1, LIST_A_RIGHT - BANK_X, 1, place % 8 == 7 ? C_LINE : C_CELL);
 		snprintf(buffer, sizeof(buffer), "%d", place + 1);
 		text_right(g, 284, y + 3, buffer, target ? C_BG : selected ? C_TEXT : C_LABEL, 2, 40);
-		snprintf(buffer, sizeof(buffer), "%.13s", place_name(bank, envelopes, place));
+		// Stage 61: up to the channels' marks, 4 px short of the first.
+		fit_text(place_name(bank, envelopes, place), buffer, sizeof(buffer), LIST_A_RIGHT - n * 8 - 4 - 290, 2);
 		text(g, 290, y + 3, buffer, target ? C_BG : from_file ? C_TEXT : C_LABEL, 2);
 		for (int c = first_channel; c < last_channel; c++) {
 			if (!takes_files(values, c) || values->channels[c][PARAM_PRESET] != place) {
@@ -5635,9 +5652,10 @@ static void draw_chooser(mdmi_gui *g, bool envelopes)
 				fill(g, BANK_X + 4, y, BANK_RIGHT - BANK_X - 4, BANK_ROW_H - 1, C_CELL);
 				fill(g, BANK_X, y, 4, BANK_ROW_H - 1, C_TEXT);
 			}
-			snprintf(buffer, sizeof(buffer), "%.30s", name);
-			text(g, 250, y + 3, buffer, elsewhere ? C_LINE : bad ? C_ERROR : C_TEXT, 2);
 			const char *note = elsewhere ? (g->chooser ? "IN LEFT" : "IN RIGHT") : bad ? "CAN'T READ" : here ? "OPEN" : "";
+			// Stage 61: up to the note at the right, 6 px short of it.
+			fit_text(name, buffer, sizeof(buffer), BANK_RIGHT - 6 - (int)strlen(note) * 6 - 6 - 250, 2);
+			text(g, 250, y + 3, buffer, elsewhere ? C_LINE : bad ? C_ERROR : C_TEXT, 2);
 			text_right(g, BANK_RIGHT - 6, y + 7, note, elsewhere ? C_LINE : bad ? C_ERROR : C_LABEL, 1, 70);
 		}
 		if (clickable && over == choice) {
@@ -5705,10 +5723,20 @@ static void draw_bank(mdmi_gui *g, const patch_values *values)
 	// The dragged sound's name at the mouse.
 	if (g->row_list >= 0 && g->row_moved) {
 		char buffer[32];
-		snprintf(buffer, sizeof(buffer), "%.13s", place_name(list_bank(g, g->row_list), envelopes, g->row_place));
-		fill(g, g->mouse_x + 8, g->mouse_y - 10, (int)strlen(buffer) * 12 + 8, 20, C_TEXT);
+		const int width = fit_text(place_name(list_bank(g, g->row_list), envelopes, g->row_place), buffer, sizeof(buffer), LABEL_ROOM, 2);
+		fill(g, g->mouse_x + 8, g->mouse_y - 10, width + 8, 20, C_TEXT);
 		text(g, g->mouse_x + 12, g->mouse_y - 7, buffer, C_BG, 2);
 	}
+}
+
+// A full library, its name by whole letters so the whole line fits the footer (stage 61).
+static void full_message(const mdmi_gui *g, int list, char *out, size_t size)
+{
+	static const char REST[] = " is full to 128: clear a sound first";
+	char name[64];
+	const int room = footer_chars(g) - (int)strlen(REST);
+	fit_text(g->lists[list].name, name, sizeof(name), (room < 4 ? 4 : room) * 12, 2);
+	snprintf(out, size, "%s%s", name, REST);
 }
 
 // The footer over the lists of BANK: what a click or a drop would do.
@@ -5734,7 +5762,7 @@ static bool bank_hint(mdmi_gui *g, char *hint, size_t size, uint32_t *color)
 			*color = C_AMBER;
 			snprintf(hint, size, "%s > slot %d, replaces %s", name, place + 1, place_name(list_bank(g, to), envelopes, place));
 		} else if (g->lists[to].kind == LIST_LIBRARY && place < 0) {
-			snprintf(hint, size, "%s is full to 128: clear a sound first", g->lists[to].name);
+			full_message(g, to, hint, size);
 		} else if (g->lists[to].kind == LIST_LIBRARY) {
 			*color = C_AMBER;
 			snprintf(hint, size, "%s > ADD to %s, %d free", name, g->lists[to].name, PATCH_BANK_SIZE - g->lists[to].count);
@@ -6682,8 +6710,8 @@ static void render(mdmi_gui *g)
 	// Stage 43: the dragged channel's name at the mouse, as a dragged BANK row's.
 	if (copy_dragged(g) && !rom && g->mouse_x >= 0) {
 		char buffer[32];
-		snprintf(buffer, sizeof(buffer), "%.13s", sound_name(patch_view(g->source.patch), g->copy_from));
-		fill(g, g->mouse_x + 8, g->mouse_y - 10, (int)strlen(buffer) * 12 + 8, 20, C_TEXT);
+		const int width = fit_text(sound_name(patch_view(g->source.patch), g->copy_from), buffer, sizeof(buffer), LABEL_ROOM, 2);
+		fill(g, g->mouse_x + 8, g->mouse_y - 10, width + 8, 20, C_TEXT);
 		text(g, g->mouse_x + 12, g->mouse_y - 7, buffer, C_BG, 2);
 	}
 }
@@ -6799,15 +6827,19 @@ static void to_utf8(const wchar_t *wide, char *out, size_t size)
 
 // LOAD on the editor takes one file for the channel. On the bank page, and for ADD, several
 // instruments go to places; a bank or a snapshot alone still loads whole.
-static void load_dialog(mdmi_gui *g, bool add)
+// Stage 61: true when a file was chosen and the footer has something to say; false when cancelled.
+static bool load_dialog(mdmi_gui *g, bool add)
 {
 	const bool bank = add || *g->source.page == PAGE_BANK;
 	const patch_values *values = patch_view(g->source.patch);
 	const int channel = *g->source.channel;
 	const bool envelopes = !channel_is_fm(channel);
 	wchar_t *buffer = calloc(DIALOG_CHARS, sizeof(wchar_t));
-	if (!buffer) {
-		return;
+	// MDMI_TEST_LOAD=cancel: gui_test's dialog, closed by Cancel at once (stage 61).
+	const char *test = getenv("MDMI_TEST_LOAD");
+	if (!buffer || (test && !strcmp(test, "cancel"))) {
+		free(buffer);
+		return false;
 	}
 	OPENFILENAMEW dialog = {0};
 	dialog.lStructSize = sizeof(dialog);
@@ -6820,7 +6852,7 @@ static void load_dialog(mdmi_gui *g, bool add)
 	dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | (bank ? OFN_ALLOWMULTISELECT | OFN_EXPLORER : 0);
 	if (!GetOpenFileNameW(&dialog)) {
 		free(buffer);
-		return;
+		return false;
 	}
 	// Several files come as the folder, then each name; one file as its whole path.
 	const wchar_t *folder = buffer, *name = buffer + wcslen(buffer) + 1;
@@ -6853,6 +6885,7 @@ static void load_dialog(mdmi_gui *g, bool add)
 	} else {
 		put_places(g, paths, count, beyond, envelopes, values->channels[channel][PARAM_PRESET]);
 	}
+	return true;
 }
 
 // REPLACE on the DAC's grid: one WAV for the selected note (stage 12).
@@ -6877,7 +6910,7 @@ static void replace_sample(mdmi_gui *g, int note)
 	say(g, message, loaded ? C_AMBER : C_ERROR, loaded ? MESSAGE_TICKS : ERROR_TICKS);
 }
 
-static void save_dialog(mdmi_gui *g)
+static bool save_dialog(mdmi_gui *g)
 {
 	const int channel = *g->source.channel;
 	const bool sound = takes_files(patch_view(g->source.patch), channel);
@@ -6905,7 +6938,7 @@ static void save_dialog(mdmi_gui *g)
 	dialog.lpstrDefExt = envelope ? L"eef" : L"vgi";
 	dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 	if (!GetSaveFileNameW(&dialog)) {
-		return;
+		return false;
 	}
 	const int chosen = dialog.nFilterIndex >= 1 && dialog.nFilterIndex <= 3 ? (int)dialog.nFilterIndex - 1 : 1;
 	char given[MAX_PATH * 3], utf8[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
@@ -6920,15 +6953,16 @@ static void save_dialog(mdmi_gui *g)
 		_snwprintf(question, sizeof(question) / sizeof(*question), L"%s already exists.\nDo you want to replace it?", slash ? slash + 1 : written);
 		question[sizeof(question) / sizeof(*question) - 1] = 0;
 		if (MessageBoxW(g->window, question, L"Save", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
-			return;
+			return false;
 		}
 	}
 	bool done = files_save(g->source.files, utf8, kind, sound ? channel : -1, message, sizeof(message));
 	say(g, message, done ? C_TEXT : C_ERROR, done ? MESSAGE_TICKS : ERROR_TICKS);
+	return true;
 }
 
 // EXPORT: the ROM for the SD card, named in the save dialog, or in MDMI_TEST_EXPORT for tests.
-static void export_dialog(mdmi_gui *g)
+static bool export_dialog(mdmi_gui *g)
 {
 	char path[MAX_PATH * 3 + 8], message[FILES_MESSAGE];
 	const char *test = getenv("MDMI_TEST_EXPORT");
@@ -6949,12 +6983,13 @@ static void export_dialog(mdmi_gui *g)
 		const bool chosen = GetSaveFileNameW(&dialog);
 		g->exporting = false;
 		if (!chosen) {
-			return;
+			return false;
 		}
 		to_utf8(file, path, MAX_PATH * 3);
 	}
 	const bool done = files_export(g->source.files, path, footer_chars(g), message, sizeof(message));
 	say(g, message, !done ? C_ERROR : strstr(message, "not in ROM") ? C_AMBER : C_TEXT, done ? MESSAGE_TICKS : ERROR_TICKS);
+	return true;
 }
 
 // Stage 55: after a modal dialog the mouse still rests on the button, and its hint would cover the
@@ -6968,20 +7003,23 @@ static void after_dialog(mdmi_gui *g)
 static void on_action(mdmi_gui *g, int action)
 {
 	char message[FILES_MESSAGE];
+	// Stage 61: a cancelled dialog said nothing, so the button's hint comes back at once.
 	if (action == ACTION_LOAD) {
-		load_dialog(g, false);
-		after_dialog(g);
+		if (load_dialog(g, false)) {
+			after_dialog(g);
+		}
 	} else if (action == ACTION_ADD) {
-		if (files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE) {
-			load_dialog(g, true);
+		if (files_add_place(g->source.files, !channel_is_fm(*g->source.channel)) < PATCH_BANK_SIZE && load_dialog(g, true)) {
 			after_dialog(g);
 		}
 	} else if (action == ACTION_SAVE) {
-		save_dialog(g);
-		after_dialog(g);
+		if (save_dialog(g)) {
+			after_dialog(g);
+		}
 	} else if (action == ACTION_EXPORT) {
-		export_dialog(g);
-		after_dialog(g);
+		if (export_dialog(g)) {
+			after_dialog(g);
+		}
 	} else if (action == ACTION_STORE) {
 		// Off when the channel is its place as it is: the mouse does nothing there.
 		if (files_can_store(g->source.files, *g->source.channel) && files_store(g->source.files, *g->source.channel, message, sizeof(message))) {
@@ -7152,7 +7190,7 @@ static void drop_row(mdmi_gui *g)
 	}
 	char message[FILES_MESSAGE];
 	if (g->lists[to].kind == LIST_LIBRARY && place < 0) {
-		snprintf(message, sizeof(message), "%s is full to 128: clear a sound first", g->lists[to].name);
+		full_message(g, to, message, sizeof(message));
 		say(g, message, C_LABEL, MESSAGE_TICKS);
 		return;
 	}
@@ -7853,7 +7891,8 @@ static mdmi_gui *gui_of(IDropTarget *self)
 static void read_drop(mdmi_gui *g, IDataObject *data)
 {
 	g->file_count = g->file_beyond = g->file_instruments = g->file_envelopes = g->file_samples = 0;
-	g->file_paths[0][0] = g->file_name[0] = g->file_stem[0] = 0;
+	g->file_paths[0][0] = g->file_stem[0] = 0;
+	g->file_name = g->file_paths[0];
 	FORMATETC format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
 	STGMEDIUM medium;
 	if (FAILED(IDataObject_GetData(data, &format, &medium))) {
@@ -7889,8 +7928,8 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 	for (const char *c = named; *c; c++) {
 		base = *c == '\\' || *c == '/' ? c + 1 : base;
 	}
-	snprintf(g->file_name, sizeof(g->file_name), "%s", base);
-	char stem[sizeof(g->file_name)];
+	g->file_name = base;
+	char stem[sizeof(g->file_paths[0])];
 	snprintf(stem, sizeof(stem), "%s", base);
 	char *dot = strrchr(stem, '.');
 	if (dot) {
@@ -8358,6 +8397,10 @@ mdmi_gui *gui_create(const gui_source *source)
 	}
 	g->source = *source;
 	g->scale = 1;
+	// Stage 61: names in the messages files writes leave the rest of the footer's line room.
+	if (g->source.files) {
+		g->source.files->message_chars = footer_chars(g);
+	}
 	g->mouse_x = g->mouse_y = -1;
 	g->key_channel = -1;
 	g->ssg_open = -1;

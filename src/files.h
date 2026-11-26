@@ -103,6 +103,9 @@ typedef struct {
 	uint16_t signature;
 	// False when EXPORT would refuse that bank.
 	bool has_signature;
+	// Stage 61: how many characters the window's footer holds, set by the window; names in messages
+	// leave the rest of the message room. 0 without a window: names cut at 40 as before.
+	int message_chars;
 } mdmi_files;
 
 void files_init(mdmi_files *files, const files_host *host);
