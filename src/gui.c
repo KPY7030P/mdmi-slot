@@ -4736,7 +4736,11 @@ static bool action_hint(mdmi_gui *g, char *hint, size_t size)
 	} else if (action == ACTION_UNDO && (undo || files_redo_text(g->source.files))) {
 		const char *redo = files_redo_text(g->source.files);
 		if (undo && redo) {
-			snprintf(hint, size, "UNDO: %.36s. SHIFT: %.36s", undo, redo);
+			// Stage 60: each half cut by whole letters, not by bytes.
+			char undo_shown[40], redo_shown[40];
+			names_fit(undo, undo_shown, sizeof(undo_shown), 36);
+			names_fit(redo, redo_shown, sizeof(redo_shown), 36);
+			snprintf(hint, size, "UNDO: %s. SHIFT: %s", undo_shown, redo_shown);
 		} else if (undo) {
 			snprintf(hint, size, "UNDO: %s", undo);
 		} else {
@@ -4968,10 +4972,16 @@ static int version_x(const mdmi_gui *g)
 	return GUI_WIDTH - 8 - (int)strlen(g->source.version) * 6;
 }
 
+// How many characters of size 2 the footer's line holds left of the version.
+static int footer_chars(const mdmi_gui *g)
+{
+	return (version_x(g) - 16) / 12;
+}
+
 static void footer_text(mdmi_gui *g, const char *message, uint32_t color)
 {
 	char cut[FILES_MESSAGE];
-	names_fit(message, cut, sizeof(cut), (version_x(g) - 16) / 12);
+	names_fit(message, cut, sizeof(cut), footer_chars(g));
 	text(g, 8, FOOTER_Y + 4, cut, color, 2);
 }
 
@@ -6943,7 +6953,7 @@ static void export_dialog(mdmi_gui *g)
 		}
 		to_utf8(file, path, MAX_PATH * 3);
 	}
-	const bool done = files_export(g->source.files, path, message, sizeof(message));
+	const bool done = files_export(g->source.files, path, footer_chars(g), message, sizeof(message));
 	say(g, message, !done ? C_ERROR : strstr(message, "not in ROM") ? C_AMBER : C_TEXT, done ? MESSAGE_TICKS : ERROR_TICKS);
 }
 
@@ -6976,17 +6986,26 @@ static void on_action(mdmi_gui *g, int action)
 		// Off when the channel is its place as it is: the mouse does nothing there.
 		if (files_can_store(g->source.files, *g->source.channel) && files_store(g->source.files, *g->source.channel, message, sizeof(message))) {
 			say(g, message, C_TEXT, MESSAGE_TICKS);
+			// Stage 60: the mouse still rests on the button, as after a dialog.
+			after_dialog(g);
 		}
 	} else if (action == ACTION_UNDO) {
 		message[0] = 0;
 		// Stage 48 (D90): Shift takes the step ahead again. Up and Down start from the Preset as it is.
 		g->key_channel = -1;
+		bool said = true;
 		if (!g->shift && !files_undo_text(g->source.files) && files_redo_text(g->source.files)) {
 			say(g, "Nothing to undo. SHIFT+CLICK: REDO", C_TEXT, MESSAGE_TICKS);
 		} else if (g->shift ? files_redo(g->source.files, message, sizeof(message)) : files_undo(g->source.files, message, sizeof(message))) {
 			say(g, message, C_TEXT, MESSAGE_TICKS);
 		} else if (!strncmp(message, "Can't undo", 10)) {
 			say(g, message, C_ERROR, ERROR_TICKS);
+		} else {
+			said = false;
+		}
+		// Stage 60: what the click did shows over the button's hint until the mouse moves.
+		if (said) {
+			after_dialog(g);
 		}
 		// A library's place may have gone back in its file (stage 22c).
 		if (*g->source.page == PAGE_BANK) {
@@ -7871,11 +7890,14 @@ static void read_drop(mdmi_gui *g, IDataObject *data)
 		base = *c == '\\' || *c == '/' ? c + 1 : base;
 	}
 	snprintf(g->file_name, sizeof(g->file_name), "%s", base);
-	snprintf(g->file_stem, sizeof(g->file_stem), "%s", base);
-	char *dot = strrchr(g->file_stem, '.');
+	char stem[sizeof(g->file_name)];
+	snprintf(stem, sizeof(stem), "%s", base);
+	char *dot = strrchr(stem, '.');
 	if (dot) {
 		*dot = 0;
 	}
+	// Stage 60: by whole letters, leaving the footer room for where it goes ("> note 60", "> CH2, ").
+	names_fit(stem, g->file_stem, sizeof(g->file_stem), footer_chars(g) - 20);
 	g->file_kind = files_kind(g->file_paths[0]);
 }
 
@@ -8196,6 +8218,10 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
 	const int x = (short)LOWORD(lparam) / g->scale, y = (short)HIWORD(lparam) / g->scale;
 	switch (message) {
 	case WM_TIMER:
+		// Stage 60: the message gone with the mouse still on its button, the button's hint comes back.
+		if (g->message_ticks == 1) {
+			g->hint_waits = false;
+		}
 		g->message_ticks -= g->message_ticks > 0;
 		g->flash_ticks -= g->flash_ticks > 0;
 		if (g->wheel_pending && patch_get(g->source.patch, g->wheel_id) == g->wheel_value) {

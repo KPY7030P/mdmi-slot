@@ -6419,7 +6419,7 @@ static void test_export(void)
 	char path[MAX_PATH], message[FILES_MESSAGE];
 	GetTempPathA(sizeof(path), path);
 	strcat(path, "mdmi-reg-export.bin");
-	const bool written = files_export(&files, path, message, sizeof(message));
+	const bool written = files_export(&files, path, 45, message, sizeof(message));
 	printf("    %s\n", message);
 	check(written && !strstr(message, "not in ROM"), "EXPORT writes the file; every channel plays a place of the bank as it is");
 	FILE *file = fopen(path, "rb");

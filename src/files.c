@@ -120,6 +120,14 @@ static const char *extension_of(const char *path)
 	return dot ? dot + 1 : "";
 }
 
+// A name in a message as the footer shows it: its transliteration cut by whole letters (stage 60), so a
+// Russian name gets as many letters as a Latin one, not half of them as a cut by bytes gave.
+static const char *letters(const char *name, char *out, size_t size, int chars)
+{
+	names_fit(name, out, size, chars);
+	return out;
+}
+
 static const char *base_of(const char *path)
 {
 	const char *base = path;
@@ -780,8 +788,10 @@ int files_put_samples(mdmi_files *files, const char *const *paths, int count, in
 	}
 	char text[FILES_MESSAGE];
 	if (count == 1) {
-		snprintf(text, sizeof(text), "note %d back before %.40s", first, read[0]->name);
-		snprintf(message, size, "%.40s > note %d", read[0]->name, first);
+		char name[48];
+		letters(read[0]->name, name, sizeof(name), 40);
+		snprintf(text, sizeof(text), "note %d back before %s", first, name);
+		snprintf(message, size, "%s > note %d", name, first);
 	} else {
 		snprintf(text, sizeof(text), "notes %d-%d back before %d WAV", first, first + count - 1, count);
 		snprintf(message, size, "%d WAV > notes %d-%d", count, first, first + count - 1);
@@ -843,7 +853,8 @@ bool files_reset_sample(mdmi_files *files, int note, char *message, size_t size)
 	char text[FILES_MESSAGE];
 	if (dac->notes[note]) {
 		// A file goes, the ROM's sample or silence comes back.
-		snprintf(text, sizeof(text), "note %d back to %.40s", note, dac->notes[note]->name);
+		char name[48];
+		snprintf(text, sizeof(text), "note %d back to %s", note, letters(dac->notes[note]->name, name, sizeof(name), 40));
 		remember_samples(files, text);
 		if (dac->removed[note]) {
 			dac_remove(dac, note);
@@ -936,7 +947,8 @@ int files_move_sample(mdmi_files *files, int from, int to, bool copy, char *mess
 	char text[FILES_MESSAGE];
 	snprintf(text, sizeof(text), copy ? "note %d before the copy" : "notes %d and %d before the swap", to, from);
 	remember_samples(files, text);
-	snprintf(message, size, copy ? "%.30s copied from %d to %d" : "%.30s from %d swapped with %d", moving->name, from, to);
+	char name[48];
+	snprintf(message, size, copy ? "%s copied from %d to %d" : "%s from %d swapped with %d", letters(moving->name, name, sizeof(name), 30), from, to);
 	put_content(dac, to, moving);
 	if (!copy) {
 		put_content(dac, from, back);
@@ -1083,7 +1095,8 @@ static bool write_library_place(const char *path, bool envelopes, int *place, co
 		set_place(bank, envelopes, free_place, before);
 	}
 	if (*place < 0) {
-		snprintf(message, size, "%.40s is full to 128: clear a sound first", name);
+		char shown[48];
+		snprintf(message, size, "%s is full to 128: clear a sound first", letters(name, shown, sizeof(shown), 40));
 		free(bank);
 		return false;
 	}
@@ -1107,7 +1120,8 @@ static void remember_library(mdmi_files *files, bool envelopes, const char *path
 	char name[LIBRARY_NAME];
 	library_name(path, name, sizeof(name));
 	// Stage 37: a place that was empty goes back to empty, not to the GM sound it holds then (22c).
-	snprintf(files->now.text, sizeof(files->now.text), "%.40s %d back to %s", name, place + 1, was_empty ? "empty" : sound_name(before, envelopes));
+	char shown[48];
+	snprintf(files->now.text, sizeof(files->now.text), "%s %d back to %s", letters(name, shown, sizeof(shown), 40), place + 1, was_empty ? "empty" : sound_name(before, envelopes));
 }
 
 // A sound into a place of the ROM bank or of a library, with its undo step.
@@ -1137,7 +1151,8 @@ static void spot_name(const files_spot *spot, char *out, size_t size)
 	char name[LIBRARY_NAME];
 	if (spot->library) {
 		library_name(spot->library, name, sizeof(name));
-		snprintf(out, size, "%.40s %d", name, spot->place + 1);
+		char shown[48];
+		snprintf(out, size, "%s %d", letters(name, shown, sizeof(shown), 40), spot->place + 1);
 	} else {
 		snprintf(out, size, "bank %d", spot->place + 1);
 	}
@@ -1406,7 +1421,8 @@ static bool apply_step(mdmi_files *files, char *message, size_t size)
 			wchar_t wide[LIBRARY_PATH];
 			const bool gone = MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, LIBRARY_PATH) && GetFileAttributesW(wide) == INVALID_FILE_ATTRIBUTES;
 			if (gone) {
-				snprintf(message, size, "Can't undo: %.40s is gone", name);
+				char shown[48];
+				snprintf(message, size, "Can't undo: %s is gone", letters(name, shown, sizeof(shown), 40));
 			} else {
 				snprintf(message, size, "Can't undo: %s", why);
 			}
@@ -1631,10 +1647,24 @@ static uint8_t *export_image(mdmi_files *files, size_t *built, uint16_t *signatu
 	return image;
 }
 
-// What the window's footer holds at scale 2 left of the build's label (gui.c, footer_text).
-#define EXPORT_FOOTER_CHARS 40
+// The end of a path in at most chars of its transliteration, by whole letters (stage 60).
+static void path_end(const char *path, char *out, size_t size, int chars)
+{
+	char tail[MAX_PATH * 3];
+	out[0] = 0;
+	for (size_t at = strlen(path); at-- > 0;) {
+		if (((unsigned char)path[at] & 0xC0) == 0x80) {
+			continue;
+		}
+		names_ascii(path + at, tail, sizeof(tail));
+		if ((int)strlen(tail) > chars) {
+			break;
+		}
+		snprintf(out, size, "%s", tail);
+	}
+}
 
-bool files_export(mdmi_files *files, const char *path, char *message, size_t size)
+bool files_export(mdmi_files *files, const char *path, int chars, char *message, size_t size)
 {
 	size_t built;
 	uint16_t signature;
@@ -1667,23 +1697,43 @@ bool files_export(mdmi_files *files, const char *path, char *message, size_t siz
 		}
 	}
 	const double mb = built / 1048576.0;
-	char head[FILES_MESSAGE];
+	// Stage 60: the footer's chars hold the head and the path's end, the file's name whole if it can.
+	// The head gets shorter by steps until it does: the sound's name goes, then the channels' list.
+	if (chars > (int)size - 1) {
+		chars = (int)size - 1;
+	}
+	char shown[MAX_PATH * 3];
+	names_ascii(path, shown, sizeof(shown));
+	const int length = (int)strlen(shown), wanted = (int)strlen(base_of(shown)) + 4;
+	char heads[2][FILES_MESSAGE];
+	int steps = 1;
 	if (count == 1) {
 		const patch_values *values = patch_view(files->host.patch);
-		const char *name = is_psg(last) ? patch_envelope_view(files->host.patch, last)->name : values->names[last];
-		snprintf(head, sizeof(head), "%s %.20s not in ROM. %.1f MB: ", channels, name, mb);
+		char name[24];
+		letters(is_psg(last) ? patch_envelope_view(files->host.patch, last)->name : values->names[last], name, sizeof(name), 20);
+		snprintf(heads[0], sizeof(heads[0]), "%s %s not in ROM. %.1f MB: ", channels, name, mb);
+		snprintf(heads[1], sizeof(heads[1]), "%s not in ROM. %.1f MB: ", channels, mb);
+		steps = 2;
 	} else if (count) {
-		snprintf(head, sizeof(head), "%s not in ROM. %.1f MB: ", channels, mb);
+		snprintf(heads[0], sizeof(heads[0]), "%s not in ROM. %.1f MB: ", channels, mb);
+		snprintf(heads[1], sizeof(heads[1]), "%d CH not in ROM. %.1f MB: ", count, mb);
+		steps = 2;
 	} else {
-		snprintf(head, sizeof(head), "ROM %.1f MB: ", mb);
+		snprintf(heads[0], sizeof(heads[0]), "ROM %.1f MB: ", mb);
 	}
-	// The path is cut at its start, so the file's name shows.
-	const int room = EXPORT_FOOTER_CHARS - (int)strlen(head);
-	const int length = (int)strlen(path);
-	if (room > 4 && length > room) {
-		snprintf(message, size, "%s...%s", head, path + length - (room - 3));
+	int step = 0;
+	while (step < steps - 1 && (int)strlen(heads[step]) + (length < wanted ? length : wanted) > chars) {
+		step++;
+	}
+	const char *head = heads[step];
+	// The path is cut at its start, so its end, the file's name, shows.
+	const int room = chars - (int)strlen(head);
+	if (length > room && room > 3) {
+		char end[FILES_MESSAGE];
+		path_end(path, end, sizeof(end), room - 3);
+		snprintf(message, size, "%s...%s", head, end);
 	} else {
-		snprintf(message, size, "%s%s", head, path);
+		snprintf(message, size, "%s%s", head, shown);
 	}
 	return true;
 }

@@ -3023,6 +3023,18 @@ static void test_dac_moves(void)
 	rom_image_sample(rom, rom_size, 36, &rim);
 	CHECK(set.notes[40]->sample.length == rim.length && !memcmp(set.notes[40]->bytes, rim.bytes, rim.length), "the ROM's sample keeps its bytes on the other note");
 	CHECK(files_undo(&files, message, sizeof(message)) && set.notes[40] && !strcmp(set.notes[40]->name, "file.wav") && !set.notes[36], "undo puts both back");
+	// Stage 60: a Russian name of 31 bytes, the most a sample keeps, shows whole; a cut by 30 bytes lost
+	// its last letter.
+	{
+		size_t russian_size;
+		uint8_t *russian_wav = sine_wav(22050, 1, 16, false, 440, 0.2, 0.5, &russian_size);
+		dac_put(&set, 50, dac_from_wav(russian_wav, russian_size, "AB \xD0\x91\xD0\xBE\xD0\xBB\xD1\x8C\xD1\x88\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xBE\xD1\x87\xD0\xBA\xD0\xB0 \xD0\xB8", &error));
+		free(russian_wav);
+		CHECK(set.notes[50] && files_move_sample(&files, 50, 52, true, message, sizeof(message)) && !strcmp(message, "AB Bolshaya bochka i copied from 50 to 52"),
+			"stage 60: a Russian sample's name whole in the message: %s", message);
+		files_undo(&files, message, sizeof(message));
+		dac_put(&set, 50, NULL);
+	}
 	CHECK(files_move_sample(&files, 40, 90, true, message, sizeof(message)) && set.notes[40] && set.notes[90], "a copy keeps the file where it was");
 	CHECK(files_move_sample(&files, 90, 100, false, message, sizeof(message)) && !set.notes[90] && set.notes[100], "moved to an empty note, the note left is empty");
 	CHECK(files_reset_sample(&files, 36, message, sizeof(message)) && set.removed[36] && !set.notes[36], "CLEAR on a ROM note removes its sample: %s", message);
@@ -3342,6 +3354,29 @@ static void test_libraries(void)
 	CHECK(files_save(&files, saved, FILES_BANK, 0, message, sizeof(message)) && same_file(saved, bytes, size), "the ROM bank saved is the same file: a saved bank is a library");
 	free(bytes);
 
+	// Stage 60: names in messages are cut by whole letters of their transliteration, so a Russian file
+	// name gives the same text as its Latin twin, at 40 letters.
+	{
+		char russian[LIBRARY_PATH], latin[LIBRARY_PATH], said[2][FILES_MESSAGE], undo[2][FILES_MESSAGE];
+		library_path(folder, "\xD0\x91\xD0\xB8\xD0\xB1\xD0\xBB\xD0\xB8\xD0\xBE\xD1\x82\xD0\xB5\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB2\xD1\x83\xD0\xBA\xD0\xBE\xD0\xB2 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xBF\xD1\x80\xD0\xBE \xD0\xBA\xD0\xBE\xD1\x81\xD0\xBC\xD0\xBE\xD1\x81 \xD0\xB8 \xD0\xBC\xD0\xBE\xD1\x80\xD0\xB5.mdbank", russian, sizeof(russian));
+		library_path(folder, "Biblioteka zvukov dlya igry pro kosmos i more.mdbank", latin, sizeof(latin));
+		const char *libraries[2] = {russian, latin};
+		files_spot first = {NULL, 0};
+		bool made = true;
+		for (int i = 0; i < 2; i++) {
+			files_spot to = {libraries[i], 4};
+			made = made && files_new_library(libraries[i], message, sizeof(message)) && files_copy_place(&files, false, &first, &to, NULL, said[i], sizeof(said[i])) && files_undo_text(&files);
+			snprintf(undo[i], sizeof(undo[i]), "%s", made ? files_undo_text(&files) : "");
+		}
+		CHECK(made && !strcmp(said[0], said[1]) && !strcmp(undo[0], undo[1]) && !strcmp(undo[0], "Biblioteka zvukov dlya igry pro kosmos i 5 back to empty"),
+			"stage 60: a Russian library's name as far as its Latin twin's: \"%s\" / \"%s\", undo \"%s\" / \"%s\"", said[0], said[1], undo[0], undo[1]);
+		for (int i = 0; i < 2; i++) {
+			wchar_t wide_library[LIBRARY_PATH];
+			MultiByteToWideChar(CP_UTF8, 0, libraries[i], -1, wide_library, LIBRARY_PATH);
+			DeleteFileW(wide_library);
+		}
+	}
+
 	// The ROM bank's place into a library: the bank and the channels stay.
 	CHECK(open_file(&files, files_dir, "Thunder Guitar 03.tyi", 0, 9, message), "a TYI in place 10: %s", message);
 	const patch_arp row = {.count = 2, .loop = -1, .steps = {0, 7}};
@@ -3500,6 +3535,19 @@ static uint32_t be32(const uint8_t *at)
 	return (uint32_t)at[0] << 24 | (uint32_t)at[1] << 16 | (uint32_t)at[2] << 8 | at[3];
 }
 
+// Stage 60: an EXPORT message as the footer takes it: ASCII, at most chars, starting and ending as given.
+static bool export_reads(const char *message, int chars, const char *start, const char *end)
+{
+	const size_t length = strlen(message), tail = strlen(end);
+	for (const char *c = message; *c; c++) {
+		if (*c < 0x20 || *c > 0x7E) {
+			return false;
+		}
+	}
+	return (int)length <= chars && !strncmp(message, start, strlen(start)) && length >= tail && !strcmp(message + length - tail, end);
+}
+
+
 // Stage 24: the image EXPORT writes, and names as the ROM's screen and the window show them.
 static void test_export(void)
 {
@@ -3595,7 +3643,7 @@ static void test_export(void)
 	patch_take_incoming(patch);
 	char path[MAX_PATH], message[FILES_MESSAGE];
 	snprintf(path, sizeof(path), "%s\\export.bin", temp_dir);
-	CHECK(files_export(&files, path, message, sizeof(message)) && !strncmp(message, "ROM ", 4), "EXPORT: %s", message);
+	CHECK(files_export(&files, path, 45, message, sizeof(message)) && !strncmp(message, "ROM ", 4), "EXPORT: %s", message);
 	size_t size;
 	uint8_t *image = read_whole(path, &size);
 	uint8_t packed[ROM_VOICE_BYTES], fields[ROM_VOICE_FIELDS];
@@ -3621,13 +3669,47 @@ static void test_export(void)
 	dropped.voice[0] = 2;
 	patch_load_voice(patch, 1, &dropped, NULL);
 	patch_take_incoming(patch);
-	CHECK(files_export(&files, path, message, sizeof(message)) && strstr(message, "CH2 Slap not in ROM"), "a channel not from the bank: %s", message);
+	CHECK(files_export(&files, path, 45, message, sizeof(message)) && strstr(message, "CH2 Slap not in ROM"), "a channel not from the bank: %s", message);
+	// Stage 60: the message fits the footer's chars and ends with the file's name; the head gets shorter
+	// by steps for it, the sound's name first, then the list of channels.
+	{
+		char folder[MAX_PATH], long_path[MAX_PATH];
+		snprintf(folder, sizeof(folder), "%s\\Mega Drive projects for the stage", temp_dir);
+		CreateDirectoryA(folder, NULL);
+		snprintf(long_path, sizeof(long_path), "%s\\export.bin", folder);
+		CHECK(files_export(&files, long_path, 45, message, sizeof(message)) && export_reads(message, 45, "CH2 Slap not in ROM. ", "\\export.bin") && strstr(message, "MB: ..."),
+			"stage 60: one channel, a long path, 45 chars: %s", message);
+		CHECK(files_export(&files, long_path, 40, message, sizeof(message)) && export_reads(message, 40, "CH2 not in ROM. ", "\\export.bin"),
+			"stage 60: at 40 chars the sound's name goes: %s", message);
+		for (int channel = 3; channel < 6; channel++) {
+			patch_load_voice(patch, channel, &dropped, NULL);
+		}
+		patch_take_incoming(patch);
+		CHECK(files_export(&files, long_path, 45, message, sizeof(message)) && export_reads(message, 45, "4 CH not in ROM. ", "\\export.bin"),
+			"stage 60: four channels, 45 chars: %s", message);
+		CHECK(files_export(&files, long_path, 70, message, sizeof(message)) && export_reads(message, 70, "CH2 CH4 CH5 CH6 not in ROM. ", "\\export.bin"),
+			"stage 60: four channels, 70 chars, the list stays: %s", message);
+		// A Russian folder and file: their transliteration, the file's name whole.
+		char russian[MAX_PATH], russian_file[MAX_PATH];
+		wchar_t wide_folder[MAX_PATH], wide_file[MAX_PATH];
+		snprintf(russian, sizeof(russian), "%s\\\xD0\x9F\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82\xD1\x8B", temp_dir);
+		MultiByteToWideChar(CP_UTF8, 0, russian, -1, wide_folder, MAX_PATH);
+		CreateDirectoryW(wide_folder, NULL);
+		snprintf(russian_file, sizeof(russian_file), "%s\\\xD0\x9C\xD0\xBE\xD0\xB9 \xD0\xBF\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82.bin", russian);
+		MultiByteToWideChar(CP_UTF8, 0, russian_file, -1, wide_file, MAX_PATH);
+		CHECK(files_export(&files, russian_file, 45, message, sizeof(message)) && export_reads(message, 45, "4 CH not in ROM. ", "\\Moy proekt.bin"),
+			"stage 60: a Russian path: %s", message);
+		DeleteFileW(wide_file);
+		RemoveDirectoryW(wide_folder);
+		DeleteFileA(long_path);
+		RemoveDirectoryA(folder);
+	}
 	// A read-only file isn't touched.
 	wchar_t wide[MAX_PATH];
 	MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH);
 	SetFileAttributesW(wide, FILE_ATTRIBUTE_READONLY);
 	uint8_t *was = read_whole(path, &size);
-	CHECK(!files_export(&files, path, message, sizeof(message)) && strstr(message, "NOT WRITTEN"), "a read-only file: %s", message);
+	CHECK(!files_export(&files, path, 45, message, sizeof(message)) && strstr(message, "NOT WRITTEN"), "a read-only file: %s", message);
 	size_t now_size;
 	uint8_t *now = read_whole(path, &now_size);
 	CHECK(was && now && now_size == size && !memcmp(was, now, size), "and its bytes stay");

@@ -191,8 +191,9 @@ const char *files_redo_text(const mdmi_files *files);
 // EXPORT (stage 24): the ROM for the SD card, with the ROM bank, the DAC samples, the names and the
 // signature, written beside the file and then put in its place, so a refusal leaves it as it was. Not
 // remembered by the project, no undo. The message names the channels that play a sound the bank
-// doesn't hold, which the file can't play by its program numbers.
-bool files_export(mdmi_files *files, const char *path, char *message, size_t size);
+// doesn't hold, which the file can't play by its program numbers. chars is the footer's width in
+// characters: the message fits it and ends with the file's name (stage 60), shortened if it must.
+bool files_export(mdmi_files *files, const char *path, int chars, char *message, size_t size);
 // The names the emulator's ROM screen shows (stage 24): the bank's, where a channel's service
 // numbers carry its own sound's name, and the signature EXPORT would write now. False when out of
 // memory.

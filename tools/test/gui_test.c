@@ -4227,14 +4227,37 @@ int main(int argc, char **argv)
 			// STORE: on with a row of the channel's own (its label grey), after it the channel is its place
 			// as it is and STORE is off (its label dim).
 			const int store_on = count_color_in(468, 532, 2, 26, COLOR_LABEL);
+			// Stage 60: the click's message shows over the button's hint until the mouse moves.
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ACTION_STORE_X, BUTTON_Y));
+			capture(window);
+			const bool store_hint = footer_says("STORE: ", COLOR_LABEL);
 			click(window, ACTION_STORE_X, BUTTON_Y);
+			capture(window);
+			const bool store_said = !footer_says("STORE: ", COLOR_LABEL) && count_not_black_in(8, 540, FOOTER_TEXT_Y, FOOTER_TEXT_Y + 14) > 100;
+			save_bmp(argv[2], "stage60-after-store");
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ACTION_STORE_X + 1, BUTTON_Y));
+			capture(window);
+			const bool store_back = footer_says("STORE: ", COLOR_LABEL);
 			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
 			capture(window);
 			save_bmp(argv[2], "arp-store");
 			const int store_off = count_color_in(468, 532, 2, 26, COLOR_LABEL);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ACTION_UNDO_X, BUTTON_Y));
+			capture(window);
+			const bool undo_hint = footer_says("UNDO: ", COLOR_LABEL);
 			click(window, ACTION_UNDO_X, BUTTON_Y);
+			capture(window);
+			const bool undo_said = !footer_says("UNDO: ", COLOR_LABEL) && count_not_black_in(8, 540, FOOTER_TEXT_Y, FOOTER_TEXT_Y + 14) > 100;
+			save_bmp(argv[2], "stage60-after-undo");
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(ACTION_UNDO_X + 1, BUTTON_Y));
+			capture(window);
+			const bool undo_back = footer_says("UNDO: ", COLOR_LABEL) || footer_says("SHIFT+CLICK: REDO", COLOR_LABEL);
+			SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
 			run_ms(200);
+			CHECK(store_hint && store_said && store_back && undo_hint && undo_said && undo_back,
+				"stage 60: over STORE its hint (%d), after the click its message (%d), a pixel on the hint (%d); the same for UNDO (%d, %d, %d)",
+				store_hint, store_said, store_back, undo_hint, undo_said, undo_back);
 			CHECK(store_on > 50 && store_off == 0 && count_color_in(468, 532, 2, 26, COLOR_LINE) > 50 && count_color_in(PSG_COL(0), PSG_COL(1) - 1, ARP_Y(ly, 12), ARP_Y(ly, 12) + 2, COLOR_PSG) == PSG_BAND,
 				"STORE is on for channel 8's own row (%d px), off once the row is in its place, the row stays", store_on);
 			// Stage 22b (D55): the row's switch at 470, 334, 52x12. ARP ON in PSG; a click turns the row
