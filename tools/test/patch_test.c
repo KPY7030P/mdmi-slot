@@ -3285,7 +3285,7 @@ static bool same_file(const char *path, const uint8_t *bytes, size_t size)
 	return read == size && !memcmp(got, bytes, size);
 }
 
-// Stage 63 (D-63): a sample keeps its whole name. 30 Russian letters, 70 bytes with the spaces and .wav.
+// Stage 63 (D102): a sample keeps its whole name. 30 Russian letters, 70 bytes with the spaces and .wav.
 #define NAME_30 "\xD0\x91\xD0\xBE\xD0\xBB\xD1\x8C\xD1\x88\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xBE\xD1\x87\xD0\xBA\xD0\xB0 \xD0\xB8\xD0\xB7 " \
 	"\xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xB4\xD0\xBB\xD1\x8F \xD0\x9C\xD0\xB5\xD0\xB3\xD0\xB0 \xD0\x94\xD1\x80\xD0\xB0\xD0\xB9\xD0\xB2.wav"
 // What builds up to 0.50.0 keep of it: 31 bytes, Большая бочка из and a space.

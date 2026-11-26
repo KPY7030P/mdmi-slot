@@ -521,7 +521,7 @@ uint8_t *dac_image(const dac_set *set, const uint8_t *rom, size_t size, size_t *
 // One sample's head in the project's block, little endian: name, source rate and frames, the edit
 // (start, end, pitch, gain, rate, fade, one-shot), the bytes' rate, clipped, their length, and the
 // loop marks (stage 18b; a head of 0.18 ends before them and reads them as 0, no marks), then the
-// whole name (stage 63, D-63). The name first is cut to DAC_OLD_NAME by whole letters, as builds up to
+// whole name (stage 63, D102). The name first is cut to DAC_OLD_NAME by whole letters, as builds up to
 // 0.50.0 read it; they skip the whole one. A head of 0.50.0 ends before it, and the cut name stays.
 #define HEAD_BYTES (DAC_OLD_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 4 + DAC_NAME)
 
