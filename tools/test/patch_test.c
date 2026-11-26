@@ -3382,6 +3382,15 @@ static void test_dac_whole_name(void)
 				&& from_cut.notes[41] && !strcmp(from_cut.notes[41]->name, "Kick.wav"),
 			"a head of 0.50.0's length reads the same bytes with the name cut");
 		dac_clear(&from_cut);
+		// 0.50.0 cut by bytes: 15 Ж and the lead byte of a 16th read as the 15.
+		memset(cut + 3, 0, DAC_OLD_NAME);
+		for (int i = 0; i < 15; i++) {
+			memcpy(cut + 3 + i * 2, "\xD0\x96", 2);
+		}
+		cut[3 + 30] = (uint8_t)0xD0;
+		CHECK(dac_block_read(&from_cut, cut, cut_size) && from_cut.notes[40] && strlen(from_cut.notes[40]->name) == 30,
+			"an old name with its last letter broken loses that letter (%zu bytes)", from_cut.notes[40] ? strlen(from_cut.notes[40]->name) : 0);
+		dac_clear(&from_cut);
 		free(cut);
 	}
 	free(block);
