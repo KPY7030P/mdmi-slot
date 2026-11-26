@@ -669,7 +669,7 @@ def main():
         crashes = set(os.listdir(CRASH)) if os.path.isdir(CRASH) else set()
         res = play(run)
         if res is None:
-            v = f'{run["name"]} {run["what"]}: НЕ СЫГРАН (Live был занят больше часа)'
+            v = f'{run["name"]} {run["what"]} ({run["bars"][0]}-{run["bars"][1]}): НЕ СЫГРАН (Live был занят больше часа)'
             verdicts.append(v); lines += [v, '']
             continue
         code, out = res

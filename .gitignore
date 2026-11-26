@@ -6,3 +6,4 @@ ALS_tsts/
 # Kept locally, not published (D42).
 /CLAUDE.md
 /.claude/
+__pycache__/
