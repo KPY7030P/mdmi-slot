@@ -2174,13 +2174,20 @@ static void stage61(HWND window, const char *dir)
 	// 3. A library named in Russian (37 letters), open in no list: the choice of list B shows 35 characters.
 	char library[MAX_PATH];
 	snprintf(library, sizeof(library), "%s\\\xD0\x91\xD0\xB8\xD0\xB1\xD0\xBB\xD0\xB8\xD0\xBE\xD1\x82\xD0\xB5\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB2\xD1\x83\xD0\xBA\xD0\xBE\xD0\xB2 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xBF\xD1\x80\xD0\xBE \xD0\xBA\xD0\xBE\xD1\x81\xD0\xBC\xD0\xBE\xD1\x81.mdbank", banks_dir);
+	// A library of its own first: NEW in list B's choice writes First.mdbank (MDMI_TEST_NEW), its bytes
+	// copied under the Russian name, whatever the steps before left in the folder.
+	click(window, BUTTON_BANK_X, BUTTON_Y);
+	run_ms(100);
+	click(window, 600, 66);
+	run_ms(50);
+	click(window, 270, 92 + 10);
+	run_ms(100);
 	static uint8_t bank_bytes[1 << 17];
 	const size_t bank_size = read_file(new_bank, bank_bytes, sizeof(bank_bytes));
 	write_utf8_file(library, bank_bytes, bank_size);
-	click(window, BUTTON_EDITOR_X, BUTTON_Y);
-	run_ms(50);
-	click(window, BUTTON_BANK_X, BUTTON_Y);
-	run_ms(100);
+	wchar_t wide_library[MAX_PATH];
+	MultiByteToWideChar(CP_UTF8, 0, library, -1, wide_library, MAX_PATH);
+	printf("    stage 61: First.mdbank %zu bytes, the Russian copy %s\n", bank_size, GetFileAttributesW(wide_library) != INVALID_FILE_ATTRIBUTES ? "written" : "missing");
 	click(window, 600, 66);
 	run_ms(50);
 	SendMessageA(window, WM_MOUSEMOVE, 0, MAKELPARAM(BUTTON_EDITOR_X, BUTTON_Y));
