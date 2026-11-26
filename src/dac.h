@@ -9,7 +9,11 @@
 // The DAC samples the plugin puts on notes in place of the ROM's (stage 12, D36, D38): the sound of
 // the file they came from, how it is prepared, and the bytes the ROM plays, made from the two. The
 // project keeps all three. Main thread only.
-#define DAC_NAME 32
+// A sample's name, UTF-8, at most DAC_NAME - 1 bytes cut by whole letters: about 47 Russian letters
+// (stage 63, D-63). Builds up to 0.50.0 kept 31 bytes, DAC_OLD_NAME: the project's head still has
+// that field first, so they read a project of now with the name cut there.
+#define DAC_NAME 96
+#define DAC_OLD_NAME 32
 // What a project may hold of sources in all (D38), checked in Live.
 #define DAC_SOURCE_MAX (16u << 20)
 #define DAC_PITCH_MAX 2400

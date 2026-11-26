@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dac.h"
+#include "names.h"
 
 // Taps on each side of the resampling filter, for the input rate or the output's if lower.
 #define SINC_SIDE 16
@@ -277,6 +278,14 @@ int dac_normalize_gain(const dac_sample *sample)
 	return gain > DAC_GAIN_MAX ? DAC_GAIN_MAX : gain < -DAC_GAIN_MAX ? -DAC_GAIN_MAX : (int)gain;
 }
 
+// A name cut to size by whole UTF-8 letters, zeros after it: the project writes the bytes as they are.
+static void take_name(char *out, size_t size, const char *name)
+{
+	memset(out, 0, size);
+	snprintf(out, size, "%s", name);
+	names_cut_utf8(out);
+}
+
 dac_sample *dac_from_wav(const uint8_t *wav, size_t size, const char *name, const char **error)
 {
 	*error = "not a WAV file";
@@ -341,7 +350,7 @@ dac_sample *dac_from_wav(const uint8_t *wav, size_t size, const char *name, cons
 		const long v = lround(frame_value(data + i * frame_bytes, channels, bits, is_float) * 32767);
 		source[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
 	}
-	snprintf(out->name, sizeof(out->name), "%s", name);
+	take_name(out->name, sizeof(out->name), name);
 	out->source = source;
 	out->source_hz = file_hz;
 	out->source_frames = (uint32_t)frames;
@@ -404,7 +413,7 @@ dac_sample *dac_from_rom(const rom_sample *rom, const char *name)
 		source[i] = (int16_t)(rom->bytes[i] * 256);
 	}
 	memcpy(bytes, rom->bytes, rom->length);
-	snprintf(s->name, sizeof(s->name), "%s", name);
+	take_name(s->name, sizeof(s->name), name);
 	s->source = source;
 	// The ROM's own samples are made for PCM4 (stage 19): they play at its rate.
 	s->source_hz = (uint32_t)lround(ROM_PCM4_HZ);
@@ -511,8 +520,10 @@ uint8_t *dac_image(const dac_set *set, const uint8_t *rom, size_t size, size_t *
 
 // One sample's head in the project's block, little endian: name, source rate and frames, the edit
 // (start, end, pitch, gain, rate, fade, one-shot), the bytes' rate, clipped, their length, and the
-// loop marks (stage 18b; a head of 0.18 ends before them and reads them as 0, no marks).
-#define HEAD_BYTES (DAC_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 4)
+// loop marks (stage 18b; a head of 0.18 ends before them and reads them as 0, no marks), then the
+// whole name (stage 63, D-63). The name first is cut to DAC_OLD_NAME by whole letters, as builds up to
+// 0.50.0 read it; they skip the whole one. A head of 0.50.0 ends before it, and the cut name stays.
+#define HEAD_BYTES (DAC_OLD_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 4 + DAC_NAME)
 
 static void put32(uint8_t **at, uint32_t v)
 {
@@ -574,8 +585,8 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 		const uint32_t frames = s->source ? s->source_frames : 0;
 		*out++ = (uint8_t)note;
 		put16(&out, HEAD_BYTES);
-		memcpy(out, s->name, DAC_NAME);
-		out += DAC_NAME;
+		take_name((char *)out, DAC_OLD_NAME, s->name);
+		out += DAC_OLD_NAME;
 		put32(&out, s->source_hz);
 		put32(&out, frames);
 		put32(&out, s->edit.start);
@@ -593,6 +604,8 @@ void dac_block_write(const dac_set *set, uint8_t *out)
 		put32(&out, s->sample.length);
 		put32(&out, s->edit.loop_start);
 		put32(&out, s->edit.loop_end);
+		take_name((char *)out, DAC_NAME, s->name);
+		out += DAC_NAME;
 		if (frames) {
 			memcpy(out, s->source, frames * sizeof(int16_t));
 			out += frames * sizeof(int16_t);
@@ -628,9 +641,11 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 			dac_clear(set);
 			return false;
 		}
-		memcpy(s->name, h, DAC_NAME);
-		s->name[DAC_NAME - 1] = '\0';
-		h += DAC_NAME;
+		memcpy(s->name, h, DAC_OLD_NAME);
+		s->name[DAC_OLD_NAME - 1] = '\0';
+		// 0.50.0 cut it by bytes: a letter the cut broke goes.
+		names_cut_utf8(s->name);
+		h += DAC_OLD_NAME;
 		s->source_hz = get32(&h);
 		const uint32_t frames = get32(&h);
 		s->edit.start = get32(&h);
@@ -648,6 +663,13 @@ bool dac_block_read(dac_set *set, const uint8_t *block, size_t length)
 		const uint32_t bytes = get32(&h);
 		s->edit.loop_start = get32(&h);
 		s->edit.loop_end = get32(&h);
+		// The whole name if the head has one (stage 63), else the cut one stays.
+		if (*h) {
+			memcpy(s->name, h, DAC_NAME);
+			s->name[DAC_NAME - 1] = '\0';
+			names_cut_utf8(s->name);
+		}
+		h += DAC_NAME;
 		const uint64_t source_bytes = (uint64_t)frames * sizeof(int16_t);
 		if (!bytes && !frames && note < ROM_IMAGE_NOTES) {
 			dac_free(s);

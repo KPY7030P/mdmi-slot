@@ -2642,7 +2642,7 @@ static void test_dac_marks(void)
 	const uint8_t *record41 = image ? image + records + 41 * 14 : NULL;
 	CHECK(record41 && !record41[10] && !record41[11] && !record41[12] && !record41[13], "an unmarked record has zeros where the marks would be");
 	free(image);
-	// The project keeps the marks; a head of 0.18, 8 bytes shorter, reads as no marks.
+	// The project keeps the marks; a head of 0.18, without the marks and the whole name (stage 63), reads as no marks.
 	const size_t block_size = dac_block_size(&set);
 	uint8_t *block = malloc(block_size);
 	dac_block_write(&set, block);
@@ -2653,7 +2653,7 @@ static void test_dac_marks(void)
 	const size_t first = 3 + head + s->source_frames * 2 + s->sample.length;
 	uint8_t *old = malloc(block_size);
 	memcpy(old, block + first, 3);
-	const uint16_t old_head = (uint16_t)(head - 8);
+	const uint16_t old_head = (uint16_t)(head - 8 - DAC_NAME);
 	memcpy(old + 1, &old_head, 2);
 	memcpy(old + 3, block + first + 3, old_head);
 	const size_t rest = block_size - first - 3 - head;
@@ -2880,7 +2880,7 @@ static void test_dac_edit(void)
 		CHECK(dac_block_read(&back, one_block, one_size) && back.notes[45]->edit.loop && !back.notes[45]->edit.one_shot && back.notes[45]->sample.flags == ROM_SAMPLE_LOOP,
 			"the project keeps LOOP");
 		// An older build's head: the same byte 1 is one-shot, as it always was.
-		const size_t mode_at = 3 + DAC_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1;
+		const size_t mode_at = 3 + DAC_OLD_NAME + 4 + 4 + 4 + 4 + 2 + 2 + 1 + 1;
 		CHECK(one_block[mode_at] == 2, "LOOP is mode 2 in the head");
 		one_block[mode_at] = 1;
 		CHECK(dac_block_read(&back, one_block, one_size) && !back.notes[45]->edit.loop && back.notes[45]->edit.one_shot && back.notes[45]->sample.flags == ROM_SAMPLE_ONE_SHOT,
@@ -3283,6 +3283,151 @@ static bool same_file(const char *path, const uint8_t *bytes, size_t size)
 	const size_t read = fread(got, 1, sizeof(got), file);
 	fclose(file);
 	return read == size && !memcmp(got, bytes, size);
+}
+
+// Stage 63 (D-63): a sample keeps its whole name. 30 Russian letters, 70 bytes with the spaces and .wav.
+#define NAME_30 "\xD0\x91\xD0\xBE\xD0\xBB\xD1\x8C\xD1\x88\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xBE\xD1\x87\xD0\xBA\xD0\xB0 \xD0\xB8\xD0\xB7 " \
+	"\xD0\xB8\xD0\xB3\xD1\x80\xD1\x8B \xD0\xB4\xD0\xBB\xD1\x8F \xD0\x9C\xD0\xB5\xD0\xB3\xD0\xB0 \xD0\x94\xD1\x80\xD0\xB0\xD0\xB9\xD0\xB2.wav"
+// What builds up to 0.50.0 keep of it: 31 bytes, Большая бочка из and a space.
+#define NAME_31 "\xD0\x91\xD0\xBE\xD0\xBB\xD1\x8C\xD1\x88\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xBE\xD1\x87\xD0\xBA\xD0\xB0 \xD0\xB8\xD0\xB7 "
+// The head 0.50.0 writes and reads (dac.c of 86a653d): name 32, rates, edit, flags, length, marks.
+#define HEAD_050 69
+
+// The names of a block as 0.50.0 reads them: per sample its note, head length, the first 31 bytes of
+// the head, then past the head, the source (frames at +36) and the bytes (length at +57). False if a
+// sample runs past the block.
+static bool names_050(const uint8_t *block, size_t length, int *notes, char names[][DAC_OLD_NAME], int *count)
+{
+	*count = 0;
+	for (size_t at = 0; at < length;) {
+		if (length - at < 3 + HEAD_050) {
+			return false;
+		}
+		uint16_t head;
+		uint32_t frames, bytes;
+		memcpy(&head, block + at + 1, 2);
+		memcpy(&frames, block + at + 3 + 36, 4);
+		memcpy(&bytes, block + at + 3 + 57, 4);
+		if (head < HEAD_050) {
+			return false;
+		}
+		notes[*count] = block[at];
+		memcpy(names[*count], block + at + 3, DAC_OLD_NAME);
+		names[*count][DAC_OLD_NAME - 1] = 0;
+		(*count)++;
+		at += 3 + (size_t)head + (size_t)frames * 2 + bytes;
+		if (at > length) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void test_dac_whole_name(void)
+{
+	printf("DAC: a sample's whole name in the project (stage 63)\n");
+	CHECK(strlen(NAME_30) == 70 && strlen(NAME_31) == 31, "the names are 70 and 31 bytes");
+	static mdmi_patch patch;
+	patch_init(&patch);
+	size_t size;
+	uint8_t *wav = sine_wav(8000, 1, 16, false, 440, 0.1, 0.5, &size);
+	const char *error;
+	dac_set set = {0};
+	dac_put(&set, 40, dac_from_wav(wav, size, NAME_30, &error));
+	dac_put(&set, 41, dac_from_wav(wav, size, "Kick.wav", &error));
+	CHECK(set.notes[40] && !strcmp(set.notes[40]->name, NAME_30), "a WAV keeps its whole name in memory");
+	// Saved and opened again: the whole name.
+	state_view view = {.dac = &set};
+	size_t state_size;
+	uint8_t *state = state_build(&patch, &view, &state_size);
+	dac_set read = {0};
+	state_view back = {.dac = &read};
+	bool knobs;
+	CHECK(state && state_read(&patch, state, state_size, &back, &knobs) && read.notes[40] && !strcmp(read.notes[40]->name, NAME_30)
+			&& read.notes[41] && !strcmp(read.notes[41]->name, "Kick.wav") && dac_same(&set, &read),
+		"a project with a 30-letter Russian name opens with the name whole: %s", read.notes[40] ? read.notes[40]->name : "(none)");
+	free(state);
+	dac_clear(&read);
+	// The new block as 0.50.0 reads it: its offsets hold, the longer head is skipped, the name cut.
+	const size_t block_size = dac_block_size(&set);
+	uint8_t *block = malloc(block_size);
+	dac_block_write(&set, block);
+	int notes[4], count = 0;
+	char names[4][DAC_OLD_NAME];
+	uint16_t head;
+	memcpy(&head, block + 1, 2);
+	uint32_t hz;
+	memcpy(&hz, block + 3 + 32, 4);
+	CHECK(head == HEAD_050 + DAC_NAME && hz == 8000 && names_050(block, block_size, notes, names, &count) && count == 2 && notes[0] == 40
+			&& !strcmp(names[0], NAME_31) && notes[1] == 41 && !strcmp(names[1], "Kick.wav"),
+		"0.50.0 reads the new project: head %u, both samples, the name cut to %s", head, count > 0 ? names[0] : "(none)");
+	// And as this build reads a head cut to 0.50.0's: the same samples, the cut name.
+	{
+		uint16_t first_head;
+		memcpy(&first_head, block + 1, 2);
+		uint32_t frames, bytes;
+		memcpy(&frames, block + 3 + 36, 4);
+		memcpy(&bytes, block + 3 + 57, 4);
+		const size_t first = 3 + first_head + frames * 2 + bytes;
+		uint8_t *cut = malloc(block_size);
+		const uint16_t old_head = HEAD_050;
+		cut[0] = block[0];
+		memcpy(cut + 1, &old_head, 2);
+		memcpy(cut + 3, block + 3, HEAD_050);
+		memcpy(cut + 3 + HEAD_050, block + 3 + first_head, block_size - 3 - first_head);
+		const size_t cut_size = block_size - (first_head - HEAD_050);
+		dac_set from_cut = {0};
+		CHECK(first < block_size && dac_block_read(&from_cut, cut, cut_size) && from_cut.notes[40] && !strcmp(from_cut.notes[40]->name, NAME_31)
+				&& from_cut.notes[40]->sample.length == set.notes[40]->sample.length && !memcmp(from_cut.notes[40]->bytes, set.notes[40]->bytes, set.notes[40]->sample.length)
+				&& from_cut.notes[41] && !strcmp(from_cut.notes[41]->name, "Kick.wav"),
+			"a head of 0.50.0's length reads the same bytes with the name cut");
+		dac_clear(&from_cut);
+		free(cut);
+	}
+	free(block);
+	// A project 0.50.0 saved (tools/test/files/dac-name-0.50.0.bin, made by patch_test of 86a653d from
+	// the same WAV on note 40): it opens, the name as 0.50.0 kept it.
+	{
+		char path[MAX_PATH];
+		path_in(path, sizeof(path), files_dir, "dac-name-0.50.0.bin");
+		FILE *file = fopen(path, "rb");
+		static uint8_t old[1 << 17];
+		const size_t old_size = file ? fread(old, 1, sizeof(old), file) : 0;
+		if (file) {
+			fclose(file);
+		}
+		dac_set from_old = {0};
+		state_view old_view = {.dac = &from_old};
+		CHECK(old_size > 0 && state_read(&patch, old, old_size, &old_view, &knobs) && from_old.notes[40] && !strcmp(from_old.notes[40]->name, NAME_31)
+				&& from_old.notes[40]->source_frames == 800 && from_old.notes[40]->sample.length == set.notes[40]->sample.length
+				&& !memcmp(from_old.notes[40]->bytes, set.notes[40]->bytes, set.notes[40]->sample.length),
+			"a project of 0.50.0 opens: the same bytes, the name %s", from_old.notes[40] ? from_old.notes[40]->name : "(none)");
+		dac_clear(&from_old);
+	}
+	// A name longer than the room: cut by whole letters, 47 of 60.
+	{
+		char sixty[256] = "";
+		for (int i = 0; i < 60; i++) {
+			strcat(sixty, "\xD0\x96");
+		}
+		dac_sample *s = dac_from_wav(wav, size, sixty, &error);
+		CHECK(s && strlen(s->name) == 94 && !strncmp(s->name, sixty, 94), "a 60-letter name keeps 47 whole letters, %zu bytes", s ? strlen(s->name) : 0);
+		dac_set one = {0};
+		dac_put(&one, 50, s);
+		const size_t one_size = dac_block_size(&one);
+		uint8_t *one_block = malloc(one_size);
+		dac_block_write(&one, one_block);
+		char cut_name[DAC_OLD_NAME];
+		memcpy(cut_name, one_block + 3, DAC_OLD_NAME);
+		dac_set one_back = {0};
+		CHECK(strlen(cut_name) == 30 && dac_block_read(&one_back, one_block, one_size) && one_back.notes[50] && !strcmp(one_back.notes[50]->name, s->name),
+			"its name for 0.50.0 is 15 whole letters (%zu bytes), and it reads back whole", strlen(cut_name));
+		free(one_block);
+		dac_clear(&one);
+		dac_clear(&one_back);
+	}
+	free(wav);
+	dac_clear(&set);
 }
 
 // Libraries beside the plugin (stage 22c, D56): files of a folder, read and written place by place,
@@ -3857,6 +4002,7 @@ int main(int argc, char **argv)
 	test_dac_marks();
 	test_dac_old_project();
 	test_dac_moves();
+	test_dac_whole_name();
 	test_libraries();
 	test_copy_channel();
 	test_undo_history();

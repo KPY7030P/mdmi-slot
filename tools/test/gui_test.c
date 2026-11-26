@@ -1750,8 +1750,8 @@ static HWND stage55(HWND window, const clap_plugin_gui_t *gui, HWND parent, cons
 			int note;
 			const char *grid, *label, *whole, *key;
 		} NAMES[4] = {
-			// A sample's name keeps 31 bytes (dac.h DAC_NAME): this one as Большая бочка из.
-			{"Большая бочка из игры", 36, "Bbiz", "Bolshaya bochk", "Bolshaya bochka iz", "C-2"},
+			// 40 bytes: up to 0.50.0 the project kept 31 (Большая бочка из), since stage 63 the name is whole.
+			{"Большая бочка из игры", 36, "Bbiig", "Bolshaya bochk", "Bolshaya bochka iz igry", "C-2"},
 			{"Long Latin Sample Name 01", 37, "LLSN0", "Long Latin Sam", "Long Latin Sample Name 01", "C#2"},
 			{"Kick Бочка 01", 38, "KB01", "Kick Bochka 01", "Kick Bochka 01", "D-2"},
 			{"Жужжащий ящер", 39, "Zhya", "Zhuzhzhashiy", "Zhuzhzhashiy yasher", "D#2"},
