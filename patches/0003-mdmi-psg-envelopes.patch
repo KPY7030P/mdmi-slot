@@ -234,7 +234,7 @@ index 497f392..511dc7a 100644
      comm_init();
      ui_print_present_devices();
 diff --git a/src/midi.c b/src/midi.c
-index 5145b6a..25593f1 100644
+index 5145b6a..48ca6fa 100644
 --- a/src/midi.c
 +++ b/src/midi.c
 @@ -1,3 +1,4 @@
@@ -335,7 +335,7 @@ index 5145b6a..25593f1 100644
  }
  
  static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
-@@ -401,12 +432,73 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
+@@ -401,12 +432,75 @@ static DeviceChannel* findSuitableDeviceChannel(u8 midiChan)
      return findFreeChannel(midiChan);
  }
  
@@ -408,11 +408,13 @@ index 5145b6a..25593f1 100644
 +    } else if (total > max * 100) {
 +        total = max * 100;
 +    }
-+    return (PitchCents) { .pitch = total / 100, .cents = total % 100 };
++    // Held within 0-12700: one division of a u16, as pc_shift's, not two of an s32 on the 68000.
++    u16 held = total;
++    return (PitchCents) { .pitch = held / 100, .cents = held % 100 };
  }
  
  static void set_downstream_pitch(DeviceChannel* devChan)
-@@ -415,9 +507,33 @@ static void set_downstream_pitch(DeviceChannel* devChan)
+@@ -415,9 +509,33 @@ static void set_downstream_pitch(DeviceChannel* devChan)
      devChan->ops->pitch(devChan->num, pc.pitch, pc.cents);
  }
  
@@ -447,7 +449,7 @@ index 5145b6a..25593f1 100644
      devChan->ops->noteOn(devChan->num, pc.pitch, pc.cents, velocity);
  }
  
-@@ -446,7 +562,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -446,7 +564,23 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      MidiChannel* midiChannel = &midiChannels[midiChan];
@@ -471,7 +473,7 @@ index 5145b6a..25593f1 100644
          if (note_priority_isFull(&midiChannel->notePriority)) {
              log_warn("Ch %d: Note priority stack full", midiChan + 1);
              return;
-@@ -462,14 +594,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
+@@ -462,14 +596,28 @@ void midi_note_on(u8 midiChan, u8 pitch, u8 velocity)
      }
  
      reapply_program_if_channel_was_formerly_percussive(devChan, midiChan);
@@ -500,7 +502,7 @@ index 5145b6a..25593f1 100644
  static bool is_single_voice_channel(u8 midiChan, bool playing)
  {
      u8 count = 0;
-@@ -483,20 +629,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
+@@ -483,20 +631,42 @@ static bool is_single_voice_channel(u8 midiChan, bool playing)
  
  void midi_note_off(u8 chan, u8 pitch)
  {
@@ -546,7 +548,7 @@ index 5145b6a..25593f1 100644
                      dev_chan_note_on(devChan, nextMostRecentPitch, midiChannel->lastVelocity);
                  }
                  handledRetrigger = true;
-@@ -510,6 +678,8 @@ void midi_note_off(u8 chan, u8 pitch)
+@@ -510,6 +680,8 @@ void midi_note_off(u8 chan, u8 pitch)
  static void dev_chan_note_on(DeviceChannel* devChan, u8 pitch, u8 velocity)
  {
      devChan->noteOn = true;
@@ -555,7 +557,7 @@ index 5145b6a..25593f1 100644
      devChan->cents = 0;
      devChan->pitch = pitch;
      set_downstream_note_on(devChan, velocity);
-@@ -519,6 +689,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
+@@ -519,6 +691,9 @@ static void dev_chan_note_off(DeviceChannel* devChan, u8 pitch)
  {
      devChan->noteOn = false;
      devChan->pitch = 0;
@@ -565,7 +567,7 @@ index 5145b6a..25593f1 100644
      devChan->ops->noteOff(devChan->num, pitch);
  }
  
-@@ -606,9 +779,12 @@ DeviceChannel* midi_channel_mappings(void)
+@@ -606,9 +781,12 @@ DeviceChannel* midi_channel_mappings(void)
  
  static void all_notes_off(u8 ch)
  {
@@ -578,7 +580,7 @@ index 5145b6a..25593f1 100644
          devChan->ops->allNotesOff(devChan->num);
      }
  }
-@@ -649,13 +825,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
+@@ -649,13 +827,78 @@ static void direct_write_ym2612(u8 part, const u8* data, u16 length)
      synth_direct_write_ym2612(part, data[0] << 4 | data[1], data[2] << 4 | data[3]);
  }
  
@@ -657,7 +659,7 @@ index 5145b6a..25593f1 100644
          FmPreset fmPreset;
          fmPreset.algorithm = data[2];
          fmPreset.feedback = data[3];
-@@ -675,7 +916,7 @@ static void store_program(const u8* data, u16 length)
+@@ -675,7 +918,7 @@ static void store_program(const u8* data, u16 length)
              fmPreset.operators[i].ssgEg = data[16 + i * 11];
          }
          midi_fm_store_preset(program, &fmPreset);
@@ -666,7 +668,7 @@ index 5145b6a..25593f1 100644
          break;
      }
      default:
-@@ -692,7 +933,7 @@ static void clear_program(const u8* data, u16 length)
+@@ -692,7 +935,7 @@ static void clear_program(const u8* data, u16 length)
      switch (type) {
      case STORE_PROGRAM_TYPE_FM:
          midi_fm_clear_preset(program);
@@ -675,7 +677,7 @@ index 5145b6a..25593f1 100644
          break;
      default:
          log_warn("Invalid clear program type: %d", type);
-@@ -811,9 +1052,9 @@ static void dump_preset_request(const u8* data, u16 length)
+@@ -811,9 +1054,9 @@ static void dump_preset_request(const u8* data, u16 length)
          const FmPreset* preset = midi_fm_get_stored_preset(program);
          if (preset != NULL) {
              send_preset_dump(program, SYSEX_COMMAND_PRESET_DATA, preset);
@@ -687,7 +689,7 @@ index 5145b6a..25593f1 100644
          }
          break;
      }
-@@ -841,7 +1082,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
+@@ -841,7 +1084,7 @@ static const SysexCommand SYSEX_COMMANDS[] = {
      { SYSEX_COMMAND_INVERT_TOTAL_LEVEL, set_invert_total_level, 1, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_0, direct_write_ym2612_part_0, 4, true },
      { SYSEX_COMMAND_WRITE_YM2612_REG_PART_1, direct_write_ym2612_part_1, 4, true },
@@ -696,7 +698,7 @@ index 5145b6a..25593f1 100644
      { SYSEX_COMMAND_CLEAR_PROGRAM, clear_program, 2, true },
      { SYSEX_COMMAND_CLEAR_ALL_PROGRAMS, clear_all_programs, 1, true },
      { SYSEX_COMMAND_DUMP_PRESET, dump_preset_request, 2, true },
-@@ -998,10 +1239,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
+@@ -998,10 +1241,107 @@ static void set_operator_total_level(u8 chan, u8 op, u8 value)
      synth_operator_total_level(chan, op, value);
  }
  
@@ -805,7 +807,7 @@ index 5145b6a..25593f1 100644
  }
  
  static void set_fm_chan_parameter(DeviceChannel* devChan, u8 controller, u8 value)
-@@ -1220,7 +1558,7 @@ static void store_program_from_channel(u8 ch, u8 program)
+@@ -1220,7 +1560,7 @@ static void store_program_from_channel(u8 ch, u8 program)
      FOREACH_DEV_CHAN_WITH_MIDI(ch, devChan) {
          if (devChan->ops == &FM_VTable) {
              midi_fm_store_preset_from_channel(devChan->num, program);
@@ -814,7 +816,7 @@ index 5145b6a..25593f1 100644
              break; // first chan we find only
          }
      }
-@@ -1247,11 +1585,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1247,11 +1587,31 @@ void midi_cc(u8 ch, u8 controller, u8 value)
          set_polyphonic_mode(RANGE(value, 2) != 0);
          break;
      case CC_GENMDM_CH3_SPECIAL_MODE:
@@ -846,7 +848,7 @@ index 5145b6a..25593f1 100644
      case CC_SHOW_PARAMETERS_ON_UI:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1265,6 +1623,18 @@ void midi_cc(u8 ch, u8 controller, u8 value)
+@@ -1265,6 +1625,18 @@ void midi_cc(u8 ch, u8 controller, u8 value)
      case CC_PORTAMENTO_ENABLE:
          set_portamento_mode(chan, RANGE(value, 2));
          break;
@@ -865,7 +867,7 @@ index 5145b6a..25593f1 100644
      case CC_FINE_TUNE:
          if (isIgnoringNonGeneralMidiCCs())
              break;
-@@ -1311,11 +1681,12 @@ void midi_reset(void)
+@@ -1311,11 +1683,12 @@ void midi_reset(void)
      reset();
  }
  
@@ -880,7 +882,7 @@ index 5145b6a..25593f1 100644
      }
  
      s16 effectiveIncrement = 0;
-@@ -1339,25 +1710,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
+@@ -1339,25 +1712,54 @@ static void process_channel_glide(DeviceChannel* chan, u16 portamentoTime)
  
      chan->pitch = pc.pitch;
      chan->cents = pc.cents;

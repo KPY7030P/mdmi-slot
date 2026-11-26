@@ -432,11 +432,13 @@ c = add_clip(psg[9], '14 шум от тона 3: край 79 вверх', P0 + 2
 bend_clip(psg[9], c, [(0, 0), (0.95, 0), (0.95, UP), (2.95, UP), (2.95, 0)])
 c = add_clip(psg[9], '14 шум от тона 3: край 0 вниз', P0 + 3 * BAR, BAR, [(0, 0, 0.9), (0, 1, 0.9), (1, 2, 0.9)], 23)
 bend_clip(psg[9], c, [(0, 0), (0.95, 0), (0.95, DOWN), (2.95, DOWN), (2.95, 0)])
-# The noise periodic on tone 3 for 123-124, white at the top rate (the defaults) before and after.
+# The noise periodic on tone 3 for 123-124, white at the top rate (the defaults) before and after. The
+# switch comes half a bar early (122 plays only K7), so it reaches the ROM before the first noise note.
 nt = configure_param(mdmi_t, 6, 'Noise Type', 7, 5)
 nr = configure_param(mdmi_t, 7, 'Noise Rate', 8, 6)
-automate_points(mdmi_t, nt, [(0, 1.0), (P0 + 2 * BAR, 1.0), (P0 + 2 * BAR, 0.0), (P0 + 4 * BAR, 0.0), (P0 + 4 * BAR, 1.0)])
-automate_points(mdmi_t, nr, [(0, 0.0), (P0 + 2 * BAR, 0.0), (P0 + 2 * BAR, 0.75), (P0 + 4 * BAR, 0.75), (P0 + 4 * BAR, 0.0)])
+NS = P0 + 2 * BAR - 2
+automate_points(mdmi_t, nt, [(0, 1.0), (NS, 1.0), (NS, 0.0), (P0 + 4 * BAR, 0.0), (P0 + 4 * BAR, 1.0)])
+automate_points(mdmi_t, nr, [(0, 0.0), (NS, 0.0), (NS, 0.75), (P0 + 4 * BAR, 0.75), (P0 + 4 * BAR, 0.0)])
 start = P0 + 4 * BAR
 
 for t in all_tracks: tracks.remove(t)
@@ -452,7 +454,8 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
 Сделан из tst6: на дорожке «MDMI песня» ваш звук из tst6 с сэмплом DAC. Пункты = пункты docs/owner-check-*.md.
 
 Дорожки:
-  MDMI песня            плагин; на ней автоматизация DAC Enable, Mono CH1, Ch8 и Ch10 Env Speed
+  MDMI песня            плагин; на ней автоматизация DAC Enable, Mono CH1, Ch8 и Ch10 Env Speed,
+                        Noise Type и Noise Rate (белый шум, высокая частота везде, кроме 123-124)
   К1-К6                 шлют ноты в «MDMI песня» на MIDI-каналы 1-6
   MDMI гласная А…Э      пять плагинов, в каждый уже загружен свой CSM vowel (LOAD не нужен)
   К3 → гласная А…Э      шлют ноты на канал 3 своего плагина
@@ -513,7 +516,7 @@ GUIDE_RU = '''Проект для общей проверки MDMI Slot. Всё 
               прыгала на чужую низкую ноту).
               122 К7 PSG: 1-я доля самая низкая нота PSG (45, A2), 2-я нота 46 с изгибом вниз: звучит как 45
               (в 0.50 молчала). 3-я доля клавиша 1 с изгибом вниз: тишина (в 0.50 визжал самый высокий тон).
-              123-124 К10 шум, автоматизация ставит Noise Type Periodic и Rate Tone 3: шум звучит нотой.
+              123-124 К10 шум, автоматизация с середины 122 ставит Noise Type Periodic и Rate Tone 3: шум нотой.
               123: 1-я доля 79 (верх шума от тона 3), 2-я 79 с изгибом вверх и 3-я 78 с изгибом вверх звучат
               как 1-я (в 0.50 2-я молчала); 4-я доля 80: тишина, так и было. 124: 1-я доля 0 (низ),
               2-я 0 и 3-я 1 с изгибом вниз звучат как 1-я (в 0.50 молчали). После 124 шум снова белый.
