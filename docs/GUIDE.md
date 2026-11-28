@@ -272,7 +272,7 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   samples are made by rescomp `PCM4 15500`, so they last as in 0.18. Channel 6's Pan (CC 10) pans them
   (stage 18): our ROM writes B6 at once for all four, the driver never writes it; switching the DAC on or
   off writes channel 6's pan again for the side now in charge.
-- Track audio through the DAC (stage 23, D73, emulator only). The plugin's one input port, `DAC In` (not
+- Track audio through the DAC (stage 23, D73, emulator only). The plugin's one input port, `DAC In Ch 6` (`DAC In` before 0.52.0; not
   main; clap-wrapper makes it an aux bus, Live's Sidechain), goes mono, (L + R) / 2, to
   `mdmi_engine_input` before each block: a ring at the host's rate by ring position. Patch 0001 counts the
   YM2612's output samples (`mdmi_samples`) and, at each write of 0x2A while the DAC is on, adds
@@ -521,7 +521,8 @@ number. A project stores pairs of id and value, so a knob added later starts at 
   without a click, as when a project's view comes in (stage 49, `ssg_channel`). Without Ch3 Special the tags are dim and take no mouse.
 
 - Outputs (stage 17, D46): Main and Ch 1 to Ch 10, one stereo port each, in this order and with these ids for
-  good (Live keeps routing by them). The patched BlastEm hands over each of the chip's ten voices (FM 1-6, the
+  good (Live keeps routing by them). Since 0.52.0 the names say what the channel plays: `Ch 1 FM1` to `Ch 5 FM5`,
+  `Ch 6 FM6/DAC`, `Ch 7 PSG1` to `Ch 9 PSG3`, `Ch 10 Noise`; the input is `DAC In Ch 6`. Names may change, ids may not. The patched BlastEm hands over each of the chip's ten voices (FM 1-6, the
   DAC on 6, PSG tones 1-3, noise) beside its mix, through the same lowpass and interpolation in float, and
   marks each 0x28 key-on. The dealer (`start_note`) tells the engine which MIDI channel a voice's note is
   for, queued with the note; the engine moves the voice to that channel's output at the voice's next key-on,

@@ -697,7 +697,7 @@ static bool audio_ports_get(const clap_plugin_t *plugin, uint32_t index, bool is
 		}
 		memset(info, 0, sizeof(*info));
 		info->id = 0;
-		strncpy(info->name, "DAC In", sizeof(info->name) - 1);
+		strncpy(info->name, "DAC In Ch 6", sizeof(info->name) - 1);
 		info->channel_count = 2;
 		info->port_type = CLAP_PORT_STEREO;
 		info->in_place_pair = CLAP_INVALID_ID;
@@ -712,7 +712,11 @@ static bool audio_ports_get(const clap_plugin_t *plugin, uint32_t index, bool is
 		strncpy(info->name, "Main", sizeof(info->name) - 1);
 		info->flags = CLAP_AUDIO_PORT_IS_MAIN;
 	} else {
-		snprintf(info->name, sizeof(info->name), "Ch %u", index);
+		// Names say what the MIDI channel plays (D46: an output is a MIDI channel, not a chip voice).
+		// Live keeps routing by id, so names may change; ids and order may not.
+		static const char *const kinds[MDMI_OUTPUTS] = {
+			"FM1", "FM2", "FM3", "FM4", "FM5", "FM6/DAC", "PSG1", "PSG2", "PSG3", "Noise"};
+		snprintf(info->name, sizeof(info->name), "Ch %u %s", index, kinds[index - 1]);
 	}
 	info->channel_count = 2;
 	info->port_type = CLAP_PORT_STEREO;
